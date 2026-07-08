@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   X, Check, Undo2, RefreshCw, MessageCircleQuestion, LayoutTemplate, AlignLeft, ListChecks, FlaskConical,
-  ClipboardCheck, ClipboardX, Loader2, Plus, Tag,
+  ClipboardCheck, ClipboardX, Loader2, Plus, Tag, Play,
 } from 'lucide-react';
-import { startPlanReview, startPlanRevise } from '../../api';
+import { startPlanReview, startPlanRevise, createBranch } from '../../api';
+import { launchPhaseDefault } from '../../agentActions';
+import { resolveEffectiveAgent, frameworkSupports } from '../../utils';
+import { isActiveSession } from '../../orchestration';
 import { ArtifactPanel } from './ArtifactPanel';
 import { TaskMarkdown } from '../TaskMarkdown';
 import { TagSelector } from '../TagSelector';
 import { getPriorityIcon } from './taskModalHelpers';
-import { dismissPlanReview, feedbackAuthorLabel, isPlanApprovalPending, isPlanGateRevising, planReviewFeedback } from '../pendingInteractions';
+import { dismissPlanReview, feedbackAuthorLabel, isPlanApprovalPending, isPlanGateRevising, planReviewFeedback, resolvePlanGateValue } from '../pendingInteractions';
 import { buildStatusChangeHistory, statusAfterGrooming } from '../../lib/ticketActions';
 import { planBodyHash } from '../../lib/planBodyHash';
 import {
@@ -88,12 +91,16 @@ const TABS: { id: TabId; label: string; icon: typeof LayoutTemplate }[] = [
  * staged here are the exact same staged state the metadata bar already shows, never a second form.
  *
  * Two modes, derived from `isPlanApprovalPending` (not a prop) so the panel flips the instant the
- * flag resolves, with no separate "resolved" field to thread through:
+ * flag resolves, with no separate "resolved" field to thread through — FLUX-1296 made that flag
+ * gate-VALUE-agnostic, so a `you`-gate manual review pass lands in **review** mode exactly like an
+ * `auto-then-you` one:
  *  - **review** — a verdict is pending confirmation: Approve / Send-back-to-Grooming / Set aside,
  *    notes are a review note attached to the commit.
  *  - **later** — opened any other time: the verdict area becomes a neutral reference card, Approve/
  *    Send-back collapse into one "Ask in chat" action, and notes post straight into the ticket's real
- *    conversation via `onSendToChat` instead of a review note.
+ *    conversation via `onSendToChat` instead of a review note. FLUX-1296: for a `you`-gate ticket
+ *    that has never been reviewed, this mode also offers "Start plan review" — the one portal entry
+ *    point for the `POST /plan-review/start` route, since nothing auto-triggers it under `you`.
  *
  * Same VERBS as the AttentionDock tray item and `ChatPlanApprovalCard` (Send for re-grooming /
  * Approve[-anyway] / Set aside), sharing their underlying action functions and attribution/TL;DR
@@ -113,6 +120,19 @@ export function PlanApprovalPanel({
 }) {
   const task = c.task;
   const mode: 'review' | 'later' = isPlanApprovalPending(task, c.config) ? 'review' : 'later';
+  // FLUX-1296: the `you` gate never auto-starts a review (see `gate-runner.ts`'s trigger-semantics
+  // doc) — a Grooming ticket resolved to `you` with no verdict yet has NO other way to reach
+  // `start_plan_review` from the portal at all. Offered only for `you`: `auto`/`auto-then-you`
+  // tickets get reviewed by the loop-driver within one poll tick, so a manual button there would
+  // just race it.
+  const noVerdictYouGate = mode === 'later' && task.status === 'Grooming' && task.planReviewState == null
+    && resolvePlanGateValue(task, c.config) === 'you';
+  const awaitingFirstReview = noVerdictYouGate && !task.planGateRunning;
+  // FLUX-1324: the one-pass review triggered by that button (or the `start_plan_review` MCP tool
+  // directly, or another tab) can run for minutes with `planReviewState` still null the whole time
+  // — without this, the panel kept showing "Start plan review" / "nothing reviews this on its own"
+  // while a review was actively running (clicking just hit the engine's 409 `already-running`).
+  const firstReviewRunning = noVerdictYouGate && !!task.planGateRunning;
   const hasArtifact = (task.artifacts?.revisions?.length ?? 0) > 0;
   // FLUX-1289/FLUX-1303: verdict-aware footer — one verb set (Send for re-grooming / Approve[-anyway])
   // with emphasis flipped by verdict; the notes composer exists in BOTH verdict states (notes are
@@ -127,14 +147,16 @@ export function PlanApprovalPanel({
   // (reviews are non-deterministic; a second opinion is the only recovery from a wrong verdict).
   // Fail open when the hash is absent (older verdicts). Memoized: the body can be 10KB+ and this
   // component re-renders per keystroke.
+  const currentBodyHash = useMemo(() => planBodyHash(task.body || ''), [task.body]);
   const planChanged = useMemo(
-    () => !task.planReviewBodyHash || planBodyHash(task.body || '') !== task.planReviewBodyHash,
-    [task.body, task.planReviewBodyHash],
+    () => !task.planReviewBodyHash || currentBodyHash !== task.planReviewBodyHash,
+    [currentBodyHash, task.planReviewBodyHash],
   );
 
   const [activeTab, setActiveTab] = useState<TabId>(hasArtifact ? 'artifact' : 'plan');
   const [busy, setBusy] = useState(false);
   const [revising, setRevising] = useState(false);
+  const [startingImpl, setStartingImpl] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   // FLUX-1303: inline plan annotations — select text in the Plan/AC/Tests tab body, attach a note
@@ -143,11 +165,14 @@ export function PlanApprovalPanel({
   // in-iframe annotation flow, FLUX-874/875/892). Anchored by quoted excerpt, not CSS path.
   // The draft (annotations + freeform notes) hydrates from and persists to the module-level
   // per-ticket store (planAnnotations.ts) so closing the panel never eats unsent feedback.
-  const [annotations, setAnnotations] = useState<PlanAnnotation[]>(() => loadPlanReviewDraft(task.id).annotations);
-  const [notes, setNotes] = useState(() => loadPlanReviewDraft(task.id).notes);
+  // FLUX-1306: keyed against `currentBodyHash` so a draft composed against a since-superseded plan
+  // (revised + re-reviewed elsewhere while the panel was closed) is dropped as stale on load instead
+  // of silently rehydrating notes anchored to text that no longer exists in the ticket.
+  const [annotations, setAnnotations] = useState<PlanAnnotation[]>(() => loadPlanReviewDraft(task.id, currentBodyHash).annotations);
+  const [notes, setNotes] = useState(() => loadPlanReviewDraft(task.id, currentBodyHash).notes);
   const [pendingSel, setPendingSel] = useState<{ text: string; x: number; y: number } | null>(null);
   const [selNote, setSelNote] = useState('');
-  useEffect(() => { savePlanReviewDraft(task.id, { annotations, notes }); }, [task.id, annotations, notes]);
+  useEffect(() => { savePlanReviewDraft(task.id, { annotations, notes, bodyHash: currentBodyHash }); }, [task.id, annotations, notes, currentBodyHash]);
 
   // The ONE derivation of "is there anything to send" — the exact string every send handler uses,
   // so the buttons' enabled-state can never disagree with what the handler would actually send.
@@ -166,7 +191,12 @@ export function PlanApprovalPanel({
     if (!sel || sel.isCollapsed) return;
     const text = sel.toString();
     if (!text.trim()) return;
-    const rect = sel.getRangeAt(0).getBoundingClientRect();
+    // FLUX-1306: a multi-line/multi-paragraph selection's range `getBoundingClientRect()` spans the
+    // WHOLE selection, not just its end — anchor on the LAST client rect instead, which sits at the
+    // selection's actual end point, so the composer doesn't appear visually detached from it.
+    const range = sel.getRangeAt(0);
+    const rects = range.getClientRects();
+    const rect = rects.length > 0 ? rects[rects.length - 1]! : range.getBoundingClientRect();
     setSelNote('');
     setPendingSel({ text: clipExcerpt(text), x: rect.left + rect.width / 2, y: rect.bottom });
   };
@@ -229,12 +259,73 @@ export function PlanApprovalPanel({
     onClose();
   }
 
-  const handleApprove = () => {
+  // Shared "Approve → Todo" commit shape for both plain Approve and Approve & start (FLUX-1294) —
+  // one place computing the target status + history entry so the two buttons can never drift.
+  const buildApproveUpdate = () => {
     const todoStatus = statusAfterGrooming((c.config?.columns ?? []).map((s) => s.name));
-    void commit(
-      { status: todoStatus, planReviewState: null, planReviewBodyHash: null },
-      buildStatusChangeHistory(task, todoStatus, c.currentUser, combinedNotes),
-    );
+    return {
+      fields: { status: todoStatus, planReviewState: null, planReviewBodyHash: null },
+      historyEntries: buildStatusChangeHistory(task, todoStatus, c.currentUser, combinedNotes),
+    };
+  };
+
+  const handleApprove = () => {
+    const { fields, historyEntries } = buildApproveUpdate();
+    void commit(fields, historyEntries);
+  };
+
+  // FLUX-1294: "Approve & start" — identical commit to plain Approve, then (best-effort) an
+  // implementation dispatch. The two steps are deliberately NOT one transaction: once the approve
+  // commit succeeds the ticket IS correctly in Todo, so a dispatch failure must never look like the
+  // approval itself failed — it surfaces via `alert()` (this codebase's convention for this class of
+  // post-close async failure) instead of `actionError`, since the panel is already closed by then.
+  const handleApproveAndStart = async () => {
+    if (busy || startingImpl || revising) return;
+    setStartingImpl(true);
+    setActionError(null);
+    const { fields, historyEntries } = buildApproveUpdate();
+    const updated = await c.persist({
+      title: c.title,
+      priority: c.priority,
+      effort: c.effort,
+      tags: c.tags,
+      ...fields,
+      appendHistory: historyEntries,
+    });
+    if (!updated) {
+      setActionError('Failed to save — is the engine running?');
+      setStartingImpl(false);
+      return;
+    }
+    clearPlanReviewDraft(task.id);
+    onClose(); // ticket is now correctly in Todo — everything below is best-effort dispatch only.
+
+    if (updated.cliSession && isActiveSession(updated.cliSession)) {
+      alert(`${updated.id} approved, but a session is already running on it — no new session was started.`);
+      return;
+    }
+
+    try {
+      if (updated.effort !== 'XS') {
+        await createBranch(updated.id, { worktree: !!c.config?.worktreeByDefault });
+      }
+      const framework = resolveEffectiveAgent(undefined, c.config?.defaultFramework);
+      const focusComment = `Plan approved via "Approve & start."${combinedNotes ? `\n\n${combinedNotes}` : ''}`;
+      const result = await launchPhaseDefault({
+        taskId: updated.id,
+        framework,
+        phase: 'implementation',
+        currentUser: c.currentUser,
+        phaseDefaults: c.config?.phaseDefaults,
+        supervisorCapable: frameworkSupports(c.config, framework, 'supervisor'),
+        focusComment,
+      });
+      if (!result) {
+        alert(`${updated.id} approved, but no default implementation persona is configured — start it manually.`);
+      }
+    } catch (err) {
+      alert(`${updated.id} approved, but couldn't auto-start implementation: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   // The staged header edits are promised to be "applied together with" every action (the pending-
@@ -289,9 +380,10 @@ export function PlanApprovalPanel({
   };
 
   // FLUX-1303: panel-only (removed from the dock/chat cards). Warns — but stays enabled — when the
-  // plan is unchanged since the verdict (`planChanged` above).
+  // plan is unchanged since the verdict (`planChanged` above). FLUX-1296: also backs the `you`-gate
+  // "Start plan review" button (mode 'later', no verdict yet) — same one-pass call either way.
   const handleRerunReview = async () => {
-    if (revising) return;
+    if (revising || busy) return;
     setRevising(true);
     setActionError(null);
     try {
@@ -314,6 +406,9 @@ export function PlanApprovalPanel({
   // a verdict except going to another surface first.
   const handleSetAside = async () => {
     if (busy || revising) return;
+    // FLUX-1306: Set aside silently discarded any composed-but-unsent notes/annotations, unlike
+    // Approve/Send-for-re-grooming (both fold `combinedNotes` in) — confirm before throwing them away.
+    if (combinedNotes && !window.confirm('Discard your unsent notes and set the plan review aside?')) return;
     setBusy(true);
     setActionError(null);
     try {
@@ -411,8 +506,16 @@ export function PlanApprovalPanel({
           </div>
         ) : (
           <div className="flex items-center gap-2 text-[var(--eh-text-muted)]">
-            <ClipboardCheck className="h-4 w-4 flex-shrink-0" />
-            <span>Reference only — this plan has already been resolved. Annotating below asks a question in this ticket's chat instead of recording a review note.</span>
+            {firstReviewRunning
+              ? <Loader2 className="h-4 w-4 flex-shrink-0 animate-spin" />
+              : <ClipboardCheck className="h-4 w-4 flex-shrink-0" />}
+            <span>
+              {firstReviewRunning
+                ? "A review pass is already running for this plan — check back shortly, or annotate to ask a question in this ticket's chat instead."
+                : awaitingFirstReview
+                  ? "This board's plan gate is manual (you) — nothing reviews this plan on its own. Start a review below, or annotate to ask a question in this ticket's chat instead."
+                  : "Reference only — this plan has already been resolved. Annotating below asks a question in this ticket's chat instead of recording a review note."}
+            </span>
           </div>
         )}
       </div>
@@ -562,7 +665,7 @@ export function PlanApprovalPanel({
                 <button
                   type="button"
                   onClick={() => void handleSetAside()}
-                  disabled={busy || revising}
+                  disabled={busy || revising || startingImpl}
                   title="Set aside — clears the pending verdict everywhere; the review comment stays in history"
                   className="mr-auto flex items-center gap-1 rounded-md p-1.5 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] disabled:opacity-50 dark:hover:bg-white/5"
                 >
@@ -572,7 +675,7 @@ export function PlanApprovalPanel({
                   <button
                     type="button"
                     onClick={() => void handleRerunReview()}
-                    disabled={revising}
+                    disabled={revising || busy}
                     title={planChanged
                       ? 'Run one fresh review pass on the current plan'
                       : 'The plan has not changed since this verdict — a re-review will usually re-produce the same result (still allowed: reviews are not deterministic)'}
@@ -584,7 +687,7 @@ export function PlanApprovalPanel({
                 <button
                   type="button"
                   onClick={() => void handleSendForRegroom()}
-                  disabled={revising || busy || (!changesRequested && !combinedNotes)}
+                  disabled={revising || busy || startingImpl || (!changesRequested && !combinedNotes)}
                   title={!changesRequested && !combinedNotes ? 'Add notes (typed or inline on the plan) — overriding an approved plan needs a stated reason' : undefined}
                   className={changesRequested
                     ? 'flex items-center gap-1.5 rounded-md bg-amber-500 px-3 py-1.5 text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-amber-600 disabled:opacity-50'
@@ -592,10 +695,21 @@ export function PlanApprovalPanel({
                 >
                   {revising ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />} Send for re-grooming
                 </button>
+                {!changesRequested && (
+                  <button
+                    type="button"
+                    onClick={() => void handleApproveAndStart()}
+                    disabled={revising || busy || startingImpl}
+                    title="Approve into Todo, then immediately create a branch/worktree and dispatch an implementation session"
+                    className="flex items-center gap-1.5 rounded-md border border-emerald-500/40 px-3 py-1.5 text-[12px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-500/10 disabled:opacity-50 dark:text-emerald-300"
+                  >
+                    {startingImpl ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />} Approve & start
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleApprove}
-                  disabled={revising || busy}
+                  disabled={revising || busy || startingImpl}
                   title={changesRequested ? 'Explicit override — moves to Todo despite the changes-requested verdict' : 'Move to Todo'}
                   className={changesRequested
                     ? 'flex items-center gap-1.5 rounded-md border border-emerald-500/40 px-3 py-1.5 text-[12px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-500/10 disabled:opacity-50 dark:text-emerald-300'
@@ -606,14 +720,32 @@ export function PlanApprovalPanel({
               </>
             )
           ) : (
-            <button
-              type="button"
-              onClick={() => void handleAskInChat()}
-              disabled={busy || !combinedNotes}
-              className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover disabled:opacity-50"
-            >
-              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MessageCircleQuestion className="h-3.5 w-3.5" />} Ask in chat
-            </button>
+            <>
+              {firstReviewRunning && (
+                <span className="mr-auto flex items-center gap-1.5 text-[12px] italic text-[var(--eh-text-muted)]">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Reviewing — a review pass is already running…
+                </span>
+              )}
+              {awaitingFirstReview && (
+                <button
+                  type="button"
+                  onClick={() => void handleRerunReview()}
+                  disabled={revising}
+                  title="Run one review pass on the current plan — this board's plan gate is manual, so nothing reviews it on its own"
+                  className="mr-auto flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] font-semibold text-[var(--eh-text-secondary)] transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+                >
+                  {revising ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Start plan review
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => void handleAskInChat()}
+                disabled={busy || !combinedNotes}
+                className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover disabled:opacity-50"
+              >
+                {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MessageCircleQuestion className="h-3.5 w-3.5" />} Ask in chat
+              </button>
+            </>
           )}
         </div>
       </div>

@@ -16,6 +16,11 @@ import type { CliSessionStatus } from './agents/types.js';
 let sessionSeq = 0;
 const dispatchSession = vi.fn(async (_ticketId: string, _phase: string, _opts?: unknown) => ({ sid: `sess-${++sessionSeq}` }));
 const parkTicketOnBoard = vi.fn(async (_ticketId: string, _reason: string, _opts?: unknown) => {});
+// FLUX-1304: `decideTicketAction`'s 'yield' branch requires the ticket's board status to already be
+// Done/Released, which `reconcileGateTicket`'s own "left Grooming" guard stops the run for BEFORE it
+// ever reaches `decideTicketAction` — so the real trigger path can't be driven end-to-end in a test.
+// Force it directly for one sentinel ticket id instead, real `decideTicketAction` for every other.
+let forceYieldFor: string | null = null;
 
 vi.mock('./furnace-stoker.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./furnace-stoker.js')>();
@@ -23,6 +28,10 @@ vi.mock('./furnace-stoker.js', async (importOriginal) => {
     ...actual,
     dispatchSession: (t: string, p: string, o?: unknown) => dispatchSession(t, p, o),
     parkTicketOnBoard: (t: string, r: string, o?: unknown) => parkTicketOnBoard(t, r, o),
+    decideTicketAction: (input: Parameters<typeof actual.decideTicketAction>[0]) =>
+      forceYieldFor && input.ticket.ticketId === forceYieldFor
+        ? { type: 'yield' as const, reason: 'test: session cancelled and ticket already merged' }
+        : actual.decideTicketAction(input),
   };
 });
 
@@ -70,6 +79,7 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     dispatchSession.mockClear();
     parkTicketOnBoard.mockClear();
     sessionSeq = 0;
+    forceYieldFor = null;
     configCache.gatePolicy = { boardDefault: { plan: 'auto', review: 'you' } };
     configCache.requireInputStatus = 'Require Input';
     configCache.columns = [
@@ -227,6 +237,20 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     await gateRunnerTick(); // retryCap exhausted -> park
     expect(parkTicketOnBoard).toHaveBeenCalledWith('PK-1', expect.stringContaining('plan review:'), expect.objectContaining({ status: 'Grooming' }));
     expect(isGateRunning('PK-1')).toBe(false);
+  });
+
+  // FLUX-1304: `advanceGateTicket`'s switch previously had no `case 'yield':` (and no `default:`), so a
+  // `yield` action from `decideTicketAction` fell through silently — no park, but the run was never
+  // stopped either, leaving `gateRuns` (and the durable `planGateRunning` field) wedged forever.
+  it('a yield action stops the gate run WITHOUT parking (mirrors Temper)', async () => {
+    seedGrooming('YLD-1');
+    await startPlanGateNow('YLD-1', { mode: 'loop-auto' });
+    putSession('sess-1', 'review', 'completed');
+    forceYieldFor = 'YLD-1';
+    await gateRunnerTick();
+    expect(isGateRunning('YLD-1')).toBe(false);
+    expect(tasksCache['YLD-1'].planGateRunning).toBeUndefined();
+    expect(parkTicketOnBoard).not.toHaveBeenCalled();
   });
 
   it('parks when the review session dies', async () => {

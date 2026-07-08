@@ -248,3 +248,53 @@
 - **PR-471**: PR #471: FLUX-1310 follow-up: hide misleading 0/N reviewed chip on resolved PRs (+PR-469)
 - **PR-472**: PR #472: Plan-approval item shows in "Needs You" while the gate is auto-revising (planGateRunning) — no input needed, non-dismissable, then vanishes (+FLUX-1319)
 
+## Release v1.5.1 — 2026-07-08T17:07:25.214Z
+
+- **FLUX-1216**: Stale worktree folders resist deletion — reap lock-holder processes and sweep orphaned dirs on prune — Approved after re-review. Both previously-flagged issues (fail-closed git worktree list query in pruneTaskWorktrees; re…
+- **FLUX-1221**: Furnace-chat: no UI parity for transcript reset / tab context-menu (minor, FLUX-1209 follow-up) — Furnace batch — approved review, CI green. Merging PR #477.
+- **FLUX-1270**: Furnace: pull a same-branch-dependent follow-up + its parent into a standalone sequential batch (reuse parent's branch) — Sole-reviewer approval. Reviewed full diff vs baseline bf38739d; independently re-ran typecheck (clean) and the 3 FLUX-…
+- **FLUX-1284**: Grooming-phase plan-review "changes requested" verdict has no board-card chip (unlike Ready-phase reviewState) — Sole-reviewer pass complete: independently re-verified the zero-diff claim (branch has 0 commits ahead of base, working…
+- **FLUX-1294**: Plan-approval panel: optional "Approve & start" action (approve into Todo + dispatch implementation) — Furnace batch — approved review, CI green. Merging PR #481.
+- **FLUX-1295**: Docs: document FLUX-1289's plan-review dismiss/revise UI and the new /plan-review/start route — Furnace batch — approved review, CI green. Merging PR #476.
+- **FLUX-1296**: Decide whether plan-review verdict UI (feedback/Revise/Dismiss) should extend to the `you` gate, not just auto-then-you — Furnace batch — approved review, CI green, independent branch. Merging PR #484.
+- **FLUX-1304**: Two more finish/merge session-stop sites don't disarm Temper/gate-runner before stopping (FLUX-1297 follow-up) — CI check failure confirmed unrelated to this diff — pre-existing FLUX-1216 Linux-only test regression (filed as FLUX-13…
+- **FLUX-1305**: Engine prunes a freshly-created ticket worktree with no session bound to it — Same pre-existing FLUX-1216 Linux-only CI regression as FLUX-1304 (FLUX-1305 also touches task-worktree.ts, so it inher…
+- **FLUX-1306**: FLUX-1303 follow-ups: dedupe plan-review helpers, close scope gaps, minor hardening — Furnace batch — approved review, CI green, independent branch. Merging PR #482.
+- **FLUX-1311**: hasAppendedStatusChange's exact-prefix check can double-append status_change for stale full-history writers — Furnace batch — approved review, CI green. Merging PR #478.
+- **FLUX-1313**: Grooming skill: UI-shaped tickets can skip publish_artifact when work is delegated — Furnace batch — approved review, CI green. Merging PR #473.
+- **FLUX-1315**: Surface live GitHub CI/check status on PR card — Furnace batch — approved review, CI green. Merging PR #474.
+- **FLUX-1316**: hovering a ticket subtask description in a PR opens both tooltips., ugly — Furnace batch — approved review, CI green. Merging PR #475.
+- **FLUX-1318**: PR reconcile has no leading-edge run: new PR cards lag up to 90s and are missing for the first 90s after a restart — Furnace batch — approved review, CI green. Merging PR #480.
+- **FLUX-1321**: engine cjs bundle: createRequire(import.meta.url) in packaged-mode.ts is createRequire(undefined) → throws (breaks a standalone SEA binary; dormant under Electron) — Furnace batch — approved review, CI green. Merging PR #479.
+- **FLUX-1322**: Add regression test for PR-card nested member hover/click bubbling (FLUX-1316 follow-up) — Reopened PR after original #483 auto-closed (stacked base branch deleted on merge). Content unchanged, already reviewed…
+- **FLUX-1323**: CI smoke test: boot the standalone SEA binary in release-windows and hit /api/health — Furnace batch — approved review, CI green, independent branch. Merging PR #486.
+- **FLUX-1324**: PlanApprovalPanel's "Start plan review" button doesn't check planGateRunning — Reopened PR after original #485 auto-closed (stacked base branch deleted on merge). Content unchanged, already reviewed…
+- **FLUX-1325**: Harden smoke-test-sea-win.js: bound fetch() with a timeout so a hung SEA boot can't hang the CI job — Reopened PR after original #487 auto-closed (stacked base branch deleted on merge). Content unchanged, already reviewed…
+- **FLUX-1326**: Merged branch kept alive by cleanupMergedBranch's dependent-PR guard is never auto-deleted once the dependency clears — Reviewed the diff (engine/src/pr-cleanup.ts, index.ts, pr-cleanup-dependent-branch.test.ts) against the ticket's accept…
+- **FLUX-1327**: FLUX-1216's lock-holder reap tests assume Windows file-locking — fail on Linux CI — Reviewed and approved. **Root cause diagnosis is correct**: the 3 FLUX-1216 tests relied on a real child process's cwd…
+- **FLUX-952**: MCP elicitation evaluation (spike vs Require Input / ask_user_question) — Approved. Research spike verified: all acceptance criteria met, technical claims in the decline verdict spot-checked ag…
+- **PR-473**: PR #473: FLUX-1313: grooming artifact decision is a workflow step + plan-review gate flags gaps (+FLUX-1313)
+- **PR-474**: PR #474: Surface live GitHub CI/check status on PR card (+FLUX-1315)
+- **PR-475**: PR #475: hovering a ticket subtask description in a PR opens both tooltips., ugly (+FLUX-1316)
+- **PR-476**: PR #476: Docs: document FLUX-1289's plan-review dismiss/revise UI + gate REST routes (+FLUX-1295)
+- **PR-477**: PR #477: FLUX-1221: Furnace-chat transcript reset UI parity (+FLUX-1221)
+- **PR-478**: PR #478: FLUX-1311: fix hasAppendedStatusChange's exact-prefix check (+FLUX-1311)
+- **PR-479**: PR #479: engine cjs bundle: createRequire(import.meta.url) in packaged-mode.ts is createRequire(undefined) → throws (breaks a standalone SEA binary; dormant under Electron) (+FLUX-1321)
+- **PR-480**: PR #480: PR reconcile has no leading-edge run: new PR cards lag up to 90s and are missing for the first 90s after a restart (+FLUX-1318)
+- **PR-481**: PR #481: Plan-approval panel: optional "Approve & start" action (approve into Todo + dispatch implementation) (+FLUX-1294)
+- **PR-482**: PR #482: FLUX-1303 follow-ups: dedupe plan-review helpers, close scope gaps, minor hardening (+FLUX-1306)
+- **PR-483**: PR #483: FLUX-1322: regression test for PR-card nested-member hover/click bubbling (+FLUX-1322)
+- **PR-484**: PR #484: Decide whether plan-review verdict UI (feedback/Revise/Dismiss) should extend to the `you` gate, not just auto-then-you (+FLUX-1296)
+- **PR-485**: PR #485: FLUX-1324: gate PlanApprovalPanel's "Start plan review" on planGateRunning (+FLUX-1324)
+- **PR-486**: PR #486: CI smoke test: boot the standalone SEA binary in release-windows and hit /api/health (+FLUX-1323)
+- **PR-487**: PR #487: FLUX-1325: bound smoke-test-sea-win.js fetch() calls with a timeout (+FLUX-1325)
+- **PR-488**: PR #488: FLUX-1322: regression test for PR-card nested-member hover/click bubbling (+FLUX-1322)
+- **PR-489**: PR #489: FLUX-1324: gate PlanApprovalPanel's "Start plan review" on planGateRunning (+FLUX-1324)
+- **PR-490**: PR #490: FLUX-1325: bound smoke-test-sea-win.js fetch() calls with a timeout (+FLUX-1325)
+- **PR-491**: PR #491: FLUX-1216: reap worktree lock-holder processes and sweep orphaned dirs on prune (+FLUX-1216)
+- **PR-492**: PR #492: Furnace: pull a same-branch-dependent follow-up + its parent into a standalone sequential batch (reuse parent's branch) (+FLUX-1270)
+- **PR-493**: PR #493: Engine prunes a freshly-created ticket worktree with no session bound to it (+FLUX-1305)
+- **PR-494**: PR #494: Two more finish/merge session-stop sites don't disarm Temper/gate-runner before stopping (FLUX-1297 follow-up) (+FLUX-1304)
+- **PR-495**: PR #495: FLUX-1327: make lock-holder-reap tests block fs.rm cross-platform (+FLUX-1327)
+- **PR-496**: PR #496: Merged branch kept alive by cleanupMergedBranch's dependent-PR guard is never auto-deleted once the dependency clears (+FLUX-1326)
+

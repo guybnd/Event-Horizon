@@ -14,7 +14,13 @@ vi.mock('./pr-cleanup.js', () => ({ isWorktreeReclaimable: vi.fn(() => true) }))
 vi.mock('./task-store.js', () => ({ tasksCache: {}, updateTaskWithHistory: vi.fn(async () => {}) }));
 vi.mock('./events.js', () => ({ broadcastEvent: vi.fn() }));
 vi.mock('./history.js', () => ({
-  buildActivityEntry: vi.fn((message: string, user: string, date: string) => ({ type: 'activity', comment: message, user, date })),
+  buildActivityEntry: vi.fn((message: string, user: string, date: string, extra: Record<string, unknown> = {}) => ({
+    type: 'activity',
+    comment: message,
+    user,
+    date,
+    ...extra,
+  })),
 }));
 vi.mock('./workspace.js', () => ({ workspaceRoot: '/fake/workspace' }));
 
@@ -86,6 +92,25 @@ describe('ensureTicketIsolation (FLUX-845 chokepoint, FLUX-852 hardening)', () =
 
     expect(res).toEqual({ branch: 'flux/FLUX-5-worktree-ok', worktree: '/fake/.eh-worktrees/FLUX-5' });
     expect(res.worktreeError).toBeUndefined();
+  });
+
+  it('stamps a worktree-created history marker on success (FLUX-1305 reclaim-grace anchor)', async () => {
+    // pr-cleanup.ts#isWorktreeReclaimableForSweep reads this marker to shield a just-created,
+    // still-zero-commit worktree from the FLUX-1214 backstop until it's had a fair chance to pick
+    // up a session or a commit — without it, a worktree made here from a board/chat session (no
+    // registered EH session on the ticket) reads as idle and gets swept on the very next tick.
+    cache['FLUX-7'] = { id: 'FLUX-7', title: 'Marker check' };
+    vi.mocked(createTicketBranch).mockResolvedValue('flux/FLUX-7-marker-check');
+    vi.mocked(createTaskWorktree).mockResolvedValue('/fake/.eh-worktrees/FLUX-7');
+
+    await ensureTicketIsolation('FLUX-7', { worktree: true });
+
+    expect(updateTaskWithHistory).toHaveBeenCalledWith(
+      'FLUX-7',
+      expect.objectContaining({
+        entries: [expect.objectContaining({ type: 'activity', event: 'worktree-created' })],
+      }),
+    );
   });
 
   it('is non-fatal when the worktree fails: returns the branch + worktreeError and records history', async () => {

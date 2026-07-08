@@ -726,6 +726,22 @@ const BatchCard = memo(function BatchCard({ batch, allBatches, slots, onChanged 
             </div>
           )}
           <div className="mt-0.5 truncate font-mono text-[10px]" style={{ color: 'var(--eh-text-muted)' }} title={batch.branch}>{batch.branch}</div>
+          {/* FLUX-1270: display-only provenance — this batch was spun off from a parallel batch to
+              pull a same-branch-dependent follow-up + its parent onto their own reused branch. */}
+          {batch.spawnedFrom && (() => {
+            const originBatch = allBatches.find((b) => b.id === batch.spawnedFrom!.batchId);
+            const originTicket = tasks.find((t) => t.id === batch.spawnedFrom!.ticketId);
+            return (
+              <div
+                className="mt-0.5 truncate text-[10px]"
+                style={{ color: 'var(--eh-text-muted)' }}
+                title={`Spun off from ${batch.spawnedFrom.ticketId}${originBatch ? ` / ${originBatch.title}` : ''} — reuses its branch so the follow-up's work stays on the same still-open PR.`}
+              >
+                ↳ spun off from {originTicket?.title ? `${batch.spawnedFrom.ticketId} (${originTicket.title})` : batch.spawnedFrom.ticketId}
+                {originBatch ? ` · ${originBatch.title}` : ''}
+              </div>
+            );
+          })()}
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold" style={{ background: STATUS_CHIP[batch.status].bg, color: STATUS_CHIP[batch.status].fg }}>{STATUS_CHIP[batch.status].label}</span>

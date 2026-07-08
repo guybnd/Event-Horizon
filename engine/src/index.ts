@@ -89,7 +89,7 @@ import { checkForUpdate, getCachedUpdateInfo, getLocalVersion } from './update-c
 import { checkGhAuth } from './branch-manager.js';
 import terminalRouter, { handleTerminalUpgrade } from './routes/terminal.js';
 import { reconcileOrphanedTerminalSessions, destroyAllTerminalSessions } from './terminal-session-store.js';
-import { reconcilePullRequests, pruneMergedBranches, reclaimReadyWorktrees } from './pr-cleanup.js';
+import { reconcilePullRequests, pruneMergedBranches, reclaimReadyWorktrees, recheckDependentBranches } from './pr-cleanup.js';
 import { syncPrTickets } from './pr-tickets.js';
 
 const __dir = (() => {
@@ -689,20 +689,13 @@ async function startServer() {
 
     checkForUpdate().catch(() => {});
 
-    checkGhAuth().then(ok => {
-      ghAuthAvailable = ok;
-      if (!ok) {
-        console.warn('[branch] GitHub CLI not configured — PR creation unavailable. Run `gh auth login` to enable.');
-      }
-    }).catch(() => { ghAuthAvailable = false; });
-
     // Out-of-band PR reconcile (FLUX-557): catch PRs merged/closed directly on GitHub and
     // reconcile the board (advance + clean up, or bounce a closed PR back to In Progress).
     // Polling-based v1 (decision #10); only runs when gh is available and a workspace is active.
     // FLUX-1001: in-flight guard — if a prior tick's sweep is still running (e.g. slow GitHub
     // API), skip the new tick entirely so ticks can't pile up and saturate the event loop.
     let prReconcileInFlight = false;
-    setInterval(() => {
+    const runPrReconcileTick = () => {
       if (prReconcileInFlight) return;
       if (workspaceRoot) {
         prReconcileInFlight = true;
@@ -725,11 +718,31 @@ async function startServer() {
                 syncPrTickets(workspaceRoot),
                 // FLUX-599: backstop — reclaim merged branches whose merge-time delete was missed.
                 pruneMergedBranches(workspaceRoot),
+                // FLUX-1326: retry branches cleanupMergedBranch kept alive under its dependent-PR
+                // guard (FLUX-1270) — reconcilePullRequests's non-terminal grouping never revisits
+                // them on its own once their tickets reach Done.
+                recheckDependentBranches(workspaceRoot),
               ]
             : []),
         ]).catch(() => {}).finally(() => { prReconcileInFlight = false; });
       }
-    }, PR_RECONCILE_INTERVAL_MS);
+    };
+
+    // FLUX-1318: fire a leading-edge reconcile as soon as ghAuthAvailable resolves, instead of
+    // waiting for the first PR_RECONCILE_INTERVAL_MS tick — otherwise PR-<n> cards are missing/stale
+    // for up to 90s after every engine boot. Sequenced inside the checkGhAuth() continuation (not
+    // right after setInterval below) so this first run reads a resolved ghAuthAvailable rather than
+    // its `null` initial value — a naive immediate call would silently skip reconcilePullRequests/
+    // syncPrTickets/pruneMergedBranches, which are gated on ghAuthAvailable being truthy.
+    checkGhAuth().then(ok => {
+      ghAuthAvailable = ok;
+      if (!ok) {
+        console.warn('[branch] GitHub CLI not configured — PR creation unavailable. Run `gh auth login` to enable.');
+      }
+      runPrReconcileTick();
+    }).catch(() => { ghAuthAvailable = false; runPrReconcileTick(); });
+
+    setInterval(runPrReconcileTick, PR_RECONCILE_INTERVAL_MS);
 
     // The Furnace (FLUX-1008 / S3): background Stoker loop. A no-op until a run is ignited
     // (it drives only the single `burning` run each tick), so it's always safe to start here.

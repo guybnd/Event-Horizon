@@ -239,6 +239,7 @@ export interface CreateBatchInput {
   branch?: string;
   icon?: string;
   createdBy?: string;
+  spawnedFrom?: { batchId: string; ticketId: string };
 }
 
 export async function createFurnaceBatch(input: CreateBatchInput): Promise<FurnaceBatch> {
@@ -267,6 +268,7 @@ export async function createFurnaceBatch(input: CreateBatchInput): Promise<Furna
     ...(input.sessionTimeoutMs !== undefined ? { sessionTimeoutMs: input.sessionTimeoutMs } : {}),
     ...(input.trigger ? { trigger: input.trigger } : {}),
     ...(input.createdBy !== undefined ? { createdBy: input.createdBy } : {}),
+    ...(input.spawnedFrom ? { spawnedFrom: input.spawnedFrom } : {}),
   });
   cache[id] = batch;
   await persist(batch);

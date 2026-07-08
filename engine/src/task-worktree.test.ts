@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
-import { existsSync, realpathSync } from 'fs';
+import { existsSync, realpathSync, chmodSync } from 'fs';
 import path from 'path';
 import os from 'os';
-import { execFile } from 'child_process';
+import { execFile, spawn, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import {
   createTaskWorktree,
@@ -27,7 +27,7 @@ import {
   stashDirtyTree,
   writeWorktreeSerenaOverride,
 } from './task-worktree.js';
-import { cliSessionsById } from './session-store.js';
+import { cliSessionsById, armReclaimGrace, __resetSessionStubStateForTests } from './session-store.js';
 import type { CliSessionRecord } from './agents/types.js';
 
 // Real git worktree ops are slow on Windows under parallel suite load — the default 5000ms
@@ -78,6 +78,58 @@ async function gitInitPlain(root: string): Promise<void> {
   await fs.writeFile(path.join(root, 'README.md'), '# test\n', 'utf8');
   await execFileAsync('git', ['-C', root, 'add', '.'], { windowsHide: true });
   await execFileAsync('git', ['-C', root, 'commit', '-m', 'init'], { windowsHide: true });
+}
+
+/**
+ * Genuinely lock `dir` the same way the 2026-07-06 incident did: spawn a real child process
+ * whose cwd is inside it. Windows blocks deleting a directory that is any live process's cwd
+ * (confirmed empirically — an in-process open file handle does NOT block deletion on Windows,
+ * since Node opens with FILE_SHARE_DELETE by default; only a real external cwd handle does), so
+ * this is the one reliable way to force a genuine `fs.rm` failure without touching production
+ * code's real implementations. Callers MUST kill the returned process (directly, or via a mock
+ * that does so) before the directory can actually be removed.
+ */
+async function spawnDirLockHolder(dir: string): Promise<ChildProcess> {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: dir, stdio: 'ignore', windowsHide: true });
+  // Give the OS a moment to establish the cwd handle before any caller races it with fs.rm.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  return child;
+}
+
+/**
+ * FLUX-1327: `spawnDirLockHolder` alone only blocks removal on Windows — a process cwd'd into (or
+ * with an open handle inside) a directory does NOT stop Linux from unlinking its contents or
+ * rmdir-ing it, so on the Linux CI runner the plain `fs.rm` in the production reap routine was
+ * succeeding immediately and the reap path (`reapDescendantsByPid`/`findLockHolders`) was never
+ * reached — the tests below failed deterministically there. This picks whichever lock is genuinely
+ * enforced on the current OS and returns an `unlock()` that releases it:
+ *  - Windows: `spawnDirLockHolder` (real child process cwd'd into `dir`).
+ *  - POSIX (Linux/macOS): strip write permission from `dir` AND its parent. Removing an entry from
+ *    a directory needs write+exec permission on the CONTAINING directory, not the entry itself, so
+ *    this blocks both "unlink a child inside dir" (needs write on `dir`) and "rmdir dir itself"
+ *    (needs write on dir's parent) — covering both an empty leftover dir and one with contents,
+ *    regardless of which. Still spawns a real child cwd'd into `dir` alongside it, purely so the
+ *    PID-based assertions (reapDescendantsByPid / findLockHolders / killPid) exercise a genuine
+ *    process on every OS, even though killing it isn't what actually releases this lock.
+ */
+async function lockDirAgainstRemoval(dir: string): Promise<{ pid: number; unlock: () => void }> {
+  if (process.platform === 'win32') {
+    const child = await spawnDirLockHolder(dir);
+    return { pid: child.pid as number, unlock: () => { child.kill(); } };
+  }
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: dir, stdio: 'ignore' });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const parentDir = path.dirname(dir);
+  chmodSync(dir, 0o500);
+  chmodSync(parentDir, 0o500);
+  return {
+    pid: child.pid as number,
+    unlock: () => {
+      child.kill();
+      try { chmodSync(dir, 0o700); } catch { /* already restored/removed */ }
+      try { chmodSync(parentDir, 0o700); } catch { /* already restored/removed */ }
+    },
+  };
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -280,6 +332,9 @@ describe('task-worktree', () => {
     });
 
     // FLUX-1207: the leftover-directory sweep gets the same best-effort reap before its `fs.rm`.
+    // FLUX-1216: a plain removal is tried FIRST now (see reapWorktreeLockHoldersAndRemove), so
+    // this genuinely locks the directory with a real child process (an unlocked directory would
+    // be removed on the first attempt and never exercise the reap path at all).
     it('reaps a known session pid for the derived ticket id before sweeping a leftover directory (FLUX-1207)', async () => {
       const ticketId = 'FLUX-61';
       const worktreePath = taskWorktreeDir(repo, ticketId);
@@ -288,7 +343,7 @@ describe('task-worktree', () => {
       // never registered with real git for this test, so the directory we create by hand is what
       // survives the (faked) remove/prune, exactly the "leftover" condition the sweep guards.
       await fs.mkdir(worktreePath, { recursive: true });
-      await fs.writeFile(path.join(worktreePath, 'shell.txt'), 'leftover\n', 'utf8');
+      const holder = await lockDirAgainstRemoval(worktreePath);
 
       cliSessionsById.set('fake-sess-61', {
         id: 'fake-sess-61',
@@ -298,14 +353,19 @@ describe('task-worktree', () => {
 
       try {
         const gitRunner = async () => ({ stdout: '', stderr: '' });
-        const reapDescendantsByPid = vi.fn(async (_pid: number) => [] as number[]);
+        const reapDescendantsByPid = vi.fn(async (pid: number) => {
+          expect(pid).toBe(535353);
+          holder.unlock(); // release the real lock this reap call is responsible for
+          return [pid];
+        });
 
-        await removeTaskWorktree(repo, worktreePath, { gitRunner, reapDescendantsByPid });
+        await removeTaskWorktree(repo, worktreePath, { gitRunner, reapDescendantsByPid, findLockHolders: async () => [] });
 
         expect(reapDescendantsByPid).toHaveBeenCalledWith(535353);
         // Same end-state as the pre-existing sweep test: the leftover dir is gone.
         expect(existsSync(worktreePath)).toBe(false);
       } finally {
+        holder.unlock();
         cliSessionsById.delete('fake-sess-61');
       }
     });
@@ -338,6 +398,36 @@ describe('task-worktree', () => {
         expect(existsSync(worktreePath)).toBe(false);
       } finally {
         cliSessionsById.delete('fake-sess-unrelated');
+      }
+    });
+
+    // FLUX-1216: killDescendantsByPid alone only reaches a KNOWN session's pid — useless once the
+    // session record is already gone (ended hours/days earlier, or an engine restart). The
+    // command-line path matcher is the fallback that finds a holder with zero tracking state.
+    it('falls back to the command-line path matcher (findLockHolders) when no session pid is tracked for the ticket (FLUX-1216)', async () => {
+      const ticketId = 'FLUX-62';
+      const worktreePath = taskWorktreeDir(repo, ticketId);
+      await fs.mkdir(worktreePath, { recursive: true });
+      const holder = await lockDirAgainstRemoval(worktreePath);
+      // No cliSessionsById entry at all for FLUX-62 — simulates a session that already ended.
+
+      try {
+        const gitRunner = async () => ({ stdout: '', stderr: '' });
+        const reapDescendantsByPid = vi.fn(async (_pid: number) => [] as number[]);
+        const findLockHolders = vi.fn(async (_wt: string, _base: string) => [holder.pid]);
+        const killPid = vi.fn((pid: number) => {
+          expect(pid).toBe(holder.pid);
+          holder.unlock(); // release the real lock this "kill" call is responsible for
+        });
+
+        await removeTaskWorktree(repo, worktreePath, { gitRunner, reapDescendantsByPid, findLockHolders, killPid });
+
+        expect(reapDescendantsByPid).not.toHaveBeenCalled(); // nothing tracked to reap by pid
+        expect(findLockHolders).toHaveBeenCalledWith(worktreePath, taskWorktreesBaseDir(repo));
+        expect(killPid).toHaveBeenCalledWith(holder.pid);
+        expect(existsSync(worktreePath)).toBe(false);
+      } finally {
+        holder.unlock();
       }
     });
   });
@@ -663,6 +753,179 @@ describe('task-worktree', () => {
 
       const { stdout } = await execFileAsync('git', ['-C', repo, 'worktree', 'list', '--porcelain'], { windowsHide: true });
       expect(stdout).not.toContain(wt);
+    });
+
+    // FLUX-1216: git's own `worktree prune` only drops the RECORD of a worktree whose dir is
+    // already gone — it never retries deleting a directory still sitting on disk. These tests
+    // cover the orphan-directory sweep added alongside it.
+    describe('orphaned directory sweep (FLUX-1216)', () => {
+      /** A leftover dir under .eh-worktrees that is NOT a registered git worktree (never `git
+       *  worktree add`-ed), simulating a folder that survived a prior failed removal. */
+      async function makeOrphanDir(ticketId: string): Promise<string> {
+        const dir = taskWorktreeDir(repo, ticketId);
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(path.join(dir, 'shell.txt'), 'leftover\n', 'utf8');
+        return dir;
+      }
+
+      it('sweeps (removes) an orphaned, unregistered directory with no active session', async () => {
+        const dir = await makeOrphanDir('FLUX-70');
+        const findLockHolders = async () => [] as number[]; // stub out the real Windows process scan
+
+        await pruneTaskWorktrees(repo, { isSessionActiveForTask: () => false, findLockHolders });
+
+        expect(existsSync(dir)).toBe(false);
+      });
+
+      // FLUX-1216: a plain removal is tried FIRST (see reapWorktreeLockHoldersAndRemove), so this
+      // genuinely locks the directory with a real child process — an unlocked one would be
+      // removed on the first attempt and never exercise the reap/escalation path at all.
+      it('reaps lock holders (both tracked session pids and the path matcher) for each orphaned dir before removing it', async () => {
+        const dir = await makeOrphanDir('FLUX-71');
+        const holder = await lockDirAgainstRemoval(dir);
+        cliSessionsById.set('fake-sess-71', { id: 'fake-sess-71', taskId: 'FLUX-71', pid: 111222 } as CliSessionRecord);
+
+        try {
+          const reapDescendantsByPid = vi.fn(async (pid: number) => {
+            expect(pid).toBe(111222);
+            holder.unlock(); // release the real lock this reap call is responsible for
+            return [pid];
+          });
+          const findLockHolders = vi.fn(async (_wt: string, _base: string) => [] as number[]);
+          const killPid = vi.fn((_pid: number) => {});
+
+          await pruneTaskWorktrees(repo, {
+            isSessionActiveForTask: () => false,
+            reapDescendantsByPid,
+            findLockHolders,
+            killPid,
+          });
+
+          expect(reapDescendantsByPid).toHaveBeenCalledWith(111222);
+          expect(findLockHolders).toHaveBeenCalledWith(dir, taskWorktreesBaseDir(repo));
+          expect(killPid).not.toHaveBeenCalled(); // findLockHolders found nothing — reap alone released the lock
+          expect(existsSync(dir)).toBe(false);
+        } finally {
+          holder.unlock();
+          cliSessionsById.delete('fake-sess-71');
+        }
+      });
+
+      // FLUX-1216 review fix: a directory that lost its EH worktree registration (e.g. FLUX-1018-
+      // style ".git link is broken" corruption) but still holds a real, dirty checkout must never
+      // be force-deleted outright — mirrors reclaimWorktrees'/removeTaskWorktree's own established
+      // "never discard uncommitted work" guard.
+      it('never deletes an orphaned directory that is still a dirty (standalone) git checkout', async () => {
+        const dir = await makeOrphanDir('FLUX-76');
+        await execFileAsync('git', ['-C', dir, 'init', '-b', 'master'], { windowsHide: true });
+        await execFileAsync('git', ['-C', dir, 'config', 'user.email', 'test@test.com'], { windowsHide: true });
+        await execFileAsync('git', ['-C', dir, 'config', 'user.name', 'Test'], { windowsHide: true });
+        await fs.writeFile(path.join(dir, 'wip.txt'), 'real uncommitted work\n', 'utf8');
+        const findLockHolders = vi.fn(async () => [] as number[]);
+
+        await pruneTaskWorktrees(repo, { isSessionActiveForTask: () => false, findLockHolders });
+
+        expect(findLockHolders).not.toHaveBeenCalled(); // never even reached the reap/kill step
+        expect(existsSync(dir)).toBe(true);
+        expect(existsSync(path.join(dir, 'wip.txt'))).toBe(true);
+      });
+
+      it('never touches a directory whose ticket has an active session', async () => {
+        const dir = await makeOrphanDir('FLUX-72');
+        const findLockHolders = vi.fn(async () => [] as number[]);
+
+        await pruneTaskWorktrees(repo, { isSessionActiveForTask: (id) => id === 'FLUX-72', findLockHolders });
+
+        expect(findLockHolders).not.toHaveBeenCalled();
+        expect(existsSync(dir)).toBe(true);
+      });
+
+      it('never touches a still-registered worktree, even when its session looks inactive', async () => {
+        const wt = await createTaskWorktree(repo, 'FLUX-73', 'flux/FLUX-73');
+        const findLockHolders = vi.fn(async () => [] as number[]);
+
+        await pruneTaskWorktrees(repo, { isSessionActiveForTask: () => false, findLockHolders });
+
+        expect(findLockHolders).not.toHaveBeenCalled();
+        expect(existsSync(wt)).toBe(true);
+        expect(existsSync(path.join(wt, 'README.md'))).toBe(true);
+      });
+
+      // FLUX-1216 review fix: a transient failure of the `git worktree list` QUERY itself (index.lock
+      // contention, a momentary spawn timeout) must NEVER be read as "confirmed zero worktrees
+      // registered" — that would make every real, live worktree look orphaned and the sweep would
+      // force-kill its holders and delete it, directly violating this routine's own "registered
+      // worktrees are never touched" contract. Repro from the review: a runner that fails only on
+      // `worktree list --porcelain` (prune itself still "succeeds") against a real, registered
+      // worktree, with isSessionActiveForTask stubbed to `false` (as it would read for any ticket
+      // with no live CLI session, e.g. a Ready ticket kept around for review).
+      it('never deletes a live, registered worktree when the `git worktree list` query itself transiently fails', async () => {
+        const wt = await createTaskWorktree(repo, 'FLUX-75', 'flux/FLUX-75');
+        const findLockHolders = vi.fn(async () => [] as number[]);
+        let listCalls = 0;
+        const flakyRunner = async (cwd: string, args: string[]) => {
+          if (args[0] === 'worktree' && args[1] === 'list') {
+            listCalls++;
+            throw new Error('simulated transient git failure (e.g. index.lock contention)');
+          }
+          const { stdout, stderr } = await execFileAsync('git', ['-C', cwd, ...args], { windowsHide: true });
+          return { stdout, stderr };
+        };
+
+        await pruneTaskWorktrees(repo, { gitRunner: flakyRunner, isSessionActiveForTask: () => false, findLockHolders });
+
+        expect(listCalls).toBeGreaterThan(0); // the query really was attempted and really did fail
+        expect(findLockHolders).not.toHaveBeenCalled(); // bailed out before ever considering candidates
+        expect(existsSync(wt)).toBe(true);
+        expect(existsSync(path.join(wt, 'README.md'))).toBe(true);
+      });
+
+      it('never touches a directory whose name does not resolve to one of this repo\'s ticket ids', async () => {
+        const dir = path.join(taskWorktreesBaseDir(repo), 'some-other-repo-FLUX-1');
+        await fs.mkdir(dir, { recursive: true });
+        const findLockHolders = vi.fn(async () => [] as number[]);
+
+        await pruneTaskWorktrees(repo, { isSessionActiveForTask: () => false, findLockHolders });
+
+        expect(findLockHolders).not.toHaveBeenCalled();
+        expect(existsSync(dir)).toBe(true);
+      });
+
+      it('defaults isSessionActiveForTask to the real session store when not injected', async () => {
+        // No opts.isSessionActiveForTask AND no tracked session anywhere for FLUX-74 — exercises
+        // the real getActiveSessionsForTask default wiring (not a mock), which must resolve "no
+        // session at all" the same as "inactive" and allow the sweep to proceed.
+        __resetSessionStubStateForTests(); // ensure no reclaim-grace window is leaking in from another test
+        const dir = await makeOrphanDir('FLUX-74');
+        // Stub out the Windows process scan (real WMI query, slow + irrelevant here) — this test
+        // is only exercising the isSessionActiveForTask default, not findWorktreeLockHolders.
+        const findLockHolders = async () => [] as number[];
+
+        await pruneTaskWorktrees(repo, { findLockHolders });
+
+        expect(existsSync(dir)).toBe(false);
+      });
+
+      // FLUX-1216: pruneTaskWorktrees runs fire-and-forget from workspace activation, which
+      // starts BEFORE rehydrateSessionStubs() repopulates the in-memory session map from
+      // persisted stubs on the same boot — so a bare getActiveSessionsForTask check can read a
+      // genuinely-active ticket as inactive during that window. isWithinReclaimGrace() (armed at
+      // boot, inert otherwise) must make the default treat EVERY ticket as presumed-active until
+      // the grace window elapses.
+      it('presumes every ticket active (skips the whole sweep) during the post-restart reclaim grace window', async () => {
+        const dir = await makeOrphanDir('FLUX-77');
+        const findLockHolders = vi.fn(async () => [] as number[]);
+        armReclaimGrace(); // simulate "engine just booted"
+
+        try {
+          await pruneTaskWorktrees(repo, { findLockHolders }); // real default isSessionActiveForTask
+
+          expect(findLockHolders).not.toHaveBeenCalled();
+          expect(existsSync(dir)).toBe(true);
+        } finally {
+          __resetSessionStubStateForTests();
+        }
+      });
     });
   });
 

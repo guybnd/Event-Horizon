@@ -31,12 +31,29 @@ export function clipExcerpt(text: string): string {
 export interface PlanReviewDraft {
   annotations: PlanAnnotation[];
   notes: string;
+  /** FLUX-1306: `planBodyHash(task.body)` at the moment this draft was composed, when the caller
+   *  supplies one. Lets `loadPlanReviewDraft` tell a draft anchored to the CURRENT plan text apart
+   *  from one composed against a since-superseded revision (the plan can be revised + re-reviewed
+   *  via the engine's auto-loop, or another surface, while the panel stays closed). */
+  bodyHash?: string;
 }
 
 const drafts = new Map<string, PlanReviewDraft>();
 
-export function loadPlanReviewDraft(ticketId: string): PlanReviewDraft {
-  return drafts.get(ticketId) ?? { annotations: [], notes: '' };
+/**
+ * @param currentBodyHash When given, a stored draft whose own `bodyHash` is set and DIFFERS is
+ * stale — the plan changed underneath it since it was composed (e.g. a revise + re-review ran
+ * while the panel was closed). A stale draft is dropped rather than silently rehydrated as if it
+ * still anchored to the current plan text.
+ */
+export function loadPlanReviewDraft(ticketId: string, currentBodyHash?: string): PlanReviewDraft {
+  const draft = drafts.get(ticketId);
+  if (!draft) return { annotations: [], notes: '' };
+  if (currentBodyHash && draft.bodyHash && draft.bodyHash !== currentBodyHash) {
+    drafts.delete(ticketId);
+    return { annotations: [], notes: '' };
+  }
+  return draft;
 }
 
 /** Save (or prune, when emptied) the ticket's unsent draft. */

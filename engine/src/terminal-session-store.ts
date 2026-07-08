@@ -16,8 +16,12 @@ import { workspaceRoot } from './workspace.js';
 function ensureSpawnHelperExecutable(): void {
   if (process.platform === 'win32') return;
   try {
-    const require = createRequire(import.meta.url);
-    const pkgRoot = path.dirname(require.resolve('node-pty/package.json'));
+    // esbuild's cjs bundle has no `import.meta.url` (see packaged-mode.ts), so
+    // `createRequire(import.meta.url)` throws there — prefer the bundle's real ambient
+    // `require` and only fall back for the ESM dev (tsx) path. (FLUX-1321)
+    const nodeRequire: NodeJS.Require =
+      typeof require === 'function' ? require : createRequire(import.meta.url);
+    const pkgRoot = path.dirname(nodeRequire.resolve('node-pty/package.json'));
     const candidates = [
       'build/Release/spawn-helper',
       'build/Debug/spawn-helper',

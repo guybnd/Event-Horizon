@@ -59,3 +59,24 @@ describe('plan-review draft store (FLUX-1303)', () => {
     expect(loadPlanReviewDraft('FLUX-3')).toEqual({ annotations: [], notes: '' });
   });
 });
+
+describe('plan-review draft staleness (FLUX-1306)', () => {
+  it('drops a draft whose bodyHash no longer matches the current plan (composed against superseded text)', () => {
+    savePlanReviewDraft('FLUX-4', { annotations: [{ excerpt: 'old excerpt', note: 'note' }], notes: 'stale', bodyHash: 'hash-a' });
+    expect(loadPlanReviewDraft('FLUX-4', 'hash-b')).toEqual({ annotations: [], notes: '' });
+    // Dropping it is also destructive (not just filtered on read) — a later load with no hash check sees nothing either.
+    expect(loadPlanReviewDraft('FLUX-4')).toEqual({ annotations: [], notes: '' });
+  });
+
+  it('keeps a draft whose bodyHash still matches the current plan', () => {
+    savePlanReviewDraft('FLUX-5', { annotations: [{ excerpt: 'e', note: 'n' }], notes: 'fresh', bodyHash: 'hash-a' });
+    expect(loadPlanReviewDraft('FLUX-5', 'hash-a')).toEqual({ annotations: [{ excerpt: 'e', note: 'n' }], notes: 'fresh', bodyHash: 'hash-a' });
+    clearPlanReviewDraft('FLUX-5');
+  });
+
+  it('does not treat a draft with no recorded bodyHash as stale (fail open for older drafts)', () => {
+    savePlanReviewDraft('FLUX-6', { annotations: [], notes: 'no hash recorded' });
+    expect(loadPlanReviewDraft('FLUX-6', 'hash-b').notes).toBe('no hash recorded');
+    clearPlanReviewDraft('FLUX-6');
+  });
+});

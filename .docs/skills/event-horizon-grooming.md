@@ -11,7 +11,7 @@ Scope: Interpret requirements, update frontmatter, and handle `.flux` metadata d
 
 # Event Horizon Agent — Grooming Skill
 
-Version: 2.13.0
+Version: 2.14.0
 
 ## When This Skill Applies
 
@@ -28,17 +28,18 @@ Full contract lives in the orchestrator skill's "End-of-Turn Action Contract" se
 2. Read `.docs/INDEX.md` to identify relevant docs, then read only those files. Skip docs entirely for XS/S effort tickets.
 3. Treat `Grooming` as a planning phase — do not code. Use `update_ticket` to tighten the ticket body into a concrete plan and fill inferable metadata (`priority`, `effort`, `tags`, hierarchy links).
 4. If implementation-critical choices are unresolved, use `change_status` with `newStatus: 'Require Input'` and a `comment` containing one question + proposed defaults, then wait. For ambiguity that *isn't* blocking, see Plan Discipline item 3 below instead — don't flip status for something you can resolve with a stated default.
-5. Once resolved, use `update_ticket` to rewrite `body` with, in this order:
+5. **Decide the artifact call, and record it (FLUX-1313).** Per the "Rich Artifacts" section below, decide whether this ticket needs a published mockup/diagram/prototype — then either call `publish_artifact`, or note in the plan why one wasn't warranted. Treat this as a checkbox in the workflow, not a standalone judgment call that's easy to forget: under `## Dynamic Delegation` launch focus (grooming split across specialist sessions — Context Scout, Requirements, Plan Review, …), the artifact decision belongs to whichever session finalizes the plan — the one that calls `change_status` to `Todo` in step 7 — not to any narrower-scoped delegate. Don't assume an earlier or later session in the chain already made the call.
+6. Once resolved, use `update_ticket` to rewrite `body` with, in this order:
    - **TL;DR** (FIRST, always): a 1–3 sentence plain-language / ELI5 summary as a leading `> **TL;DR** — …` blockquote, so the user grasps the ticket at a glance without reading the full plan (see the orchestrator skill's "Body convention").
    - **Problem / Motivation** (1–3 sentences): what problem, who benefits, why prioritised.
    - **Implementation plan**: concrete steps so another agent could pick up without re-discovery. Apply the Plan Discipline items below, scaled to the ticket's size and risk.
-6. Use `change_status` with `newStatus: 'Todo'`. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.** If the board's `plan` gate policy is `Auto` or `Auto→You` (FLUX-1263), this call may not move the ticket immediately — it instead kicks off an automated plan-review pass and the tool's response explains what happened. That's expected: stop the same way regardless of whether the move applied directly or the gate took over.
+7. Use `change_status` with `newStatus: 'Todo'`. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.** If the board's `plan` gate policy is `Auto` or `Auto→You` (FLUX-1263), this call may not move the ticket immediately — it instead kicks off an automated plan-review pass and the tool's response explains what happened. That's expected: stop the same way regardless of whether the move applied directly or the gate took over.
 
 All persistence uses MCP tools — see the orchestrator skill's "Persisting Changes" section.
 
 ## Plan-reviewer Agent Handoff
 
-When resuming a ticket that's already in `Grooming`, check `planReviewState` first. If it's `changes-requested`, read the latest plan-review comment (or the plan-approval panel's "Send back to Grooming" notes, FLUX-1273) before touching the plan — it explains what needs revising. Address every point raised, then re-run workflow step 6 (`change_status` to `Todo`) as normal.
+When resuming a ticket that's already in `Grooming`, check `planReviewState` first. If it's `changes-requested`, read the latest plan-review comment (or the plan-approval panel's "Send back to Grooming" notes, FLUX-1273) before touching the plan — it explains what needs revising. Address every point raised, then re-run workflow step 7 (`change_status` to `Todo`) as normal.
 
 The `Auto` gate's own revise-dispatch already carries this instruction via `gate-runner.ts`'s `PLAN_REVISE_FOCUS` session focus text — but that only fires when the gate itself dispatches the revision. A groomer resuming manually (not freshly dispatched by the gate — e.g. picking the ticket back up after a `you`-gate rejection, or continuing a stalled session) gets no equivalent guidance without this section.
 
@@ -81,6 +82,8 @@ For grooming: on tickets where the user has to *imagine* the result, publish a *
 
 - **Emit when** the ticket is about UI/UX, visual layout, an architecture/data-flow you can diagram, or a "shape of the thing" decision where a rendering surfaces misunderstanding cheaply.
 - **Skip when** it's a bug fix, an XS/S ticket, backend plumbing, or any change with no visual/structural "shape" to react to. A markdown plan is the right output for these.
+
+This judgment call is workflow step 5, not just a section to remember on your own (FLUX-1313) — see the ownership note there for Dynamic Delegation. The plan-review gate also checks for this: a UI/UX-shaped plan with no artifact gets flagged in the review comment as a gap rather than silently approved, so a missed decision here surfaces there too — but that's a backstop, not a substitute for making the call at grooming time.
 
 ## Epic → Subtask Splitting — Affordance Coverage Check (FLUX-1274)
 

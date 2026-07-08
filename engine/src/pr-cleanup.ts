@@ -1,12 +1,13 @@
 import { log } from './log.js';
 import { findWorktreeForBranch, removeTaskWorktree, detachTaskWorktree, stashDirtyTree, unlinkWorktreeDependencies, reclaimWorktrees } from './task-worktree.js';
-import { getDefaultBranch, deleteTicketBranch, getPullRequestStatus, getTicketBranchStatus } from './branch-manager.js';
+import { getDefaultBranch, deleteTicketBranch, getPullRequestStatus, getTicketBranchStatus, getOpenPullRequestsWithBase } from './branch-manager.js';
 import { addNotification } from './notifications.js';
 import { stopAllSessionsForTask, getActiveSessionsForTask, isWithinReclaimGrace, RECLAIM_GRACE_MS } from './session-store.js';
 import { tasksCache, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { configCache } from './config.js';
 import { TERMINAL_TICKET_STATUSES } from './schema.js';
+import { buildActivityEntry } from './history.js';
 // FLUX-1297: disarm Temper before this module stops a ticket's sessions itself (see
 // `disarmTemperForExternalStop`'s doc comment). Deliberately a function-body-only cross-import —
 // furnace-stoker.ts already imports from this module (reclaimReadyWorktrees), so this closes a
@@ -37,6 +38,8 @@ interface TicketHistoryEntry {
   date?: string;
   endedAt?: string;
   startedAt?: string;
+  /** FLUX-1305: marks the `worktree-created` activity entry `ensureTicketIsolation` stamps. */
+  event?: string;
 }
 
 /** Minimal `tasksCache` ticket shape as read/written by this module. */
@@ -48,6 +51,8 @@ interface CachedTicket {
   implementationLink?: string;
   swimlane?: string | null;
   history?: TicketHistoryEntry[];
+  /** FLUX-1326: see {@link branchesPendingDependencyClear}'s doc comment. */
+  branchDeletePending?: boolean;
 }
 
 // ─── Worktree reclamation at Ready (FLUX-1031) ───────────────────────────────
@@ -139,14 +144,22 @@ export function isWorktreeReclaimable(ticketId: string, opts: { honorReadyGrace?
  * `'status'` — the live-session/recent-activity refusals above still apply unconditionally, so this
  * can never yank a worktree out from under work in flight.
  */
-export async function isWorktreeReclaimableForSweep(ticketId: string, opts: { honorReadyGrace?: boolean } = {}): Promise<boolean> {
+export async function isWorktreeReclaimableForSweep(ticketId: string, opts: { honorReadyGrace?: boolean } = {}): Promise<boolean | string> {
   const reason = worktreeUnreclaimableReason(ticketId, opts);
-  if (reason === null) return true;
+  if (reason === null) return 'ready-or-terminal-status';
   if (reason !== 'status') return false;
   const t = (tasksCache as Record<string, CachedTicket>)[ticketId];
   if (!t?.branch) return false;
+  // FLUX-1305: never widen past a worktree that was JUST created — give it a chance to pick up a
+  // session or a commit before the zero-commit backstop below treats it as abandoned. Without this,
+  // a worktree created via the `branch` MCP tool from a board/chat session — which never registers
+  // a live EH session for the ticket, so the checks above can't see it — reads as
+  // 'status'-refused-but-zero-commits and gets swept on the very next ~90s reconcile tick, before
+  // the calling session even starts editing (incident: FLUX-1303's worktree vanishing twice).
+  if (hasRecentWorktreeCreation(t)) return false;
   const branchStatus = await getTicketBranchStatus(t.branch).catch(() => null);
-  return !!branchStatus && branchStatus.exists && branchStatus.aheadCount === 0;
+  if (!branchStatus?.exists || branchStatus.aheadCount !== 0) return false;
+  return 'zero-commit-branch (FLUX-1214)';
 }
 
 /**
@@ -157,6 +170,31 @@ export async function isWorktreeReclaimableForSweep(ticketId: string, opts: { ho
  * commonly starts looking), not long enough to meaningfully stall board-wide pool recovery.
  */
 export const READY_WORKTREE_GRACE_MS = 3 * 60_000;
+
+/**
+ * FLUX-1305: how long a freshly-created, never-committed-to worktree is shielded from the
+ * FLUX-1214 zero-commit-branch backstop (see {@link isWorktreeReclaimableForSweep}). Deliberately
+ * generous (well beyond the ~90s reconcile-tick cadence) — this only delays reclaiming a branch
+ * that truly never gets worked; it never protects one that picks up a commit or a live session
+ * (those are already unreclaimable through the ordinary checks).
+ */
+export const WORKTREE_CREATION_GRACE_MS = 30 * 60_000;
+
+/**
+ * Was this ticket's worktree created within the last `graceMs`? Scans history for the
+ * `worktree-created` marker `ensureTicketIsolation` stamps when it makes a NEW worktree — the only
+ * signal available for a worktree spun up from a board/chat session, which never registers a live
+ * EH session on the ticket (so {@link hasLiveSessionOnBranch} can't see it either).
+ */
+function hasRecentWorktreeCreation(t: CachedTicket, now: number = Date.now(), graceMs: number = WORKTREE_CREATION_GRACE_MS): boolean {
+  const history = Array.isArray(t?.history) ? t.history : [];
+  for (const h of history) {
+    if (h?.type !== 'activity' || h?.event !== 'worktree-created') continue;
+    const ts = Date.parse(h.date ?? '');
+    if (!Number.isNaN(ts) && now - ts < graceMs) return true;
+  }
+  return false;
+}
 
 /**
  * Did this ticket have an agent session whose last-known activity is within `graceMs` of `now`?
@@ -205,7 +243,24 @@ function hasLiveSessionOnBranch(branch: string | undefined, ownerId: string): bo
  * ticket ids. Best-effort; never throws.
  */
 export async function reclaimReadyWorktrees(workspaceRoot: string): Promise<string[]> {
-  return reclaimWorktrees(workspaceRoot, isWorktreeReclaimableForSweep).catch(() => [] as string[]);
+  // FLUX-1305: capture the rule string `isWorktreeReclaimableForSweep` resolved for each ticket so
+  // a reclaimed worktree's disappearance is explained on the ticket itself, not just silently
+  // logged engine-side (reclaimWorktrees logs the same rule to stderr).
+  const rules = new Map<string, string>();
+  const predicate = async (ticketId: string): Promise<boolean | string> => {
+    const rule = await isWorktreeReclaimableForSweep(ticketId);
+    if (rule) rules.set(ticketId, typeof rule === 'string' ? rule : 'reclaimable');
+    return rule;
+  };
+  const reclaimed = await reclaimWorktrees(workspaceRoot, predicate).catch(() => [] as string[]);
+  for (const id of reclaimed) {
+    const rule = rules.get(id) ?? 'idle-worktree-cleanup';
+    await updateTaskWithHistory(id, {
+      updatedBy: 'Agent',
+      entries: [buildActivityEntry(`Task worktree automatically reclaimed (${rule})`, 'Agent', new Date().toISOString())],
+    }).catch(() => {});
+  }
+  return reclaimed;
 }
 
 /**
@@ -265,8 +320,9 @@ export interface CleanupResult {
   masterSynced: boolean;
   worktreeRemoved: boolean;
   branchDeleted: boolean;
-  reason?: string;           // when unsafe
+  reason?: string;           // when unsafe, or when the delete was skipped (see 'branch-depended-on')
   notificationId?: string;   // when unsafe
+  dependentTicketIds?: string[]; // FLUX-1270: flagged `merge-conflict` when reason is 'branch-depended-on'
 }
 
 /**
@@ -433,6 +489,81 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
     // Best-effort — if we can't switch off the branch, the delete below just no-ops.
   }
 
+  // FLUX-1270: don't delete a branch another OPEN PR still bases off — GitHub auto-closes that PR
+  // the instant its base ref disappears, with no error surfaced anywhere (the live incident this
+  // guards against: FLUX-861 merged/deleted while FLUX-1265's PR still based off it, silently
+  // reverting FLUX-1265's work). Flag the dependent ticket(s) `merge-conflict` (same swimlane +
+  // "Launch Rebase Session" CTA as a real git conflict — generalized off PrDeckCard.tsx-only scoping
+  // so it also renders on a plain, non-PR ticket card) instead of deleting, so a human can either
+  // rebase them onto master or pull {parent, follow-up} into a sequential batch that adopts this
+  // branch (`furnace_build`'s `adoptBranchFrom`).
+  const dependentPrs = await getOpenPullRequestsWithBase(branch).catch(() => []);
+  if (dependentPrs.length) {
+    const dependentBranches = new Set(dependentPrs.map((p) => p.headRefName).filter(Boolean));
+    const dependentTickets = (Object.values(tasksCache) as CachedTicket[]).filter((t) => t.branch && dependentBranches.has(t.branch));
+    for (const t of dependentTickets) {
+      if (t.swimlane === 'merge-conflict') continue; // already flagged
+      const pr = dependentPrs.find((p) => p.headRefName === t.branch);
+      try {
+        await updateTaskWithHistory(t.id, {
+          updatedBy: 'Agent',
+          entries: [{
+            type: 'comment',
+            user: 'Agent',
+            comment:
+              `\`${branch}\` (this ticket's base branch) just merged and would normally be deleted — but ` +
+              `PR ${pr?.url || `#${pr?.number ?? '?'}`} still depends on it, so the branch was KEPT to avoid ` +
+              `GitHub silently auto-closing that PR. Rebase this ticket's branch onto \`master\`, or fold it ` +
+              `into a sequential batch that adopts \`${branch}\`, before it can be safely removed.`,
+            date: new Date().toISOString(),
+          }],
+          extraFields: { swimlane: 'merge-conflict' },
+        });
+        broadcastEvent('taskUpdated', { id: t.id });
+      } catch (err) {
+        console.error(`[pr-cleanup] Failed to flag ${t.id} as depending on merged branch ${branch}:`, (err as Error)?.message);
+      }
+    }
+    // FLUX-1326: persist a marker on THIS branch's own tickets (already advanced to Done in step 1
+    // above) so a later sweep can find and retry `branch` once the dependency clears.
+    // `reconcilePullRequests` only groups NON-terminal tickets by branch, so the instant every
+    // ticket on `branch` reaches Done, the branch drops out of that grouping and this function is
+    // never called again for it by the normal poller — without a persisted marker the branch would
+    // linger forever once flagged (see `recheckDependentBranches`, which scans for this marker
+    // instead of relying on ticket status). Persisted rather than an in-module Set so it survives an
+    // engine restart.
+    for (const t of branchTickets) {
+      if (t.branchDeletePending) continue; // already marked
+      try {
+        await updateTaskWithHistory(t.id, { updatedBy: 'Agent', extraFields: { branchDeletePending: true } });
+      } catch (err) {
+        console.error(`[pr-cleanup] Failed to mark ${t.id}'s branch ${branch} for a dependency recheck:`, (err as Error)?.message);
+      }
+    }
+    return {
+      outcome: 'cleaned',
+      branch,
+      advanced,
+      masterSynced,
+      worktreeRemoved,
+      branchDeleted: false,
+      reason: 'branch-depended-on',
+      dependentTicketIds: dependentTickets.map((t) => t.id),
+    };
+  }
+
+  // FLUX-1326: the dependency (if any) has cleared — drop the marker set above so
+  // `recheckDependentBranches` stops resweeping this branch. Guarded so the common case (a branch
+  // that was never dependency-blocked) never writes.
+  for (const t of branchTickets) {
+    if (!t.branchDeletePending) continue;
+    try {
+      await updateTaskWithHistory(t.id, { updatedBy: 'Agent', extraFields: { branchDeletePending: null } });
+    } catch (err) {
+      console.error(`[pr-cleanup] Failed to clear the dependency-recheck marker on ${t.id}:`, (err as Error)?.message);
+    }
+  }
+
   // Force-delete the branch (local + remote) — squash merge ⇒ `-d` won't recognise it.
   // FLUX-1231: if a worktree still holds this branch (it read clean above but removeTaskWorktree
   // couldn't remove it — a lock/leftover), a `git branch -D` is GUARANTEED to fail ("used by
@@ -546,6 +677,45 @@ export async function reconcilePullRequests(workspaceRoot: string): Promise<void
 }
 
 /**
+ * Branches `cleanupMergedBranch` is currently holding onto because another OPEN PR still bases off
+ * them (FLUX-1270's `branch-depended-on` guard) — every ticket carrying a truthy
+ * `branchDeletePending` marker, grouped by branch. Deliberately scans ALL of `tasksCache` (not
+ * `reconcilePullRequests`'s non-terminal-only grouping): the tickets on a `branch-depended-on`
+ * branch are already Done by the time the marker is set (step 1 of `cleanupMergedBranch` advances
+ * them before the dependent-PR check runs), so a terminal-status filter would never see them again.
+ * Persisted on ticket frontmatter rather than an in-module `Set` so it survives an engine restart.
+ */
+function branchesPendingDependencyClear(): Set<string> {
+  const branches = new Set<string>();
+  for (const t of Object.values(tasksCache) as CachedTicket[]) {
+    if (t.branch && t.branchDeletePending) branches.add(t.branch);
+  }
+  return branches;
+}
+
+/**
+ * FLUX-1326: revisit branches `cleanupMergedBranch` kept alive under its dependent-PR guard
+ * (`reason: 'branch-depended-on'`) and retry the delete now that time has passed — the dependent
+ * PR(s) may since have merged, closed, or been rebased off `branch` entirely. Without this, once a
+ * `branch-depended-on` branch's tickets all reach Done, `reconcilePullRequests`'s non-terminal
+ * grouping never revisits it and the branch lingers indefinitely (see
+ * {@link branchesPendingDependencyClear}). `cleanupMergedBranch` itself is idempotent and does the
+ * real work: if a dependent PR is still open it just re-flags (no-op — already-flagged tickets are
+ * skipped) and the marker stays; once the dependency is gone it deletes the branch and clears the
+ * marker. Runs on the same cadence as `reconcilePullRequests`/`pruneMergedBranches`. Best-effort;
+ * never throws.
+ */
+export async function recheckDependentBranches(workspaceRoot: string): Promise<void> {
+  for (const branch of branchesPendingDependencyClear()) {
+    try {
+      await cleanupMergedBranch(workspaceRoot, branch, { auto: true });
+    } catch {
+      // Best-effort per branch — retry next tick.
+    }
+  }
+}
+
+/**
  * Branches whose backstop delete has thrown and already raised a "couldn't clean up" notification
  * (FLUX-599). Deduped here so a genuinely-stuck branch is surfaced ONCE per orphaned state rather
  * than re-notified every poll. An entry is cleared when its branch finally disappears from the
@@ -607,8 +777,18 @@ export async function pruneMergedBranches(workspaceRoot: string): Promise<void> 
     if (!existing.has(b)) notifiedStuckBranches.delete(b);
   }
 
+  // FLUX-1326: don't force-delete a branch cleanupMergedBranch deliberately kept alive under its
+  // dependent-PR guard (FLUX-1270) — its tickets are already Done (terminal), so `activeBranches`
+  // above doesn't protect it, and its worktree was already torn down before that guard was hit, so
+  // the worktree check right below doesn't protect it either. Without this, this backstop would
+  // force-delete the branch on the very next tick after cleanupMergedBranch flags it — reintroducing
+  // the exact GitHub auto-close-the-dependent-PR incident the guard exists to prevent. Leave it for
+  // `recheckDependentBranches` to retry (via cleanupMergedBranch's own dependency check) instead.
+  const pendingDependencyBranches = branchesPendingDependencyClear();
+
   for (const branch of mergedSet) {
     if (!existing.has(branch) || branch === cur || activeBranches.has(branch)) continue;
+    if (pendingDependencyBranches.has(branch)) continue;
     // A worktree still holds it → leave it for cleanupMergedBranch's worktree-aware teardown.
     const wt = await findWorktreeForBranch(workspaceRoot, branch).catch(() => null);
     if (wt) continue;

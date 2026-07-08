@@ -276,6 +276,14 @@ export interface FurnaceBatch {
   /** PRs opened by this batch (one for sequential, one-per-ticket for parallel). */
   prs: BatchPr[];
   report?: FurnaceReport;
+  /**
+   * FLUX-1270: display-only provenance — set when this batch was spun off from another (non-terminal)
+   * batch to pull a same-branch-dependent follow-up + its parent out into their own standalone
+   * sequential batch (reusing the parent's branch, see `branch` adoption in `createFurnaceBatch`).
+   * Purely informational: no batch-control mechanism (ignite/stop/resume/discard) reads this field or
+   * behaves differently because of it — the portal renders it as a "spun off from" subtitle.
+   */
+  spawnedFrom?: { batchId: string; ticketId: string };
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
@@ -367,6 +375,7 @@ export function newFurnaceBatch(input: {
   trigger?: BatchTrigger;
   icon?: string;
   createdBy?: string;
+  spawnedFrom?: { batchId: string; ticketId: string };
 }): FurnaceBatch {
   const kind: BatchKind = input.kind ?? 'parallel';
   const requestedRate = input.burnRate ?? 1;
@@ -395,6 +404,7 @@ export function newFurnaceBatch(input: {
   if (input.trigger !== undefined) batch.trigger = input.trigger;
   if (input.icon !== undefined) batch.icon = input.icon;
   if (input.createdBy !== undefined) batch.createdBy = input.createdBy;
+  if (input.spawnedFrom !== undefined) batch.spawnedFrom = input.spawnedFrom;
   return batch;
 }
 

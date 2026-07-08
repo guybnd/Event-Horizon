@@ -24,7 +24,7 @@ import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePull
 import { detachTaskWorktree, taskWorktreeDir, findWorktreeForBranch, worktreeUncommittedCount, reclaimWorktrees } from './task-worktree.js';
 import { ensureTicketIsolation } from './ticket-isolation.js';
 import { cleanupMergedBranch, isWorktreeReclaimable } from './pr-cleanup.js';
-import { sharedNonDoneSiblings } from './pr-tickets.js';
+import { sharedNonDoneSiblings, prTicketsOnBranch } from './pr-tickets.js';
 import { existsSync } from 'fs';
 import { getActiveSessionsForTask, getLiveStandaloneSessionForTask, stopAllSessionsForTask, reapStaleParkedSessions } from './session-store.js';
 import { generatePromptNotification, generateReviewNotification, dismissNotificationsForTicket, addNotification } from './notifications.js';
@@ -2253,14 +2253,44 @@ export function buildMcpServer(): McpServer {
       kind: z.enum(['sequential', 'parallel']).optional().describe('Batch kind (default parallel).'),
       burnRate: z.number().int().positive().optional().describe('Parallel concurrency, 1–4 (default 1). Ignored for sequential.'),
       title: z.string().optional().describe('Human label for the batch.'),
+      adoptBranchFrom: z.string().optional().describe('FLUX-1270: reuse this ticket\'s existing branch as the new batch\'s shared branch instead of minting one — for pulling a same-branch-dependent follow-up + its parent out of a parallel batch into a standalone sequential batch. The named ticket must already have a `branch` with an OPEN PR on it (i.e. an existing `kind:"pr"` card for that branch with `prState:"OPEN"`); forces `kind` to `sequential` (refused if `kind:"parallel"` was explicitly passed).'),
+      spawnedFrom: z.object({ batchId: z.string(), ticketId: z.string() }).optional().describe('Display-only provenance: stamp this batch as spun off from `batchId` (the origin batch) / `ticketId` (the parent ticket whose branch was adopted). Purely informational — rendered as a subtitle in the Furnace drawer; no lifecycle behavior reads it.'),
     },
-    async ({ tag, tickets, statuses, limit, kind, burnRate, title }) => {
+    async ({ tag, tickets, statuses, limit, kind, burnRate, title, adoptBranchFrom, spawnedFrom }) => {
       try {
         if (!tag && !(tickets && tickets.length)) {
           return errorResult(
             'furnace_build requires an explicit selector — tag the tickets you want burnable (convention `burn-furnace`) or pass explicit ticket ids. There is no way to pool the entire backlog.',
             'validation_failed',
           );
+        }
+        // FLUX-1270: branch adoption — reuse an existing ticket's still-open-PR branch as the batch's
+        // shared branch instead of minting a fresh one (see furnace.md's "spun off" section). Resolved
+        // from already-loaded ticket cache data (no live `gh` call): a ticket's own branch + a sibling
+        // `kind:'pr'` card on that branch with `prState:'OPEN'` is the same signal `prTicketsOnBranch`
+        // already uses elsewhere (pr-tickets.ts).
+        let resolvedKind = kind;
+        let adoptedBranch: string | undefined;
+        if (adoptBranchFrom) {
+          if (kind && kind !== 'sequential') {
+            return errorResult(
+              `adoptBranchFrom requires a sequential batch (one shared branch/PR) — kind "${kind}" opens a separate branch per ticket, so there is nothing to adopt onto.`,
+              'validation_failed',
+            );
+          }
+          const anchor = tasksCache[adoptBranchFrom] as { branch?: string } | undefined;
+          if (!anchor) return errorResult(`adoptBranchFrom ticket ${adoptBranchFrom} not found.`, 'not_found');
+          const anchorBranch = anchor.branch;
+          if (!anchorBranch) return errorResult(`adoptBranchFrom ticket ${adoptBranchFrom} has no branch to adopt.`, 'validation_failed');
+          const hasOpenPr = prTicketsOnBranch(Object.values(tasksCache), anchorBranch).some((t) => t.prState === 'OPEN');
+          if (!hasOpenPr) {
+            return errorResult(
+              `adoptBranchFrom ticket ${adoptBranchFrom}'s branch (${anchorBranch}) has no open PR to adopt — expected its PR to still be open.`,
+              'invalid_state',
+            );
+          }
+          resolvedKind = 'sequential';
+          adoptedBranch = anchorBranch;
         }
         await ensureFurnaceLoaded();
         const candidates = Object.values(tasksCache).map(toBuildCandidate);
@@ -2287,11 +2317,14 @@ export function buildMcpServer(): McpServer {
         const batch = await createFurnaceBatch({
           title: title ?? 'Backlog batch',
           tickets: proposal.tickets,
-          ...(kind !== undefined ? { kind: kind as BatchKind } : {}),
+          ...(resolvedKind !== undefined ? { kind: resolvedKind as BatchKind } : {}),
+          ...(adoptedBranch ? { branch: adoptedBranch } : {}),
           ...(burnRate !== undefined ? { burnRate } : {}),
+          ...(spawnedFrom ? { spawnedFrom } : {}),
           createdBy: 'furnace_build',
         });
         const notes = [...proposal.notes];
+        if (adoptedBranch) notes.push(`Adopted ${adoptBranchFrom}'s existing branch \`${adoptedBranch}\` — no new branch/PR was created.`);
         const warn = burnRateClampWarning(burnRate);
         if (warn) notes.push(warn);
         return jsonResult({ batchId: batch.id, batch, excluded: proposal.excluded, notes });
@@ -2395,8 +2428,9 @@ export function buildMcpServer(): McpServer {
       action: z.enum(['retry', 'dismiss', 'takeover', 'handback', 'add', 'remove']).describe('Which per-ticket operation to run.'),
       batchId: z.string().describe('The batch containing the ticket.'),
       ticketId: z.string().describe('The ticket to act on.'),
+      allowedStatuses: z.array(z.string()).optional().describe('action:"add" only (ignored otherwise): board statuses the ticket is allowed to be in (default ["Todo"]). FLUX-1270: pass e.g. ["In Progress"] to pull a follow-up ticket that is mid-implementation (branch-adopting a same-branch-dependent parent) into a batch — normally only groomed Todo tickets may be added.'),
     },
-    async ({ action, batchId, ticketId }) => {
+    async ({ action, batchId, ticketId, allowedStatuses }) => {
       if (action === 'retry') {
         try {
           const r = await retryTicket(batchId, ticketId);
@@ -2447,6 +2481,7 @@ export function buildMcpServer(): McpServer {
           const { rejected } = validateBatchTickets([ticketId], tasksCache, {
             activeBatches: getFurnaceBatchesCache(),
             excludeBatchId: batchId,
+            ...(allowedStatuses !== undefined ? { allowedStatuses } : {}),
           });
           if (rejected[0]) {
             const r = rejected[0];

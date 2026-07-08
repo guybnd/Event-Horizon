@@ -58,9 +58,10 @@ describe('isGateParkedTicket (FLUX-1262)', () => {
   });
 });
 
-describe('isPlanApprovalPending (FLUX-1262)', () => {
+describe('isPlanApprovalPending (FLUX-1262 / FLUX-1296)', () => {
   const autoThenYouConfig: Config = { gatePolicy: { boardDefault: { plan: 'auto-then-you', review: 'you' } } } as Config;
   const youConfig: Config = { gatePolicy: { boardDefault: { plan: 'you', review: 'you' } } } as Config;
+  const autoConfig: Config = { gatePolicy: { boardDefault: { plan: 'auto', review: 'you' } } } as Config;
 
   it('is false when planReviewState is unset', () => {
     expect(isPlanApprovalPending(makeTask({ status: 'Grooming' }), autoThenYouConfig)).toBe(false);
@@ -71,9 +72,11 @@ describe('isPlanApprovalPending (FLUX-1262)', () => {
     expect(isPlanApprovalPending(task, autoThenYouConfig)).toBe(false);
   });
 
-  it('is false when the resolved plan gate is not auto-then-you', () => {
+  it('is true when Grooming + a verdict is set, regardless of the resolved plan gate value (FLUX-1296: extended beyond auto-then-you)', () => {
     const task = makeTask({ status: 'Grooming', planReviewState: 'approved' });
-    expect(isPlanApprovalPending(task, youConfig)).toBe(false);
+    expect(isPlanApprovalPending(task, autoThenYouConfig)).toBe(true);
+    expect(isPlanApprovalPending(task, youConfig)).toBe(true);
+    expect(isPlanApprovalPending(task, autoConfig)).toBe(true);
   });
 
   it('is true when Grooming + a verdict is set + the board default plan gate is auto-then-you', () => {
@@ -81,14 +84,9 @@ describe('isPlanApprovalPending (FLUX-1262)', () => {
     expect(isPlanApprovalPending(task, autoThenYouConfig)).toBe(true);
   });
 
-  it('a per-ticket override wins over the board default', () => {
+  it('a per-ticket gate override does not affect it either — only status + verdict matter now', () => {
     const task = makeTask({ status: 'Grooming', planReviewState: 'approved', gatePolicyOverride: { plan: 'auto-then-you' } });
     expect(isPlanApprovalPending(task, youConfig)).toBe(true);
-  });
-
-  it('a per-ticket override can also suppress it despite an auto-then-you board default', () => {
-    const task = makeTask({ status: 'Grooming', planReviewState: 'approved', gatePolicyOverride: { plan: 'you' } });
-    expect(isPlanApprovalPending(task, autoThenYouConfig)).toBe(false);
   });
 });
 
@@ -125,6 +123,12 @@ describe('isPlanApprovalNeedsYou (FLUX-1319)', () => {
   it('includes a ticket whose loop has fully stopped and awaits a human confirm', () => {
     const stopped = makeTask({ status: 'Grooming', planReviewState: 'approved' });
     expect(isPlanApprovalNeedsYou(stopped, autoThenYouConfig)).toBe(true);
+  });
+
+  it('FLUX-1296: also includes a `you`-gate ticket after its manual one-pass review — same shape as auto-then-you', () => {
+    const youConfig: Config = { gatePolicy: { boardDefault: { plan: 'you', review: 'you' } } } as Config;
+    const task = makeTask({ status: 'Grooming', planReviewState: 'changes-requested' });
+    expect(isPlanApprovalNeedsYou(task, youConfig)).toBe(true);
   });
 });
 

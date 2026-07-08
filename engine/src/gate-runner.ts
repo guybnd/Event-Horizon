@@ -33,6 +33,7 @@
 //                     ⛔ gate-parked item via the existing `parkTicketOnBoard` Furnace-park marker).
 
 import { log } from './log.js';
+import { buildActivityEntry, buildCommentEntry } from './history.js';
 import { configCache, nextColumnAfter } from './config.js';
 import { tasksCache, updateTaskWithHistory } from './task-store.js';
 import { generateNeedsActionNotification } from './notifications.js';
@@ -79,13 +80,16 @@ const DUPLICATE_CHECK =
 const ADVERSARIAL_CHECK =
   "Adversarial self-review (Plan Discipline item 4): read the plan as its harshest critic — find what's weak, missing, or wrong: an unanchored step, an implicit hard-to-reverse decision left unstated, a menu of options where the plan should commit to one, an obvious missing decision. A clear-cut fixable gap is Minor; a genuine judgment call the plan ducked is Major/Blocker.";
 
+const ARTIFACT_CHECK =
+  'Artifact check (FLUX-1313): if this plan is UI/UX-shaped (visual layout, a new component, an interaction change) and no `publish_artifact` mockup/diagram has been published for this ticket, flag it in the review comment as a gap — do not approve silently. This is a flag, not a blocker: note it and still record your verdict on the plan\'s own merits.';
+
 const PLAN_VERDICT_CONTRACT =
   'Record your verdict via `change_status` — leave `newStatus` as "Grooming" (do NOT move the ticket) and set `planReviewState` to "approved" or "changes-requested" (never `reviewState`; that is a different field for the post-Todo code-review gate). ' +
   'Posting a comment that starts with **APPROVED** or **CHANGES NEEDED** is not enough by itself — without the `change_status` call the ticket will be parked for a human over an unrecorded verdict.';
 
 /** The focus handed to a plan-review session, scaled to the resolved depth (Quick/Standard/Thorough). */
 export function planReviewFocus(depth: PlanReviewDepth): string {
-  const checks = [ANCHOR_CHECK];
+  const checks = [ANCHOR_CHECK, ARTIFACT_CHECK];
   if (depth === 'standard' || depth === 'thorough') checks.push(REGROUND_CHECK, AC_COVERAGE_CHECK);
   if (depth === 'thorough') checks.push(DUPLICATE_CHECK, ADVERSARIAL_CHECK);
   return `${PLAN_REVIEW_BASE} Depth: ${depth}. ${checks.join(' ')} ${PLAN_VERDICT_CONTRACT}`;
@@ -185,7 +189,11 @@ const PLAN_GATE_SPEC: GateRunSpec = {
     const todo = nextColumnAfter(GROOMING_STATUS) || 'Todo';
     await updateTaskWithHistory(ticketId, {
       nextStatus: todo,
-      extraFields: { planReviewState: null },
+      // FLUX-1306: null the reviewed-body hash alongside the verdict — every other verdict-clearing
+      // path (mcp-server.ts change_status, dismissPlanReview, approvePlanToTodo, the panel's
+      // handleApprove) already does this; leaving it stale here would violate that invariant even
+      // though nothing currently reads the hash once planReviewState is null.
+      extraFields: { planReviewState: null, planReviewBodyHash: null },
       entries: [{
         type: 'activity',
         user: 'Plan Gate',
@@ -350,6 +358,17 @@ async function advanceGateTicket(ticketId: string, action: TicketAction): Promis
 
     case 'park': {
       await parkGate(spec, ticketId, action.reason);
+      break;
+    }
+
+    case 'yield': {
+      // FLUX-1304 (mirrors Temper's 'yield' handling in temper.ts): the ticket already succeeded/
+      // terminalized outside this gate run's control (something else — a finish/merge flow — killed
+      // the review session on purpose). Stop tracking quietly instead of leaving the run wedged: with
+      // no case here it fell through silently, so `gateRuns` never cleared and the ticket got
+      // silently re-evaluated (still yielding, still no-op) on every subsequent tick forever.
+      await stopGateRun(spec, ticketId, `${spec.gate} gate yielded — ${action.reason}.`);
+      log.info(`[gate:${spec.gate}] ${ticketId} yielded — ${action.reason}.`);
       break;
     }
 
@@ -569,15 +588,14 @@ export async function startPlanReviseNow(
         ...(task.swimlane === 'require-input'
           ? [{ type: 'swimlane_change' as const, swimlane: 'require-input', action: 'cleared', user: 'Plan Gate', date: nowIso() }]
           : []),
-        ...(notes ? [{ type: 'comment' as const, user, comment: notes, date: nowIso() }] : []),
-        {
-          type: 'activity' as const,
-          user: 'Plan Gate',
-          comment: notes
+        ...(notes ? [buildCommentEntry(user, notes, nowIso())] : []),
+        buildActivityEntry(
+          notes
             ? `Sent for re-grooming by ${user} (notes above) — a grooming session is revising the plan; the gate re-reviews the revision.`
             : `Sent for re-grooming by ${user} — a grooming session is revising the plan against the review feedback; the gate re-reviews the revision.`,
-          date: nowIso(),
-        },
+          'Plan Gate',
+          nowIso(),
+        ),
       ],
       updatedBy: user,
     });

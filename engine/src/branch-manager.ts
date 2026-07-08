@@ -420,6 +420,35 @@ export async function getPullRequestStatus(selector: string): Promise<PrStatus |
   }
 }
 
+/** One entry of `gh pr list --json number,url,title,headRefName`. */
+export interface OpenPrOnBase {
+  number: number;
+  url: string;
+  title: string;
+  headRefName: string;
+}
+
+/**
+ * FLUX-1270: every OPEN PR whose base is `branch` — the check `cleanupMergedBranch` needs before
+ * deleting a just-merged branch. Without it, a still-open sibling PR based on the deleted branch
+ * (e.g. a same-branch-dependent follow-up ticket opened mid-parallel-burn, per the FLUX-861/
+ * FLUX-1265 incident) gets silently auto-closed by GitHub the instant its base ref disappears —
+ * no error surfaces anywhere, and the follow-up's work appears to just revert. Best-effort: an
+ * unreachable/unauthed `gh` returns an empty array rather than blocking cleanup on a network hiccup.
+ */
+export async function getOpenPullRequestsWithBase(branch: string): Promise<OpenPrOnBase[]> {
+  try {
+    const { stdout } = await gh(['pr', 'list', '--base', branch, '--state', 'open', '--json', 'number,url,title,headRefName']);
+    const raw = JSON.parse(stdout) as Array<{ number?: number; url?: string; title?: string; headRefName?: string }>;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((p): p is { number: number; url?: string; title?: string; headRefName?: string } => typeof p.number === 'number')
+      .map((p) => ({ number: p.number, url: String(p.url ?? ''), title: String(p.title ?? ''), headRefName: String(p.headRefName ?? '') }));
+  } catch {
+    return []; // no gh / unauthed / network hiccup — best-effort, never blocks cleanup
+  }
+}
+
 /** How {@link finish_ticket} should obtain a mergeable PR for a branch (FLUX-741). */
 export interface FinishPrPlan {
   /**

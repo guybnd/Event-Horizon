@@ -126,8 +126,10 @@ export async function launchPhaseDefault(opts: {
    *  Replaces the old `framework === 'claude' || framework === 'gemini'` hardcode. Defaults to
    *  false (fail closed → standalone launch) if the caller hasn't loaded capabilities yet. */
   supervisorCapable?: boolean;
+  /** Optional reviewer/approver note appended to the resolved persona prompt (FLUX-1294). */
+  focusComment?: string;
 }): Promise<CliSessionSummary | null> {
-  const { taskId, framework, phase, currentUser, phaseDefaults, skipPermissions, supervisorCapable } = opts;
+  const { taskId, framework, phase, currentUser, phaseDefaults, skipPermissions, supervisorCapable, focusComment } = opts;
   const defaultId = resolvePhaseDefaultId(phaseDefaults, phase, 'single');
   const list = await fetchWorkflows();
   const wf = list.find((w) => w.id === defaultId);
@@ -138,7 +140,7 @@ export async function launchPhaseDefault(opts: {
 
   if (cfg?.pattern === 'supervisor' && supervisorCapable) {
     const combiner = phaseCombiner(phase);
-    const lead = { role: personaId, label: combiner?.label || personaId, personaId };
+    const lead = { role: personaId, label: combiner?.label || personaId, personaId, focusComment };
     const result = await launchOrchestration({
       taskId,
       framework,
@@ -156,7 +158,7 @@ export async function launchPhaseDefault(opts: {
   return runAgentAction({
     taskId,
     framework,
-    action: { kind: 'persona', personaId },
+    action: { kind: 'persona', personaId, focusComment },
     currentUser,
     skipPermissions,
     preStatus: phaseLaunchStatus(phase),

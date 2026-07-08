@@ -71,13 +71,29 @@ export async function ensureTicketIsolation(
   let worktree: string | undefined;
   let worktreeError: string | undefined;
   if (opts.worktree) {
-    const createWorktree = () =>
-      createTaskWorktree(
+    const createWorktree = async () => {
+      const wt = await createTaskWorktree(
         workspaceRoot!,
         ticketId,
         branch!,
         opts.baseBranch ? { baseBranch: opts.baseBranch } : {},
       );
+      // FLUX-1305: stamp a timestamped marker the reclaim sweep's zero-commit-branch backstop
+      // (pr-cleanup.ts#isWorktreeReclaimableForSweep) checks before treating a never-committed
+      // branch as abandoned. Without it, a worktree created here from a board/chat session — which
+      // never registers a live EH session for the ticket — reads as idle and gets swept on the
+      // very next ~90s reconcile tick, before the caller even starts editing. Best-effort: a write
+      // failure must not fail worktree creation itself.
+      await updateTaskWithHistory(ticketId, {
+        updatedBy,
+        entries: [
+          buildActivityEntry(`Created worktree for branch ${branch}`, updatedBy, new Date().toISOString(), {
+            event: 'worktree-created',
+          }),
+        ],
+      }).catch(() => {});
+      return wt;
+    };
     try {
       worktree = await createWorktree();
     } catch (wtErr: unknown) {

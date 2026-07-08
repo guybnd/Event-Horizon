@@ -187,8 +187,9 @@ function RequireInputBody({ ticketId, onOpen, label = 'Open to answer' }: { tick
   );
 }
 
-/** FLUX-1262/FLUX-1289/FLUX-1303: a `plan` gate's `auto-then-you` pass ran and is waiting for a
- *  human. FLUX-1303 unified this body onto the shared `PlanReviewFeedbackBlock` + `PlanReviewActions`
+/** FLUX-1262/FLUX-1289/FLUX-1303: a `plan` gate's review pass ran (any gate value — FLUX-1296
+ *  extended this beyond `auto-then-you` to `you`'s manual pass too) and is waiting for a human.
+ *  FLUX-1303 unified this body onto the shared `PlanReviewFeedbackBlock` + `PlanReviewActions`
  *  (the exact same verbs as `ChatPlanApprovalCard` and the panel): attributed feedback + plan TL;DR,
  *  an inline notes composer behind **Send for re-grooming** (the atomic revise endpoint), Approve /
  *  Approve-anyway, and "Re-run review" lives only in the plan-approval panel, gated on the plan

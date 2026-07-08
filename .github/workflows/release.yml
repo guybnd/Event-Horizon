@@ -119,6 +119,17 @@ jobs:
       - name: Build (portal + engine bundle)
         run: npm run build
 
+      # FLUX-1323: boot the packaged SEA binary and hit /api/health — nothing in CI previously
+      # launched the built binary, which let FLUX-1321 (isSea detection silently failing) ship
+      # undetected. Non-continue-on-error: a broken standalone binary must block the release.
+      # timeout-minutes (FLUX-1325) is a second layer of defense on top of the script's own
+      # internal HEALTH_TIMEOUT_MS/FETCH_TIMEOUT_MS bounds, in case some other step of the script
+      # (build/extract/spawn) itself hangs — without it, the only backstop is GitHub Actions'
+      # default 6-hour job timeout.
+      - name: Smoke-test Windows SEA binary
+        timeout-minutes: 10
+        run: npm run smoke-test:win
+
       - name: Build Windows desktop app (Electron)
         continue-on-error: true # non-blocking (see the macOS desktop step) — first run of this path
         shell: bash

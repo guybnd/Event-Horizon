@@ -24,6 +24,7 @@ import { CardCommentPopover } from './task-card/CardCommentPopover';
 import { CardSubtaskPopover } from './task-card/CardSubtaskPopover';
 import { CardDescriptionPopup } from './task-card/CardDescriptionPopup';
 import { PrDeckSection } from './PrDeckCard';
+import { MergeConflictBanner } from './MergeConflictBanner';
 
 // Violet wash for PR cards — a translucent violet gradient layered over the eh-card bg
 // (inline so it beats eh-card's unlayered background). Module-level so it's allocated once,
@@ -137,6 +138,7 @@ export const TaskCardInner = memo(function TaskCardInner({
       className={`mb-4 group flex flex-col relative ${(c.priorityMenuOpen || c.effortMenuOpen || c.assigneeMenuOpen || c.tagMenuOpen || c.isEditingTitle || c.isHovering) ? 'z-40' : ''}`}
       onMouseEnter={c.handleMouseEnter}
       onMouseLeave={c.handleMouseLeave}
+      onMouseOver={c.handleMouseOverSurface}
       onContextMenu={(e) => {
         if (isOverlay) return;
         e.preventDefault();
@@ -257,6 +259,11 @@ export const TaskCardInner = memo(function TaskCardInner({
                 <p className="eh-card-desc mb-3 text-xs leading-relaxed text-gray-600 line-clamp-3 dark:text-gray-400">
                   {c.snippet}
                 </p>
+
+                {/* FLUX-1270: generalized off PrDeckCard.tsx-only scoping — a plain ticket can also
+                    carry `swimlane: 'merge-conflict'` (e.g. its branch was kept alive by
+                    cleanupMergedBranch because a dependent PR still based off it). */}
+                {!isOverlay && !compact && <MergeConflictBanner task={task} c={c} />}
 
                 {c.clusterGroup && c.clusterAgg && !isOverlay && (
                   <CardClusterPanel c={c} />

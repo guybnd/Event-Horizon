@@ -1,16 +1,17 @@
 import { useState } from 'react';
 import type { JSX } from 'react';
-import { GitMerge, AlertTriangle, ShieldCheck, Loader2, Bot, Wrench, RotateCcw, Undo2, Plus, Link2, ExternalLink } from 'lucide-react';
+import { GitMerge, AlertTriangle, ShieldCheck, Loader2, Bot, Wrench, RotateCcw, Undo2, Plus, Link2, ExternalLink, CheckCircle2, XCircle, Clock } from 'lucide-react';
 import type { Task } from '../types';
 import { reviewChip, internalApprovedChip, reviewProgressChip, aggregateMemberReviews, selectPrReviewChip } from './ReviewChip';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import type { TaskCardController } from '../hooks/useTaskCardController';
 import { TaskDeck } from './TaskDeck';
 import { mergePr, retryPr, updateTask, adoptPr, MergeParkedError } from '../api';
-import { launchPhaseDefault, runAgentAction } from '../agentActions';
+import { launchPhaseDefault } from '../agentActions';
 import { resolveEffectiveAgent, frameworkSupports } from '../utils';
 import { ACTIVE_SESSION_STATUSES } from '../orchestration';
 import { prLink } from '../lib/ticketActions';
+import { MergeConflictBanner } from './MergeConflictBanner';
 
 // Shared PR action-button classes — equal-width (flex-1) + centered so the bar is symmetrical
 // regardless of label length. Module-level so they're allocated once, not per render.
@@ -63,12 +64,6 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
   const [continueTicketId, setContinueTicketId] = useState('');
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueErr, setContinueErr] = useState('');
-  // Merge-conflict rebase CTA (FLUX-986). The engine flags `swimlane: 'merge-conflict'` on a real
-  // git conflict WITHOUT touching status (see routes/tasks.ts), so the ticket stays put until the
-  // user actually clicks through here — only then does the branch move to In Progress.
-  const [launchingRebase, setLaunchingRebase] = useState(false);
-  const [rebaseErr, setRebaseErr] = useState('');
-
   const members = (task.members ?? []).map((id) => taskById.get(id)).filter((t): t is Task => !!t);
   const memberCount = members.length;
   // Members with a live session (FLUX-1310) — the member deck folds by default (TaskDeck), so
@@ -89,8 +84,6 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
   // (FLUX-1089). Warn only; does not block the merge (force:true already covers the confirmation).
   const changesRequestedMembers = members.filter((m) => m.reviewState === 'changes-requested');
   const changesRequested = task.swimlane === 'changes-requested';
-  // FLUX-986: engine-set (never agent-set) when `gh pr merge` hit a real git conflict.
-  const hasMergeConflict = task.swimlane === 'merge-conflict';
   // FLUX-1089: derive the PR-card review signal from its members at render time — see
   // aggregateMemberReviews for why this is never propagated onto the PR ticket itself.
   const memberReview = aggregateMemberReviews(members);
@@ -217,41 +210,25 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
     }
   };
 
-  // Launch a pre-briefed rebase/resolve session for a `merge-conflict`-swimlaned PR (FLUX-986).
-  // Moves the ticket to In Progress via `preStatus` — i.e. only NOW, on the user's click, not the
-  // instant the merge failed — and the engine's generic-update auto-clear (routes/tasks.ts) drops
-  // the `merge-conflict` swimlane as soon as that status write lands, so this banner disappears.
-  const doLaunchRebase = async () => {
-    if (c.hasActiveCliSession) {
-      setRebaseErr(`${task.id} already has an active session running. Wait for it to finish, or stop it first.`);
-      return;
-    }
-    setRebaseErr('');
-    setLaunchingRebase(true);
-    const mission =
-      `Branch \`${task.branch}\` failed to merge due to a git conflict. Check out the branch ` +
-      `(or use the existing worktree), rebase onto \`origin/master\` (or merge master in), ` +
-      `resolve all conflicts with code judgment, push, and retry the merge.`;
-    try {
-      const fw = resolveEffectiveAgent(undefined, config?.defaultFramework);
-      await runAgentAction({
-        taskId: task.id,
-        framework: fw,
-        action: { kind: 'prompt', appendPrompt: mission, focusComment: mission },
-        currentUser,
-        phase: 'implementation',
-        preStatus: 'In Progress',
-      });
-      triggerRefresh();
-    } catch (e) {
-      setRebaseErr(e instanceof Error ? e.message : 'Failed to launch rebase session');
-    } finally {
-      setLaunchingRebase(false);
-    }
-  };
-
   return (
-    <div onClick={(e) => e.stopPropagation()}>
+    <div
+      onClick={(e) => {
+        // Only swallow clicks on actual interactive controls (buttons/links/form fields, incl.
+        // the deck's own fold/unwind toggle) — everything else (chip row, whitespace, empty-state
+        // text) should bubble up to the ancestor card's click-to-open handler (FLUX-1316).
+        // Also swallow clicks that bubbled up from a nested foreign card (a folded PR member
+        // rendered via TaskDeck) — otherwise a click on the member's non-interactive body (e.g.
+        // its description text) keeps bubbling past this PR's own click-to-open handler too,
+        // opening both tickets at once (review follow-up on FLUX-1316).
+        const target = e.target as HTMLElement;
+        const isInteractive = target.closest('button, a, input, textarea, select, label');
+        const owner = target.closest('[data-task-id]');
+        const isForeignNestedCard = owner && owner.getAttribute('data-task-id') !== task.id;
+        if (isInteractive || isForeignNestedCard) {
+          e.stopPropagation();
+        }
+      }}
+    >
       {/* Status chips. pr-8 reserves the top-right corner for the comment badge (TaskCard renders
           it absolutely there — FLUX-804), so the chips never run under it. */}
       <div className="mb-2 flex flex-wrap items-center gap-1.5 pr-8">
@@ -298,6 +275,10 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
             <Bot className="h-3 w-3" /> {membersWithActiveSession.length} member session{membersWithActiveSession.length === 1 ? '' : 's'} running
           </span>
         )}
+        {/* CI status chip (FLUX-1315) — sourced from GitHub's check-run rollup, refreshed on the
+            existing PR-reconcile poll. No chip for 'unknown' (no checks configured) — see
+            ciStatusChip. */}
+        {ciStatusChip(task.ciStatus)}
         {/* GitHub link (FLUX-1310) — icon-only so it doesn't compete visually with the status
             chips; uses the URL already on the ticket (`implementationLink`, set from `pr.url`). */}
         {prUrl && (
@@ -313,26 +294,9 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
         )}
       </div>
 
-      {/* Merge-conflict rebase CTA (FLUX-986). Persistent (not hover-gated like the action bar
-          below) so it can't be missed — this is the entire point of the ticket: give the user a
-          guided next step instead of a dead-end error. */}
-      {hasMergeConflict && !isResolved && (
-        <div className="mb-2 rounded-md border border-rose-300 bg-rose-50 p-2 dark:border-rose-500/30 dark:bg-rose-500/10">
-          <p className="mb-1.5 flex items-center gap-1 text-[11px] font-semibold text-rose-700 dark:text-rose-300">
-            <AlertTriangle className="h-3.5 w-3.5" /> Merge failed — git conflict
-          </p>
-          <button
-            disabled={launchingRebase}
-            onClick={doLaunchRebase}
-            title="Start an agent session to rebase, resolve the conflict, and retry the merge"
-            className="flex items-center gap-1 rounded-md bg-rose-600 px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-rose-700 disabled:opacity-50"
-          >
-            {launchingRebase ? <Loader2 className="h-3 w-3 animate-spin" /> : <Bot className="h-3 w-3" />}
-            {launchingRebase ? 'Launching…' : 'Launch Rebase Session'}
-          </button>
-          {rebaseErr && <p role="alert" className="mt-1 text-[11px] text-red-600 dark:text-red-400">{rebaseErr}</p>}
-        </div>
-      )}
+      {/* Merge-conflict rebase CTA (FLUX-986), generalized (FLUX-1270) into a shared component so a
+          plain non-PR ticket card can render the same CTA — see MergeConflictBanner's doc comment. */}
+      {!isResolved && <MergeConflictBanner task={task} c={c} />}
 
       {/* Deck — folded members (FLUX-567 / FLUX-580 shared primitive) */}
       {memberCount > 0 ? (
@@ -586,6 +550,22 @@ function prStateChip(state?: string) {
     CLOSED: { cls: 'bg-gray-100 text-gray-600 dark:bg-white/10 dark:text-gray-400', label: 'Closed' },
   };
   const m = map[state ?? 'OPEN'] ?? map.OPEN;
+  return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${m.cls}`}>{m.icon}{m.label}</span>;
+}
+
+/**
+ * CI status chip (FLUX-1315), sourced from `task.ciStatus` (GitHub's check-run rollup, aggregated
+ * by the engine's `deriveCiStatus`). `'unknown'`/absent (no checks configured on the PR) renders
+ * no chip at all — a repo/PR without CI must not show a stuck "unknown" or error-looking badge.
+ */
+function ciStatusChip(ciStatus?: string) {
+  const map: Record<string, { cls: string; label: string; icon: JSX.Element }> = {
+    passing: { cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300', label: 'CI passing', icon: <CheckCircle2 className="h-3 w-3" /> },
+    failing: { cls: 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300', label: 'CI failing', icon: <XCircle className="h-3 w-3" /> },
+    pending: { cls: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300', label: 'CI running', icon: <Clock className="h-3 w-3" /> },
+  };
+  const m = ciStatus ? map[ciStatus] : undefined;
+  if (!m) return null;
   return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${m.cls}`}>{m.icon}{m.label}</span>;
 }
 

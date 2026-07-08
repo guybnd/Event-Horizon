@@ -869,6 +869,7 @@ import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, extractF
 import { createTaskWorktree, detachTaskWorktree, taskWorktreeDir, listTaskWorktrees, findWorktreeForBranch, worktreeChangeCount, worktreeChangeCounts, worktreeIsDirty, listLocalBranches, currentBranchName } from '../task-worktree.js';
 import { isEditorAvailable, openEditorWindow, openEditorFile, isShellSafePath } from '../editor-launcher.js';
 import { cleanupMergedBranch } from '../pr-cleanup.js';
+import { disarmTemperForExternalStop } from '../temper.js';
 import { broadcastEvent, getTasksVersion } from '../events.js';
 import { ensureTicketIsolation } from '../ticket-isolation.js';
 
@@ -1146,6 +1147,14 @@ router.post('/:id/pr/merge', async (req, res) => {
   }
 
   if (parkedOwners.length > 0 && stopParked) {
+    // FLUX-1304 (FLUX-1297 follow-up): disarm Temper on every parked owner BEFORE stopping its
+    // session — same race as `cleanupMergedBranch`'s own disarm loop. Without this, Temper's own
+    // tick can observe the 'cancelled' session this stop produces before the `cleanupMergedBranch`
+    // call below advances the ticket's board status to Done, and park/revert a ticket whose work
+    // just landed. Best-effort: never blocks the merge.
+    for (const t of parkedOwners) {
+      try { await disarmTemperForExternalStop(t.id); } catch { /* best effort */ }
+    }
     for (const t of parkedOwners) {
       stopAllSessionsForTask(t.id, 'stop & merge');
       await updateTaskWithHistory(t.id, {
@@ -1426,6 +1435,16 @@ router.post('/:id/retry', async (req, res) => {
   }
 });
 
+// FLUX-1306: `not-found` never reaches these two routes (the `tasksCache[id]` check above always
+// wins first), so only the remaining reasons need a status — `notes-required` is caller error (a
+// missing required field, 400), `persist-failed` is a server-side write failure (500); the rest
+// (`wrong-status`, `already-running`, `furnace-owned`) are genuine 409 conflicts with current state.
+function planGateStatusFor(reason: string | undefined): number {
+  if (reason === 'notes-required') return 400;
+  if (reason === 'persist-failed') return 500;
+  return 409;
+}
+
 // FLUX-1289: the portal's entry point for "Re-run review" (AttentionDock body / ChatPlanApprovalCard /
 // PlanApprovalPanel) — the REST twin of the `start_plan_review` MCP tool, since a human clicking a
 // button in the portal has no agent turn to call the MCP tool from. Same one-shot mechanics;
@@ -1434,7 +1453,7 @@ router.post('/:id/plan-review/start', async (req, res) => {
   const { id } = req.params;
   if (!tasksCache[id]) return res.status(404).json({ error: `Ticket ${id} not found` });
   const result = await startPlanGateNow(id, { mode: 'one-pass' });
-  if (!result.ok) return res.status(409).json({ error: result.message, reason: result.reason });
+  if (!result.ok) return res.status(planGateStatusFor(result.reason)).json({ error: result.message, reason: result.reason });
   res.json({ ok: true, message: result.message });
 });
 
@@ -1451,7 +1470,7 @@ router.post('/:id/plan-review/revise', async (req, res) => {
     ...(typeof notes === 'string' ? { notes } : {}),
     ...(typeof user === 'string' ? { user } : {}),
   });
-  if (!result.ok) return res.status(409).json({ error: result.message, reason: result.reason });
+  if (!result.ok) return res.status(planGateStatusFor(result.reason)).json({ error: result.message, reason: result.reason });
   res.json({ ok: true, message: result.message });
 });
 

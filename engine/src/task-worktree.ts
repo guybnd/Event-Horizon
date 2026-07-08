@@ -1,14 +1,17 @@
 import fs from 'fs/promises';
 import { existsSync, realpathSync } from 'fs';
 import path from 'path';
+import { setTimeout as sleep } from 'timers/promises';
 import { evictSharedServersForPath } from './shared-mcp-server.js';
 // FLUX-999 (epic FLUX-996): defaultGitRunner used to be a bare execFileAsync — no timeout, no
 // non-interactive env — so `git worktree add` (the spawn-agent-with-isolation path) could hang
 // forever on a slow/unreachable remote or a stalled credential prompt. Route through the S1
 // runner; every caller here goes through this one default (or an injected test runner).
 import { runGit } from './git-exec.js';
-import { cliSessionsById } from './session-store.js';
-import { killDescendantsByPid } from './kill-process-tree.js';
+import { cliSessionsById, getActiveSessionsForTask, isWithinReclaimGrace } from './session-store.js';
+import { killDescendantsByPid, defaultKillWin32Pid } from './kill-process-tree.js';
+import { findWorktreeLockHolders } from './worktree-lock-holders.js';
+import { log } from './log.js';
 
 /**
  * Per-task-branch git worktree management (FLUX-517).
@@ -427,6 +430,114 @@ export async function createTaskWorktree(
 }
 
 /**
+ * Injectable lock-holder reaping hooks (FLUX-1216), shared by {@link removeTaskWorktree}'s
+ * leftover-directory sweep and {@link pruneTaskWorktrees}'s orphan sweep so both go through the
+ * exact same best-effort reap-then-remove routine.
+ */
+interface WorktreeReapOptions {
+  /** Reap descendants of a KNOWN session pid (FLUX-1207) — defaults to killDescendantsByPid. */
+  reapDescendantsByPid?: (pid: number) => Promise<number[]>;
+  /** Find lock holders by command-line path match, for dirs with no tracked session pid at all
+   *  (FLUX-1216) — defaults to findWorktreeLockHolders. */
+  findLockHolders?: (worktreePath: string, baseDir: string) => Promise<number[]>;
+  /** Kill a single pid found by findLockHolders — defaults to defaultKillWin32Pid. */
+  killPid?: (pid: number) => void;
+}
+
+/**
+ * Best-effort: reap every lock holder we can find for `worktreePath` (both a KNOWN ticket
+ * session's descendants, and any process whose command line resolves under the path — the latter
+ * catches holders with no tracked session at all, e.g. a session that ended hours/days earlier
+ * and was already dropped from `cliSessionsById`, or an ad-hoc test server the agent started and
+ * never stopped), then remove the directory. Logs — never silently swallows — when the directory
+ * survives the attempt, naming the path and any holders killed, so a folder that resists removal
+ * is visible instead of accumulating unnoticed (the 2026-07-06 incident this closes: 13 stale
+ * folders nobody knew were there).
+ */
+async function reapWorktreeLockHoldersAndRemove(
+  worktreePath: string,
+  base: string,
+  ticketId: string | null,
+  runner: GitRunner,
+  opts: WorktreeReapOptions,
+): Promise<void> {
+  if (!existsSync(worktreePath)) return;
+
+  // Safety net: never discard real uncommitted work. A genuine leftover has no valid git
+  // metadata left by this point (its registration was already dropped — the expected case), so
+  // `git status` fails and — matching removeTaskWorktree's own established convention just above
+  // (a query failure reads as "nothing to lose") — is treated as clean. This only actually
+  // protects the rarer case where a directory lost its git worktree REGISTRATION (e.g. the
+  // FLUX-1018 "gitdir points to non-existent location" corruption) while still holding a real,
+  // dirty checkout.
+  const { stdout: status } = await runner(worktreePath, ['status', '--porcelain']).catch(() => ({ stdout: '' }));
+  if (status.trim().length > 0) {
+    console.warn(
+      `[task-worktree] ${ticketId ?? worktreePath}: skipping sweep of ${worktreePath} — it still has uncommitted changes.`,
+    );
+    return;
+  }
+
+  // FLUX-518: strip the shared node_modules junctions BEFORE any recursive delete, exactly like
+  // removeTaskWorktree's own git-remove path does — otherwise `fs.rm(recursive)` can follow a
+  // junction still intact in an orphaned directory and destroy the main tree's real dependencies.
+  await unlinkWorktreeDependencies(worktreePath).catch(() => {});
+
+  // Try a plain removal FIRST. Most leftover directories are no longer actually locked by the
+  // time this runs (the holder exited seconds/minutes ago) — only escalate to hunting down and
+  // killing lock-holder processes (which, via the command-line path matcher, can affect processes
+  // this engine never spawned at all, e.g. a user's own editor with the folder open) when a plain
+  // removal genuinely didn't work.
+  await fs.rm(worktreePath, { recursive: true, force: true }).catch(() => {});
+  if (!existsSync(worktreePath)) return;
+
+  const sessionPids = ticketId
+    ? [...cliSessionsById.values()]
+        .filter((s) => s.taskId === ticketId && typeof s.pid === 'number')
+        .map((s) => s.pid as number)
+    : [];
+  const reap = opts.reapDescendantsByPid ?? killDescendantsByPid;
+  const findHolders = opts.findLockHolders ?? findWorktreeLockHolders;
+  const killPid = opts.killPid ?? defaultKillWin32Pid;
+
+  const [reapedGroups, pathHolders] = await Promise.all([
+    Promise.all(sessionPids.map((pid) => reap(pid).catch(() => [] as number[]))),
+    findHolders(worktreePath, base).catch(() => [] as number[]),
+  ]);
+  for (const pid of pathHolders) {
+    try {
+      killPid(pid);
+    } catch {
+      /* already gone */
+    }
+  }
+  const killed = [...new Set([...reapedGroups.flat(), ...pathHolders])];
+  if (killed.length > 0) {
+    console.warn(
+      `[task-worktree] ${ticketId ?? worktreePath}: reaped orphaned lock-holder pid(s) ${killed.join(', ')} before removing ${worktreePath}`,
+    );
+  }
+
+  // A kill (`killPid`/the reap helpers) is fire-and-forget — it returns once the OS accepts the
+  // termination request, not once the target has actually exited and released its handle on the
+  // directory. An immediate retry can still lose that race (empirically ~25-50ms to clear); a
+  // few short-backoff attempts covers the common case without an unbounded/long wait.
+  for (let attempt = 0; existsSync(worktreePath) && attempt < 5; attempt++) {
+    await sleep(50);
+    await fs.rm(worktreePath, { recursive: true, force: true }).catch(() => {});
+  }
+  if (existsSync(worktreePath)) {
+    console.warn(
+      `[task-worktree] failed to remove leftover worktree directory ${worktreePath}` +
+        (killed.length > 0
+          ? ` even after killing lock-holder pid(s) ${killed.join(', ')}`
+          : ' (no lock holders found)') +
+        ' — will be retried on the next prune sweep.',
+    );
+  }
+}
+
+/**
  * Remove a task worktree on the clean finish path (after the agent committed).
  * Falls back to --force only if the plain remove fails (e.g. leftover ignored
  * build artifacts), then prunes git's administrative records.
@@ -434,7 +545,7 @@ export async function createTaskWorktree(
 export async function removeTaskWorktree(
   workspaceRoot: string,
   worktreePath: string,
-  opts: { gitRunner?: GitRunner; reapDescendantsByPid?: (pid: number) => Promise<number[]> } = {},
+  opts: { gitRunner?: GitRunner } & WorktreeReapOptions = {},
 ): Promise<void> {
   const runner = opts.gitRunner ?? defaultGitRunner;
   // FLUX-1182: this removes a registered worktree below — drop the cached
@@ -471,26 +582,15 @@ export async function removeTaskWorktree(
 
   // `git worktree remove` deletes the files it manages but can leave the top
   // directory behind as an empty shell when a handle is held (e.g. a VS Code
-  // window still open on the worktree — FLUX-522 makes this routine). A leftover
-  // shell at the target path later blocks `git worktree add` for the same ticket,
-  // so sweep it. Guarded to our own .eh-worktrees subtree and best-effort: a
-  // truly locked folder is harmless (it's empty) and reconciles on the next prune.
+  // window still open on the worktree — FLUX-522 makes this routine, FLUX-1207/
+  // FLUX-1216 found it can also be a FULL leftover tree when an orphaned
+  // descendant process — a zombie vitest run, an ad-hoc test server — holds a
+  // Windows file-handle lock inside it). A leftover shell at the target path
+  // later blocks `git worktree add` for the same ticket, so sweep it. Guarded to
+  // our own .eh-worktrees subtree.
   if (existsSync(worktreePath) && isUnder(worktreePath, taskWorktreesBaseDir(workspaceRoot))) {
     const leftoverTicketId = ticketIdFromWorktreePath(workspaceRoot, worktreePath);
-    const pids = [...cliSessionsById.values()]
-      .filter((s) => leftoverTicketId !== null && s.taskId === leftoverTicketId && typeof s.pid === 'number')
-      .map((s) => s.pid as number);
-    if (pids.length > 0) {
-      const reap = opts.reapDescendantsByPid ?? killDescendantsByPid;
-      const killedGroups = await Promise.all(pids.map((pid) => reap(pid).catch(() => [] as number[])));
-      const killed = killedGroups.flat();
-      if (killed.length > 0) {
-        console.warn(
-          `[task-worktree] ${leftoverTicketId ?? worktreePath}: reaped orphaned descendant pid(s) ${killed.join(', ')} before removing leftover directory`,
-        );
-      }
-    }
-    await fs.rm(worktreePath, { recursive: true, force: true }).catch(() => {});
+    await reapWorktreeLockHoldersAndRemove(worktreePath, taskWorktreesBaseDir(workspaceRoot), leftoverTicketId, runner, opts);
   }
 }
 
@@ -621,18 +721,97 @@ export async function stashDirtyTree(
 }
 
 /**
- * Prune git's records of task worktrees whose directories were removed out of
- * band (manual delete, crash). Safe to call on engine startup.
+ * Prune git's records of task worktrees whose directories were removed out of band (manual
+ * delete, crash), THEN sweep `.eh-worktrees/` itself for orphaned directories — ones that are no
+ * longer a registered git worktree and have no active session — reaping any lock-holder processes
+ * and deleting them (FLUX-1216). Unlike the pre-FLUX-1216 version, this is NOT limited to git's
+ * bookkeeping: it does real, best-effort filesystem deletion and can force-kill OS processes.
+ * Fire-and-forget safe to call on every engine boot/workspace activation — a directory that fails
+ * to clear (still dirty, still locked after a retry) is simply left for the next call.
  */
 export async function pruneTaskWorktrees(
   workspaceRoot: string,
-  opts: { gitRunner?: GitRunner } = {},
+  opts: { gitRunner?: GitRunner; isSessionActiveForTask?: (ticketId: string) => boolean } & WorktreeReapOptions = {},
 ): Promise<void> {
   const runner = opts.gitRunner ?? defaultGitRunner;
   // FLUX-1182: prune can deregister worktrees below — drop the cached
   // `isRegisteredWorktree` read (see createTaskWorktree for the same rationale).
   invalidateWorktreeListCache(workspaceRoot);
   await runner(workspaceRoot, ['worktree', 'prune']).catch(() => {});
+
+  // FLUX-1216: the `worktree prune` above only drops git's RECORD of a worktree whose directory
+  // is already gone — nothing before this ever re-attempted deleting a directory that survived
+  // (e.g. because a lock holder blocked the first attempt in removeTaskWorktree). That let 13
+  // stale folders accumulate silently (2026-07-06 incident) with no retry. Sweep the base dir
+  // directly on every call — this runs on workspace activation (engine boot), so a folder that
+  // fails once gets retried on every subsequent boot instead of being stranded forever.
+  const base = taskWorktreesBaseDir(workspaceRoot);
+  const entries = await fs.readdir(base, { withFileTypes: true }).catch(() => []);
+  if (entries.length === 0) return;
+
+  // FLUX-1216 review fix: deliberately does NOT reuse the swallowing `listWorktrees` here. That
+  // helper's "query failure → []" contract is safe for its OTHER callers (create/repair flows read
+  // an empty result as "nothing registered, proceed" and worst case a subsequent `git worktree add`
+  // fails loudly on a genuine conflict) but is the WRONG default here: this `[]` feeds an ALLOW-LIST
+  // ("registeredPaths") that gates deletion, so reading a transient query hiccup (index.lock
+  // contention, a slow/timed-out spawn) as "confirmed zero worktrees registered" would make every
+  // real, live worktree look orphaned and the sweep below would force-kill its holders and delete
+  // it — directly violating this routine's own "never touch a registered worktree" contract
+  // (mirrors {@link isRegisteredWorktree}'s own reasoning for not reusing `listWorktrees` either).
+  // Bail out of the whole sweep on a query failure instead; it is safely retried on the next
+  // boot/workspace-activation call, matching this routine's fire-and-forget design.
+  let registered: WorktreeEntry[];
+  try {
+    const { stdout } = await runner(workspaceRoot, ['worktree', 'list', '--porcelain']);
+    registered = parseWorktreeListPorcelain(stdout);
+  } catch (err) {
+    console.warn(
+      `[task-worktree] pruneTaskWorktrees: 'git worktree list' failed for ${workspaceRoot} — ` +
+        `skipping the orphan sweep this pass (will retry on the next activation):`,
+      err,
+    );
+    return;
+  }
+  const registeredPaths = new Set(registered.map((w) => canonical(w.path)));
+  // FLUX-1216: this sweep runs fire-and-forget from workspace activation (task-store.ts), which
+  // starts BEFORE `rehydrateSessionStubs()` repopulates the in-memory session map from persisted
+  // stubs on this same boot — so `getActiveSessionsForTask` alone can read as "nothing active" for
+  // a ticket whose session is genuinely about to be restored. `isWithinReclaimGrace()` is the
+  // existing post-restart buffer built for exactly this class of race (see its callers in
+  // pr-cleanup.ts's worktreeUnreclaimableReason) — during that window, presume every ticket may
+  // still be active and skip the sweep entirely rather than risk deleting a live session's worktree.
+  //
+  // Residual, deliberately deferred scope (mirrors this ticket's own "acceptable to miss on v1"
+  // framing): this check is ticket-id-scoped, not branch-scoped, so a directory that lost its git
+  // registration while a *joined* sibling ticket's session is still using it (pr-cleanup.ts's
+  // hasLiveSessionOnBranch handles that case for the registered-worktree reclaim path) isn't
+  // covered here — task-worktree.ts can't see ticket branch/board data without a circular import
+  // on task-store.ts. Narrower risk than it sounds: the directory must ALSO already be
+  // git-unregistered for this sweep to ever see it in the first place.
+  const isSessionActive =
+    opts.isSessionActiveForTask ?? ((ticketId: string) => isWithinReclaimGrace() || getActiveSessionsForTask(ticketId).length > 0);
+
+  const candidates: Array<{ dirPath: string; ticketId: string }> = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dirPath = path.join(base, entry.name);
+    // Still a live/registered worktree — never touch, even if its session looks inactive (e.g. a
+    // human editing it manually, or a race with a session about to (re)start).
+    if (registeredPaths.has(canonical(dirPath))) continue;
+
+    // Unparseable / belongs to a different repo sharing this same `.eh-worktrees` parent (FLUX-1207
+    // review precedent: fail CLOSED on an unidentifiable dir, never sweep something we can't
+    // positively attribute to one of THIS repo's tickets).
+    const ticketId = ticketIdFromWorktreePath(workspaceRoot, dirPath);
+    if (!ticketId) continue;
+    if (isSessionActive(ticketId)) continue;
+
+    candidates.push({ dirPath, ticketId });
+  }
+
+  // Each candidate is an independent directory/ticket — sweep them concurrently so N stale
+  // folders (the 2026-07-06 incident found 13) cost roughly the slowest single one, not their sum.
+  await Promise.all(candidates.map(({ dirPath, ticketId }) => reapWorktreeLockHoldersAndRemove(dirPath, base, ticketId, runner, opts)));
 }
 
 /**
@@ -856,14 +1035,16 @@ export function ticketIdFromWorktreePath(workspaceRoot: string, worktreePath: st
  */
 export async function reclaimWorktrees(
   workspaceRoot: string,
-  isReclaimable: (ticketId: string) => boolean | Promise<boolean>,
+  isReclaimable: (ticketId: string) => boolean | string | Promise<boolean | string>,
   opts: { gitRunner?: GitRunner } = {},
 ): Promise<string[]> {
   const runner = opts.gitRunner ?? defaultGitRunner;
   const reclaimed: string[] = [];
   for (const wt of await listTaskWorktrees(workspaceRoot, opts)) {
     const id = ticketIdFromWorktreePath(workspaceRoot, wt.path);
-    if (!id || !(await isReclaimable(id))) continue;
+    if (!id) continue;
+    let rule = await isReclaimable(id);
+    if (!rule) continue;
     // Drop the shared node_modules junctions first so they don't read as dirty,
     // then only remove when the tree is genuinely clean — never lose real work.
     await unlinkWorktreeDependencies(wt.path).catch(() => {});
@@ -874,10 +1055,14 @@ export async function reclaimWorktrees(
     // between worktree resolution and `registerSession`, or a joined sibling starting work.
     // Re-evaluate reclaimability immediately before removal so the sweep never yanks a slot
     // from work that started mid-iteration.
-    if (!(await isReclaimable(id))) continue;
+    rule = await isReclaimable(id);
+    if (!rule) continue;
     try {
       await removeTaskWorktree(workspaceRoot, wt.path, opts);
       reclaimed.push(id);
+      // FLUX-1305: name the rule that fired — previously silent, so a worktree vanishing left no
+      // trace anywhere (engine log or ticket history) for the next debugger to find.
+      log.info(`[worktree-reclaim] removed ${id} at ${wt.path} (rule: ${typeof rule === 'string' ? rule : 'reclaimable'})`);
     } catch {
       // Best-effort — a lock/leftover reconciles on the next prune.
     }

@@ -191,7 +191,7 @@ action:"add"` / `action:"remove"`, and the S6 drawer.
 ## MCP tools (`engine/src/mcp-server.ts`)
 
 - **`furnace_get`** — `{ runId? }` → one run (full magazine + config + report) or, without `runId`, every run.
-- **`furnace_build`** — `{ tag?, tickets?, statuses?, limit?, kind?, burnRate?, title? }` → requires `tag` and/or `tickets` (FLUX-1051 — no selector, no build); builds a `draft` batch from the selection and returns `{ batchId, batch, excluded, notes }`.
+- **`furnace_build`** — `{ tag?, tickets?, statuses?, limit?, kind?, burnRate?, title?, adoptBranchFrom?, spawnedFrom? }` → requires `tag` and/or `tickets` (FLUX-1051 — no selector, no build); builds a `draft` batch from the selection and returns `{ batchId, batch, excluded, notes }`. `adoptBranchFrom`/`spawnedFrom` are FLUX-1270 branch adoption — see "Spinning off a same-branch-dependent follow-up" below.
 - **`furnace_update`** — live-adjust a run's config: `burnRate`, `mode`, `reviewDepth`, `retryCap`, `hardStop`, `title`. Changes are honored on the next stoke tick. Does not ignite/pause/stop.
 - **`furnace_batch`** (FLUX-1085 — folds `furnace_ignite`/`furnace_stop`/`furnace_resume`/`furnace_discard`) — `{ action, batchId, reason?, hard? }`:
   - `action: 'ignite'` → move a batch `draft`→`burning` and start burning. Enforces at most one active run.
@@ -203,10 +203,68 @@ action:"add"` / `action:"remove"`, and the S6 drawer.
   - `action: 'dismiss'` (FLUX-1066) → clear the board flag + mark dismissed without re-queuing (works on a done batch).
   - `action: 'takeover'` (FLUX-1066) → owner → human; the Furnace yields (stops its session, keeps the worktree). Hand back with `action: 'handback'`.
   - `action: 'handback'` (FLUX-1070) → owner → furnace; re-queue a human-owned ticket with a fresh attempt budget, bypassing the pr-open/active-state guards (a human is deliberately returning it). Errors if the ticket is not currently human-owned — unlike `retry`, which has no such guard.
-  - `action: 'add'` (FLUX-1081) → append one ticket to a batch (draft or burning) without a full rebuild; same existence/status gate as `furnace_build`, plus the one-active-batch invariant (FLUX-1051): rejected if the ticket is already queued in a different non-terminal batch.
+  - `action: 'add'` (FLUX-1081) → append one ticket to a batch (draft or burning) without a full rebuild; same existence/status gate as `furnace_build`, plus the one-active-batch invariant (FLUX-1051): rejected if the ticket is already queued in a different non-terminal batch. Optional `allowedStatuses` (FLUX-1270, default `['Todo']`) widens the status gate — e.g. `['In Progress']` to pull in a follow-up ticket that is still mid-implementation (see "Spinning off a same-branch-dependent follow-up" below).
   - `action: 'remove'` (FLUX-1081) → remove one ticket from a batch; disallowed while it is actively burning in a `burning` batch.
 
 > **FLUX-1085 consolidation note:** these two tools replace 10 single-op tools (`furnace_ignite`, `furnace_stop`, `furnace_resume`, `furnace_discard`, `furnace_retry`, `furnace_dismiss`, `furnace_takeover`, `furnace_handback`, `furnace_add_ticket`, `furnace_remove_ticket`) — a hard cut, no old-name aliases. `furnace_get`/`furnace_build`/`furnace_update` were deliberately **not** folded in: their per-action param sets (read filters, build selectors, live-config knobs) are too heterogeneous to merge into one schema without hurting usability, unlike the two groups above where every merged action shares an (almost) identical signature. See the [MCP tools reference](mcp-tools.md#flux-1085-furnace-tool-consolidation-migration) for the full old→new mapping.
+
+## Spinning off a same-branch-dependent follow-up (FLUX-1270)
+
+A review session inside a parallel batch sometimes spawns a follow-up ticket whose diff only exists
+on a **sibling ticket's still-open branch** (the parent hasn't merged yet, so there's nothing to diff
+against on master). Opening a normal second PR for that follow-up — based off the parent's branch — is
+a trap: the instant the parent merges and its branch is deleted (`cleanupMergedBranch`, `pr-cleanup.ts`),
+GitHub auto-closes the follow-up's PR too, since its base ref just vanished. The follow-up silently
+reverts with no error surfaced anywhere (the live incident this traces to: FLUX-861/FLUX-1265,
+2026-07-07, PR #434).
+
+**Fix: don't open a second PR — pull `{parent, follow-up}` into their own standalone *sequential*
+batch that reuses the parent's existing branch**, so the follow-up is just another commit on the same
+still-open PR. This needs no new nested-batch concept — only existing batch machinery plus one new
+capability (branch adoption):
+
+1. **Pull the parent out of its parallel batch** — `furnace_ticket action:'remove'` on the parent, from
+   its original batch. The parent's own charge is normally already `pr-open` (terminal), so this is
+   allowed even while that batch is `burning` — nothing new to build.
+2. **Build the new sequential batch, adopting the parent's branch** — `furnace_build` with
+   `{ tickets: [parentId], statuses: [<parent's actual status, e.g. 'Ready'>], kind: 'sequential',
+   adoptBranchFrom: parentId, spawnedFrom: { batchId: <origin batch id>, ticketId: parentId } }`.
+   `adoptBranchFrom` reuses the named ticket's existing `branch` as the batch's shared branch instead of
+   minting a fresh `flux/furnace-<id>-...` one — resolved from already-loaded ticket-cache data (no live
+   `gh` call): the ticket must have a `branch`, and a sibling `kind:'pr'` card for that branch with
+   `prState:'OPEN'` (the same signal `prTicketsOnBranch`, `pr-tickets.ts`, uses elsewhere). Forces `kind`
+   to `sequential` (refused if `kind:'parallel'` was explicitly passed — there is nothing to adopt onto,
+   since parallel mints one branch per ticket). `spawnedFrom` is pure **display-only provenance** — `{
+   batchId, ticketId }` pointing at the origin batch + parent — rendered as a "↳ spun off from ..."
+   subtitle in `FurnaceDrawer.tsx`; no batch-control mechanism (ignite/stop/resume/discard) reads it or
+   behaves differently because of it.
+3. **Add the follow-up** — `furnace_ticket action:'add'` with `allowedStatuses: ['In Progress']` (the
+   follow-up is realistically still mid-implementation when this is detected, not `Todo` — the default
+   gate only allows `Todo`). It then implements as a normal commit onto the adopted branch; no second PR
+   ever opens.
+4. **Chained follow-ups** (A→B→C): if a second follow-up depends on the first follow-up's unmerged code,
+   it joins the **same** sequential batch (another `furnace_ticket action:'add'`), not a third spun-off
+   batch.
+
+**Trigger condition — only when genuinely dependent.** Not every review-spawned follow-up needs this:
+a follow-up whose PR targets `master` directly and merges clean has no dependency on unmerged sibling
+code and must stay in its parallel batch, own branch, unserialized. The signal is the follow-up's
+*implementing session* discovering it needs to branch off the parent's still-open branch (about to open
+a PR with `base != master` pointing at a sibling ticket's branch) — not merely "this ticket was spawned
+by a review inside a batch." That detection happens inside the follow-up's own agent session (the review
+skill's "follow-ups into the current batch" convention), not in engine code — the engine's job is to make
+the resulting pull-out (`furnace_ticket remove` → `furnace_build adoptBranchFrom` → `furnace_ticket add`)
+a well-defined, one-call-per-step operation once an agent decides to do it.
+
+**Residual fallback — the parent already merged before this could trigger.** `cleanupMergedBranch`
+(`pr-cleanup.ts`) itself now guards the root cause directly: before deleting a just-merged branch, it
+checks (`getOpenPullRequestsWithBase`, `branch-manager.ts`) whether any OTHER open PR still bases off it.
+If one does, the branch delete is **skipped** (`branchDeleted: false`, `reason: 'branch-depended-on'`,
+`dependentTicketIds` names the flagged tickets) and every ticket on that dependent PR's branch is flagged
+`swimlane: 'merge-conflict'` with a comment explaining why — the same swimlane + "Launch Rebase Session"
+CTA a real `gh pr merge` git conflict gets (FLUX-986), generalized (FLUX-1270, `MergeConflictBanner.tsx`)
+off its original `PrDeckCard.tsx`-only scoping so a plain non-PR ticket card renders it too. A human can
+then either rebase the follow-up onto master or retroactively run the spin-off steps above.
 
 ## The Stoker — the lifecycle loop (`engine/src/furnace-stoker.ts`)
 

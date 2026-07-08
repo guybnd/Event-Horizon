@@ -5,6 +5,14 @@ import fs from 'fs/promises';
 import { existsSync, statSync } from 'fs';
 import { createRequire } from 'module';
 
+// engine/scripts/build.js bundles with esbuild `format: 'cjs'` and no `import.meta` define, so
+// `import.meta.url` is `undefined` in the built binary — `createRequire(import.meta.url)` there
+// throws `TypeError [ERR_INVALID_ARG_TYPE]`. The cjs bundle DOES have a real ambient `require`
+// (Node's own), so prefer that; only fall back to `createRequire(import.meta.url)` for the ESM
+// dev (tsx) path, where `require` isn't a global at all. (FLUX-1321)
+const nodeRequire: NodeJS.Require =
+  typeof require === 'function' ? require : createRequire(import.meta.url);
+
 // The `pkg` packaging tool injects a `pkg` property onto `process` when the app is
 // bundled with it; this is not part of Node's own NodeJS.Process typings.
 interface ProcessWithPkg extends NodeJS.Process {
@@ -16,8 +24,7 @@ export const isPkg: boolean = (process as ProcessWithPkg).pkg !== undefined;
 // The try/catch is required — node:sea throws when not in SEA mode.
 export const isSea: boolean = (() => {
   try {
-    const require = createRequire(import.meta.url);
-    return (require('node:sea') as { isSea(): boolean }).isSea();
+    return (nodeRequire('node:sea') as { isSea(): boolean }).isSea();
   } catch { return false; }
 })();
 
@@ -76,8 +83,7 @@ export async function ensureSeaAssetsExtracted(): Promise<string> {
   // the dir without extracting, and keying on it skipped extraction entirely (FLUX-1096).
   if (_seaAssetsExtracted && _seaExtractDir) return _seaExtractDir;
 
-  const require = createRequire(import.meta.url);
-  const { getRawAsset } = require('node:sea') as { getRawAsset(key: string): ArrayBuffer };
+  const { getRawAsset } = nodeRequire('node:sea') as { getRawAsset(key: string): ArrayBuffer };
 
   const manifest: { version: string; keys: string[] } = JSON.parse(
     Buffer.from(getRawAsset('manifest')).toString('utf8')
@@ -123,7 +129,6 @@ export async function ensureSeaAssetsExtracted(): Promise<string> {
 
 /** Read a single SEA asset by key.  Only valid in SEA mode. */
 export function getSeaAsset(key: string): Buffer {
-  const require = createRequire(import.meta.url);
-  const { getRawAsset } = require('node:sea') as { getRawAsset(key: string): ArrayBuffer };
+  const { getRawAsset } = nodeRequire('node:sea') as { getRawAsset(key: string): ArrayBuffer };
   return Buffer.from(getRawAsset(key));
 }

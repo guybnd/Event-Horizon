@@ -36,6 +36,48 @@ interface GhPr {
   reviewDecision: string | null; // APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null
   isDraft: boolean;
   body: string; // the PR description (markdown) — pulled into the PR card body (FLUX-751)
+  statusCheckRollup?: GhCheckRollupEntry[] | null; // FLUX-1315: CI/check status, verified live shape below
+}
+
+/**
+ * FLUX-1315: one entry of `gh pr list --json statusCheckRollup`. GitHub's GraphQL rollup is a
+ * union of two node types (verified against a live `gh pr list --json statusCheckRollup` call):
+ *  - CheckRun (GitHub Actions etc.): `status` (QUEUED|IN_PROGRESS|COMPLETED|WAITING|PENDING|
+ *    REQUESTED) + `conclusion` (set once status is COMPLETED: SUCCESS|FAILURE|CANCELLED|
+ *    TIMED_OUT|ACTION_REQUIRED|STARTUP_FAILURE|NEUTRAL|SKIPPED|STALE).
+ *  - StatusContext (legacy commit statuses, e.g. external CI): `state` (SUCCESS|FAILURE|ERROR|
+ *    PENDING|EXPECTED) instead of status/conclusion.
+ * Both shapes are optional here since only one set of fields is populated per entry.
+ */
+interface GhCheckRollupEntry {
+  status?: string | null;
+  conclusion?: string | null;
+  state?: string | null;
+}
+
+export type CiStatus = 'passing' | 'failing' | 'pending' | 'unknown';
+
+const CI_FAILING_CONCLUSIONS = new Set(['FAILURE', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE']);
+const CI_FAILING_STATES = new Set(['FAILURE', 'ERROR']);
+
+/**
+ * Aggregate a PR's raw check-run rollup into one small signal for the card chip (FLUX-1315).
+ * Zero checks (no CI configured on this repo/PR) is `unknown`, not `failing`/`pending`, so an
+ * unconfigured PR never shows a stuck/alarming chip — the caller renders no chip at all for it.
+ * Any failing check wins over any pending check, which wins over an all-success rollup.
+ */
+export function deriveCiStatus(rollup: GhCheckRollupEntry[] | null | undefined): CiStatus {
+  if (!Array.isArray(rollup) || rollup.length === 0) return 'unknown';
+  let anyPending = false;
+  for (const entry of rollup) {
+    if ((entry.conclusion && CI_FAILING_CONCLUSIONS.has(entry.conclusion)) || (entry.state && CI_FAILING_STATES.has(entry.state))) {
+      return 'failing';
+    }
+    if ((entry.status && entry.status !== 'COMPLETED') || entry.state === 'PENDING') {
+      anyPending = true;
+    }
+  }
+  return anyPending ? 'pending' : 'passing';
 }
 
 export function prTicketId(n: number): string {
@@ -138,6 +180,7 @@ export function prTicketFields(pr: GhPr, members: string[], existing: ExistingPr
     reviewDecision: pr.reviewDecision ?? null,
     isDraft: !!pr.isDraft,
     implementationLink: pr.url,
+    ciStatus: deriveCiStatus(pr.statusCheckRollup), // FLUX-1315
     members,
     // changes-requested flags a tint (rendered in P2); merge-conflict is preserved (see above);
     // otherwise no swimlane.
@@ -196,7 +239,7 @@ async function bounceMembersToInProgress(memberIds: string[], comment: string): 
 async function listOpenPrs(workspaceRoot: string): Promise<GhPr[]> {
   try {
     const { stdout } = await runGh(
-      ['pr', 'list', '--state', 'open', '--json', 'number,title,url,state,headRefName,reviewDecision,isDraft,body'],
+      ['pr', 'list', '--state', 'open', '--json', 'number,title,url,state,headRefName,reviewDecision,isDraft,body,statusCheckRollup'],
       { cwd: workspaceRoot },
     );
     const arr = JSON.parse(stdout);

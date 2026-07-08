@@ -155,6 +155,10 @@ export interface Task {
   prNumber?: number;
   prState?: string;
   reviewDecision?: string | null;
+  /** FLUX-1315: PR tickets only — aggregate of GitHub's check-run rollup, refreshed on the
+   *  existing PR-reconcile poll (`syncPrTickets`). 'unknown' = no checks configured on the PR
+   *  (the card renders no chip for it, to avoid a stuck/alarming state). */
+  ciStatus?: 'passing' | 'failing' | 'pending' | 'unknown';
   /** FLUX-816: the outcome of an EH (non-GitHub) review — set by the review orchestrator when it
    *  concludes (approve→Ready, changes-requested→In Progress) or set/cleared manually by a human.
    *  Surfaces a review badge on the card. Distinct from `reviewDecision` (GitHub-synced, PR-only,

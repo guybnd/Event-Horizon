@@ -79,6 +79,19 @@ describe('batch model defaults', () => {
     expect(clampBurnRate(2)).toBe(2);
     expect(clampBurnRate(100)).toBe(MAX_BURN_RATE);
   });
+  // FLUX-1270: branch adoption (an explicit `branch` override) + `spawnedFrom` provenance — the two
+  // additions that let a same-branch-dependent follow-up + its parent be pulled into a standalone
+  // sequential batch reusing the parent's still-open-PR branch.
+  it('accepts an explicit branch override instead of deriving one (branch adoption)', () => {
+    const b = newFurnaceBatch({ id: 'aaaaaaaa-3', now: 'now', title: 'Spun off', kind: 'sequential', branch: 'flux/FLUX-861-parent-branch' });
+    expect(b.branch).toBe('flux/FLUX-861-parent-branch');
+  });
+  it('stamps spawnedFrom when provided, and omits it otherwise', () => {
+    const spun = newFurnaceBatch({ id: 'aaaaaaaa-4', now: 'now', title: 'Spun off', spawnedFrom: { batchId: 'origin-batch', ticketId: 'FLUX-861' } });
+    expect(spun.spawnedFrom).toEqual({ batchId: 'origin-batch', ticketId: 'FLUX-861' });
+    const plain = newFurnaceBatch({ id: 'aaaaaaaa-5', now: 'now', title: 'Plain' });
+    expect(plain.spawnedFrom).toBeUndefined();
+  });
 });
 
 describe('slot math', () => {

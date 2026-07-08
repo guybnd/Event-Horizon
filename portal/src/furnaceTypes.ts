@@ -129,6 +129,13 @@ export interface FurnaceBatch {
   createdBy?: string;
   prs: BatchPr[];
   report?: FurnaceReport;
+  /**
+   * FLUX-1270: display-only provenance — set when this batch was spun off from another (non-terminal)
+   * batch to pull a same-branch-dependent follow-up + its parent out into their own standalone
+   * sequential batch (reusing the parent's branch). Rendered as a "spun off from" subtitle; no
+   * lifecycle control reads it.
+   */
+  spawnedFrom?: { batchId: string; ticketId: string };
 }
 
 /** Live worktree-slot usage returned by GET /api/furnace/slots. */

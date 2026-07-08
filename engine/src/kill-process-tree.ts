@@ -161,6 +161,9 @@ function defaultListWin32Processes(): Promise<Array<{ pid: number; ppid: number 
   });
 }
 
-function defaultKillWin32Pid(pid: number): void {
+/** Best-effort taskkill of a single Windows pid (+ /T sub-tree). Exported (FLUX-1216) so the
+ *  worktree lock-holder sweep (worktree-lock-holders.ts) can reuse the same kill primitive
+ *  instead of duplicating an `execFile('taskkill', ...)` call. */
+export function defaultKillWin32Pid(pid: number): void {
   execFile('taskkill', ['/F', '/T', '/PID', String(pid)], { windowsHide: true }, () => {});
 }

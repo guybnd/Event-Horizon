@@ -51,8 +51,9 @@ import { ChatBoardRebasePanel } from './BoardRebasePanel';
  *
  * FLUX-1262 (gate-policy epic FLUX-1247) extends this aggregation with two more reasons — same
  * surface, no second inbox (see `AttentionDock`'s `plan-approval`/`gate-parked` item kinds):
- *  - `planApprovalTickets` — a `plan` gate resolved to `auto-then-you` ran its one auto-review
- *    pass and is waiting for a human to confirm (`planReviewState` set, still in `Grooming`).
+ *  - `planApprovalTickets` — a `plan` gate ran a review pass (auto-driven or, under `you`, a manual
+ *    `start_plan_review` — FLUX-1296) and is waiting for a human to confirm (`planReviewState` set,
+ *    still in `Grooming`), regardless of which gate value produced it.
  *  - `gateParkedTickets` — a ticket the Furnace/Temper machinery parked (raised `require-input`)
  *    while driving a gate's `auto` loop, e.g. retryCap exhaustion — split out of the plain
  *    `requireInputTickets` bucket so a stalled auto-loop doesn't read as an ordinary question.
@@ -80,7 +81,7 @@ export interface PendingInteractionsValue {
    *  client-side from the task store; no engine change. FLUX-1262: EXCLUDES gate-parked tickets (see
    *  `gateParkedTickets`) so a stalled auto-loop isn't double-counted as a plain question. */
   requireInputTickets: Task[];
-  /** FLUX-1262: `plan` gate resolved to `auto-then-you`, its one auto-review pass ran, and it's sitting
+  /** FLUX-1262: a `plan` gate review pass ran (any gate value — FLUX-1296) and the ticket is sitting
    *  in `Grooming` with `planReviewState` set awaiting a human confirm. Derived client-side (task store +
    *  board config); no engine change in this ticket — `planReviewState` is written by the "Plan-review
    *  runner" (FLUX-1263). */
@@ -119,18 +120,27 @@ export function isGateParkedTicket(task: Task): boolean {
 
 /** Resolve a ticket's effective `plan` gate value: its own override, else the board default, else the
  *  hard-coded safe default — mirrors the engine's `resolveGateValue` (`models/gate-policy.ts`), which
- *  the portal can't import directly (separate package, see FLUX-1261's duplicated GateName/GateValue). */
-function resolvePlanGateValue(task: Task, config: Config | null | undefined): GateValue {
+ *  the portal can't import directly (separate package, see FLUX-1261's duplicated GateName/GateValue).
+ *  Exported for `PlanApprovalPanel` (FLUX-1296), which needs to tell a `you`-gate ticket apart to
+ *  offer its manual "Start plan review" trigger — the one case where nothing reviews it on its own. */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper colocated with the pending-interactions model it feeds (FLUX-1262); shared with PlanApprovalPanel (FLUX-1296).
+export function resolvePlanGateValue(task: Task, config: Config | null | undefined): GateValue {
   return task.gatePolicyOverride?.plan ?? config?.gatePolicy?.boardDefault?.plan ?? 'you';
 }
 
-/** A `plan` gate resolved to `auto-then-you` whose one auto-review pass has run and is waiting on a
- *  human to confirm — `planReviewState` set, ticket still in `Grooming` (see `Task.planReviewState`). */
+/** A ticket with a plan-review verdict awaiting a human's confirm — `planReviewState` set, ticket
+ *  still in `Grooming` (see `Task.planReviewState`). FLUX-1296: gate-VALUE-agnostic — originally
+ *  restricted to `auto-then-you` (the only mode wired to the loop-driver at the time), but the
+ *  `you` gate's manual `start_plan_review` pass (FLUX-1263) lands in the exact same shape (a verdict
+ *  sitting in `Grooming`) and deserves the exact same treatment: the reviewer's feedback and the
+ *  Approve/Send-back/Set-aside actions, not just the passive board-card chip. `auto` never leaves a
+ *  verdict sitting here unattended (it loops or parks automatically — see `gate-runner.ts`), so
+ *  widening this to ALL gate values costs nothing there and fixes it for `you`, the system default.
+ *  `config` is kept for signature stability (call sites already thread it through) even though it's
+ *  no longer read here. */
 // eslint-disable-next-line react-refresh/only-export-components -- pure helper colocated with the pending-interactions model it feeds (FLUX-1262); shared with the attention surface.
-export function isPlanApprovalPending(task: Task, config: Config | null | undefined): boolean {
-  return task.status === 'Grooming'
-    && task.planReviewState != null
-    && resolvePlanGateValue(task, config) === 'auto-then-you';
+export function isPlanApprovalPending(task: Task, _config: Config | null | undefined): boolean {
+  return task.status === 'Grooming' && task.planReviewState != null;
 }
 
 /** FLUX-1319: the gate loop is ACTIVELY revising toward a verdict — `planGateRunning` AND the current
@@ -628,9 +638,23 @@ export function PlanReviewActions({ task, onOpenFull, openLabel, onSetAside, set
   }
 
   if (isPlanGateRevising(task)) {
+    // FLUX-1306: keep the pure-navigation "Open full plan" link available while revising — dropping
+    // it along with the dispatch buttons (which genuinely must hide, to avoid racing the in-flight
+    // auto-loop revise) left no way to even LOOK at the plan from this card until the loop stopped.
     return (
-      <div className="flex items-center gap-1.5 text-[12px] italic text-gray-500 dark:text-gray-400">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Revising — a grooming session is addressing the feedback…
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="flex items-center gap-1.5 text-[12px] italic text-gray-500 dark:text-gray-400">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Revising — a grooming session is addressing the feedback…
+        </span>
+        {onOpenFull && (
+          <button
+            type="button"
+            onClick={onOpenFull}
+            className="flex items-center gap-1 rounded-lg px-2 py-1 text-[12px] font-semibold text-gray-500 underline-offset-2 hover:underline dark:text-gray-400"
+          >
+            <ExternalLink className="h-3.5 w-3.5" /> {openLabel ?? 'Open full plan'}
+          </button>
+        )}
       </div>
     );
   }
@@ -729,7 +753,6 @@ function ChatPlanApprovalCard({ conversationId }: { conversationId: string }) {
   const task = useTaskById(conversationId);
   const config = useAppSelector((s) => s.config);
   const currentUser = useAppSelector((s) => s.currentUser);
-  const { triggerRefresh } = useAppActions();
   const { openPlanApproval } = useDockActions();
 
   if (!task || !isPlanApprovalPending(task, config)) return null;
@@ -750,11 +773,15 @@ function ChatPlanApprovalCard({ conversationId }: { conversationId: string }) {
             </div>
           )}
       </div>
+      {/* FLUX-1306: keyed on the verdict — mirrors the AttentionDock tray item's
+          `plan-approval:${id}:${verdict}` key — so a verdict flip while the user is mid-compose
+          (typed re-groom notes) remounts this instead of carrying stale text across the flip. */}
       <PlanReviewActions
+        key={task.planReviewState ?? 'none'}
         task={task}
         onOpenFull={() => openPlanApproval(task.id)}
         openLabel="Review plan"
-        onSetAside={async () => { await dismissPlanReview(task.id, currentUser); triggerRefresh(); }}
+        onSetAside={() => dismissPlanReview(task.id, currentUser)}
       />
     </div>
   );

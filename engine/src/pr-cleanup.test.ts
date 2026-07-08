@@ -322,6 +322,67 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
       expect(existsSync(wt)).toBe(true);
     });
   });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // FLUX-1305 — a worktree just created via the `branch` MCP tool (from a board/chat session,
+  // which never registers a live EH session for the ticket) was read as 'status'-refused-but-
+  // zero-commits by the FLUX-1214 backstop and swept on the very next ~90s reconcile tick, before
+  // the caller even started editing. `ensureTicketIsolation` now stamps a `worktree-created`
+  // history marker; the backstop must shield the worktree until that marker ages past the grace
+  // window, and resume reclaiming it afterward (the original FLUX-1214 behaviour, delayed not
+  // disabled).
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('reclaimReadyWorktrees shields a freshly-created worktree from the zero-commit backstop (FLUX-1305)', () => {
+    it('does NOT reclaim a zero-commit worktree with a recent worktree-created marker', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+      // No commitInWorktree call — mirrors the incident: a worktree created moments ago, no work
+      // done in it yet, no live session (board/chat session, not a dispatched EH session).
+      tasksCache['FLUX-1'] = {
+        id: 'FLUX-1',
+        status: 'In Progress',
+        branch: 'flux/FLUX-1',
+        history: [{ type: 'activity', event: 'worktree-created', date: new Date().toISOString() }],
+      };
+
+      const reclaimed = await reclaimReadyWorktrees(repo);
+
+      expect(reclaimed).toEqual([]);
+      expect(existsSync(wt)).toBe(true);
+    });
+
+    it('reclaims it once the worktree-created marker ages past the grace window', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+      tasksCache['FLUX-1'] = {
+        id: 'FLUX-1',
+        status: 'In Progress',
+        branch: 'flux/FLUX-1',
+        history: [{ type: 'activity', event: 'worktree-created', date: new Date(Date.now() - 31 * 60_000).toISOString() }],
+      };
+
+      const reclaimed = await reclaimReadyWorktrees(repo);
+
+      expect(reclaimed).toEqual(['FLUX-1']);
+      expect(existsSync(wt)).toBe(false);
+    });
+
+    it('does not shield a worktree once it has picked up a real commit, even with a recent marker', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+      await commitInWorktree(wt, 'a.txt');
+      tasksCache['FLUX-1'] = {
+        id: 'FLUX-1',
+        status: 'In Progress',
+        branch: 'flux/FLUX-1',
+        history: [{ type: 'activity', event: 'worktree-created', date: new Date().toISOString() }],
+      };
+
+      const reclaimed = await reclaimReadyWorktrees(repo);
+
+      // Not reclaimed — but because it's genuinely mid-work (ahead of base), not because of the
+      // marker: the ordinary 'status' gate already protects it once there's a real commit.
+      expect(reclaimed).toEqual([]);
+      expect(existsSync(wt)).toBe(true);
+    });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

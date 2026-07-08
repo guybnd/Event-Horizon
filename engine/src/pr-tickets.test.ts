@@ -26,7 +26,7 @@ vi.mock('./sync-watcher.js', () => ({
 
 import { tasksCache, upsertManagedTicket, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
-import { selectMembers, prTicketFields, prTicketId, sharedNonDoneSiblings, membersToBounce, prTicketsOnBranch, resolveMergedPrTickets, syncPrTickets } from './pr-tickets.js';
+import { selectMembers, prTicketFields, prTicketId, sharedNonDoneSiblings, membersToBounce, prTicketsOnBranch, resolveMergedPrTickets, syncPrTickets, deriveCiStatus } from './pr-tickets.js';
 
 /** FLUX-566: work-gated PR membership + gh-state→ticket-field mapping (pure logic). */
 describe('selectMembers (work-gated membership)', () => {
@@ -110,6 +110,62 @@ describe('prTicketFields (state mapping)', () => {
 
   it('prTicketId uses the gh number', () => {
     expect(prTicketId(42)).toBe('PR-42');
+  });
+
+  // FLUX-1315: ciStatus is derived from the raw gh rollup and always present on the fields object.
+  it('derives ciStatus from statusCheckRollup (unknown when absent)', () => {
+    expect(prTicketFields(base, [], null).ciStatus).toBe('unknown');
+    const failing = { ...base, statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'FAILURE' }] };
+    expect(prTicketFields(failing, [], null).ciStatus).toBe('failing');
+  });
+});
+
+/**
+ * FLUX-1315: pure aggregation of GitHub's check-run rollup into one small signal for the PR-card
+ * chip. Covers both node shapes the GraphQL union can return (CheckRun via status/conclusion,
+ * StatusContext via state) and the representative all-success/one-failure/one-pending/empty cases
+ * called out in the ticket's recommended tests.
+ */
+describe('deriveCiStatus (CI rollup aggregation)', () => {
+  it('unknown for an empty/missing rollup (no checks configured)', () => {
+    expect(deriveCiStatus(undefined)).toBe('unknown');
+    expect(deriveCiStatus(null)).toBe('unknown');
+    expect(deriveCiStatus([])).toBe('unknown');
+  });
+
+  it('passing when every CheckRun completed with a success-ish conclusion', () => {
+    expect(deriveCiStatus([
+      { status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { status: 'COMPLETED', conclusion: 'NEUTRAL' },
+      { status: 'COMPLETED', conclusion: 'SKIPPED' },
+    ])).toBe('passing');
+  });
+
+  it('failing when any CheckRun concluded with a failing outcome', () => {
+    expect(deriveCiStatus([
+      { status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { status: 'COMPLETED', conclusion: 'FAILURE' },
+    ])).toBe('failing');
+  });
+
+  it('pending when a CheckRun has not completed yet (and nothing has failed)', () => {
+    expect(deriveCiStatus([
+      { status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { status: 'IN_PROGRESS', conclusion: null },
+    ])).toBe('pending');
+  });
+
+  it('failing wins over pending when both are present', () => {
+    expect(deriveCiStatus([
+      { status: 'IN_PROGRESS', conclusion: null },
+      { status: 'COMPLETED', conclusion: 'CANCELLED' },
+    ])).toBe('failing');
+  });
+
+  it('handles the legacy StatusContext shape (state instead of status/conclusion)', () => {
+    expect(deriveCiStatus([{ state: 'SUCCESS' }])).toBe('passing');
+    expect(deriveCiStatus([{ state: 'ERROR' }])).toBe('failing');
+    expect(deriveCiStatus([{ state: 'PENDING' }])).toBe('pending');
   });
 });
 

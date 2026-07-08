@@ -117,6 +117,7 @@ export function useTaskCardController({
   const commentCloseTimeout = useRef<number | null>(null);
   const isMouseOverCard = useRef(false);
   const lastCardRectRef = useRef<DOMRect | null>(null);
+  const cancelledForNestedCard = useRef(false);
   const effortLabel = effortName && effortName !== 'None' ? effortName : null;
   const [subtaskPopoverOpen, setSubtaskPopoverOpen] = useState(false);
   const [subtaskPopoverPos, setSubtaskPopoverPos] = useState({ top: 0, left: 0 });
@@ -678,6 +679,7 @@ export function useTaskCardController({
 
   const handleMouseLeave = () => {
     isMouseOverCard.current = false;
+    cancelledForNestedCard.current = false;
     if (hoverTimeout.current !== null) {
       window.clearTimeout(hoverTimeout.current);
       hoverTimeout.current = null;
@@ -692,6 +694,33 @@ export function useTaskCardController({
         // If mouse is still over the card, restart description timer
         if (isMouseOverCard.current) startDescriptionTimer();
       }, 200);
+    }
+  };
+
+  // FLUX-1316: cancel/hide this card's OWN description popup the instant the pointer is
+  // actually over a NESTED foreign card (e.g. a PR-member TaskCard rendered inside this PR
+  // card's DOM via TaskDeck). React's non-bubbling enter/leave fires once per box-crossing and
+  // can't detect the pointer drifting onto a nested descendant without leaving this card's own
+  // box — so gating only in handleMouseEnter isn't enough; a timer started before the pointer
+  // reached the nested card keeps running. `onMouseOver` bubbles on every crossing, so walk up
+  // from the real event target to the nearest `data-task-id` owner and compare.
+  const handleMouseOverSurface = (event: React.MouseEvent<HTMLDivElement>) => {
+    const owner = (event.target as HTMLElement).closest('[data-task-id]');
+    const isForeignNestedCard = !!owner && owner.getAttribute('data-task-id') !== task.id;
+    if (isForeignNestedCard) {
+      cancelledForNestedCard.current = true;
+      if (hoverTimeout.current !== null) {
+        window.clearTimeout(hoverTimeout.current);
+        hoverTimeout.current = null;
+      }
+      setIsHovering(false);
+      return;
+    }
+    // Pointer drifted back onto this card's own content without ever leaving its outer box
+    // (so handleMouseEnter won't refire) — restart the timer we cancelled above.
+    if (cancelledForNestedCard.current) {
+      cancelledForNestedCard.current = false;
+      startDescriptionTimer();
     }
   };
 
@@ -880,6 +909,7 @@ export function useTaskCardController({
     handleMouseEnter,
     startDescriptionTimer,
     handleMouseLeave,
+    handleMouseOverSurface,
     contentAnimation,
     hideStatusBadge,
     parentTask,

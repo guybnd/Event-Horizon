@@ -1749,6 +1749,17 @@ export async function startGroupDocsWatcher() {
 
 export async function activateWorkspace(newRoot: string): Promise<string> {
   workspaceActivating = true;
+  // FLUX-1216 review fix: arm the post-restart reclaim grace synchronously, right here, BEFORE any
+  // async work in this function runs (including the pruneTaskWorktrees fire-and-forget call below).
+  // Previously this was armed only from the activeFluxWatcher 'ready' handler further down, AFTER
+  // rehydrateSessionStubs() resolved — but pruneTaskWorktrees fires (unawaited) well before
+  // startWatchers() even runs, so `isWithinReclaimGrace()` read `false` for the entire boot-to-
+  // rehydration window, i.e. exactly backwards from the race (a directory that lost its git
+  // registration while its session is still mid-rehydration) it exists to protect against. The
+  // 'ready' handler's own armReclaimGrace() call still runs too — harmless, it only extends the
+  // window — preserving the original post-rehydration buffer pr-cleanup.ts's `worktreeUnreclaimableReason`
+  // relies on.
+  armReclaimGrace();
   // FLUX-1132/FLUX-1184: thin timing wrapper covering the whole workspace switch (watchers, group
   // docs, sync, ...), which nests initDir()'s own `store.fullRescan` sample. Recorded under the
   // separate `store.workspaceActivation` metric (not `store.fullRescan`) so one boot doesn't log
@@ -1776,9 +1787,13 @@ export async function activateWorkspace(newRoot: string): Promise<string> {
     await attachWorktreeIfPresent(newRoot, (storeDir, changedRelativePaths) => {
       void reconcileBackgroundPull(storeDir, changedRelativePaths);
     });
-    // Crash recovery: prune git's records of any task worktrees whose dirs were
-    // removed out of band before this workspace was last deactivated (FLUX-517).
-    // Best-effort — no-op when the repo has no task worktrees.
+    // Crash recovery: prune git's records of any task worktrees whose dirs were removed out of
+    // band before this workspace was last deactivated (FLUX-517) — AND sweep `.eh-worktrees/`
+    // for orphaned directories left behind by a failed removal, reaping their lock-holder
+    // processes if needed (FLUX-1216; this call now does real, best-effort filesystem deletion
+    // and can force-kill OS processes, not just touch git's bookkeeping). Fire-and-forget —
+    // runs after activation "completes" from this caller's perspective, so a request landing
+    // moments after a workspace switch can race the tail of this sweep on `.eh-worktrees/`.
     pruneTaskWorktrees(newRoot).catch((err) =>
       console.error('[task-worktree] prune on activation failed:', err),
     );

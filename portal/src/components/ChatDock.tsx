@@ -910,7 +910,11 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
           isWorking={statusOf.get(menu.id) === 'running'}
           // FLUX-720: a chat with a pending prompt can't be closed from the menu either.
           canClose={menu.id !== BOARD_CONVERSATION_ID && !pendingPromptConversationIds.has(menu.id)}
-          canReset={menu.id === BOARD_CONVERSATION_ID}
+          // FLUX-1221: reset (wipe transcript) is valid for either virtual conversation — the engine's
+          // DELETE /:id/transcript already accepts both (isVirtualConversationId). No tab exposes the
+          // Furnace-chat's context menu today (it's flyout/window-only, FLUX-1212), but this stays
+          // correct for whenever one does instead of silently staying board-only.
+          canReset={menu.id === BOARD_CONVERSATION_ID || menu.id === FURNACE_CONVERSATION_ID}
           onToggle={() => {
             toggle(menu.id);
             setMenu(null);
@@ -920,7 +924,7 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
             setMenu(null);
           }}
           onReset={() => {
-            if (window.confirm('Reset the orchestrator conversation? This clears its chat history.')) {
+            if (window.confirm(`Reset the ${titleOf(menu.id)} conversation? This clears its chat history.`)) {
               void resetSession(menu.id);
             }
             setMenu(null);
@@ -1853,7 +1857,7 @@ function ChatWindowHeader({
   canClose,
   onClose,
   openTaskFullView,
-  onResetOrchestrator,
+  onResetConversation,
 }: {
   id: string;
   orchestrator: boolean;
@@ -1867,7 +1871,7 @@ function ChatWindowHeader({
   canClose: boolean;
   onClose?: (id: string) => void;
   openTaskFullView: (task: Task) => void;
-  onResetOrchestrator: () => void;
+  onResetConversation: () => void;
 }) {
   return (
     <div
@@ -1894,12 +1898,14 @@ function ChatWindowHeader({
           </div>
         )}
         {/* Orchestrator can't be closed (it's pinned) — instead it can be reset to a clean
-            slate: stop the live turn and wipe the transcript. */}
-        {orchestrator && (
+            slate: stop the live turn and wipe the transcript. FLUX-1221: the Furnace-chat gets the
+            same affordance here — it's the one reachable reset surface, since (by design, FLUX-1212)
+            it has no strip tab and therefore no tab context-menu to reset from. */}
+        {(orchestrator || isFurnaceChat) && (
           <button
             type="button"
             onPointerDown={(e) => e.stopPropagation()}
-            onClick={onResetOrchestrator}
+            onClick={onResetConversation}
             title="Reset conversation (clears history)"
             className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
           >
@@ -2447,8 +2453,11 @@ const ChatWindow = memo(function ChatWindow({
     />
   );
 
-  const handleResetOrchestrator = () => {
-    if (window.confirm('Reset the orchestrator conversation? This clears its chat history.')) {
+  const handleResetConversation = () => {
+    // FLUX-1221: this button also backs the Furnace-chat's reset (see ChatWindowHeader) — label the
+    // confirm off which window it actually is instead of hardcoding "orchestrator".
+    const label = orchestrator ? 'orchestrator' : isFurnaceChat ? (session?.label ?? 'Furnace chat') : 'this';
+    if (window.confirm(`Reset the ${label} conversation? This clears its chat history.`)) {
       void chat.reset();
     }
   };
@@ -2490,7 +2499,7 @@ const ChatWindow = memo(function ChatWindow({
                 canClose={canClose}
                 onClose={onClose}
                 openTaskFullView={openTaskFullView}
-                onResetOrchestrator={handleResetOrchestrator}
+                onResetConversation={handleResetConversation}
                 titleSlot={
                   <input
                     type="text"
@@ -2567,7 +2576,7 @@ const ChatWindow = memo(function ChatWindow({
             canClose={canClose}
             onClose={onClose}
             openTaskFullView={openTaskFullView}
-            onResetOrchestrator={handleResetOrchestrator}
+            onResetConversation={handleResetConversation}
             titleSlot={
               <span className="truncate">
                 {/* FLUX-1209: the Furnace-chat window title is the persona's resolved label (e.g.
