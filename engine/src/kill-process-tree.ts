@@ -37,11 +37,24 @@ import type { ChildProcess } from 'child_process';
 export function killProcessTree(
   proc: ChildProcess | null | undefined,
   signal: NodeJS.Signals = 'SIGTERM',
-  opts: { group?: boolean } = {},
+  opts: { group?: boolean; label?: string } = {},
 ): void {
   if (!proc || !proc.pid) return;
   if (process.platform === 'win32') {
     execFile('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { windowsHide: true }, () => {});
+    // FLUX-1207: `/T` requires the target pid to still be alive to walk its tree — exactly false
+    // whenever this fires from a `proc.on('exit', ...)` handler. Always also try the graph-walk
+    // reaper, which can find true descendants via ParentProcessId even after `proc.pid` itself
+    // has already exited.
+    killDescendantsByPid(proc.pid)
+      .then((killed) => {
+        if (killed.length > 0) {
+          console.warn(
+            `[kill-process-tree]${opts.label ? ` ${opts.label}:` : ''} reaped orphaned descendant pid(s) ${killed.join(', ')} of pid ${proc.pid}`,
+          );
+        }
+      })
+      .catch(() => {});
     return;
   }
   if (opts.group) {
@@ -59,4 +72,95 @@ export function killProcessTree(
   } catch {
     /* already gone */
   }
+}
+
+/**
+ * Windows-only: find and best-effort kill every still-alive descendant of `pid`, walking the
+ * FULL process tree via `Win32_Process.ParentProcessId` — not just `taskkill /T`, which requires
+ * `pid` itself to still resolve to a live process (exactly the state whenever a session's exit
+ * handler runs) and so silently reaches zero descendants once the top PID has already exited.
+ * `ParentProcessId` keeps recording each descendant's true parent chain even after intervening
+ * ancestors have exited, so a BFS anchored on a last-known pid can still find and kill orphans
+ * `taskkill /T` alone cannot reach (FLUX-1207).
+ *
+ * No-op on POSIX (no incident observed there). Best-effort: never throws — a stale/reused pid, an
+ * empty process table, or a failed query all resolve to `[]`.
+ *
+ * `deps` lets tests inject a fake process table + fake killer so no real process is spawned.
+ */
+export async function killDescendantsByPid(
+  pid: number,
+  deps: {
+    listProcesses?: () => Promise<Array<{ pid: number; ppid: number }>>;
+    kill?: (pid: number) => void;
+  } = {},
+): Promise<number[]> {
+  if (process.platform !== 'win32') return [];
+  const listProcesses = deps.listProcesses ?? defaultListWin32Processes;
+  const kill = deps.kill ?? defaultKillWin32Pid;
+  let table: Array<{ pid: number; ppid: number }>;
+  try {
+    table = await listProcesses();
+  } catch {
+    return [];
+  }
+  const childrenByParent = new Map<number, number[]>();
+  for (const { pid: cpid, ppid } of table) {
+    if (!childrenByParent.has(ppid)) childrenByParent.set(ppid, []);
+    childrenByParent.get(ppid)!.push(cpid);
+  }
+  const descendants: number[] = [];
+  const seen = new Set<number>();
+  const queue = [...(childrenByParent.get(pid) ?? [])];
+  while (queue.length > 0) {
+    const next = queue.shift()!;
+    if (seen.has(next)) continue;
+    seen.add(next);
+    descendants.push(next);
+    queue.push(...(childrenByParent.get(next) ?? []));
+  }
+  for (const descendantPid of descendants) {
+    try {
+      kill(descendantPid);
+    } catch {
+      /* already gone */
+    }
+  }
+  return descendants;
+}
+
+function defaultListWin32Processes(): Promise<Array<{ pid: number; ppid: number }>> {
+  return new Promise((resolve) => {
+    execFile(
+      'powershell',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress',
+      ],
+      { windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout) => {
+        if (err || !stdout) return resolve([]);
+        try {
+          const parsed: unknown = JSON.parse(String(stdout));
+          const rows: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+          resolve(
+            rows
+              .map((r) => {
+                const row = r as { ProcessId?: unknown; ParentProcessId?: unknown };
+                return { pid: Number(row.ProcessId), ppid: Number(row.ParentProcessId) };
+              })
+              .filter((r) => Number.isFinite(r.pid) && Number.isFinite(r.ppid)),
+          );
+        } catch {
+          resolve([]);
+        }
+      },
+    );
+  });
+}
+
+function defaultKillWin32Pid(pid: number): void {
+  execFile('taskkill', ['/F', '/T', '/PID', String(pid)], { windowsHide: true }, () => {});
 }

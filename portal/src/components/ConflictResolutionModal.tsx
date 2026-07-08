@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { X, AlertTriangle, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
-import type { ConflictInfo } from '../api';
+import type { ConflictInfo, ResolutionStrategy } from '../api';
 
 interface ConflictResolutionModalProps {
   conflicts: ConflictInfo[];
-  onResolve: (resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'rename-local' | 'manual'; newContent?: string }>) => Promise<void>;
+  onResolve: (resolutions: Array<{ ticketId: string; strategy: ResolutionStrategy; newContent?: string }>) => Promise<void>;
   onClose: () => void;
 }
 
@@ -89,8 +89,8 @@ function renderFieldDiff(label: string, localValue: string | string[], remoteVal
 }
 
 export function ConflictResolutionModal({ conflicts, onResolve, onClose }: ConflictResolutionModalProps) {
-  const [resolutions, setResolutions] = useState<Record<string, { strategy: 'use-remote' | 'rename-local' | 'manual'; newContent?: string }>>(
-    Object.fromEntries(conflicts.map(c => [c.ticketId, { strategy: 'use-remote' as const }]))
+  const [resolutions, setResolutions] = useState<Record<string, { strategy: ResolutionStrategy; newContent?: string } | undefined>>(
+    Object.fromEntries(conflicts.map(c => [c.ticketId, undefined]))
   );
   const [expandedConflict, setExpandedConflict] = useState<string | null>(conflicts[0]?.ticketId || null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -137,15 +137,23 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
     };
   }, [onClose, isSubmitting]);
 
+  // Derived from the live `conflicts` prop (not from `resolutions`' own keys) so a
+  // conflict list that grows or shrinks while the modal stays mounted (SSE push mid-resolve)
+  // can't leave a stale/missing key making this look done when it isn't, or vice versa.
+  const allResolved = conflicts.every(c => {
+    const res = resolutions[c.ticketId];
+    return res !== undefined && (res.strategy !== 'manual' || !!res.newContent);
+  });
+
   const handleResolve = async () => {
+    if (!allResolved) return;
     setIsSubmitting(true);
     setErrorMessage(null);
     try {
-      const resolutionArray = Object.entries(resolutions).map(([ticketId, res]) => ({
-        ticketId,
-        strategy: res.strategy,
-        newContent: res.newContent,
-      }));
+      const resolutionArray = conflicts.map(c => {
+        const res = resolutions[c.ticketId]!;
+        return { ticketId: c.ticketId, strategy: res.strategy, newContent: res.newContent };
+      });
       await onResolve(resolutionArray);
       onClose();
     } catch (err) {
@@ -157,7 +165,7 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
     }
   };
 
-  const updateResolution = (ticketId: string, strategy: 'use-remote' | 'rename-local' | 'manual', newContent?: string) => {
+  const updateResolution = (ticketId: string, strategy: ResolutionStrategy, newContent?: string) => {
     setResolutions(prev => ({
       ...prev,
       [ticketId]: { strategy, newContent }
@@ -218,6 +226,7 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
 
             const strategyLabels: Record<string, string> = {
               'use-remote': 'Use Remote',
+              'use-local': 'Use Local',
               'rename-local': 'Rename Local',
               'manual': 'Manual Merge',
             };
@@ -235,8 +244,8 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
                     <span className="font-mono text-xs sm:text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
                       {conflict.ticketId}
                     </span>
-                    <span className="text-xs bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 px-2 py-1 rounded whitespace-nowrap">
-                      {strategyLabels[currentResolution.strategy]}
+                    <span className={`text-xs px-2 py-1 rounded whitespace-nowrap ${currentResolution ? 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200' : 'bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200'}`}>
+                      {currentResolution ? strategyLabels[currentResolution.strategy] : 'Choose a strategy'}
                     </span>
                   </div>
                   {isExpanded ? <ChevronUp className="h-5 w-5 shrink-0" /> : <ChevronDown className="h-5 w-5 shrink-0" />}
@@ -250,7 +259,21 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
                         <input
                           type="radio"
                           name={`resolution-${conflict.ticketId}`}
-                          checked={currentResolution.strategy === 'use-remote'}
+                          checked={currentResolution?.strategy === 'use-local'}
+                          onChange={() => updateResolution(conflict.ticketId, 'use-local')}
+                          className="mt-1"
+                        />
+                        <div>
+                          <div className="font-medium text-sm text-gray-900 dark:text-gray-100">Use local version</div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">Keep your changes and overwrite the remote version</div>
+                        </div>
+                      </label>
+
+                      <label className="flex items-start gap-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name={`resolution-${conflict.ticketId}`}
+                          checked={currentResolution?.strategy === 'use-remote'}
                           onChange={() => updateResolution(conflict.ticketId, 'use-remote')}
                           className="mt-1"
                         />
@@ -264,7 +287,7 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
                         <input
                           type="radio"
                           name={`resolution-${conflict.ticketId}`}
-                          checked={currentResolution.strategy === 'rename-local'}
+                          checked={currentResolution?.strategy === 'rename-local'}
                           onChange={() => updateResolution(conflict.ticketId, 'rename-local')}
                           className="mt-1"
                         />
@@ -278,7 +301,7 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
                         <input
                           type="radio"
                           name={`resolution-${conflict.ticketId}`}
-                          checked={currentResolution.strategy === 'manual'}
+                          checked={currentResolution?.strategy === 'manual'}
                           onChange={() => {
                             // Don't bias - start with empty textarea so user must choose
                             updateResolution(conflict.ticketId, 'manual', '');
@@ -291,7 +314,7 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
                         </div>
                       </label>
 
-                      {currentResolution.strategy === 'manual' && (
+                      {currentResolution?.strategy === 'manual' && (
                         <div className="mt-3 space-y-2">
                           <label className="text-xs font-semibold text-gray-700 dark:text-gray-300">
                             Merged Content
@@ -381,6 +404,11 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
 
         {/* Footer */}
         <div className="flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2 sm:gap-3 px-4 sm:px-6 py-4 border-t border-gray-200 dark:border-gray-700">
+          {!allResolved && (
+            <p className="text-xs text-gray-500 dark:text-gray-400 sm:mr-auto">
+              Resolve every conflict to continue — manual merges need non-empty content.
+            </p>
+          )}
           <button
             onClick={onClose}
             disabled={isSubmitting}
@@ -390,7 +418,7 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
           </button>
           <button
             onClick={handleResolve}
-            disabled={isSubmitting}
+            disabled={isSubmitting || !allResolved}
             className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded disabled:opacity-50 flex items-center justify-center gap-2 transition-colors"
           >
             {isSubmitting ? (

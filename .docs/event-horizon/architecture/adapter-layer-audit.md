@@ -74,7 +74,7 @@ Phase 1 (a separate ticket) lifts these into `engine/src/agents/shared.ts`.
 ### A.6 `cleanChildEnv` — the blocking asymmetry
 
 - **Location** — [`claude-code.ts:33`](../../../engine/src/agents/claude-code.ts), [`copilot.ts:27`](../../../engine/src/agents/copilot.ts), [`gemini.ts:28`](../../../engine/src/agents/gemini.ts).
-- **What it does today** — Cleans the parent process's env before spawning the CLI: strips `npm_*`, `NODE_*`, and `EH_*` keys; injects `EVENT_HORIZON_FRAMEWORK = '<self>'` and `EH_CANONICAL_WORKSPACE` when present.
+- **What it does today** — Cleans the parent process's env before spawning the CLI: strips `npm_*`, `NODE_*`, and `EH_*` keys; injects `EVENT_HORIZON_FRAMEWORK = '<self>'`.
 - **Why** — All three were forked when the adapters split. The drift: **only claude's signature accepts `conversationId` and sets `EH_CONVERSATION_ID = conversationId`** (`claude-code.ts:47`). Copilot's and gemini's are no-arg and never set it.
 - **Severity** — **`blocking`**.
 - **Downstream impact** — `EH_CONVERSATION_ID` powers the MCP picker routing for `permission_prompt`, `ask_user_question`, and `propose_board_rebase` (see C.9). From a copilot or gemini session, the env var is `undefined`, the MCP handler sends `conversationId: null`, and the portal cannot show the picker on the originating chat — it falls into the global overlay. The feature visibly degrades on non-claude adapters.

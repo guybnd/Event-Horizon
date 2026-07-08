@@ -262,6 +262,70 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
     expect(cliSessionsById.get(session.id)?.status).toBe('cancelled');
   });
 
+  // FLUX-1235: the active-session guard's take-over contract. A roleless start is refused when the
+  // ticket has a blocking session — but an authoritative driver (the Furnace) sets `supersedeParked` to
+  // reclaim an IDLE (waiting-input) session even when it is resumable, while a LIVE (running/pending)
+  // session is never clobbered, flag or not. Without the flag the portal's resume-preferring UX stands.
+  function seedBlockingSession(over: Partial<CliSessionRecord>): CliSessionRecord {
+    const s = {
+      id: 'pre', taskId: 'FLUX-1', framework: TEST_FRAMEWORK, status: 'waiting-input',
+      command: 'claude', args: [], startedAt: new Date().toISOString(), label: 'Claude Code',
+      outputBuffer: '', liveOutputBuffer: '', pendingAssistantText: '', skipPermissions: true,
+      requestedStop: false, writeQueue: Promise.resolve(), inputTokens: 0, outputTokens: 0, costUSD: 0,
+      ...over,
+    } as unknown as CliSessionRecord;
+    cliSessionsById.set(s.id, s);
+    cliSessionsByTaskId.set('FLUX-1', [s.id]);
+    return s;
+  }
+
+  async function startRoleless(body: Record<string, unknown>) {
+    return fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ framework: TEST_FRAMEWORK, appendPrompt: 'go', ...body }),
+    });
+  }
+
+  describe('active-session guard take-over (FLUX-1235)', () => {
+    it('a resumable parked session still 409s WITHOUT the flag (portal resume UX unchanged)', async () => {
+      seedBlockingSession({ status: 'waiting-input', resumeSessionId: 'resume-me' });
+      const res = await startRoleless({});
+      expect(res.status).toBe(409);
+      expect(cliSessionsById.get('pre')?.status).toBe('waiting-input'); // untouched
+    });
+
+    it('supersedeParked takes over a resumable parked session and starts the worker', async () => {
+      seedBlockingSession({ status: 'waiting-input', resumeSessionId: 'resume-me' });
+      const res = await startRoleless({ supersedeParked: true });
+      expect(res.status).toBe(201);
+      expect(cliSessionsById.get('pre')?.status).toBe('cancelled'); // superseded
+    });
+
+    it('supersedeParked does NOT clobber a live (running) session — still 409', async () => {
+      seedBlockingSession({ status: 'running' });
+      const res = await startRoleless({ supersedeParked: true });
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/live CLI session/);
+      expect(cliSessionsById.get('pre')?.status).toBe('running'); // untouched
+    });
+
+    it('supersedeParked does NOT clobber a live (pending) session — still 409', async () => {
+      seedBlockingSession({ status: 'pending' });
+      const res = await startRoleless({ supersedeParked: true });
+      expect(res.status).toBe(409);
+      expect(cliSessionsById.get('pre')?.status).toBe('pending'); // untouched
+    });
+
+    it('the pre-existing FLUX-915 self-heal still supersedes a NON-resumable parked session without the flag', async () => {
+      seedBlockingSession({ status: 'waiting-input' }); // no resumeSessionId
+      const res = await startRoleless({});
+      expect(res.status).toBe(201);
+      expect(cliSessionsById.get('pre')?.status).toBe('cancelled');
+    });
+  });
+
   it('phase:"grooming" skips ensureTicketIsolation regardless of requested isolation (FLUX-1214)', async () => {
     // Grooming never writes code or opens a PR — it has no use for a branch/worktree. Request
     // 'worktree' isolation anyway (as start_session/board-rebase dispatch always do) to prove the

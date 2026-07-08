@@ -394,7 +394,7 @@ async function autoResolveHistoryConflicts(storeDir: string, conflicts: Conflict
 }
 
 export async function resolveConflicts(
-  resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'rename-local' | 'manual'; newContent?: string }>
+  resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'use-local' | 'rename-local' | 'manual'; newContent?: string }>
 ): Promise<void> {
   if (!pendingConflicts || pendingConflicts.length === 0) {
     throw new Error('No conflicts to resolve');
@@ -419,7 +419,7 @@ export async function resolveConflicts(
 // The worktree-mutating body of resolveConflicts, run under the syncInFlight lock so a
 // chokidar-scheduled runSync() tick fired by our own .md writes no-ops instead of racing.
 async function applyConflictResolutions(
-  resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'rename-local' | 'manual'; newContent?: string }>,
+  resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'use-local' | 'rename-local' | 'manual'; newContent?: string }>,
   storeDir: string
 ): Promise<void> {
   for (const resolution of resolutions) {
@@ -430,6 +430,11 @@ async function applyConflictResolutions(
       case 'use-remote':
         await fs.writeFile(filePath, conflict.remoteContent, 'utf-8');
         log.info(`[sync-watcher] Resolved ${resolution.ticketId}: used remote version`);
+        break;
+
+      case 'use-local':
+        await fs.writeFile(filePath, conflict.localContent, 'utf-8');
+        log.info(`[sync-watcher] Resolved ${resolution.ticketId}: used local version`);
         break;
 
       case 'rename-local': {

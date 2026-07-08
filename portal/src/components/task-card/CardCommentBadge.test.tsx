@@ -30,6 +30,7 @@ const TASK: Task = {
       { id: 'c5', user: 'alice', date: '2025-12-05T00:00:00Z' },
     ],
     requireInput: null,
+    planReviewComment: null,
   },
 };
 

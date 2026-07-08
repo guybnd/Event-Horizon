@@ -218,6 +218,15 @@ export function getBlockingSessionsForTask(taskId: string): CliSessionRecord[] {
     .filter((s): s is CliSessionRecord => !!s && ['pending', 'running'].includes(s.status));
 }
 
+// FLUX-1235: the roleless running/pending ("live") session on a task, if any. This is exactly the
+// session the per-ticket start guard (cli-session.ts) refuses a roleless dispatch against — a Furnace
+// dispatch is roleless, so a live standalone session is what makes it 409 (whereas an IDLE
+// waiting-input one is taken over via `supersedeParked`). furnace_build soft-flags a candidate carrying
+// one BEFORE ignite so the drawer surfaces "resolve this chat first" instead of a mid-burn park.
+export function getLiveStandaloneSessionForTask(taskId: string): CliSessionRecord | undefined {
+  return getBlockingSessionsForTask(taskId).find(s => !s.role);
+}
+
 export function getParkedSessionsForTask(taskId: string): CliSessionRecord[] {
   const ids = cliSessionsByTaskId.get(taskId);
   if (!ids) return [];

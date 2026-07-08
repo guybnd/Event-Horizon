@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { JSX } from 'react';
-import { GitMerge, AlertTriangle, ShieldCheck, Loader2, Bot, Wrench, RotateCcw, Undo2, Plus, Link2 } from 'lucide-react';
+import { GitMerge, AlertTriangle, ShieldCheck, Loader2, Bot, Wrench, RotateCcw, Undo2, Plus, Link2, ExternalLink } from 'lucide-react';
 import type { Task } from '../types';
 import { reviewChip, internalApprovedChip, reviewProgressChip, aggregateMemberReviews, selectPrReviewChip } from './ReviewChip';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
@@ -9,6 +9,8 @@ import { TaskDeck } from './TaskDeck';
 import { mergePr, retryPr, updateTask, adoptPr, MergeParkedError } from '../api';
 import { launchPhaseDefault, runAgentAction } from '../agentActions';
 import { resolveEffectiveAgent, frameworkSupports } from '../utils';
+import { ACTIVE_SESSION_STATUSES } from '../orchestration';
+import { prLink } from '../lib/ticketActions';
 
 // Shared PR action-button classes — equal-width (flex-1) + centered so the bar is symmetrical
 // regardless of label length. Module-level so they're allocated once, not per render.
@@ -69,6 +71,13 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
 
   const members = (task.members ?? []).map((id) => taskById.get(id)).filter((t): t is Task => !!t);
   const memberCount = members.length;
+  // Members with a live session (FLUX-1310) — the member deck folds by default (TaskDeck), so
+  // without this a running/parked session on a member ticket is invisible until manually unwound.
+  // Same status set as `hasActiveCliSession` (useTaskCardController.tsx) and the engine's merge
+  // guard (getBlockingSessionsForTask/getParkedSessionsForTask in session-store.ts) — advisory only,
+  // does not change merge-gating behavior.
+  const membersWithActiveSession = members.filter((m) => m.cliSession && ACTIVE_SESSION_STATUSES.includes(m.cliSession.status));
+  const prUrl = prLink(task);
   // Members a merge would sweep to Done that aren't finished yet (drives the merge-confirm warning
   // + the shared-PR force — FLUX-569). Match the engine's terminal-status set (Done/Released/
   // Archived — see TERMINAL_TICKET_STATUSES in engine/src/schema.ts) so this confirm-text count
@@ -254,8 +263,12 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
         )}
         {/* Review badge — precedence decision lives in `selectPrReviewChip` (FLUX-1092 extracted
             this from an inline IIFE so the branch order, FLUX-1089's "red wins", is pin-testable
-            without a full component render). */}
-        {(() => {
+            without a full component render). Gated on `!isResolved` (FLUX-1310 follow-up): once a
+            PR merges, its members are advanced to Done, so `aggregateMemberReviews`'s stale-approval
+            guard (`status === 'Ready'`) can never count them again — every merged/closed PR would
+            otherwise show a misleading "0/N reviewed" chip regardless of whether it was actually
+            reviewed before merging. The review question is moot post-resolution anyway. */}
+        {!isResolved && (() => {
           const selection = selectPrReviewChip(task, memberReview);
           switch (selection.kind) {
             case 'changes-requested': return reviewChip('changes-requested');
@@ -273,6 +286,30 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
           <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300 bot-assignee-glow">
             <Bot className="h-3 w-3" /> {task.cliSession.label}{c.currentActivity ? ` · ${c.currentActivity}` : ''}
           </span>
+        )}
+        {/* Member-session badge (FLUX-1310) — a folded member ticket still has a live session.
+            Visible in this always-shown header row regardless of whether the deck below is
+            unwound; advisory only, mirrors the merge guard's status set without duplicating it. */}
+        {membersWithActiveSession.length > 0 && (
+          <span
+            title={`Still running: ${membersWithActiveSession.map((m) => `${m.id} (${m.cliSession?.status})`).join(', ')}`}
+            className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300 bot-assignee-glow"
+          >
+            <Bot className="h-3 w-3" /> {membersWithActiveSession.length} member session{membersWithActiveSession.length === 1 ? '' : 's'} running
+          </span>
+        )}
+        {/* GitHub link (FLUX-1310) — icon-only so it doesn't compete visually with the status
+            chips; uses the URL already on the ticket (`implementationLink`, set from `pr.url`). */}
+        {prUrl && (
+          <a
+            href={prUrl}
+            target="_blank"
+            rel="noreferrer"
+            title="Open on GitHub"
+            className="inline-flex items-center rounded-full p-1 text-gray-500 hover:bg-gray-100 hover:text-violet-700 dark:text-gray-400 dark:hover:bg-white/10 dark:hover:text-violet-300"
+          >
+            <ExternalLink className="h-3 w-3" />
+          </a>
         )}
       </div>
 

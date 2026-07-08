@@ -422,9 +422,12 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
 
   const copilotIntegration = configCache.integrations?.copilotCli;
   const groomingStatuses = [configCache.requireInputStatus || 'Require Input', 'Grooming'];
-  const selectedModel = copilotIntegration
+  // FLUX-931: session.model carries a delegate's resolved model (routes/cli-session.ts
+  // /delegate) — honor it over the status-derived grooming/implementation model, mirroring
+  // claude-code.ts's `session.model || selectedModel`.
+  const selectedModel = session.model || (copilotIntegration
     ? (groomingStatuses.includes(task.status) ? copilotIntegration.groomingModel : copilotIntegration.implementationModel)
-    : null;
+    : null);
 
   // FLUX-1193: prefer the session's own launch phase — set by the caller (routes/cli-session.ts
   // passes 'chat' for ticket chat, per useChatSession.ts) — over a status-derived guess, mirroring
@@ -556,6 +559,9 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
   }, 15000);
 
   proc.on('exit', async (code, signal) => {
+    // FLUX-1207: best-effort reap of any orphaned descendants (e.g. a Bash-tool-launched vitest
+    // run) on every exit, not only engine-initiated stop().
+    killProcessTree(proc, undefined, { label: id });
     if (session.progressHeartbeat) {
       clearInterval(session.progressHeartbeat);
       session.progressHeartbeat = undefined;
@@ -799,6 +805,9 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   replyProc.on('exit', async (code, signal) => {
+    // FLUX-1207: best-effort reap of any orphaned descendants (e.g. a Bash-tool-launched vitest
+    // run) on every exit, not only engine-initiated stop().
+    killProcessTree(replyProc, undefined, { label: id });
     commitReplyPending();
     flushSessionOutput(session, true, 'text');
     // FLUX-981: a crashed resumed turn (nonzero/signal, not user-stopped) was silent in the chat.

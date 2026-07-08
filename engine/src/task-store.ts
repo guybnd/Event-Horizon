@@ -2,6 +2,7 @@ import { log } from './log.js';
 import { performance } from 'node:perf_hooks';
 import { recordDuration } from './perf/registry.js';
 import { recordFullRescan, recordWorkspaceActivation } from './perf/rescan-timing.js';
+import { warnIfSlowLoadTask } from './perf/load-task-timing.js';
 import { recordWatchEvent } from './perf/watch-storm.js';
 import { finalMessageNeedsUser } from './final-message-heuristic.js';
 import fs from 'fs/promises';
@@ -255,7 +256,7 @@ export function serializeTaskForList(task: TaskRecord) {
     const i = entryIndex++;
     if (e?.type === 'comment') commentEntries.push({ i, e });
     else if (e?.type === 'agent_session' && e?.status === 'active') sessionEntries.push({ i, e });
-  });
+  }, task.planReviewState as string | null | undefined);
   // FLUX-1144: comments were ~50% of a full-board list response (4,257 comments / 11MB measured
   // 2026-07-05) — the hover popover only ever needs recent context at a glance ("Open in full
   // view" reads the complete thread off the detail endpoint). Cap the full-text comments shipped
@@ -676,6 +677,13 @@ export interface CreateTaskOptions {
    */
   links?: Array<{ type: string; target: string; label?: string }>;
   /**
+   * FLUX-1225: ticket kind. Omitted/`'ticket'` = a normal board ticket. `'scratch'` = a freeform
+   * Scratch Chat: it gets its own `SCRATCH-n` id namespace (never consumes the `FLUX-n` sequence)
+   * and is hidden from board columns + the `list_tickets` active-default screen. `'pr'` tickets are
+   * minted by the engine via `upsertManagedTicket`, not this path.
+   */
+  kind?: string;
+  /**
    * Suppress the `taskCreated` broadcast inside createTask so a caller doing
    * follow-up writes (e.g. create_subtask's parent-linking) can broadcast only
    * after every write succeeds — avoids emitting an event for an orphan child
@@ -716,23 +724,27 @@ async function getMaxIdFromRemote(projectKey: string): Promise<number> {
 
 export async function createTask(options: CreateTaskOptions): Promise<CreateTaskResult> {
   const pKey = options.projectKey || configCache.projects?.[0] || 'FLUX';
+  // FLUX-1225: scratch chats live in their own `SCRATCH-n` id namespace so they never consume the
+  // `FLUX-n` sequence and are trivially distinguishable from board tickets. The counter is scanned
+  // (cache + remote) against this prefix, so scratch and project ids increment independently.
+  const idPrefix = options.kind === 'scratch' ? 'SCRATCH' : pKey;
   let maxId = 0;
   Object.keys(tasksCache).forEach((key) => {
-    if (key.startsWith(`${pKey}-`)) {
-      const num = parseInt(key.replace(`${pKey}-`, ''), 10);
+    if (key.startsWith(`${idPrefix}-`)) {
+      const num = parseInt(key.replace(`${idPrefix}-`, ''), 10);
       if (!isNaN(num) && num > maxId) maxId = num;
     }
   });
 
   if (isOrphanMode()) {
-    const remoteMaxId = await getMaxIdFromRemote(pKey);
+    const remoteMaxId = await getMaxIdFromRemote(idPrefix);
     maxId = Math.max(maxId, remoteMaxId);
     if (remoteMaxId > 0) {
-      log.info(`[tasks] Remote max ID for ${pKey}: ${remoteMaxId}, using ${maxId + 1}`);
+      log.info(`[tasks] Remote max ID for ${idPrefix}: ${remoteMaxId}, using ${maxId + 1}`);
     }
   }
 
-  const nextId = `${pKey}-${maxId + 1}`;
+  const nextId = `${idPrefix}-${maxId + 1}`;
   const filePath = path.join(getActiveFluxDir(), `${nextId}.md`);
   const createdAt = new Date().toISOString();
   const actor = options.author || 'Unknown';
@@ -752,6 +764,7 @@ export async function createTask(options: CreateTaskOptions): Promise<CreateTask
     tags: options.tags || [],
     createdBy: actor,
     updatedBy: actor,
+    ...(options.kind ? { kind: options.kind } : {}),
     ...(options.parentId && { parentId: options.parentId }),
     ...(options.links && options.links.length > 0 ? { links: options.links } : {}),
     history: historyWithCreation.history,
@@ -1057,7 +1070,11 @@ export async function loadTask(filePath: string) {
   try {
     return await loadTaskInner(filePath);
   } finally {
-    recordDuration('store.loadTask', performance.now() - __loadTaskStartedAt);
+    // FLUX-1202: the histogram alone can't name the culprit behind a single-call outlier —
+    // warn per-file so a future spike is diagnosable directly instead of inferred after the fact.
+    const __loadTaskMs = performance.now() - __loadTaskStartedAt;
+    recordDuration('store.loadTask', __loadTaskMs);
+    warnIfSlowLoadTask(filePath, __loadTaskMs);
   }
 }
 
@@ -1177,6 +1194,17 @@ async function loadTaskInner(filePath: string) {
       }
     }
 
+    // FLUX-1287: retroactively apply FLUX-1202's progress-log compaction to every terminal
+    // agent_session entry on load, not just the one entry an in-flight session update touches
+    // (updateAgentSessionLocked). Without this, a ticket whose bloat predates FLUX-1202 stays
+    // bloated forever — nothing else ever revisits an already-terminal session. Cheap after the
+    // first pass: compactSessionProgress is idempotent and a no-op once an entry is already
+    // compacted, so this only does real work once per bloated ticket.
+    let historyCompacted = false;
+    for (const entry of history) {
+      if (entry?.type === 'agent_session' && compactSessionProgress(entry)) historyCompacted = true;
+    }
+
     const normalizedFrontmatter: Record<string, unknown> = { ...parsed.data, history };
 
     // Normalize inline subtask objects → create separate ticket files and convert to string IDs
@@ -1205,7 +1233,7 @@ async function loadTaskInner(filePath: string) {
     // Clear any previous parse error for this ticket
     delete parseErrors[id];
 
-    if (normalizedHistory.changed || subtasksNormalized || historyReinjected) {
+    if (normalizedHistory.changed || subtasksNormalized || historyReinjected || historyCompacted) {
       const normalizedContent = matter.stringify(parsed.content, normalizedFrontmatter);
       recentEngineWrites.add(filePath);
       await atomicWriteFile(filePath, normalizedContent);

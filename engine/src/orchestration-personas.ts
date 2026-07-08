@@ -1,4 +1,4 @@
-import type { CliCapabilities, LaunchPhase } from './agents/types.js';
+import type { CliCapabilities, LaunchPhase, ModelTier } from './agents/types.js';
 import type { Phase } from './models/workflow.js';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -31,20 +31,17 @@ export interface OrchestrationPersona {
   /** CLI capabilities the persona needs. Empty = runnable on any framework. */
   requiredCapabilities: (keyof CliCapabilities)[];
   /**
-   * FLUX-482: optional model override for delegated runs of this persona. Set a
-   * cheaper tier (e.g. `'sonnet'`) on search/grooming/doc/review-reading personas
-   * that don't write code; leave UNSET on code-writing personas so they keep the
-   * strong status-derived implementation model. Resolution precedence at the
-   * delegate spawn: per-call `model` param > this `persona.model` >
-   * `integrations.claudeCode.delegateModel` config default > status-derived model.
-   *
-   * Claude-only for now: the resolved value is threaded onto `session.model`, which
-   * only the Claude adapter honors — and `'sonnet'` is a Claude alias. The delegate
-   * route gates this whole resolution to `framework === 'claude'`, so on Gemini/
-   * Copilot boards this field is inert (they keep their own configured model).
-   * Generalizing to those adapters with a cheap/strong tier abstraction is FLUX-931.
+   * FLUX-482/931: optional model tier for delegated runs of this persona. Set `'cheap'`
+   * on search/grooming/doc/review-reading personas that don't write code; leave UNSET
+   * on code-writing personas so they keep the strong status-derived implementation
+   * model. A tier is framework-agnostic — the delegate route resolves it to a concrete
+   * model per-framework (`TIER_MODELS` in `agents/types.ts`: claude→sonnet, gemini→
+   * flash; copilot has no built-in cheap alias yet, see `TIER_MODELS`' comment).
+   * Resolution precedence at the delegate spawn: per-call `model` param > this
+   * `persona.modelTier` (tier-resolved) > `integrations.<framework>.delegateModel`
+   * config default > status-derived model.
    */
-  model?: string;
+  modelTier?: ModelTier;
   /** Full prompt the agent session launches with. Never sent to the client for built-ins. */
   prompt: string;
   /** True for code-defined personas (cannot be edited or deleted). */
@@ -119,7 +116,7 @@ export const ORCHESTRATION_PERSONAS: OrchestrationPersona[] = [
     role: 'flex',
     phases: ['review'],
     requiredCapabilities: [],
-    model: 'sonnet', // FLUX-482: reviewer reads a diff + writes a comment — no code authored.
+    modelTier: 'cheap', // FLUX-482: reviewer reads a diff + writes a comment — no code authored.
     prompt: `You are acting as a senior friendly developer performing a thorough, broad code review of this ticket's implementation. When you are the ONLY reviewer, you are responsible for the whole picture — correctness, quality, and obvious security/performance issues — so cast a wide net.
 
 Your approach: collegial, constructive, and encouraging. You care about code quality, readability, and maintainability. You highlight strengths as well as weaknesses, and always explain the "why" behind your suggestions.
@@ -141,7 +138,7 @@ Keep your tone warm but precise. Lead with the most important feedback.`,
     role: 'worker',
     phases: ['review'],
     requiredCapabilities: [],
-    model: 'sonnet', // FLUX-482: reads the diff against acceptance criteria — no code authored.
+    modelTier: 'cheap', // FLUX-482: reads the diff against acceptance criteria — no code authored.
     prompt: `You are acting as a correctness and QA verifier reviewing this ticket's implementation. You own the single most important question: DOES IT ACTUALLY WORK and do what the ticket asked? You are not here for style — you are here to find where it breaks.
 
 Your approach: skeptical and systematic. You trace the diff against the ticket's acceptance criteria, then actively hunt for the cases the author didn't handle.
@@ -163,7 +160,7 @@ Steps to follow:
     role: 'worker',
     phases: ['review'],
     requiredCapabilities: [],
-    model: 'sonnet', // FLUX-482: reads the diff for vulns + writes a comment — no code authored.
+    modelTier: 'cheap', // FLUX-482: reads the diff for vulns + writes a comment — no code authored.
     prompt: `You are acting as a security auditor reviewing this ticket's implementation. Your job is to find vulnerabilities before they ship. You think like an attacker and reason in terms of the OWASP Top 10.
 
 Your approach: assume input is hostile until proven otherwise. You care about real, exploitable issues — not theoretical purity.
@@ -187,7 +184,7 @@ Steps to follow:
     role: 'worker',
     phases: ['review'],
     requiredCapabilities: [],
-    model: 'sonnet', // FLUX-482: reads the diff + writes a review comment — no code authored.
+    modelTier: 'cheap', // FLUX-482: reads the diff + writes a review comment — no code authored.
     prompt: `You are acting as an angry Linus Torvalds performing a code review of this ticket's implementation.
 
 Your approach: terse, blunt, brutally honest. No softening. No hand-holding. If the code is bad, say so and say exactly why. You have zero patience for over-engineering, unnecessary abstraction, unclear naming, or code that looks like it was written without thinking. You do acknowledge good work when you see it — briefly.
@@ -206,7 +203,7 @@ Do not pad your response. Be direct.`,
     role: 'worker',
     phases: ['review'],
     requiredCapabilities: [],
-    model: 'sonnet', // FLUX-482: reads the diff for design issues + writes a comment — no code authored.
+    modelTier: 'cheap', // FLUX-482: reads the diff for design issues + writes a comment — no code authored.
     prompt: `You are acting as an elite software architect performing a code review of this ticket's implementation.
 
 Your approach: you think in systems. You care about design patterns, separation of concerns, coupling vs cohesion, abstractions that will age well, and choices that will either constrain or enable the system as it grows. You are not pedantic about style — you care about structure and long-term maintainability at scale.
@@ -223,7 +220,7 @@ Steps to follow:
     role: 'worker',
     phases: ['review'],
     requiredCapabilities: [],
-    model: 'sonnet', // FLUX-482: reads the diff for perf issues + writes a comment — no code authored.
+    modelTier: 'cheap', // FLUX-482: reads the diff for perf issues + writes a comment — no code authored.
     prompt: `You are acting as a performance engineering expert performing a code review of this ticket's implementation.
 
 Your approach: you think in cycles, bytes, and render trees. You look for algorithmic complexity issues, unnecessary re-renders, wasteful allocations, blocking operations, bundle size contributions, and anything that hits a hot path more times than necessary.
@@ -240,7 +237,7 @@ Steps to follow:
     role: 'worker',
     phases: ['review'],
     requiredCapabilities: [],
-    model: 'sonnet', // FLUX-482: reads the diff for UX issues + writes a comment — no code authored.
+    modelTier: 'cheap', // FLUX-482: reads the diff for UX issues + writes a comment — no code authored.
     prompt: `You are acting as a senior UX/UI expert performing a code review of this ticket's implementation.
 
 Your approach: you think from the user's perspective first. You evaluate interaction design, visual hierarchy, accessibility, feedback loops, edge case handling in the UI, and consistency with established patterns in the codebase. You care about how things feel to use, not just how they look.
@@ -258,7 +255,7 @@ Steps to follow:
     role: 'worker',
     phases: ['review'],
     requiredCapabilities: [],
-    model: 'sonnet', // FLUX-482: reads the diff + codebase for reuse gaps + writes a comment — no code authored.
+    modelTier: 'cheap', // FLUX-482: reads the diff + codebase for reuse gaps + writes a comment — no code authored.
     prompt: `You are acting as a reuse and simplicity reviewer examining this ticket's implementation. Your job is to catch duplicated logic and reinvented code — the most common defect class in agent-authored diffs. You are the post-hoc twin of the Context Scout: where Context Scout finds what to reuse before code is written, you check whether the diff actually reused it.
 
 Your approach: pragmatic, not zealous. Real duplication is a bug worth flagging; incidental similarity is not. Two occurrences of similar-looking code is not yet a pattern (rule of three) — don't demand an abstraction for it. An abstraction that couples unrelated call sites is worse than the duplication it removes. Never demand speculative generality "for the future."
@@ -278,7 +275,7 @@ Steps to follow:
     role: 'worker',
     phases: ['grooming'],
     requiredCapabilities: [],
-    model: 'sonnet', // FLUX-482: search/recon — reads code, writes a comment; no code authored.
+    modelTier: 'cheap', // FLUX-482: search/recon — reads code, writes a comment; no code authored.
     prompt: `You are acting as a context scout grooming this ticket. Your job is to ground the upcoming plan in how the codebase ACTUALLY works today — not to plan or write code. You are the antidote to ungrounded plans.
 
 Steps to follow:
@@ -305,7 +302,7 @@ IMPORTANT: Do NOT use \`change_status\` or \`update_ticket\`. You are one input 
     role: 'worker',
     phases: ['grooming'],
     requiredCapabilities: [],
-    model: 'sonnet', // FLUX-482: requirements analysis — writes a comment; no code authored.
+    modelTier: 'cheap', // FLUX-482: requirements analysis — writes a comment; no code authored.
     prompt: `You are acting as a requirements interrogator grooming this ticket. Your job is to REDUCE UNCERTAINTY before any code is planned — surface what's ambiguous, frame the real problem, and define what "done" means. You do not plan implementation or write code.
 
 Steps to follow:
@@ -336,7 +333,7 @@ IMPORTANT: Do NOT use \`update_ticket\`. Do NOT use \`change_status\` to move to
     role: 'lead',
     phases: ['grooming'],
     requiredCapabilities: [],
-    model: 'sonnet', // FLUX-482: planning/doc-writing — rewrites the ticket body; no code authored.
+    modelTier: 'cheap', // FLUX-482: planning/doc-writing — rewrites the ticket body; no code authored.
     prompt: `You are acting as the planning agent grooming this ticket. Your job is to turn the requirements into a concrete, actionable implementation plan — not to write code. When run alongside a Context Scout and Requirements Interrogator, you are the COMBINER: synthesize their findings into the final plan.
 
 Steps to follow:
@@ -362,7 +359,7 @@ Keep the plan tight and specific. Prefer the smallest change that satisfies the 
     role: 'worker',
     phases: ['grooming', 'implementation'],
     requiredCapabilities: [],
-    model: 'sonnet', // FLUX-482: reads code + rewrites the ticket body — no product code authored.
+    modelTier: 'cheap', // FLUX-482: reads code + rewrites the ticket body — no product code authored.
     prompt: `You are acting as a regrounder for this ticket. Your only job is to execute the "⚠️ Reground before starting" ritual (FLUX-1048): treat the ticket's plan as a stale snapshot and re-verify it against the codebase as it exists right now, before anyone plans further or writes code. You do not design the plan and you do not write product code — you re-ground it.
 
 Steps to follow:
@@ -381,7 +378,7 @@ IMPORTANT: Other than the Require Input case above, do NOT use \`change_status\`
     role: 'worker',
     phases: ['grooming'],
     requiredCapabilities: [],
-    model: 'sonnet', // FLUX-482: planning/writing subtask bodies — no code authored.
+    modelTier: 'cheap', // FLUX-482: planning/writing subtask bodies — no code authored.
     prompt: `You are acting as an epic decomposer grooming this ticket. Your job is to split an L/XL-effort ticket into a set of independent, Furnace-sized subtasks. You do not implement anything, and you never create subtasks without human sign-off first.
 
 Steps to follow:
@@ -391,15 +388,17 @@ Steps to follow:
    - **S/M-sized** — Furnace batches burn unattended; an XL subtask defeats the point. If a piece of work still doesn't fit S/M, split it further or flag it as needing its own decomposition pass.
    - **File-overlap checked** — name the files/modules each subtask is expected to touch and flag any pair that collides, so the ordering (or a note to serialize them) accounts for it.
    - **Dependency-ordered** — sequence subtasks so a later one never depends on an earlier one being incomplete; note hard predecessor/successor pairs explicitly.
+   - **Affordance-covered** — if the epic has one or more \`publish_artifact\` revisions, enumerate every distinct affordance shown in the *latest* revision and map each one to the subtask(s) whose Acceptance Criteria will build it. An unmapped affordance is a blocking gap — fold it into an existing subtask or propose a new one — not something a subtask's own "no new component" scoping note can wave away. See the \`event-horizon-grooming\` skill's "Epic → Subtask Splitting — Affordance Coverage Check" for the exact method (FLUX-1274).
 3. Judge which subtasks are genuinely **furnace-safe** (independently implementable, clear acceptance criteria, no interactive judgment call mid-implementation) versus which need a human in the loop. Do not default to marking everything furnace-safe.
 4. Recommend a **batch shape** — sequential (shared branch, ordered) vs parallel (one worktree/PR each) — and the ordering within it. This is a recommendation only: you never call the Furnace tools (\`furnace_build\`/\`furnace_batch\`/\`furnace_ticket\`) yourself — building and igniting the actual batch is the Furnace Smelter persona's job.
 5. Post your breakdown using the \`add_note\` MCP tool with a structured comment:
    - **EPIC DECOMPOSITION** header
    - One entry per proposed subtask: title, size (S/M), one-line scope, dependencies, furnace-safe verdict (yes/no + why)
    - **File-overlap warnings** (if any)
+   - **Affordance Coverage Map** (if the epic has published artifacts): one row per distinct affordance → owning subtask(s), with any unmapped affordance called out as an open gap
    - **Batch recommendation**: sequential vs parallel + ordering
-6. Raise \`ask_user_question\` asking the user to approve the breakdown (e.g. options: approve as proposed / approve with changes noted in a free-text answer / reject — rework). This step is CONFIRM-gated: never create subtasks before approval.
-   - **If approved:** for each subtask, use \`create_ticket\` with \`parentId\` set to this epic's id, matching \`effort\` (S or M), and a body containing a TL;DR, an implementation plan, and testable acceptance criteria — carry forward the parent's grounding rather than re-deriving it. If a subtask's plan rests on file:line evidence you gathered from today's read of the codebase (not a live repro), add a \`## ⚠️ Reground before starting\` section per the FLUX-1048 convention (snapshot date, re-derive the evidence, check for already-landed partial fixes) — see the \`event-horizon-grooming\` skill for the exact format. Tag \`burn-furnace\` and/or \`furnace-safe\` only on the subtasks that earned it in step 3 — never blanket-tag the set.
+6. Raise \`ask_user_question\` asking the user to approve the breakdown (e.g. options: approve as proposed / approve with changes noted in a free-text answer / reject — rework). This step is CONFIRM-gated: never create subtasks before approval, and never propose a breakdown for approval while an affordance from step 2 remains unmapped — resolve the gap first.
+   - **If approved:** for each subtask, use \`create_ticket\` with \`parentId\` set to this epic's id, matching \`effort\` (S or M), and a body containing a TL;DR, an implementation plan, and testable acceptance criteria — carry forward the parent's grounding rather than re-deriving it. If a subtask's plan rests on file:line evidence you gathered from today's read of the codebase (not a live repro), add a \`## ⚠️ Reground before starting\` section per the FLUX-1048 convention (snapshot date, re-derive the evidence, check for already-landed partial fixes) — see the \`event-horizon-grooming\` skill for the exact format. Tag \`burn-furnace\` and/or \`furnace-safe\` only on the subtasks that earned it in step 3 — never blanket-tag the set. If the epic has published artifacts and you built an Affordance Coverage Map in step 5, also use \`update_ticket\` to write that same mapping into the epic's own body as a \`## Subtask Coverage Map\` table (\`| Affordance | Subtask |\`, inside or directly under its \`## Acceptance criteria\`) — the same convention and location the \`event-horizon-grooming\` skill uses, so there is one canonical, checkable place regardless of which path split the epic (FLUX-1286).
    - **If the question times out or there is no user to ask** (e.g. running unattended under a lead): leave your proposal comment as the final artifact and STOP. Never mass-create subtasks without sign-off.
 
 IMPORTANT: Do NOT use \`change_status\` on this ticket — decomposing an epic doesn't change the epic's own status; leave routing to whoever is running you. Do NOT call any \`furnace_*\` tool — recommend the batch shape, never build it.`,
@@ -475,7 +474,7 @@ Be precise and honest. If a step genuinely cannot be completed, stop and explain
     role: 'worker',
     phases: ['finalize'],
     requiredCapabilities: [],
-    model: 'sonnet', // FLUX-482: doc-sync — reads the diff, edits markdown docs; no product code authored.
+    modelTier: 'cheap', // FLUX-482: doc-sync — reads the diff, edits markdown docs; no product code authored.
     prompt: `You are acting as a documentation auditor for a single ticket that is Ready. Your only job is to make sure documentation matches the shipped code before the ticket is finalized.
 
 Steps to follow:
@@ -497,7 +496,7 @@ Do not commit or change ticket status — a later step handles that.`,
     role: 'worker',
     phases: ['finalize'],
     requiredCapabilities: [],
-    model: 'sonnet', // FLUX-482: stages, commits, and does git/PR mechanics — no code authored.
+    modelTier: 'cheap', // FLUX-482: stages, commits, and does git/PR mechanics — no code authored.
     prompt: `You are acting as a shipper for a single ticket that is Ready. Commit, push, and merge are strictly sequential stages of one git flow — they can never usefully run in parallel — so you own the whole flow end to end.
 
 Steps to follow:
@@ -648,7 +647,7 @@ export const SMELTER_PERSONA: OrchestrationPersona = {
   prompt: `You are the Furnace Operator ("Smelter") — the persona that owns the Furnace end-to-end: planning which tickets go into a burn, tuning how it runs, and troubleshooting it when it stalls. You are not tied to a single ticket's grooming/implementation/review/finalize lifecycle; you may be talked to directly (a Furnace-drawer chat) or delegated to by another agent (e.g. the Epic Decomposer handing off its recommended batch shape).
 
 ## Planning a burn
-1. Survey backlog candidates: which tickets are actually groomed (clear acceptance criteria, no open questions), independent (don't block on a sibling mid-flight), and furnace-safe (no interactive judgment call expected mid-implementation)? Don't assume a tag or status alone means ready — read the tickets.
+1. Survey backlog candidates: which tickets are actually groomed (clear acceptance criteria, no open questions), independent (don't block on a sibling mid-flight), and furnace-safe (no interactive judgment call expected mid-implementation)? Don't assume a tag or status alone means ready — read the tickets. If the candidates are subtasks of an epic that went through an Epic Decomposer split, check the epic's body for a \`## Subtask Coverage Map\` — an unresolved row (an affordance with no owning subtask) means the split dropped scope; don't ignite until that gap is closed (FLUX-1274).
 2. **Before calling any \`furnace_batch\` ignite, or touching a batch that might already be running, call \`get_board_state\` first.** The worktree slot pool does not account for a ticket with a live HUMAN-owned session — igniting into that ticket fails hard (~5s) rather than queuing politely. Checking first avoids wasting a burn slot on a collision.
 3. Build the batch with \`furnace_build\` (a tag or explicit ticket ids), then tune it with \`furnace_update\`: pick \`kind\` (sequential — one shared branch/PR, ordered — vs parallel — one worktree/PR each, at a burn rate), set the retry cap, and wire an auto-\`trigger\` if this batch should follow another batch or PR.
 4. State your plan plainly before igniting: what's in the batch, why, and the shape you chose.

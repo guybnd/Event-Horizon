@@ -136,6 +136,31 @@ describe('buildBatchTickets — one-active-batch invariant (FLUX-1051)', () => {
   });
 });
 
+describe('buildBatchTickets — live-session soft-flag (FLUX-1235)', () => {
+  it('soft-flags (does not exclude) a candidate with a live session and summarizes it', () => {
+    const proposal = buildBatchTickets(
+      [candidate({ id: 'FLUX-1', tags: ['burn-furnace'] }), candidate({ id: 'FLUX-2', tags: ['burn-furnace'] })],
+      { tag: 'burn-furnace', liveSessionTicketIds: new Set(['FLUX-1']) },
+    );
+    // Still loaded (flag, not block), and accounted for nowhere in excluded.
+    expect(proposal.tickets.map((t) => t.ticketId).sort()).toEqual(['FLUX-1', 'FLUX-2']);
+    expect(proposal.excluded).toEqual([]);
+    const flagged = proposal.tickets.find((t) => t.ticketId === 'FLUX-1');
+    expect(flagged?.note).toMatch(/live session/);
+    expect(proposal.tickets.find((t) => t.ticketId === 'FLUX-2')?.note).toBeUndefined();
+    expect(proposal.notes.some((n) => /have a live session/.test(n))).toBe(true);
+  });
+
+  it('does not flag anything when no candidate has a live session', () => {
+    const proposal = buildBatchTickets([candidate({ id: 'FLUX-1', tags: ['burn-furnace'] })], {
+      tag: 'burn-furnace',
+      liveSessionTicketIds: new Set(),
+    });
+    expect(proposal.tickets[0]?.note).toBeUndefined();
+    expect(proposal.notes.some((n) => /live session/.test(n))).toBe(false);
+  });
+});
+
 describe('findActiveBatchFor', () => {
   it('returns the owning non-terminal batch id', () => {
     expect(findActiveBatchFor('FLUX-1', [fakeBatch('b1', 'draft', ['FLUX-1'])])).toBe('b1');

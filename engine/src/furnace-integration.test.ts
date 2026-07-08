@@ -26,10 +26,11 @@ import {
   ensureFurnaceLoaded,
   __resetFurnaceStoreForTests,
 } from './furnace-store.js';
-import { igniteBatch, stokerTick, checkTriggers, reconcileBatch, handBackTicket, retryTicket, resumeBatch, dismissTicketFlag, takeoverTicket, SOLE_REVIEWER_FOCUS } from './furnace-stoker.js';
+import { igniteBatch, stokerTick, checkTriggers, reconcileBatch, handBackTicket, retryTicket, resumeBatch, stopBatch, dismissTicketFlag, takeoverTicket, SOLE_REVIEWER_FOCUS, furnaceFollowupFocus } from './furnace-stoker.js';
 import { newBatchTicket, type BatchTicket } from './models/furnace.js';
 import { cliSessionsById, cliSessionsByTaskId, registerSession } from './session-store.js';
-import { tasksCache } from './task-store.js';
+import { tasksCache, createTask } from './task-store.js';
+import * as taskStoreModule from './task-store.js';
 import type { CliSessionRecord } from './agents/types.js';
 
 const runGh = vi.fn();
@@ -123,6 +124,110 @@ describe('Furnace integration (FLUX-1057)', () => {
       .filter((m: RegExpMatchArray | null): m is RegExpMatchArray => !!m)
       .map((m) => decodeURIComponent(m[1]!));
   }
+
+  describe('feedCoal surfaces a full-pool wait in chat (FLUX-1245)', () => {
+    it('announces the wait once per transition, then feeds + clears the flag when a slot frees', async () => {
+      // A parallel batch with one queued ticket, but every worktree slot is already taken → feedCoal
+      // cannot start it. Create a REAL task so the activity note has a persistable home. Keep one filler
+      // in a handle we can retire, so we can free a slot later.
+      const { id: blkId } = await createTask({ title: 'Blocked', status: 'Todo' });
+      await fillSlots(FURNACE_SLOT_CAP - 1);
+      const filler = await createFurnaceBatch({ title: 'freeable', kind: 'sequential', tickets: [newBatchTicket('FREE-ME', 0)] });
+      await mutateFurnaceBatch(filler.id, (d) => { d.status = 'burning'; }); // pool now full
+
+      const batch = await createFurnaceBatch({ title: 'blocked', kind: 'parallel', tickets: [newBatchTicket(blkId, 0)] });
+      await mutateFurnaceBatch(batch.id, (d) => { d.status = 'burning'; });
+
+      const blk = () => getFurnaceBatch(batch.id)!.tickets.find((t) => t.ticketId === blkId);
+      const slotWaitNotes = () => (tasksCache[blkId]?.history || [])
+        .filter((e: { type: string; comment?: string }) => e.type === 'activity' && /waiting for a free worktree slot/i.test(e.comment || ''));
+
+      // Full pool → exactly one chat-visible activity + the dedup flag set, and the ticket is NOT started.
+      await stokerTick(batch.id);
+      expect(slotWaitNotes()).toHaveLength(1);
+      expect(blk()?.waitingForSlot).toBe(true);
+      expect(dispatchedTicketIds()).not.toContain(blkId);
+
+      // Further ticks with the pool still full must NOT re-announce (no per-tick spam).
+      await stokerTick(batch.id);
+      await stokerTick(batch.id);
+      expect(slotWaitNotes()).toHaveLength(1);
+
+      // A slot frees → the ticket is fed and the wait flag is cleared.
+      await mutateFurnaceBatch(filler.id, (d) => { d.status = 'done'; });
+      await stokerTick(batch.id);
+      expect(dispatchedTicketIds()).toContain(blkId);
+      expect(blk()?.waitingForSlot).toBeUndefined();
+    });
+  });
+
+  describe('feedCoal note-write-before-flag ordering (FLUX-1250)', () => {
+    it('does not set waitingForSlot when the best-effort activity note write throws, and retries next tick', async () => {
+      const { id: blkId } = await createTask({ title: 'Blocked', status: 'Todo' });
+      await fillSlots(FURNACE_SLOT_CAP - 1);
+      const filler = await createFurnaceBatch({ title: 'freeable', kind: 'sequential', tickets: [newBatchTicket('FREE-ME', 0)] });
+      await mutateFurnaceBatch(filler.id, (d) => { d.status = 'burning'; }); // pool now full
+
+      const batch = await createFurnaceBatch({ title: 'blocked', kind: 'parallel', tickets: [newBatchTicket(blkId, 0)] });
+      await mutateFurnaceBatch(batch.id, (d) => { d.status = 'burning'; });
+
+      const blk = () => getFurnaceBatch(batch.id)!.tickets.find((t) => t.ticketId === blkId);
+      const slotWaitNotes = () => (tasksCache[blkId]?.history || [])
+        .filter((e: { type: string; comment?: string }) => e.type === 'activity' && /waiting for a free worktree slot/i.test(e.comment || ''));
+
+      // Simulate a transient failure writing the activity note (addTicketActivity swallows it by design).
+      const spy = vi.spyOn(taskStoreModule, 'updateTaskWithHistory').mockImplementationOnce(() => {
+        throw new Error('simulated disk failure');
+      });
+      await stokerTick(batch.id);
+      spy.mockRestore();
+      expect(slotWaitNotes()).toHaveLength(0);
+      expect(blk()?.waitingForSlot).toBeUndefined(); // NOT set — a failed write must not suppress the retry
+
+      // Next tick: the write succeeds, so the flag is set AND the note lands together.
+      await stokerTick(batch.id);
+      expect(slotWaitNotes()).toHaveLength(1);
+      expect(blk()?.waitingForSlot).toBe(true);
+    });
+  });
+
+  describe('stale waitingForSlot cleared on takeover + hand-back (FLUX-1250)', () => {
+    it('re-announces a fresh block after a blocked head-of-queue ticket is taken over and handed back', async () => {
+      const { id: blkId } = await createTask({ title: 'Blocked', status: 'Todo' });
+      await fillSlots(FURNACE_SLOT_CAP - 1);
+      const filler = await createFurnaceBatch({ title: 'freeable', kind: 'sequential', tickets: [newBatchTicket('FREE-ME', 0)] });
+      await mutateFurnaceBatch(filler.id, (d) => { d.status = 'burning'; }); // pool now full
+
+      const batch = await createFurnaceBatch({ title: 'blocked', kind: 'parallel', tickets: [newBatchTicket(blkId, 0)] });
+      await mutateFurnaceBatch(batch.id, (d) => { d.status = 'burning'; });
+
+      const blk = () => getFurnaceBatch(batch.id)!.tickets.find((t) => t.ticketId === blkId);
+      const slotWaitNotes = () => (tasksCache[blkId]?.history || [])
+        .filter((e: { type: string; comment?: string }) => e.type === 'activity' && /waiting for a free worktree slot/i.test(e.comment || ''));
+
+      // Blocked once — flag set, note posted.
+      await stokerTick(batch.id);
+      expect(slotWaitNotes()).toHaveLength(1);
+      expect(blk()?.waitingForSlot).toBe(true);
+
+      // A human takes it over while still blocked (queued, flag still true), then hands it back.
+      expect((await takeoverTicket(batch.id, blkId)).ok).toBe(true);
+      const hb = await handBackTicket(batch.id, blkId);
+      expect(hb.ok).toBe(true);
+      expect(blk()?.state).toBe('queued');
+      expect(blk()?.owner).toBe('furnace');
+      expect(blk()?.waitingForSlot).toBeUndefined(); // stale flag from before the takeover is gone
+
+      // Pool is still full — the re-queued ticket blocks again. Since the stale flag was cleared, this
+      // announces a FRESH wait note instead of being silently suppressed by the leftover dedup flag.
+      // `retryTicket` (called by `handBackTicket`) already fires its own background `stokerTick`, which
+      // races the `ticking` re-entrancy guard against an explicit call here — wait for it to land instead.
+      await vi.waitFor(() => {
+        expect(slotWaitNotes()).toHaveLength(2);
+      });
+      expect(blk()?.waitingForSlot).toBe(true);
+    });
+  });
 
   describe('POST /:id/ignite — 409 no_slots when the worktree pool is full', () => {
     it('rejects with 409 {error:"no_slots"} once every slot is taken', async () => {
@@ -672,6 +777,42 @@ describe('Furnace integration (FLUX-1057)', () => {
       expect(r.error).toBe('no_slots');
       expect(getFurnaceBatch(batch.id)?.status).toBe('parked'); // never claimed
     });
+
+    it('clears a stale waitingForSlot when a halted-while-blocked ticket is resumed (FLUX-1256)', async () => {
+      // Repro: a queued ticket blocks on a full pool (feedCoal sets waitingForSlot, ticket stays queued),
+      // the batch is hard-halted while it's still queued+blocked (haltBatch flips queued -> skipped but
+      // only touches state/note, per FLUX-1256), then the batch is resumed (skipped -> queued). Without
+      // the fix, the stale flag survives the round trip and suppresses the next wait announcement.
+      const { id: blkId } = await createTask({ title: 'Blocked', status: 'Todo' });
+      await fillSlots(FURNACE_SLOT_CAP - 1);
+      const filler = await createFurnaceBatch({ title: 'freeable', kind: 'sequential', tickets: [newBatchTicket('FREE-ME', 0)] });
+      await mutateFurnaceBatch(filler.id, (d) => { d.status = 'burning'; }); // pool now full
+
+      const batch = await createFurnaceBatch({ title: 'blocked', kind: 'parallel', tickets: [newBatchTicket(blkId, 0)] });
+      await mutateFurnaceBatch(batch.id, (d) => { d.status = 'burning'; });
+      const blk = () => getFurnaceBatch(batch.id)!.tickets.find((t) => t.ticketId === blkId);
+
+      // Blocked on the full pool — dedup flag set, ticket stays queued.
+      await stokerTick(batch.id);
+      expect(blk()?.state).toBe('queued');
+      expect(blk()?.waitingForSlot).toBe(true);
+
+      // Hard-halt while still queued+blocked: queued -> skipped, but the flag is untouched by the halt itself.
+      const stopRes = await stopBatch(batch.id, 'test halt', { hard: true });
+      expect(stopRes.ok).toBe(true);
+      expect(blk()?.state).toBe('skipped');
+      expect(blk()?.waitingForSlot).toBe(true); // still stale — haltBatch never clears it
+
+      // Free the filler slot so resumeBatch's own claim can succeed.
+      await mutateFurnaceBatch(filler.id, (d) => { d.status = 'done'; });
+
+      const r = await resumeBatch(batch.id);
+      expect(r.ok).toBe(true);
+      const resumed = r.batch?.tickets.find((t) => t.ticketId === blkId);
+      expect(resumed?.state).toBe('queued');
+      expect(resumed?.owner).toBe('furnace');
+      expect(resumed?.waitingForSlot).toBeUndefined(); // FLUX-1256: stale flag cleared on skipped -> queued
+    });
   });
 
   describe('FLUX-1070 — dismissTicketFlag ("I\'ve got this" — clears the flag WITHOUT re-queuing)', () => {
@@ -767,7 +908,7 @@ describe('Furnace integration (FLUX-1057)', () => {
 
       const body = reviewStartBodyFor('FR-1');
       expect(body.phase).toBe('review');
-      expect(body.focusComment).toBe(SOLE_REVIEWER_FOCUS);
+      expect(body.focusComment).toBe(SOLE_REVIEWER_FOCUS + furnaceFollowupFocus(batch));
     });
 
     it('redrive — dispatched when a reviewing ticket has no observable session (e.g. after an engine restart)', async () => {
@@ -779,7 +920,7 @@ describe('Furnace integration (FLUX-1057)', () => {
 
       const body = reviewStartBodyFor('FR-2');
       expect(body.phase).toBe('review');
-      expect(body.focusComment).toBe(SOLE_REVIEWER_FOCUS);
+      expect(body.focusComment).toBe(SOLE_REVIEWER_FOCUS + furnaceFollowupFocus(batch));
     });
 
     it('retry-exhausted — dispatched when a reviewing session dies from context exhaustion', async () => {
@@ -798,7 +939,7 @@ describe('Furnace integration (FLUX-1057)', () => {
 
       const body = reviewStartBodyFor('FR-3');
       expect(body.phase).toBe('review');
-      expect(body.focusComment).toBe(SOLE_REVIEWER_FOCUS);
+      expect(body.focusComment).toBe(SOLE_REVIEWER_FOCUS + furnaceFollowupFocus(batch));
     });
 
     it("retry-rate-limited — dispatched when a reviewing ticket's rate-limit cooldown elapses", async () => {
@@ -817,7 +958,7 @@ describe('Furnace integration (FLUX-1057)', () => {
 
       const body = reviewStartBodyFor('FR-4');
       expect(body.phase).toBe('review');
-      expect(body.focusComment).toBe(SOLE_REVIEWER_FOCUS);
+      expect(body.focusComment).toBe(SOLE_REVIEWER_FOCUS + furnaceFollowupFocus(batch));
     });
   });
 

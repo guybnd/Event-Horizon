@@ -593,7 +593,7 @@ export function useTaskModalController() {
           implementationLink: implementationLink.trim(),
           swimlane: null,
           order: modalTask.order,
-          history: [...(modalTask.history || []), ...historyUpdates],
+          appendHistory: historyUpdates,
           updatedBy: currentUser,
         });
         const idsToMarkRead: string[] = [];
@@ -635,7 +635,7 @@ export function useTaskModalController() {
           implementationLink: implementationLink.trim(),
           swimlane: null,
           order: modalTask.order,
-          history: [...(modalTask.history || []), ...historyUpdates],
+          appendHistory: historyUpdates,
           updatedBy: currentUser,
         });
         const newResponseComment = [...(updatedTask.history || [])].reverse().find(
@@ -690,7 +690,7 @@ export function useTaskModalController() {
         effortLevel: effortLevel || undefined,
         implementationLink: implementationLink.trim(),
         order: modalTask.order,
-        history: [...(modalTask.history || []), ...newEntries],
+        appendHistory: newEntries,
         updatedBy: currentUser,
       });
       setReturnToWorkOpen(false);

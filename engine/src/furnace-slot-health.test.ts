@@ -20,6 +20,7 @@ import {
   mutateFurnaceBatch,
   setObservedWorktrees,
   ensureFurnaceLoaded,
+  setTemperReserved,
   __resetFurnaceStoreForTests,
   FURNACE_SLOT_CAP,
 } from './furnace-store.js';
@@ -139,5 +140,34 @@ describe('checkFurnaceSlotHealth (FLUX-1217)', () => {
     worktreesOnDisk = Array.from({ length: FURNACE_SLOT_CAP }, (_, i) => ({ path: taskWorktreeDir(root, `LEAKED2-${i}`), branch: null }));
     await checkFurnaceSlotHealth();
     expect(addNotificationMock).toHaveBeenCalledTimes(2);
+  });
+
+  // FLUX-1257: FLUX-1239's Temper reservation (`temperReservedTicketIds`) is held for the ticket's entire
+  // time under Temper's control, not just its brief pre-materialization window — so a same-tick Temper
+  // burst can legitimately fill the pool with zero Furnace batches burning. That's healthy activity, not
+  // the leak this check exists to catch.
+  it('does nothing when the pool is full solely due to legitimate Temper reservations', async () => {
+    for (let i = 0; i < FURNACE_SLOT_CAP; i++) setTemperReserved(`TEMPER-${i}`, true);
+
+    await checkFurnaceSlotHealth();
+
+    expect(addNotificationMock).not.toHaveBeenCalled();
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it('still warns when usage exceeds what Temper reservations account for', async () => {
+    setTemperReserved('TEMPER-1', true); // accounts for exactly 1 of the used slots
+    const leakedCount = FURNACE_SLOT_CAP - 1;
+    setObservedWorktrees(Array.from({ length: leakedCount }, (_, i) => `LEAKED-${i}`));
+    worktreesOnDisk = Array.from({ length: leakedCount }, (_, i) => ({ path: taskWorktreeDir(root, `LEAKED-${i}`), branch: null }));
+
+    await checkFurnaceSlotHealth();
+
+    expect(addNotificationMock).toHaveBeenCalledTimes(1);
+    const notification = addNotificationMock.mock.calls[0]![0];
+    expect(notification.message).toContain('TEMPER-1');
+    for (let i = 0; i < leakedCount; i++) {
+      expect(notification.message).toContain(`LEAKED-${i}`);
+    }
   });
 });

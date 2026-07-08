@@ -117,6 +117,52 @@ export function validateGitRemote(raw: unknown, opts: { allowLocal?: boolean | u
   return { ok: false, reason: 'remote is not a recognized git URL' };
 }
 
+// ─── member name sanitization (FLUX-543) ─────────────────────────────────────
+
+/**
+ * Derive a safe member name from a free-form folder / display name so it
+ * satisfies `isSafeName` — the same `SAFE_NAME_PATTERN` the loader enforces on
+ * every `member.name`. Member names double as a local path segment (`../<name>`)
+ * and a doc-path prefix, so an unsafe name (spaces, parens, …) makes the written
+ * `group.json` fail its own validator: the group is "created" but then loads as
+ * invalid and every repo renders flat with no error surfaced (the FLUX-543 dead
+ * end).
+ *
+ * Strips a trailing parenthetical (`anzu-server(logic)` → `anzu-server`),
+ * replaces remaining unsafe runs with a single `-`, collapses repeated `-`, and
+ * trims leading non-alphanumerics + trailing separators so the first char is
+ * alphanumeric. Returns `''` when nothing usable remains — the caller decides
+ * whether an unsalvageable name is a hard failure.
+ */
+export function sanitizeMemberName(raw: string): string {
+  return (raw ?? '')
+    .trim()
+    .replace(/\s*\([^)]*\)\s*$/, '') // drop a trailing parenthetical: foo(bar) → foo
+    .replace(/[^A-Za-z0-9._-]+/g, '-') // unsafe runs → single '-'
+    .replace(/-+/g, '-') // collapse repeated '-'
+    .replace(/^[^A-Za-z0-9]+/, '') // first char must be alphanumeric
+    .replace(/[._-]+$/, ''); // no trailing separator
+}
+
+/**
+ * Sanitize a list of raw member names into safe names, de-duping collisions with
+ * a numeric suffix (`api`, `api-2`, `api-3`). Preserves input order. An entry
+ * that can't be made safe stays `''` so the caller can reject it by index rather
+ * than silently dropping or renaming it.
+ */
+export function deriveSafeMemberNames(rawNames: string[]): string[] {
+  const used = new Set<string>();
+  return rawNames.map((raw) => {
+    const base = sanitizeMemberName(raw);
+    if (!base) return '';
+    let name = base;
+    let n = 2;
+    while (used.has(name)) name = `${base}-${n++}`;
+    used.add(name);
+    return name;
+  });
+}
+
 // ─── plan model ──────────────────────────────────────────────────────────────
 
 export type FileAction = 'create' | 'patch' | 'exists';

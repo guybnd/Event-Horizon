@@ -10,9 +10,9 @@ Authoritative list of every tool exposed by the Event Horizon MCP server ([`engi
 
 ## How tools are exposed
 
-The tool set is built once by `buildMcpServer()` ([`engine/src/mcp-server.ts`](../../../engine/src/mcp-server.ts)) and served over **two transports**, both via `@modelcontextprotocol/sdk`:
+The tool set is built once by `buildMcpServer()` ([`engine/src/mcp-server.ts`](../../../engine/src/mcp-server.ts)) and served over Streamable-HTTP, via `@modelcontextprotocol/sdk`. (A stdio transport existed prior to FLUX-646 for a headless `--mcp` entry point; it was retired since every real install path already used HTTP exclusively — `--mcp` now fails fast with an informative error instead of starting a second transport.)
 
-### Streamable-HTTP, in-process on the engine (default, FLUX-645)
+### Streamable-HTTP, in-process on the engine (FLUX-645)
 
 The already-running portal engine mounts the MCP server in-process and exposes it over loopback HTTP at `POST/GET/DELETE http://127.0.0.1:<engine-port>/mcp` (`handleMcpHttpRequest`, wired in [`engine/src/index.ts`](../../../engine/src/index.ts)). Every Claude Code session — whether opened in the main checkout or in a `.eh-worktrees/*` git worktree — points at this one URL and shares the engine's **single** task-store cache and chokidar watchers. There is **no per-session stdio process** and no per-request `--workspace`; the server binds to the engine's already-active canonical workspace.
 
@@ -28,10 +28,6 @@ Key properties:
 - **Raw stream, not pre-parsed.** The `/mcp` routes are registered **before** `express.json()` so the JSON-RPC request stream reaches the transport unparsed — `express.json()` would otherwise consume the body and the transport would hang.
 - **Per-ticket write serialization.** With one shared server, concurrent sessions can issue concurrent read-modify-write on the same ticket's history. `updateTaskWithHistory` ([`engine/src/task-store.ts`](../../../engine/src/task-store.ts)) serializes writes per `ticketId` (a promise chain) so near-simultaneous `add_note`/`change_status` calls on one ticket no longer drop history entries; writes to *different* tickets stay parallel.
 - **Engine-restart reconnect caveat.** The MCP connection is bound to the engine process, so restarting the engine (e.g. the tsx-watch dev loop restarting on a code edit, or a customer update/crash) drops the connection. Claude Code reconnects on its next call; mid-call work in flight at the moment of restart is lost. This is the accepted residual for the single-process design.
-
-### Stdio (headless `--mcp` fallback)
-
-`startMcpServer()` keeps the original stdio behaviour for the headless entry point (`engine/src/index.ts --mcp --workspace /path/to/project`). It calls the same `buildMcpServer()` then connects a `StdioServerTransport`. Logs go to stderr so they never corrupt protocol framing on stdout. The worktree-redirect machinery (`EH_CANONICAL_WORKSPACE` / `resolveMainWorktree`) that lets a stdio server in a worktree bind to the canonical store is retained for this path (its broader fate is tracked in FLUX-646).
 
 ## Server instructions & tool annotations (FLUX-948)
 
@@ -118,6 +114,7 @@ Round-trip, no-duplicate-text, and token-delta coverage: [`mcp-structured-output
 | [`create_ticket`](#create_ticket) | Mutation | yes |
 | [`update_ticket`](#update_ticket) | Mutation | yes |
 | [`change_status`](#change_status) | Mutation | yes (enforced) |
+| [`start_plan_review`](#start_plan_review) | Mutation (spawns a session) | yes |
 | [`archive`](#archive) | Mutation | yes |
 | [`add_note`](#add_note) | Mutation | yes |
 | [`publish_artifact`](#publish_artifact) | Mutation | yes |
@@ -251,19 +248,19 @@ Spawn one specialist [orchestration persona](../../../engine/src/orchestration-p
 - `personaId` — a persona id from [`list_available_agents`](#list-available-agents) (built-in or custom).
 - `task` — clear scope/expected-output for the delegate.
 - `effort` — `low | medium | high` (default `medium`).
-- `model` (**FLUX-482**) — optional per-call model override for *this* delegate (e.g. `"sonnet"`, `"opus"`). **Highest precedence** among the delegate-model overrides. **Claude-only for now** (see resolution note below). Omit to let the persona/config/status-derived default apply.
+- `model` (**FLUX-482**) — optional per-call model override for *this* delegate, a literal CLI model name (e.g. `"sonnet"`, `"opus"` on Claude; `"flash"` on Gemini). **Highest precedence** among the delegate-model overrides, on **all three frameworks** (FLUX-931). Omit to let the persona/config/status-derived default apply.
 - `timeout` — seconds, default 300, max 600.
 
-**Model resolution (FLUX-482).** The delegate route resolves the child's model with this precedence:
+**Model resolution (FLUX-482/931).** The delegate route resolves the child's model with this precedence, per-framework:
 
-1. per-call `model` param (above),
-2. `persona.model` — built-in personas now carry a cheaper tier (`sonnet`) on **search / grooming / doc-sync / review-reading** roles (e.g. `context-scout`, `planner`, the review reviewers, `docs-auditor`); **code-writing personas** (`implementer`, `test-engineer`, `dev-lead`, `finalizer`) carry **no** override and keep the strong model,
-3. `integrations.claudeCode.delegateModel` config default (empty by default = no override),
+1. per-call `model` param (above) — a literal model name for whichever framework the board runs on,
+2. `persona.modelTier` — built-in personas now carry the generic `'cheap'` tier on **search / grooming / doc-sync / review-reading** roles (e.g. `context-scout`, `planner`, the review reviewers, `docs-auditor`); **code-writing personas** (`implementer`, `test-engineer`, `dev-lead`, `finalizer`) carry **no** tier and keep the strong model. A tier resolves to a concrete model per-framework (`TIER_MODELS` in [`agents/types.ts`](../../../engine/src/agents/types.ts): claude→`sonnet`, gemini→`flash`; copilot has no built-in cheap alias yet, so a cheap-tier persona on a Copilot board falls through to step 3),
+3. `integrations.<claudeCode|geminiCli|copilotCli>.delegateModel` config default for the board's framework (empty by default = no override),
 4. the existing **status-derived** grooming/implementation model.
 
 With no config or persona override, default behavior is unchanged except for the personas deliberately set to the cheaper tier. The persona's `phase` is also threaded onto the child so its prompt and MCP-server scoping match the delegated role.
 
-> **Claude-framework only (for now).** The resolved model is threaded onto `session.model`, which currently only the Claude adapter honors; the Gemini and Copilot adapters read their own configured grooming/implementation model and ignore it (and `sonnet` is a Claude alias). The delegate route therefore gates the whole override to `framework === 'claude'` — on Gemini/Copilot boards all four layers above are inert and the delegate keeps its configured model. Generalizing the other adapters to honor a `cheap`/`strong` tier is tracked in FLUX-931.
+> **All three frameworks (FLUX-931).** `session.model` — the channel the resolved model above is threaded onto — is now honored by every adapter (`session.model || selectedModel` in claude-code.ts/gemini.ts/copilot.ts), so the delegate route resolves per-framework instead of gating to Claude. Gemini validates the resolved model against its own known-models list — an unrecognized name (shouldn't happen via `TIER_MODELS`/config, only possible via a bad per-call `model` param) is dropped to no `--model` flag at all, same guard a manually-configured `geminiCli.groomingModel`/`implementationModel` already gets; Copilot has no such validation.
 
 > FLUX-882 will later merge `delegate_to_agent` + `delegate_parallel` into a single `delegate` tool; the model-override contract above is designed to carry forward unchanged.
 
@@ -374,12 +371,24 @@ is **extraction, not 1:1** — address the slice by `seq` range on the source st
 | `tags` | string[] | no | `[]` |
 | `body` | string | no | `''` |
 
-**Output:** `{ id, title, turnsExtracted }`.
+**Output:** `{ id, title, turnsExtracted, sourceConsumed?, consumeError? }` — `sourceConsumed`
+is `true` when a scratch source was consumed (see below); `consumeError` is set if that
+best-effort archive failed (the promote still stands).
 
 **Side effects:** creates the new ticket (`create_ticket` path) and appends one `extract` op to
 the curation op-log (`<fluxDir>/transcripts/_curation-ops.jsonl`). The source turns are **never
 moved or copied** — the new card's transcript re-derives the slice from substrate + op-log, so
 extract is additive and un-doable (remove the op → the view reverts).
+
+**Scratch exception (FLUX-1249):** the one case where promotion is *not* additive. When the
+source is a `kind:"scratch"` disposable scratchpad, promotion **consumes** it — the scratch is
+tombstoned (a pinned comment pointing at the new ticket + a `mergedInto` pointer) and archived,
+mirroring how [`merge_tickets`](#merge_tickets) consumes its sources. A scratch is disposable, so
+leaving it live would surface every new scratch turn in **both** cards; consuming it leaves
+exactly one live card. Archiving (never deleting) keeps the promoted card's live re-derivation
+intact — `sliceTurns` reads the untouched substrate transcript. Consume is **best-effort**: if
+the archive fails the promote still succeeds (`consumeError` is returned). Promoting any
+non-scratch source (e.g. `__board__`, a real ticket slice) stays purely additive.
 
 **Gating (human-approval invariant):** `extract_ticket` is in the **CONFIRM** permission tier
 — a direct call by a gated session prompts the human. The orchestrator does not call it
@@ -451,7 +460,9 @@ Move a ticket to a new status.
 | `comment` | string | conditional — see enforcement |
 | `callerRole` | string | no — set to `"orchestrator"` or `"lead"` to bypass scatter-gather restriction |
 | `reviewState` | `'approved'` \| `'changes-requested'` \| null | no — **FLUX-816.** Records the EH review verdict on the card (persisted as the [`reviewState`](ticket-schema.md) frontmatter field). A review lead passes `"approved"` when moving to `Ready` and `"changes-requested"` when moving back to `In Progress`; `null` clears it. Surfaces a review badge; distinct from the GitHub-synced `reviewDecision`. An explicit value on this call always wins over the FLUX-1089 auto-clear below. |
+| `planReviewState` | `'approved'` \| `'changes-requested'` \| null | no — **FLUX-1263.** The `plan` gate's verdict, parallel to `reviewState` but for the Grooming → Todo gate (persisted as [`planReviewState`](ticket-schema.md); never overloads `reviewState`). A plan-review session passes this while leaving `newStatus` as `"Grooming"`; `null` clears it. Cleared automatically on any other move out of Grooming with no explicit value (`resolvePlanReviewStateOnMove`, mirrors the `reviewState` auto-clear below). **FLUX-1303:** an explicit value also stamps [`planReviewBodyHash`](ticket-schema.md) (the reviewed body's hash; nulled when the verdict clears) — the portal uses it to gate "Re-review plan" on the plan actually having changed. |
 | `completion` | object | no — **FLUX-1147.** Optional structured completion handoff: `{ changedFiles?: string[], validation?: {command: string, passed: boolean}[], decisions?: string[], residualRisk?: string, docsUpdated?: string[] \| boolean }`. Persisted as extra fields on the same `comment` history entry this call writes (**not** ticket frontmatter — see [history entry types](ticket-schema.md)) — a machine-readable companion to the required prose `comment`, not a replacement for it. Attached only when a `comment` entry is actually written by this call (i.e. it's dropped if `comment` is omitted on a transition where it isn't required). Accepted regardless of `newStatus` (not gated to `Ready`). **Best-effort, never a gate:** malformed or oversized fields are silently dropped/truncated (`sanitizeCompletion` in `engine/src/completion-payload.ts` — caps: 200 `changedFiles`, 50 `validation`, 20 `decisions`, ~2000-char `residualRisk`, ~8KB total serialized) — a garbage payload can never fail schema validation or block the status move. An explicit empty object `{}` is stored as-is (renders nothing extra in the portal). |
+| `noDiffExpected` | boolean | no — **FLUX-1267.** `Ready` transitions only. Explicit caller acknowledgment that this ticket's scope genuinely produces no code diff (a verification/investigation/spike ticket) — see the FLUX-730 enforcement bullet below for exactly what it lifts. |
 
 **Output:** a confirmation line (`<id> moved to <status>`). On moves to `In Progress` / `Todo` / `Grooming` / `Ready` it appends a terse AXI #9 contextual-disclosure next-step hint (FLUX-877) — e.g. a `Ready` move points at `finish_ticket`; terminal/unknown statuses get no hint. The `Require Input` route returns its own hint to wait for the user.
 
@@ -460,16 +471,30 @@ Move a ticket to a new status.
 - Transitioning **to** `Require Input` requires `comment` (the question to ask the user).
 - Transitioning **to** `Ready` requires `comment` (the completion summary), unless `config.requireCommentOnStatusChange === false`.
 - **Commit-before-Ready for worktree branches (FLUX-730).** Transitioning **to** `Ready` is **refused** (error result, status unchanged) when the ticket's branch has a dedicated worktree **and** the branch has **0 commits ahead** of the default branch — an uncommitted worktree can never open a PR, so the move would land a silent "Ready, no PR". The error distinguishes "work done but uncommitted" (worktree has changes) from "no changes yet" and tells the agent to commit then retry. **Scoped to worktree branches only:** plain-branch tickets keep the soft warning (notification + activity, move still proceeds), and branchless tickets are unaffected (they legitimately stay uncommitted until `finish`). On a successful `Ready` move for a branch with commits, the engine pushes and opens the PR (`implementationLink` + `open-pr` swimlane).
+  - **Zero-diff escape hatch (FLUX-1267).** A ticket whose scope legitimately produces no code diff (verification/investigation/spike) has no work to commit and would otherwise be refused forever, tempting a skip straight to `Done` that bypasses this review stop entirely. Passing `noDiffExpected: true` lifts the refusal **only when the worktree is also clean** (0 uncommitted changes, per `worktreeUncommittedCount`) — if there ARE uncommitted changes sitting in the tree, the refusal still fires with its normal message, since that contradicts a zero-diff claim. When acknowledged, no PR is opened (there is nothing to merge); the move records a plain `Zero-diff ticket acknowledged…` activity entry instead of the PR-creation attempt / "commit needed" warning.
 - **Dirty-root backstop for engine-driven switches (FLUX-741).** Sibling to the commit-before-Ready discipline, but for the **main/root checkout** rather than worktrees. Whenever the engine *must* switch or fast-forward the root tree off a branch during post-merge cleanup (`cleanupMergedBranch`'s `git checkout <default>` and `syncDefaultBranch`'s in-place `merge --ff-only`), it first **stashes any uncommitted/untracked root work** (`stashDirtyTree`, reusing the detach stash pattern) so the switch can never silently discard it — the root-clobber that lost work in the FLUX-734/739 incidents. The stashed work stays recoverable (`git stash apply <ref>`) and the ref is surfaced in a notification. Worktree mutation points are already guarded (`removeTaskWorktree` refuses a dirty tree; `detachTaskWorktree` stashes); this closes the gap on the root tree only. The complementary fix is **worktree-by-default** (see `branch` `action:'create'`): isolating agent sessions in their own worktree means the shared root is rarely the place edits live in the first place.
 - The `Require Input` / `Ready` status names are read from `configCache.requireInputStatus` / `readyForMergeStatus` and may be renamed in board config.
 - **Stale-`reviewState` clear on leaving Ready (FLUX-1089).** Transitioning **out of** `Ready` (to anything else) clears a prior `reviewState` unless this same call passes an explicit one (`resolveReviewStateOnMove` in `mcp-server.ts`) — an `approved` (or stale `changes-requested`) verdict from the last review no longer describes a ticket that's active work again. The FLUX-569 changes-requested unwind (`bounceMembersToInProgress` in `pr-tickets.ts`, which bounces a PR's Ready members straight to `In Progress` without going through this tool) applies the same clear at its own `updateTaskWithHistory` call site.
 - **Scatter-gather guard:** If the ticket has 2+ active sessions where at least one has `patternPosition: 'step'`, status changes are rejected unless `callerRole` is `'orchestrator'` or `'lead'`. This prevents individual reviewers from moving the ticket while peers are still reviewing. Affected sessions should use `add_note` (`type: 'comment'`) instead.
+- **Plan-review gate redirect (FLUX-1263, loop shape updated FLUX-1288).** A `Grooming` → `Todo` move is **intercepted** — the status stays `Grooming` — when the resolved `plan` gate (`config.gatePolicy.boardDefault.plan`, or the ticket's own `gatePolicyOverride.plan`) is `auto` or `auto-then-you` **and** no `planReviewState` verdict has been recorded yet (`evaluatePlanGateTrigger`, pure). The plan-review gate runner (`gate-runner.ts`) starts instead, via `resolvePlanGateMode` (`mcp-server.ts`): `auto` and `auto-then-you` both loop review → revise → re-review up to the shared retry cap on a `changes-requested` verdict — they differ only on an `approved` verdict, where `auto` moves the ticket to Todo itself (bypassing this tool) and `auto-then-you` instead stops and flags a human to confirm; either mode parks on retry-cap exhaustion. Any `comment` on the intercepted call is still recorded before the redirect. Once a verdict already exists (the `auto-then-you` loop stopped on approval, or a manual [`start_plan_review`](#start_plan_review) ran under `you`), the next `Grooming` → `Todo` call goes through normally and clears it — that call **is** the human's confirm. The `you` gate value never intercepts.
 
 **Output:** `<id> moved to <status>`.
 
 **Side effects:** appends a `comment` entry when one is provided, plus a `status_change` entry recording the transition.
 
 - **Stale parked-session reaping (FLUX-721).** On a genuine **forward** transition (any `newStatus` other than `Require Input`, where parking is legitimate), the ticket's sessions still parked at `waiting-input` on an **earlier phase** are terminalized (`reapStaleParkedSessions`). This prevents grooming/implementation sessions left parked after the ticket advances from lingering as zombies that gate merges (the [`POST /:id/pr/merge`](rest-api.md) Tier-2 guard) or 409 new session starts. The live calling agent (`running`) and the persistent per-ticket **`chat`** session (`phase: 'chat'`) are preserved. An `activity` entry records any reap.
+
+### `start_plan_review`
+
+**FLUX-1263.** Manually trigger ONE plan-review pass on a `Grooming` ticket right now — the `plan` gate's explicit human-invoked entry point. Use it under the `you` gate value (which never auto-triggers) or any time an extra look is wanted before moving `Grooming` to `Todo`. Runs exactly one pass regardless of gate value (never loops) and records its verdict to [`planReviewState`](ticket-schema.md); it does not move the ticket itself — a later `change_status` to `Todo` goes through once the verdict is recorded (see the redirect note above).
+
+| Input | Type | Required |
+|-------|------|----------|
+| `ticketId` | string | yes — must currently be in `Grooming` |
+
+**Errors:** ticket not found; not currently `Grooming`; a plan-review pass is already in flight on this ticket; the ticket is owned by an active Furnace batch (which wins — the gate never double-drives a Furnace-owned ticket).
+
+**Output:** a confirmation line noting whether the review session dispatched immediately or is waiting for a session slot.
 
 ### `archive`
 
@@ -496,7 +521,7 @@ Append a note to a ticket's history. One tool dispatched by `type` (FLUX-882 —
 | `ticketId` | string | yes |
 | `type` | `'comment'` \| `'activity'` | yes — `comment` = human-facing comment; `activity` = agent progress/activity update |
 | `message` | string | yes — the comment body or progress message |
-| `user` | string | no — author (default `Agent`); honored for `type: 'comment'`, while `activity` is always attributed to `Agent` |
+| `user` | string | no — author (default `Agent`); honored for `type: 'comment'`, while `activity` is always attributed to `Agent`. **This is a caller-controlled claim, not authenticated** — any comment it writes is stamped `selfAttested` (FLUX-1271) so it can never itself satisfy the [`finish_ticket` merge-lock](#finish_ticket)'s "a human touched this" check, no matter what name is passed. |
 | `summary` | string | no — a faithful summary; shown in the agent digest once the note ages past the recent window (full text via `get_ticket` `expand`). Provide for substantial notes; concise but lossless. |
 | `pin` | boolean | no — never collapse this note in the agent digest (review handoffs / key decisions). |
 | `supersedes` | string[] | no — ids of earlier history entries this note makes obsolete (a decision reversed/replaced). The superseded entries collapse to a one-line marker in the agent digest (still recoverable via `expand`). A `pin: true`/user-authored target is advisory-only (kept full). Set ONLY when genuinely retiring a now-wrong entry. |
@@ -512,7 +537,7 @@ Each call is a **new revision** (history is kept — never an overwrite). The HT
 | Input | Type | Required |
 |-------|------|----------|
 | `ticketId` | string | yes |
-| `html` | string | yes — a **complete, self-contained** HTML document (inline `<style>`/`<script>`; default to hand-written inline CSS). Mermaid is loadable via CDN `<script>` for diagrams; the Tailwind Play CDN is allowed but a heavy last resort, not the default — it's a full in-browser compiler that can freeze the host UI for seconds per load. Rendered in a sandboxed opaque-origin iframe with `connect-src 'none'`, so it cannot reach the portal/cookies/storage and cannot make network requests — inline everything or load from the allowed CDNs. |
+| `html` | string | yes — a **complete, self-contained** HTML document (inline `<style>`/`<script>`; default to hand-written inline CSS). Mermaid is loadable via CDN `<script>` for diagrams; the Tailwind Play CDN is allowed but a heavy last resort, not the default — it's a full in-browser compiler that can freeze the host UI for seconds per load. Rendered in a sandboxed opaque-origin iframe with `connect-src 'none'`, so it cannot reach the portal/cookies/storage and cannot make network requests — inline everything or load from the allowed CDNs. React/TSX components render via inline React + `@babel/standalone` (transpiled in-browser under `'unsafe-eval'`) and must be self-contained — no `import` of project modules or external `.tsx` fetch (FLUX-961); the grooming skill carries the full copy-paste template. |
 | `title` | string | no — short label shown above the viewer. |
 | `note` | string | no — what changed in this revision / what to look at. |
 
@@ -540,6 +565,7 @@ Atomic close-out: set `implementationLink`, append a completion comment, move st
 
 - For a branch ticket: ensures an **OPEN** PR exists (opens a fresh one if missing **or if the existing PR is MERGED/CLOSED** — FLUX-741), squash-merges it, then runs the unified post-merge cleanup (`cleanupMergedBranch` — advance branch tickets, fast-forward master, remove worktree + delete branch, clear the `open-pr` swimlane). The post-merge cleanup stashes any **uncommitted work on the main/root checkout** before switching/fast-forwarding it, so an engine-driven branch switch can never silently discard root edits (FLUX-741, incident FLUX-734) — the work is surfaced as a recoverable stash via a notification.
 - **Shared-PR guard (FLUX-569):** finishing one member of a branch shared by **non-terminal sibling tickets** is refused — merging would advance them all to Done as a one-way door (the FLUX-556/PR#6 incident). The error names the siblings; either finish/close them first, merge via the PR ticket, or re-run with `force: true` to land the whole shared PR. **PR tickets (`kind:'pr'`) are exempt** — merging a PR ticket to advance its members is the sanctioned shared-merge surface.
+- **Merge-lock guard (FLUX-1264, hardened FLUX-1271, gated FLUX-1290):** for a branch ticket (including `kind:'pr'` tickets — intentional, not an oversight), refuses to merge unless the ticket's history has at least one `comment` or `status_change` entry authored by someone other than the `Agent` actor (`hasHumanGateTouch`, `models/gate-policy.ts`) — the runtime half of the merge-lock, since this is the one merge path an agent session can reach on its own initiative. Ask a human to comment on or move the ticket, then finish again; no `force` override exists for this one. `add_note`'s `user` param (fully caller-controlled, see [`add_note`](#add_note)) can no longer satisfy this check — every comment it writes is stamped `selfAttested` and ignored here regardless of the claimed author, so the same session can't call `add_note({user:'SomeHuman', ...})` then `finish_ticket` to forge a human touch in one round trip. Not a cryptographic guarantee (this is a local-first app with no real auth — a session willing to hit the REST API directly instead of the sanctioned MCP tools could still forge it), just a closed instance of the specific same-tool-call spoof. **FLUX-1290:** this whole check is now gated behind the board config's `blockAgentPrMerges` (default **`false`**) — when `false`, the check is skipped entirely and `finish_ticket` merges with no human touch required; when `true`, behavior is unchanged from the above. See [Configuration Reference](../configuration.md#block-agent-pr-merges).
 - Merge failure / `gh` unavailable → bounces the ticket back to In Progress with an actionable comment (no partial Done). A branch with **no commits ahead** of its base routes to **Require Input** (FLUX-741) — there is genuinely nothing to merge, so it surfaces as a blocker rather than looping — unless it's detected as **folded** (FLUX-944, see above), in which case it finishes straight through instead.
 - Writes status + link + comment in one disk write — no partial state on failure.
 - Reaps stale parked **phase** sessions (`waiting-input`, non-`chat`) once the ticket is Done, so a finished ticket leaves no session zombies behind (FLUX-721).
@@ -584,7 +610,7 @@ Delegate one or more tasks to specialist agents and wait for them to finish (FLU
 | `delegations` | array (≥1) | yes | Each: `{ personaId, task, effort?, model? }`. Length 1 = serial; >1 = parallel. |
 | `timeout` | number | no | Seconds for ALL delegations (default 300, max 600). |
 
-**Output:** `[{ persona, succeeded, status, output }, …]` — one entry per delegation, in input order. A rejected delegation yields `{ persona, succeeded: false, status: 'error', output: <reason> }`. (`model` is an optional per-delegation override — **FLUX-482** — honored with precedence per-call `model` > `persona.model` > config `delegateModel` default > the status-derived default; Claude-framework only for now, see [`cli-session.ts`](../../../engine/src/routes/cli-session.ts).)
+**Output:** `[{ persona, succeeded, status, output }, …]` — one entry per delegation, in input order. A rejected delegation yields `{ persona, succeeded: false, status: 'error', output: <reason> }`. (`model` is an optional per-delegation override — **FLUX-482/931** — honored with precedence per-call `model` > `persona.modelTier` (tier-resolved per-framework) > config `delegateModel` default > the status-derived default, on all three frameworks; see [`cli-session.ts`](../../../engine/src/routes/cli-session.ts).)
 
 ---
 

@@ -231,5 +231,42 @@ describe('claude-code.ts — raiseNeedsAction wiring for a crashed spawn/resume 
 
       expect(raiseNeedsAction).not.toHaveBeenCalled();
     });
+
+    // FLUX-1204: parity with the initial-spawn late-error case above — the resume 'error' handler's
+    // raiseNeedsAction was previously guarded only by !requestedStop, not by whether it was the
+    // first to observe the outcome. A healthy 'exit' firing FIRST (setting telemetryEmitted, itself
+    // correctly skipping raiseNeedsAction) could still be overridden by a later spurious 'error'
+    // incorrectly flagging a resumed turn that actually succeeded.
+    it('does NOT raise needsAction from a late "error" after a healthy reply "exit" already fired', async () => {
+      const { sendCliSessionInput } = await import('./claude-code.js');
+      const { raiseNeedsAction } = await import('../parked-ticket.js');
+      const session = await seedResumableSession();
+
+      await sendCliSessionInput(session, 'continue please', 'Guy', '/tmp/test-repo');
+      lastProc!.emit('exit', 0, null);
+      await new Promise((r) => setTimeout(r, 20));
+      lastProc!.emit('error', new Error('late spurious error'));
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(raiseNeedsAction).not.toHaveBeenCalled();
+    });
+
+    // FLUX-1204: the reverse ordering — an 'error' firing FIRST raises needsAction exactly once;
+    // a subsequent non-zero/signalled 'exit' must NOT double-fire (its raiseNeedsAction now sits
+    // behind the same isFirstOutcome guard, outside the telemetryEmitted block).
+    it('raises needsAction only ONCE when an "error" is followed by a non-zero "exit"', async () => {
+      const { sendCliSessionInput } = await import('./claude-code.js');
+      const { raiseNeedsAction } = await import('../parked-ticket.js');
+      const session = await seedResumableSession();
+
+      await sendCliSessionInput(session, 'continue please', 'Guy', '/tmp/test-repo');
+      lastProc!.emit('error', new Error('spawn EAGAIN'));
+      await vi.waitFor(() => expect(raiseNeedsAction).toHaveBeenCalled());
+      lastProc!.emit('exit', 1, null);
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(raiseNeedsAction).toHaveBeenCalledTimes(1);
+      expect(raiseNeedsAction).toHaveBeenCalledWith('FLUX-TEST', 'Failed to resume agent: spawn EAGAIN');
+    });
   });
 });

@@ -11,7 +11,7 @@ Scope: Judge a diff against the ticket's intent and record a machine-readable ve
 
 # Event Horizon Agent — Review Skill
 
-Version: 1.1.0
+Version: 1.2.0
 
 ## When This Skill Applies
 
@@ -47,5 +47,15 @@ If the ticket body has a `## Acceptance criteria` section (the grooming skill's 
   - Any Blocker or Major item → `change_status` to `In Progress` with `reviewState: 'changes-requested'` and a comment summarizing the required changes, Blockers first.
 
 Skipping the `change_status` call strands the ticket — from the outside it looks like the review never happened even though it did, and costs a human a round-trip to unblock it.
+
+## Follow-ups into the current Furnace batch (FLUX-1218)
+
+When you are reviewing a ticket inside a **Furnace batch**, your launch focus names the batch id (`This review is running inside Furnace batch <id> …`). If you spot a genuine, small, clearly-related follow-up worth doing in this same burn — most naturally in a sequential batch, where it's one shared branch/PR anyway — you may queue it straight into that batch without a human gate (same trust level as your own `reviewState` verdict):
+
+1. `create_ticket` for the follow-up (normal TL;DR + plan conventions apply).
+2. `furnace_ticket` (`action:'add'`, `batchId:` the id from your focus) to append it to the same batch immediately — it burns in order like any other batch ticket.
+3. Note in your review comment that you added the follow-up and why, so the completion trail is legible.
+
+Keep it scoped: a genuine next step directly related to this diff, not a dumping ground. Tangential ideas still go through the normal board/backlog path. If your focus doesn't name a batch id, you aren't in a burn — use the ordinary ticket tools instead.
 
 All persistence uses MCP tools — see the orchestrator skill's "Persisting Changes" section.

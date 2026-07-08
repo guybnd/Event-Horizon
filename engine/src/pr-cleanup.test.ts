@@ -6,7 +6,7 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { setWorkspaceRoot } from './workspace.js';
-import { syncDefaultBranch, isWorktreeReclaimable, reclaimReadyWorktrees } from './pr-cleanup.js';
+import { syncDefaultBranch, isWorktreeReclaimable, reclaimReadyWorktrees, cleanupMergedBranch } from './pr-cleanup.js';
 import { clearNotifications, getNotifications } from './notifications.js';
 import { createTaskWorktree, listTaskWorktrees } from './task-worktree.js';
 import { tasksCache } from './task-store.js';
@@ -19,6 +19,7 @@ import {
   armReclaimGrace,
   __resetSessionStubStateForTests,
 } from './session-store.js';
+import { rehydrateTemper, isTempering, __resetTemperForTests } from './temper.js';
 import type { CliSessionRecord } from './agents/types.js';
 
 const execFileAsync = promisify(execFile);
@@ -305,6 +306,21 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
       expect(reclaimed).toEqual([]);
       expect(existsSync(wt)).toBe(true);
     });
+
+    it('does not widen past a dirty working tree even with zero commits ahead (FLUX-1215)', async () => {
+      // isWorktreeReclaimableForSweep only widens the STATUS gate — it says nothing about the
+      // working tree, so the lower-level reclaimWorktrees' own `git status --porcelain` check
+      // (task-worktree.ts) must independently refuse a zero-commit branch that still has
+      // uncommitted work sitting in it (e.g. a session that edited files but never committed).
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+      await fs.writeFile(path.join(wt, 'scratch.txt'), 'uncommitted\n', 'utf8');
+      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', branch: 'flux/FLUX-1' };
+
+      const reclaimed = await reclaimReadyWorktrees(repo);
+
+      expect(reclaimed).toEqual([]);
+      expect(existsSync(wt)).toBe(true);
+    });
   });
 });
 
@@ -488,5 +504,53 @@ describe('restart-safe worktree reclaim (FLUX-1060)', () => {
       };
       expect(isWorktreeReclaimable('FLUX-1', { honorReadyGrace: false })).toBe(true);
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLUX-1297 — cleanupMergedBranch disarms Temper BEFORE stopping sessions, so a review session
+// Temper just spawned (e.g. from a bookkeeping Ready move racing this same merge cleanup) can never
+// be observed by Temper's own tick as a "cancelled" session on a still-active ticket and get parked.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('cleanupMergedBranch disarms Temper before stopping sessions (FLUX-1297)', () => {
+  beforeEach(() => {
+    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    cliSessionsById.clear();
+    cliSessionsByTaskId.clear();
+    __resetSessionStubStateForTests();
+    __resetTemperForTests();
+  });
+  afterEach(() => {
+    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    cliSessionsById.clear();
+    cliSessionsByTaskId.clear();
+    __resetSessionStubStateForTests();
+    __resetTemperForTests();
+  });
+
+  it('disarms an in-flight Temper loop on the ticket before the merge cleanup stops its sessions', async () => {
+    const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+    await commitInWorktree(wt, 'a.txt');
+    // The board already reads Done (the finish/merge flow's own status write already landed) while
+    // Temper's durable flag is still set — the exact race: a bookkeeping Ready move armed Temper right
+    // before this cleanup runs. `rehydrateTemper` seeds the in-memory loop from that durable flag,
+    // exactly as an engine restart (or the original Ready-move trigger) would.
+    tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Done', branch: 'flux/FLUX-1', tempering: true, temperAttempts: 0 };
+    rehydrateTemper();
+    expect(isTempering('FLUX-1')).toBe(true);
+
+    await cleanupMergedBranch(repo, 'flux/FLUX-1');
+
+    // Disarmed — Temper is no longer tracking this ticket, so no later tick can ever park it.
+    expect(isTempering('FLUX-1')).toBe(false);
+  });
+
+  it('is a no-op when Temper is not driving the ticket', async () => {
+    const wt = await createTaskWorktree(repo, 'FLUX-2', 'flux/FLUX-2');
+    await commitInWorktree(wt, 'a.txt');
+    tasksCache['FLUX-2'] = { id: 'FLUX-2', status: 'Done', branch: 'flux/FLUX-2' };
+
+    await expect(cleanupMergedBranch(repo, 'flux/FLUX-2')).resolves.toBeDefined();
+    expect(isTempering('FLUX-2')).toBe(false);
   });
 });

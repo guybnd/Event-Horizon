@@ -7,6 +7,8 @@ import { evictSharedServersForPath } from './shared-mcp-server.js';
 // forever on a slow/unreachable remote or a stalled credential prompt. Route through the S1
 // runner; every caller here goes through this one default (or an injected test runner).
 import { runGit } from './git-exec.js';
+import { cliSessionsById } from './session-store.js';
+import { killDescendantsByPid } from './kill-process-tree.js';
 
 /**
  * Per-task-branch git worktree management (FLUX-517).
@@ -51,6 +53,8 @@ export interface TaskWorktreeOptions {
   baseBranch?: string | undefined;
   /** Junction the main tree's node_modules into the new worktree (default true). FLUX-518. */
   linkDependencies?: boolean;
+  /** Injectable for tests (FLUX-1207) — defaults to the real killDescendantsByPid. */
+  reapDescendantsByPid?: (pid: number) => Promise<number[]>;
 }
 
 /**
@@ -297,36 +301,69 @@ export async function createTaskWorktree(
   // `git worktree repair <target>` to re-link the existing tree; if that
   // re-registers it on our branch, reuse it in place instead of recreating.
   if (existsSync(target)) {
-    await runner(workspaceRoot, ['worktree', 'repair', target]).catch((err) =>
-      console.error('[task-worktree] worktree repair on orphaned tree failed:', err),
-    );
-    // FLUX-1195: repair just changed the registered set — invalidate again so a read racing
-    // this call isn't served a pre-repair snapshot for the rest of the TTL window.
-    invalidateWorktreeListCache(workspaceRoot);
-    const repaired = (await listWorktrees(runner, workspaceRoot)).find((w) =>
-      pathsEqual(w.path, target),
-    );
-    if (repaired) {
-      if (repaired.branch === branch) {
-        if (opts.linkDependencies !== false) {
-          await linkWorktreeDependencies(workspaceRoot, target).catch((err) =>
-            console.error('[task-worktree] re-linking node_modules after repair failed:', err),
-          );
+    // FLUX-1277 — an empty leftover directory carries nothing to lose (e.g. a
+    // Windows cleanup deleted the contents but the top-level rmdir failed because
+    // something briefly held a handle). Reclaim it instead of refusing — there's
+    // no un-pushed work to protect, and `git worktree repair` would fail anyway
+    // with no `.git` link file to re-link.
+    const entries = await fs.readdir(target).catch(() => null);
+    if (entries !== null && entries.length === 0) {
+      console.warn(`[task-worktree] reclaiming empty leftover directory at ${target}`);
+      await fs.rmdir(target);
+    } else {
+      const attemptRepair = async () => {
+        await runner(workspaceRoot, ['worktree', 'repair', target]).catch((err) =>
+          console.error('[task-worktree] worktree repair on orphaned tree failed:', err),
+        );
+        // FLUX-1195: repair just changed the registered set — invalidate again so a read racing
+        // this call isn't served a pre-repair snapshot for the rest of the TTL window.
+        invalidateWorktreeListCache(workspaceRoot);
+        return (await listWorktrees(runner, workspaceRoot)).find((w) => pathsEqual(w.path, target));
+      };
+
+      let repaired = await attemptRepair();
+      if (!repaired) {
+        // FLUX-1207: repair can fail because an orphaned descendant of a killed session (e.g. a
+        // Bash-tool-launched vitest run) still holds a Windows file-handle lock on the worktree
+        // dir. Best-effort reap any known session pid for this ticket, then retry once before
+        // giving up.
+        const pids = [...cliSessionsById.values()]
+          .filter((s) => s.taskId === ticketId && typeof s.pid === 'number')
+          .map((s) => s.pid as number);
+        if (pids.length > 0) {
+          const reap = opts.reapDescendantsByPid ?? killDescendantsByPid;
+          const killedGroups = await Promise.all(pids.map((pid) => reap(pid).catch(() => [] as number[])));
+          const killed = killedGroups.flat();
+          if (killed.length > 0) {
+            console.warn(
+              `[task-worktree] ${ticketId}: reaped orphaned descendant pid(s) ${killed.join(', ')} before retrying worktree repair`,
+            );
+          }
+          repaired = await attemptRepair();
         }
-        await writeWorktreeSerenaOverride(target, { gitRunner: runner });
-        return target;
       }
+      if (repaired) {
+        if (repaired.branch === branch) {
+          if (opts.linkDependencies !== false) {
+            await linkWorktreeDependencies(workspaceRoot, target).catch((err) =>
+              console.error('[task-worktree] re-linking node_modules after repair failed:', err),
+            );
+          }
+          await writeWorktreeSerenaOverride(target, { gitRunner: runner });
+          return target;
+        }
+        throw new Error(
+          `A worktree already exists at ${target} on a different branch (${repaired.branch ?? 'detached'}).`,
+        );
+      }
+      // Repair could not re-register the tree (e.g. its .git metadata is gone
+      // entirely). Refuse rather than let `git worktree add` fail cryptically or,
+      // worse, degrade to master.
       throw new Error(
-        `A worktree already exists at ${target} on a different branch (${repaired.branch ?? 'detached'}).`,
+        `A directory already exists at ${target} but is not a valid git worktree and could not be repaired. ` +
+          `Remove it and retry.`,
       );
     }
-    // Repair could not re-register the tree (e.g. its .git metadata is gone
-    // entirely). Refuse rather than let `git worktree add` fail cryptically or,
-    // worse, degrade to master.
-    throw new Error(
-      `A directory already exists at ${target} but is not a valid git worktree and could not be repaired. ` +
-        `Remove it and retry.`,
-    );
   }
 
   // Branch-exclusivity — git already refuses to check a branch out twice, so at
@@ -397,7 +434,7 @@ export async function createTaskWorktree(
 export async function removeTaskWorktree(
   workspaceRoot: string,
   worktreePath: string,
-  opts: { gitRunner?: GitRunner } = {},
+  opts: { gitRunner?: GitRunner; reapDescendantsByPid?: (pid: number) => Promise<number[]> } = {},
 ): Promise<void> {
   const runner = opts.gitRunner ?? defaultGitRunner;
   // FLUX-1182: this removes a registered worktree below — drop the cached
@@ -439,6 +476,20 @@ export async function removeTaskWorktree(
   // so sweep it. Guarded to our own .eh-worktrees subtree and best-effort: a
   // truly locked folder is harmless (it's empty) and reconciles on the next prune.
   if (existsSync(worktreePath) && isUnder(worktreePath, taskWorktreesBaseDir(workspaceRoot))) {
+    const leftoverTicketId = ticketIdFromWorktreePath(workspaceRoot, worktreePath);
+    const pids = [...cliSessionsById.values()]
+      .filter((s) => leftoverTicketId !== null && s.taskId === leftoverTicketId && typeof s.pid === 'number')
+      .map((s) => s.pid as number);
+    if (pids.length > 0) {
+      const reap = opts.reapDescendantsByPid ?? killDescendantsByPid;
+      const killedGroups = await Promise.all(pids.map((pid) => reap(pid).catch(() => [] as number[])));
+      const killed = killedGroups.flat();
+      if (killed.length > 0) {
+        console.warn(
+          `[task-worktree] ${leftoverTicketId ?? worktreePath}: reaped orphaned descendant pid(s) ${killed.join(', ')} before removing leftover directory`,
+        );
+      }
+    }
     await fs.rm(worktreePath, { recursive: true, force: true }).catch(() => {});
   }
 }

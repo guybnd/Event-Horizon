@@ -95,6 +95,10 @@ export interface AppStoreState {
   tasksLoading: boolean;
   taskLiveEvents: Record<string, TaskLiveEvent>;
   columnLiveEvents: Record<string, ColumnLiveEvent>;
+  /** FLUX-1300: task id → epoch ms until which it should sort first in its column regardless of
+   *  the configured sort option — a temporary "just created" top-pin so a new ticket doesn't get
+   *  buried under swimlane-stacked cards. Expires client-side (no server write). */
+  pinnedTasks: Record<string, number>;
   refreshTrigger: number;
   lastRefreshAt: number | null;
   isWindowVisible: boolean;
@@ -195,6 +199,7 @@ function createInitialState(): AppStoreState {
     tasksLoading: true,
     taskLiveEvents: {},
     columnLiveEvents: {},
+    pinnedTasks: {},
     refreshTrigger: 0,
     lastRefreshAt: null,
     isWindowVisible: true,

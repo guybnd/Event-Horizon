@@ -97,6 +97,12 @@ describe('selectPrReviewChip (FLUX-1089 precedence, FLUX-1092 extraction)', () =
     expect(selectPrReviewChip(task, agg)).toEqual({ kind: 'progress', approvedCount: 1, total: 3 });
   });
 
+  it('FLUX-1310: members exist but none approved yet → progress chip at 0/N, not fallback', () => {
+    const agg = { approvedCount: 0, total: 2, anyChangesRequested: false };
+    const task = { reviewDecision: null, reviewState: null, swimlane: null };
+    expect(selectPrReviewChip(task, agg)).toEqual({ kind: 'progress', approvedCount: 0, total: 2 });
+  });
+
   it('falls back to the GitHub reviewDecision when no members have reviewed', () => {
     const task = { reviewDecision: 'REVIEW_REQUIRED', reviewState: null, swimlane: null };
     expect(selectPrReviewChip(task, noMembers)).toEqual({ kind: 'fallback', signal: 'REVIEW_REQUIRED' });

@@ -105,6 +105,25 @@ describe('selectTicketsForList (FLUX-489)', () => {
     expect(rows.map((r) => r.id)).toEqual(['FLUX-1', 'FLUX-2']);
   });
 
+  it("FLUX-1225: hides kind:'scratch' from the active-default screen (silently — not counted as terminal)", () => {
+    const tasks = [
+      ticket('FLUX-1', { status: 'Todo' }),
+      ticket('SCRATCH-1', { status: 'Todo', kind: 'scratch' }),
+      ticket('FLUX-2', { status: 'Done' }),
+    ];
+    const { rows, note } = selectTicketsForList(tasks, {});
+    expect(rows.map((r) => r.id)).toEqual(['FLUX-1']);
+    // The scratch chat drops without a nudge; the note reflects ONLY the terminal ticket.
+    expect(note).toMatch(/1 terminal-status ticket\b/);
+    expect(note).not.toMatch(/2 terminal-status/);
+  });
+
+  it("FLUX-1225: an explicit status reaches a kind:'scratch' entity (escape hatch)", () => {
+    const tasks = [ticket('SCRATCH-1', { status: 'Todo', kind: 'scratch' }), ticket('FLUX-1', { status: 'Todo' })];
+    expect(selectTicketsForList(tasks, { status: 'Todo' }).rows.map((r) => r.id)).toEqual(['SCRATCH-1', 'FLUX-1']);
+    expect(selectTicketsForList(tasks, { includeAll: true }).rows.map((r) => r.id)).toEqual(['SCRATCH-1', 'FLUX-1']);
+  });
+
   it('keeps lean columns only', () => {
     const tasks = [ticket('FLUX-1', { body: 'big body', history: [{}], _path: '/x' })];
     const { rows } = selectTicketsForList(tasks, {});

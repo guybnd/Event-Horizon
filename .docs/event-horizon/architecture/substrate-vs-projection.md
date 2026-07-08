@@ -399,19 +399,26 @@ convention, so `board-rebase.ts` drives both verbs uniformly.
   source card. The op is appended FIRST (the durable, re-derivable fact); the tombstone/archive
   side-effects are best-effort, so a failure there leaves the view correctly folded and surfaces in
   the result's `archiveFailures`.
-- **Folds don't compose (single-level).** A source is folded by its *substrate* turns, not its
-  re-derived view, so a stream whose view ≠ its substrate — a prior merge **survivor** or an
-  **extracted** card (any curation op's `into`) — is **rejected as a `from` source**
-  (`streamsWithDerivedView` in `curation-ops.ts`, shared by the guard and the fold loop). Folding
-  such a stream would silently drop the turns it only shows via an op. Re-merge or re-promote its
-  original sources directly into the survivor instead. (Recursive/transitive composition is the
-  alternative if this constraint is ever lifted.)
+- **Folds compose (FLUX-861 Fix B).** A source is folded by its own re-derived **VIEW** —
+  `gatherTurnsForView` recurses into a `from` stream's own gather instead of reading only its
+  substrate — so a prior merge **survivor** or an **extracted** card is a valid `from` source
+  again: `promote→fold` round-trips, and a fold chain (B→A then A→C) carries every level's turns
+  through to the end of the chain. Recursion is bounded (`MAX_FOLD_DEPTH` in `transcript.ts`) and
+  cycle-safe (an `ancestors` set stops re-entering a stream already being resolved higher up the
+  same call) as a defense-in-depth backstop — the real guard is at write time (next bullet). This
+  superseded the earlier Fix A behavior, which rejected any stream with a derived view as a source
+  (`streamsWithDerivedView` in `curation-ops.ts`, still present as a general predicate but no longer
+  used to gate merge sources).
 - **Engine entrypoint + gating.** `mergeTickets(opts)` (`engine/src/merge.ts`) is the one shared
   path behind both the `merge_tickets` MCP tool and the board-rebase `fold` executor. It validates
   every id/guard (unknown survivor, empty `from`, self-merge `into ∈ from`, unknown source, a
-  source already merged, or a source with a re-derived view → clear error) BEFORE appending the op
-  or mutating any ticket, so there is no partial state. Like extract, it reaches the engine only via the human-approved board-rebase
-  ritual or a direct call that hits the FLUX-605 CONFIRM gate.
+  source already merged, or a source that would create a **cycle** → clear error) BEFORE appending
+  the op or mutating any ticket, so there is no partial state. The cycle check
+  (`reachableFoldSources` in `curation-ops.ts`) walks the op-log's `into -> from` dependency edges
+  (both extract and merge ops) from each candidate source and refuses it if the survivor is already
+  in that closure — folding it in would make the survivor's view depend on itself. Like extract, it
+  reaches the engine only via the human-approved board-rebase ritual or a direct call that hits the
+  FLUX-605 CONFIRM gate.
 
 ## 7. Authored vs projected — field map
 

@@ -162,6 +162,16 @@ export interface BatchTicket {
    * forever if the follow-up session also forgets to call `change_status`.
    */
   reviewNudgeSent?: boolean;
+  /**
+   * FLUX-1245: set while this queued ticket is blocked on a full shared worktree pool, so `feedCoal`
+   * emits the "waiting for a slot" chat activity exactly ONCE per waiting transition (not every tick).
+   * Cleared when the ticket is finally fed, so a later re-block announces again. FLUX-1250: also cleared
+   * by `retryTicket` (and so `handBackTicket`) whenever the ticket re-enters `queued`, so a takeover or
+   * hand-back while blocked doesn't leave a stale flag that suppresses the next wait announcement.
+   * FLUX-1256: also cleared by `resumeBatch` whenever a `skipped` ticket (halted/stopped while still
+   * queued and blocked) re-enters `queued`, so a resume doesn't leave a stale flag either.
+   */
+  waitingForSlot?: boolean;
 }
 
 /** A PR belonging to a batch — one for `sequential`, one-per-ticket for `parallel`. */

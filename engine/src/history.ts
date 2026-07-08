@@ -135,20 +135,37 @@ function asEntry(value: unknown): HistoryEntryLike | undefined {
 // agent's final message, the only raw output a later reader tends to need.
 const COMPACT_TEXT_TAIL = 2;
 
+// FLUX-1202: `tool` milestones carry a `data` payload (toolName + the raw call parameters —
+// e.g. a full Edit's old_string/new_string) that's unbounded per call and, unlike `text` chunks,
+// was never trimmed. A single long session can rack up thousands of tool calls; on one live
+// ticket this pushed `data` payloads to ~60% of a 1.3MB persisted history, making that ticket's
+// loadTask() call a multi-second synchronous outlier. Keep `data` only on the most recent
+// COMPACT_TOOL_DATA_TAIL tool entries — older ones keep their human-readable `message` (the
+// transcript stays readable) but drop the raw parameters.
+const COMPACT_TOOL_DATA_TAIL = 20;
+
 /**
  * Compact a finished session's progress log in place. Raw `text` flush chunks
  * (one per ~1s of agent output) are dropped in favor of typed milestones
  * (`tool`, `topic`, `info`), error-looking entries, and the last few text
- * chunks; the last text chunk is promoted to `finalMessage`.
- * `originalProgressCount` records the largest raw length seen. No-op on
- * active sessions. Idempotent — stop paths can persist the terminal status
- * before the adapter's exit handler flushes the accumulated progress, so this
- * may run more than once per entry and must compact late-arriving chunks too.
+ * chunks; the last text chunk is promoted to `finalMessage`. Typed milestones
+ * keep their `message` indefinitely, but a `tool` entry's `data` payload is
+ * dropped once it falls outside the most recent COMPACT_TOOL_DATA_TAIL tool
+ * calls (see above). `originalProgressCount` records the largest raw length
+ * seen. No-op on active sessions. Idempotent — stop paths can persist the
+ * terminal status before the adapter's exit handler flushes the accumulated
+ * progress, so this may run more than once per entry and must compact
+ * late-arriving chunks too.
+ *
+ * Returns whether the entry was actually mutated, so a caller that runs this
+ * over many entries (e.g. the retroactive load-time pass in task-store.ts)
+ * can tell whether a write-back is warranted without diffing the whole
+ * history array itself.
  */
-export function compactSessionProgress(entry: unknown): void {
+export function compactSessionProgress(entry: unknown): boolean {
   const session = asEntry(entry);
-  if (!session || session.type !== 'agent_session' || session.status === 'active') return;
-  if (!Array.isArray(session.progress)) return;
+  if (!session || session.type !== 'agent_session' || session.status === 'active') return false;
+  if (!Array.isArray(session.progress)) return false;
 
   const progress: AgentSessionProgress[] = session.progress;
   const isText = (p: AgentSessionProgress) => p && (p.type === 'text' || p.type == null) && typeof p.message === 'string' && p.message.trim();
@@ -160,10 +177,30 @@ export function compactSessionProgress(entry: unknown): void {
   const textEntries = progress.filter(isText);
   const keptTail = new Set(textEntries.slice(-COMPACT_TEXT_TAIL));
 
-  session.progress = progress.filter((p) => (p?.type && p.type !== 'text') || keptTail.has(p) || looksLikeError(p));
-  session.originalProgressCount = Math.max(session.originalProgressCount ?? 0, progress.length);
+  const dataToolEntries = progress.filter((p) => p?.type === 'tool' && p.data !== undefined);
+  const keptDataTail = new Set(dataToolEntries.slice(-COMPACT_TOOL_DATA_TAIL));
+
+  let dataStripped = false;
+  const nextProgress = progress
+    .filter((p) => (p?.type && p.type !== 'text') || keptTail.has(p) || looksLikeError(p))
+    .map((p) => {
+      if (p?.type !== 'tool' || p.data === undefined || keptDataTail.has(p) || looksLikeError(p)) return p;
+      dataStripped = true;
+      const { data: _data, ...rest } = p;
+      return rest;
+    });
+  const progressChanged = dataStripped || nextProgress.length !== progress.length;
+  session.progress = nextProgress;
+
+  const priorOriginalCount = session.originalProgressCount ?? 0;
+  session.originalProgressCount = Math.max(priorOriginalCount, progress.length);
+  const originalCountChanged = session.originalProgressCount !== priorOriginalCount;
+
   const finalMessage = textEntries.length > 0 ? textEntries[textEntries.length - 1]!.message : undefined;
-  if (finalMessage && session.finalMessage == null) session.finalMessage = finalMessage;
+  const finalMessageChanged = finalMessage != null && session.finalMessage == null;
+  if (finalMessageChanged) session.finalMessage = finalMessage;
+
+  return progressChanged || originalCountChanged || finalMessageChanged;
 }
 
 /**
@@ -421,6 +458,13 @@ export interface HistoryDigest {
   /** Pre-computed Require-Input question + set-date (attention dock). Only populated for a
    *  ticket actually in the require-input swimlane, so question text isn't shipped board-wide. */
   requireInput: { question: string; setDate: string } | null;
+  /** FLUX-1289: the plan-review gate's latest feedback comment — the AttentionDock's plan-approval
+   *  item and ChatPlanApprovalCard surface this inline so a `changes-requested` verdict's actual
+   *  wording is visible without opening full history. Only populated when `planReviewState` is set
+   *  (mirrors `requireInput`'s conditional), so comment text isn't shipped board-wide otherwise.
+   *  FLUX-1303: carries `user` so surfaces attribute the feedback (reviewer vs the human's own
+   *  re-groom notes) instead of rendering an anonymous blob. */
+  planReviewComment: { text: string; date: string; user: string } | null;
 }
 
 /** Server-side twin of the portal's `requireInputMeta` (pendingInteractions.tsx): the question
@@ -445,6 +489,24 @@ function computeRequireInputMeta(entries: unknown[]): { question: string; setDat
   return { question, setDate: '' };
 }
 
+/** Server-side twin of the portal's fallback in `planReviewFeedback` (pendingInteractions.tsx): the
+ *  most recent comment entry is the plan-review verdict's feedback — true for both the human
+ *  send-back path (`PlanApprovalPanel`) and the auto-review agent's own comment, which is always
+ *  posted immediately before the `change_status` call that records the verdict. */
+function computePlanReviewComment(entries: unknown[]): { text: string; date: string; user: string } | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = asEntry(entries[i]);
+    if (e?.type === 'comment' && typeof e.comment === 'string' && e.comment) {
+      return {
+        text: e.comment,
+        date: typeof e.date === 'string' ? e.date : '',
+        user: typeof e.user === 'string' && e.user ? e.user : 'Agent',
+      };
+    }
+  }
+  return null;
+}
+
 export function buildHistoryDigest(
   history: unknown[] = [],
   status: string,
@@ -454,6 +516,8 @@ export function buildHistoryDigest(
   // history (e.g. serializeTaskForList's inline comment/active-session entries) can collect it
   // in this same pass instead of a separate O(n) `.filter`. Never touches the returned digest.
   onEntry?: (entry: HistoryEntryLike) => void,
+  // FLUX-1289: trailing (not inserted earlier) so existing positional callers/tests are undisturbed.
+  planReviewState?: string | null,
 ): HistoryDigest {
   const entries = Array.isArray(history) ? history : [];
   const cutoff = now - 86_400_000; // 24h, matching Board.tsx flow/streak cutoffs
@@ -509,6 +573,7 @@ export function buildHistoryDigest(
     statusChanges24h,
     comments,
     requireInput: swimlane === 'require-input' ? computeRequireInputMeta(entries) : null,
+    planReviewComment: planReviewState != null ? computePlanReviewComment(entries) : null,
   };
 }
 
@@ -639,6 +704,59 @@ export function hasAppendedStatusChange(existingHistory: unknown[] = [], nextHis
     const e = asEntry(entry);
     return e?.type === 'status_change' && e?.from === from && e?.to === to;
   });
+}
+
+/** Recursive, key-order-independent JSON serialization — used only to build an equality
+ *  signature for history entries, never for storage. Plain `JSON.stringify` with a key-array
+ *  replacer would DROP any nested key not named at the top level (e.g. an `agent_session`
+ *  entry's `progress[].data`), silently collapsing distinct entries onto the same signature. */
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/** FLUX-1308: identity for a history entry — its persisted `id` where present (comment/activity
+ *  entries always have one, FLUX-811), else a content signature. Entry types with no `id`
+ *  (status_change, swimlane_change, agent_session, ...) fall back to the signature; content
+ *  equality is the only identity available for them. */
+function historyEntryIdentity(entry: HistoryEntryLike): string {
+  if (typeof entry.id === 'string' && entry.id.trim()) return `id:${entry.id.trim()}`;
+  return `sig:${stableStringify(entry)}`;
+}
+
+/**
+ * FLUX-1308: reconcile a client-submitted full `history` array against the server's copy by
+ * entry IDENTITY instead of array length/position. The old `nextHistory.slice(existingHistory
+ * .length)` treated "everything past the server's current length" as novel — but a client
+ * snapshot stale by N entries submits a SHORTER array, so the slice point lands inside the
+ * client's own new entries and silently drops the first N of them. Returns only the entries in
+ * `nextHistory` that don't match any existing entry; existing entries are never dropped by
+ * omission, and reordering/staleness in the client's copy can no longer lose a novel entry.
+ */
+export function reconcileNovelHistoryEntries(existingHistory: unknown[] = [], nextHistory: unknown[] = []): HistoryEntryLike[] {
+  const existingIdentities = new Set<string>();
+  for (const raw of existingHistory) {
+    const entry = asEntry(raw);
+    if (entry) existingIdentities.add(historyEntryIdentity(entry));
+  }
+
+  const novel: HistoryEntryLike[] = [];
+  for (const raw of nextHistory) {
+    const entry = asEntry(raw);
+    if (!entry) {
+      // Malformed/non-object entries never originate from a real writer — same tolerant
+      // pass-through contract as normalizeHistoryEntries above.
+      novel.push(raw as HistoryEntryLike);
+      continue;
+    }
+    if (!existingIdentities.has(historyEntryIdentity(entry))) novel.push(entry);
+  }
+  return novel;
 }
 
 export function normalizeHistoryEntries(history: unknown[] = []): { history: HistoryEntryLike[]; changed: boolean } {

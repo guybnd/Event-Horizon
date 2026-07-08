@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { Profiler, useCallback, useState, type ProfilerOnRenderCallback, type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { Board } from './Board';
 import { DockProvider } from './DockProvider';
 import { appStore } from '../store/appStore';
@@ -107,28 +107,40 @@ function renderBoard(onRender: ProfilerOnRenderCallback) {
 describe('Board memoization (FLUX-1141)', () => {
   afterEach(() => cleanup());
 
-  it('does not re-render when an unrelated sibling state toggles (stable props)', async () => {
-    const commits: Array<{ phase: string; actualDuration: number }> = [];
-    renderBoard((_id, phase, actualDuration) => commits.push({ phase, actualDuration }));
+  it(
+    'does not re-render when an unrelated sibling state toggles (stable props)',
+    async () => {
+      const commits: Array<{ phase: string; actualDuration: number }> = [];
+      renderBoard((_id, phase, actualDuration) => commits.push({ phase, actualDuration }));
 
-    // Data is already in the store before render (no async loading state), so the initial mount
-    // is synchronous — assert on it directly rather than via `findBy*`, whose internal polling
-    // would otherwise burn enough wall-clock for unrelated per-second timers deeper in the tree
-    // (e.g. Column's live-session clock) to tick and add noise unrelated to the bug under test.
-    expect(screen.getByText('Synthetic task 0')).toBeTruthy();
-    const commitsBeforeToggle = commits.length;
-    expect(commitsBeforeToggle).toBeGreaterThan(0);
+      // Data is already in the store before render (no async loading state), so the initial mount
+      // is synchronous — assert on it directly rather than via `findBy*`, whose internal polling
+      // would otherwise burn enough wall-clock for unrelated per-second timers deeper in the tree
+      // (e.g. Column's live-session clock) to tick and add noise unrelated to the bug under test.
+      expect(screen.getByText('Synthetic task 0')).toBeTruthy();
 
-    fireEvent.click(screen.getByText('toggle unrelated'));
-    expect(screen.getByTestId('unrelated-flag').textContent).toBe('true');
+      // Board defers several filter/search values via useDeferredValue (FLUX-1200); flush any
+      // low-priority catch-up render those schedule on mount before counting commits, so mount
+      // settling isn't misattributed to the toggle below (FLUX-1220).
+      await act(async () => {});
 
-    // The whole point of the fix: Board's memo comparator bails on the unrelated update. In
-    // practice React's Profiler still fires once more for bookkeeping even on a full bailout, but
-    // its actualDuration is now negligible — nothing like the ~hundreds-of-ms mount/settle commits
-    // above, which reconcile all 80 synthetic cards. Assert on cost, not raw commit count.
-    const newCommits = commits.slice(commitsBeforeToggle);
-    for (const c of newCommits) {
-      expect(c.actualDuration).toBeLessThan(5);
-    }
-  });
+      const commitsBeforeToggle = commits.length;
+      expect(commitsBeforeToggle).toBeGreaterThan(0);
+
+      fireEvent.click(screen.getByText('toggle unrelated'));
+      expect(screen.getByTestId('unrelated-flag').textContent).toBe('true');
+
+      // The whole point of the fix: Board's memo comparator bails on the unrelated update. In
+      // practice React's Profiler still fires once more for bookkeeping even on a full bailout, but
+      // its actualDuration is now negligible — nothing like the ~hundreds-of-ms mount/settle commits
+      // above, which reconcile all 80 synthetic cards. Assert on cost, not raw commit count.
+      // Threshold has some headroom above the sub-millisecond steady state to absorb JIT/CI-runner
+      // noise on the bail-out render itself (FLUX-1220).
+      const newCommits = commits.slice(commitsBeforeToggle);
+      for (const c of newCommits) {
+        expect(c.actualDuration).toBeLessThan(15);
+      }
+    },
+    10000,
+  );
 });

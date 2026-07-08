@@ -49,7 +49,7 @@ import {
   resolveBaselineCommit,
   type PromptDiffCapture,
 } from '../branch-manager.js';
-import type { CliSessionRecord, CliFramework, ExecutionPattern, PatternPosition, GroupVariant, LaunchPhase } from '../agents/types.js';
+import { TIER_MODELS, INTEGRATION_CONFIG_KEYS, type CliSessionRecord, type CliFramework, type ExecutionPattern, type PatternPosition, type GroupVariant, type LaunchPhase } from '../agents/types.js';
 
 // ─── Local types (lint burndown, FLUX-1073) ──────────────────────────────────
 // Ticket frontmatter has no canonical compile-time type in this codebase — it's validated at
@@ -91,6 +91,36 @@ function resolvePermissionMode(
     : configCache?.permissions?.ticketDefault;
   if (configured === 'gated' || configured === 'skip') return configured;
   return surface === 'board' ? 'gated' : 'skip';
+}
+
+/**
+ * FLUX-1236: apply a mid-chat permission-chip change to a live session record so it takes
+ * effect on the NEXT resumed turn (the flag is re-emitted per spawn via permissionArgs()).
+ * - 'gated'/'skip' set the mode explicitly (and clear the legacy skipPermissions flag so the
+ *   explicit mode is authoritative — permissionArgs() already prefers permissionMode, but a stale
+ *   skipPermissions:true would otherwise linger on the record).
+ * - 'default' (or '') RE-INHERITS the surface/workspace default via resolvePermissionMode
+ *   (gated for board, skip for ticket, or the configured override) — it does NOT clear the mode.
+ *   A cleared mode yields permissionArgs()===[], and in `claude -p` print mode there is no
+ *   interactive approval path, so [] silently denies autonomous tool use — the very failure the
+ *   chip is meant to let you escape. Resolving keeps "Default" predictable and identical to the
+ *   mode a fresh session on this surface would get.
+ * - Any absent/unknown value leaves the mode UNCHANGED, so an ordinary send never wipes it. The
+ *   portal only transmits permissionMode when the user actually touches the Perms chip (FLUX-1236,
+ *   ChatView Composer) — an untouched follow-up omits it entirely and lands here as undefined.
+ */
+function applyPermissionModeChange(
+  session: CliSessionRecord,
+  raw: unknown,
+  surface: 'board' | 'ticket',
+): void {
+  if (raw === 'gated' || raw === 'skip') {
+    session.permissionMode = raw;
+    session.skipPermissions = false;
+  } else if (raw === 'default' || raw === '') {
+    session.permissionMode = resolvePermissionMode(undefined, surface);
+    session.skipPermissions = false;
+  }
 }
 
 /**
@@ -671,6 +701,12 @@ router.post('/:id/cli-session/start', async (req, res) => {
   // regardless of what the caller requested, so a ticket that grooms straight back to Todo
   // (never reaching Ready/a terminal status) never leaves an orphaned worktree that
   // `worktreeUnreclaimableReason` (status-gated) can't ever reclaim.
+  // FLUX-1215 follow-up: this is a deny-list (block only 'grooming'), not an allow-list (permit
+  // only 'implementation'), because 'review'/'finalize' dispatch onto a ticket that ALREADY
+  // carries a branch (idempotent reuse of the existing worktree, no fresh isolation-creation) —
+  // so 'grooming' is genuinely the only phase that both lacks a branch and doesn't need one
+  // today. If a future phase is added that, like grooming, can run branchless without ever
+  // needing isolation, re-check this condition rather than assuming the deny-list still covers it.
   const isolationRaw = typeof req.body?.isolation === 'string' ? req.body.isolation.trim() : '';
   const isolation: 'worktree' | 'branch' | undefined =
     phase === 'grooming'
@@ -710,6 +746,14 @@ router.post('/:id/cli-session/start', async (req, res) => {
     }
   }
 
+  // FLUX-1235: an authoritative programmatic driver (the Furnace) opts in via `supersedeParked` to take
+  // over an IDLE (waiting-input) session — even a genuinely resumable one — because it is the sanctioned
+  // grooming→implementation handoff and the idle session's proc has already exited (nothing is killed).
+  // Without the flag the portal's interactive single-session/resume UX (FLUX-915/667) is byte-for-byte
+  // unchanged. A LIVE (running/pending) session is NEVER superseded, flag or not — a real turn is in
+  // flight and must not be clobbered; the caller gets a 409 and (for the Furnace) parks the ticket.
+  const supersedeParked = req.body?.supersedeParked === true;
+
   // Only block if there's already an active standalone (legacy single-session) session without a role
   const activeSessions = getActiveSessionsForTask(id);
   if (!role && activeSessions.length > 0) {
@@ -719,14 +763,18 @@ router.post('/:id/cli-session/start', async (req, res) => {
       // input route 409s on a missing session id) yet counts as active and reconcileDeadSessions
       // skips waiting-input — a permanent wedge (the per-ticket twin of the board's FLUX-667
       // self-heal). Terminalize it so a fresh start supersedes it instead of 409-ing forever. A
-      // genuinely resumable parked session (has resumeSessionId) still blocks — the user should
-      // send input to it, not spawn a duplicate.
-      if (blockingSession.status === 'waiting-input' && !blockingSession.resumeSessionId) {
+      // genuinely resumable parked session (has resumeSessionId) still blocks the interactive user —
+      // they should send input to it, not spawn a duplicate — UNLESS `supersedeParked` is set
+      // (FLUX-1235), where the authoritative driver reclaims an idle session regardless of resumability.
+      const idle = blockingSession.status === 'waiting-input';
+      if (idle && (!blockingSession.resumeSessionId || supersedeParked)) {
         blockingSession.status = 'cancelled';
         blockingSession.endedAt = new Date().toISOString();
       } else {
         return res.status(409).json({
-          error: 'Task already has an active CLI session. Use role/pattern params for multi-session.',
+          error: idle
+            ? 'Task already has a resumable parked CLI session. Send input to it, or supersede it.'
+            : 'Task already has a live CLI session. Use role/pattern params for multi-session.',
           session: getCliSessionSummaryForTask(id),
         });
       }
@@ -1030,27 +1078,24 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
   // the key) if spawn itself errors so a genuine later retry can start fresh.
   const reservation = reserveDispatch(idempotencyKey);
 
-  // FLUX-482: resolve the delegate's model with precedence:
-  //   per-call `model` param  >  persona.model  >  config.delegateModel  >  undefined.
+  // FLUX-482/931: resolve the delegate's model with precedence:
+  //   per-call `model` param  >  persona.modelTier (tier-resolved)  >  config.delegateModel  >  undefined.
   // Leaving it undefined makes the adapter fall back to its status-derived
   // grooming/implementation model (unchanged default behavior). Cheap personas
-  // (search/grooming/doc/review-reading) carry persona.model='sonnet'; code-writing
-  // personas carry none, so they keep the strong implementation model.
+  // (search/grooming/doc/review-reading) carry persona.modelTier='cheap', resolved to a
+  // concrete model per-framework via TIER_MODELS (claude→sonnet, gemini→flash; copilot has
+  // no built-in cheap alias yet — see TIER_MODELS' comment); code-writing personas carry no
+  // tier, so they keep the strong implementation model.
   //
-  // Claude-only for now: the resolved model is threaded onto session.model, which
-  // is currently honored ONLY by the Claude adapter (claude-code.ts: `session.model
-  // || selectedModel`). The Gemini and Copilot adapters read their own configured
-  // grooming/implementation model and ignore session.model, and persona.model='sonnet'
-  // is a Claude alias meaningless to them. So we gate the override to framework
-  // 'claude' — on Gemini/Copilot it stays undefined (no behavior change, and no risk
-  // of pushing a Claude alias onto a --model arg). Generalizing the adapters to honor
-  // session.model with a cheap/strong tier abstraction is tracked in FLUX-931.
-  const configDelegateModel = typeof configCache?.integrations?.claudeCode?.delegateModel === 'string'
-    ? configCache.integrations.claudeCode.delegateModel.trim()
+  // FLUX-931: generalized off the Claude-only gate — every adapter now honors session.model
+  // (claude-code.ts/gemini.ts/copilot.ts: `session.model || selectedModel`), so this resolves
+  // per-framework instead of only for framework === 'claude'.
+  const integrationConfig = configCache?.integrations?.[INTEGRATION_CONFIG_KEYS[framework]];
+  const configDelegateModel = typeof integrationConfig?.delegateModel === 'string'
+    ? integrationConfig.delegateModel.trim()
     : '';
-  const resolvedModel = framework === 'claude'
-    ? (modelOverride || persona?.model || configDelegateModel || undefined)
-    : undefined;
+  const tierModel = persona?.modelTier === 'cheap' ? TIER_MODELS[framework] : undefined;
+  const resolvedModel = modelOverride || tierModel || configDelegateModel || undefined;
 
   let session: CliSessionRecord;
   try {
@@ -1134,7 +1179,7 @@ router.post('/:id/cli-session/input', async (req, res) => {
     }
     if (typeof req.body?.model === 'string') boardSession.model = req.body.model.trim() || undefined;
     if (typeof req.body?.effortOverride === 'string') boardSession.effortOverride = req.body.effortOverride.trim() || undefined;
-    if (req.body?.permissionMode === 'gated' || req.body?.permissionMode === 'skip') boardSession.permissionMode = req.body.permissionMode;
+    applyPermissionModeChange(boardSession, req.body?.permissionMode, 'board');
     try {
       // FLUX-959: framework is fixed for a board session's life — resolve via the session
       // record, not the request (resumeSessionId is CLI-specific; switching = a new session).
@@ -1177,7 +1222,7 @@ router.post('/:id/cli-session/input', async (req, res) => {
 
   if (typeof req.body?.model === 'string') session.model = req.body.model.trim() || undefined;
   if (typeof req.body?.effortOverride === 'string') session.effortOverride = req.body.effortOverride.trim() || undefined;
-  if (req.body?.permissionMode === 'gated' || req.body?.permissionMode === 'skip') session.permissionMode = req.body.permissionMode;
+  applyPermissionModeChange(session, req.body?.permissionMode, 'ticket');
   try {
     await adapter.sendInput(session, message, user, workspaceRoot!, { attachments });
 

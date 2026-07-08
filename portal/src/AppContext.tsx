@@ -57,6 +57,9 @@ const VIEW_PATHS: Record<AppView, string> = {
 
 const LIVE_TASK_POLL_INTERVAL_MS = 3000;
 const LIVE_EVENT_DURATION_MS = 2200;
+/** FLUX-1300: how long a freshly-created ticket sorts first in its column (client-side "top-pin"),
+ *  regardless of the board's configured sort option, before settling into its normal position. */
+const NEW_TASK_PIN_DURATION_MS = 15_000;
 /** FLUX-1189: how long the board can sit untouched before the purely-ambient CSS loops
  *  (`.eh-idle` in index.css) pause. Long enough that normal reading/thinking pauses don't
  *  flicker the effect off and on. */
@@ -239,6 +242,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [tasksLoading, setTasksLoading] = useState(true);
   const [taskLiveEvents, setTaskLiveEvents] = useState<Record<string, TaskLiveEvent>>({});
   const [columnLiveEvents, setColumnLiveEvents] = useState<Record<string, ColumnLiveEvent>>({});
+  // FLUX-1300: task id → epoch ms until which it top-pins in its column (see NEW_TASK_PIN_DURATION_MS).
+  const [pinnedTasks, setPinnedTasks] = useState<Record<string, number>>({});
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
   const [isWindowVisible, setIsWindowVisible] = useState(() => (typeof document === 'undefined' ? true : !document.hidden));
@@ -274,6 +279,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const hasLoadedTasksRef = useRef(false);
   const taskEventTimeoutsRef = useRef<Record<string, number>>({});
   const columnEventTimeoutsRef = useRef<Record<string, number>>({});
+  const taskPinTimeoutsRef = useRef<Record<string, number>>({});
   const liveEventSequenceRef = useRef(0);
   const pendingReadStateRef = useRef<Record<string, string[]>>({});
   const readStateFlushTimerRef = useRef<number | null>(null);
@@ -328,6 +334,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [scheduleColumnEventClear, scheduleTaskEventClear]);
 
+  // FLUX-1300: schedule a pinned task's expiry — a plain per-id timeout (ids are never re-pinned
+  // once minted) instead of the sequence-guarded pattern above.
+  const scheduleTaskPinClear = useCallback((taskId: string) => {
+    const existingTimeout = taskPinTimeoutsRef.current[taskId];
+    if (existingTimeout) {
+      window.clearTimeout(existingTimeout);
+    }
+
+    taskPinTimeoutsRef.current[taskId] = window.setTimeout(() => {
+      setPinnedTasks((current) => removeKey(current, taskId));
+      delete taskPinTimeoutsRef.current[taskId];
+    }, NEW_TASK_PIN_DURATION_MS);
+  }, []);
+
+  const applyPins = useCallback((nextPinnedTasks: Record<string, number>) => {
+    const entries = Object.entries(nextPinnedTasks);
+    if (entries.length === 0) return;
+    setPinnedTasks((current) => ({ ...current, ...nextPinnedTasks }));
+    entries.forEach(([taskId]) => scheduleTaskPinClear(taskId));
+  }, [scheduleTaskPinClear]);
+
   const loadTasks = useCallback(async (activeOnly = false) => {
     if (isFetchingTasksRef.current) {
       return;
@@ -372,6 +399,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const previousTasksById = new Map(previousTasks.map((task) => [task.id, task]));
       const nextTaskEvents: Record<string, TaskLiveEvent> = {};
       const nextColumnEvents: Record<string, ColumnLiveEvent> = {};
+      const nextPinnedTasks: Record<string, number> = {};
       const shouldEmitLiveEvents = previousTasks.length > 0;
       let changed = previousTasks.length !== fetchedTasks.length;
 
@@ -399,6 +427,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
               at: Date.now(),
               taskId: task.id,
             };
+            // FLUX-1300: top-pin a newly-appeared ticket in its column for everyone (not just the
+            // creator's tab) — SSE's `taskCreated` drives this same reconciliation for other viewers.
+            nextPinnedTasks[task.id] = Date.now() + NEW_TASK_PIN_DURATION_MS;
           }
 
           continue;
@@ -483,6 +514,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setLastRefreshAt(Date.now());
         if (shouldEmitLiveEvents) {
           applyLiveEvents(nextTaskEvents, nextColumnEvents);
+          applyPins(nextPinnedTasks);
         }
       });
     } catch (error) {
@@ -494,7 +526,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } finally {
       isFetchingTasksRef.current = false;
     }
-  }, [applyLiveEvents]);
+  }, [applyLiveEvents, applyPins]);
 
   const loadParseErrors = useCallback(async () => {
     if (!workspaceConfigured) return;
@@ -727,6 +759,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => {
       Object.values(taskEventTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId));
       Object.values(columnEventTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId));
+      Object.values(taskPinTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId));
       if (readStateFlushTimerRef.current !== null) {
         window.clearTimeout(readStateFlushTimerRef.current);
         flushReadState();
@@ -1043,6 +1076,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         incr('refresh.trigger.sse');
         void loadTasks();
       });
+      // FLUX-1282: a newly created top-level ticket re-fetches the list so it appears
+      // immediately in other tabs/sessions instead of waiting for the 3s poll.
+      trackListener('taskCreated', () => {
+        incr('refresh.trigger.sse');
+        void loadTasks();
+      });
       trackListener('activity', (e: MessageEvent) => {
         const { taskId, activity } = JSON.parse(e.data) as { taskId: string; activity: string | null };
         // FLUX-626: write to the isolated `liveSessions` slice instead of churning the whole
@@ -1204,20 +1243,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
     updateTaskFilterUrl({ searchQuery, sortOption, filterAssignee, filterPriority, filterTag, filterUnreadOnly, filterWorktree });
   }, [searchQuery, sortOption, filterAssignee, filterPriority, filterTag, filterUnreadOnly, filterWorktree]);
 
+  // FLUX-1251: the last ticket id auto-opened from a `?ticket=` URL. The default (no `view`) opens
+  // via `openTask` (chat mode) which never sets `isModalOpen`, so the guard below can't stop this
+  // effect re-firing on every `tasks` churn (SSE/poll) — track it here to open exactly once per id.
+  const openedFromUrlRef = useRef<string | null>(null);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const ticketId = params.get('ticket');
     if (!ticketId || tasksLoading) return;
     if (isModalOpen && modalTask?.id === ticketId) return;
+    if (openedFromUrlRef.current === ticketId) return;
 
     const task = tasks.find((item) => item.id === ticketId);
     if (!task) return;
     const view = params.get('view');
+    openedFromUrlRef.current = ticketId;
     if (view === 'full') {
       openTaskFullView(task);
+    } else if (view === 'popup') {
+      // Preserve an explicit popup deep-link (what an in-app popup-opened URL carries).
+      openTaskModal(task);
     } else {
-      setModalTask(task);
-      setIsModalOpen(true);
+      // FLUX-1251: no explicit view → open the ticket the same way a card click does, honoring
+      // boardCardOpenMode (default 'chat') rather than always popping the center modal.
+      openTask(task);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isModalOpen, modalTask?.id, tasks, tasksLoading]);
@@ -1363,7 +1413,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     tasks, taskById, prByBranch, prMemberIds, worktreeBranches, worktrees,
     liveSessions: appStore.getState().liveSessions,
     engineEvents: appStore.getState().engineEvents,
-    changesFocus, tasksLoading, taskLiveEvents, columnLiveEvents,
+    changesFocus, tasksLoading, taskLiveEvents, columnLiveEvents, pinnedTasks,
     refreshTrigger, lastRefreshAt, isWindowVisible, isConnected,
     workspaceConfigured, workspacePath, workspaces,
     config, readComments, totalUnreadCount,

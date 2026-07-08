@@ -12,9 +12,12 @@ import {
   ensureGroupStoreScaffold,
   getOriginRemote,
   peekGroupMembers,
+  isSafeName,
+  validateGroupConfig,
+  formatGroupValidationErrors,
   type GroupMember,
 } from './group.js';
-import { validateGitRemote } from './group-setup.js';
+import { validateGitRemote, deriveSafeMemberNames } from './group-setup.js';
 import {
   getWorkspacesList,
   addWorkspaceEntry,
@@ -227,6 +230,23 @@ export async function createDedicatedParent(
     if (!check.ok) throw new Error(`member ${m.name}: ${check.reason}`);
   }
 
+  // Derive safe, unique member names (FLUX-543). Folder-derived names can carry
+  // spaces / parens the loader's SAFE_NAME_PATTERN rejects; writing them verbatim
+  // yields a group.json that fails its own validator, so the group silently
+  // renders flat. Auto-sanitize + de-dupe, then hard-fail any name that still
+  // can't be made safe rather than persisting an invalid config. The safe name is
+  // what's written to group.json and keys group.local.json below; the real
+  // on-disk folder is preserved via that path mapping, not the name.
+  const safeNames = deriveSafeMemberNames(input.members.map((m) => m.name));
+  const safeMembers = input.members.map((member, i) => ({ member, name: safeNames[i] ?? '' }));
+  for (const { member, name } of safeMembers) {
+    if (!isSafeName(name)) {
+      throw new Error(
+        `member '${member.name}' cannot be converted to a safe name (needs at least one letter or digit)`,
+      );
+    }
+  }
+
   // Never clobber an existing group — route the caller to repair instead.
   if (existsSync(getGroupConfigFile(parentRoot))) {
     throw new Error(
@@ -251,13 +271,20 @@ export async function createDedicatedParent(
   // 4. Write group.json.
   const config = {
     name: input.groupName,
-    members: input.members.map((m) => ({
-      name: m.name,
+    members: safeMembers.map(({ member: m, name }) => ({
+      name,
       role: m.role,
       remote: m.remote,
       ...(m.testCommand ? { testCommand: m.testCommand } : {}),
     })),
   };
+  // Gate the write on the same validator the loader enforces (mirrors
+  // planGroupSetup, group-setup.ts:246-249) — hard-fail here rather than
+  // persist a group.json the loader will reject and render flat.
+  const configErrors = validateGroupConfig(config);
+  if (configErrors.length > 0) {
+    throw new Error(`Invalid group config: ${formatGroupValidationErrors(configErrors)}`);
+  }
   await fs.writeFile(getGroupConfigFile(parentRoot), JSON.stringify(config, null, 2) + '\n', 'utf-8');
   const wroteConfig = true;
 
@@ -268,9 +295,11 @@ export async function createDedicatedParent(
   //    can't find its members and the group reads as "not fully linked".
   let wroteLocalConfig = false;
   const memberPaths: Record<string, string> = {};
-  for (const m of input.members) {
+  for (const { member: m, name } of safeMembers) {
     if (typeof m.path === 'string' && m.path.trim().length > 0) {
-      memberPaths[m.name] = path.resolve(m.path);
+      // Key by the SAFE name (matches group.json) → real on-disk folder, which
+      // preserves the human-readable/parenthesized folder without a schema change.
+      memberPaths[name] = path.resolve(m.path);
     }
   }
   if (Object.keys(memberPaths).length > 0) {
@@ -299,22 +328,22 @@ export async function createDedicatedParent(
   //    member with no supplied path or a path that isn't checked out is reported
   //    as a gap rather than failing the whole create.
   const memberRegistrations: MemberRegistration[] = [];
-  for (const m of input.members) {
-    const memberPath = memberPaths[m.name] ?? null;
+  for (const { name } of safeMembers) {
+    const memberPath = memberPaths[name] ?? null;
     if (!memberPath) {
-      memberRegistrations.push({ name: m.name, path: null, registered: false, reason: 'no local path supplied' });
+      memberRegistrations.push({ name, path: null, registered: false, reason: 'no local path supplied' });
       continue;
     }
     if (!existsSync(memberPath)) {
-      memberRegistrations.push({ name: m.name, path: memberPath, registered: false, reason: 'path not found on disk' });
+      memberRegistrations.push({ name, path: memberPath, registered: false, reason: 'path not found on disk' });
       continue;
     }
     try {
-      await registerWorkspace(memberPath, m.name);
-      memberRegistrations.push({ name: m.name, path: memberPath, registered: true });
+      await registerWorkspace(memberPath, name);
+      memberRegistrations.push({ name, path: memberPath, registered: true });
     } catch (err) {
       const reason = err instanceof Error ? err.message : 'registration failed';
-      memberRegistrations.push({ name: m.name, path: memberPath, registered: false, reason });
+      memberRegistrations.push({ name, path: memberPath, registered: false, reason });
     }
   }
 

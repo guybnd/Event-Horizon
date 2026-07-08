@@ -9,6 +9,7 @@ import { configCache, autoRegisterUnknownTags } from '../config.js';
 import {
   normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry,
   summarizeFieldChanges, hasAppendedStatusChange, findEarliestHistoryDate,
+  reconcileNovelHistoryEntries,
 } from '../history.js';
 import { tasksCache, serializeTaskForApi, serializeTaskForAgent, serializeTaskForList, updateTaskWithHistory, upsertManagedTicket, workspaceActivating, parseErrors, atomicWriteFile, createTask, getTerminalStatuses, syncParentSubtaskLinks, validateParentLink, subtaskIds } from '../task-store.js';
 import { generatePromptNotification, generateCompletionNotification } from '../notifications.js';
@@ -26,6 +27,7 @@ import { isVirtualConversationId } from '../agents/board.js';
 import { diffFilesForBranch } from '../diff-aggregator.js';
 import { ARTIFACT_CSP, injectArtifactScripts, isSafeTicketId, parseRevParam, readArtifactRevision } from '../artifacts.js';
 import { selectMembers, sharedNonDoneSiblings, resolveMergedPrTickets } from '../pr-tickets.js';
+import { startPlanGateNow, startPlanReviseNow } from '../gate-runner.js';
 // FLUX-999 (epic FLUX-996): every git call in this file used to be a bare execFileAsync — no
 // timeout, no non-interactive env — so e.g. `git fetch`/`git push` in the update-branch route
 // (below) could hang that request forever on a slow/unreachable remote. Route through the S1
@@ -439,6 +441,9 @@ router.post('/', async (req, res) => {
       body: body || '',
       author: author || 'Unknown',
       projectKey,
+      // FLUX-1225: forward the ticket kind (e.g. 'scratch' from the ChatDock spawn). createTask
+      // routes 'scratch' into its own SCRATCH-n id namespace and persists the kind to frontmatter.
+      ...(typeof rest.kind === 'string' ? { kind: rest.kind } : {}),
     });
     res.json(serializeTaskForApi(task));
   } catch (err: unknown) {
@@ -541,9 +546,13 @@ router.put('/:id', async (req, res) => {
   // Backwards-compat: portal drag to "Require Input" column routes through swimlane
   if (updates.status === requireInputStatus && task.status !== requireInputStatus) {
     const submittedHistory: HistoryEntry[] = Array.isArray(updates.history) ? updates.history : [];
-    const existingLen = (task.history || []).length;
+    // FLUX-1308: skip reconciliation when no history array was submitted — building identity
+    // signatures for the whole existing history is wasted work in the appendHistory-only case.
+    const novelSubmitted = Array.isArray(updates.history)
+      ? reconcileNovelHistoryEntries(task.history || [], submittedHistory)
+      : [];
     const hasNewComment =
-      submittedHistory.slice(existingLen).some((e) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === requireInputStatus && e?.comment))) ||
+      novelSubmitted.some((e) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === requireInputStatus && e?.comment))) ||
       appendHistoryEntries.some((e) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === requireInputStatus && e?.comment)));
     if (!hasNewComment) {
       return res.status(400).json({
@@ -574,9 +583,13 @@ router.put('/:id', async (req, res) => {
   // refuse, reuse `evaluateWorktreeReadyRefusal` from mcp-server.ts rather than duplicating it.
   if (updates.status === readyStatus && task.status !== readyStatus) {
     const submittedHistory: HistoryEntry[] = Array.isArray(updates.history) ? updates.history : [];
-    const existingLen = (task.history || []).length;
+    // FLUX-1308: skip reconciliation when no history array was submitted — building identity
+    // signatures for the whole existing history is wasted work in the appendHistory-only case.
+    const novelSubmitted = Array.isArray(updates.history)
+      ? reconcileNovelHistoryEntries(task.history || [], submittedHistory)
+      : [];
     const hasNewComment =
-      submittedHistory.slice(existingLen).some((e) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === readyStatus && e?.comment))) ||
+      novelSubmitted.some((e) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === readyStatus && e?.comment))) ||
       appendHistoryEntries.some((e) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === readyStatus && e?.comment)));
     if (!hasNewComment && configCache.requireCommentOnStatusChange !== false && !skipCommentRequirement) {
       return res.status(400).json({
@@ -607,10 +620,19 @@ router.put('/:id', async (req, res) => {
   ).history;
 
   const activityTimestamp = new Date().toISOString();
-  const novelEntries = nextHistory.slice(existingHistory.length).map((entry) => ({
-    ...entry,
-    date: activityTimestamp,
-  }));
+  // FLUX-1308: reconcile by entry identity, not array length/position — a client submitting a
+  // full `history` array from a stale snapshot (missing N entries the server already has) used
+  // to have its first N genuinely-novel entries silently dropped by the old slice-by-length
+  // reconciliation. See reconcileNovelHistoryEntries for the full rationale. Skipped entirely
+  // when no `history` array was submitted (the dominant appendHistory-only case) — nextHistory
+  // is then just existingHistory re-derived, so reconciliation would always yield [] but still
+  // pay to build identity signatures for the whole history on every PUT.
+  const novelEntries = Array.isArray(updates.history)
+    ? reconcileNovelHistoryEntries(existingHistory, nextHistory).map((entry) => ({
+        ...entry,
+        date: activityTimestamp,
+      }))
+    : [];
   nextHistory = [...existingHistory, ...novelEntries];
   // FLUX-725: the portal status-move writers now send the `status_change` (and any required
   // comment) as `appendHistory` deltas instead of a reconstructed full `history` array. Those
@@ -1402,6 +1424,35 @@ router.post('/:id/retry', async (req, res) => {
   } catch (err: unknown) {
     res.status(500).json({ error: `Failed to create retry ticket: ${errorMessage(err)}` });
   }
+});
+
+// FLUX-1289: the portal's entry point for "Re-run review" (AttentionDock body / ChatPlanApprovalCard /
+// PlanApprovalPanel) — the REST twin of the `start_plan_review` MCP tool, since a human clicking a
+// button in the portal has no agent turn to call the MCP tool from. Same one-shot mechanics;
+// startPlanGateNow already guards status / already-running / Furnace-owned.
+router.post('/:id/plan-review/start', async (req, res) => {
+  const { id } = req.params;
+  if (!tasksCache[id]) return res.status(404).json({ error: `Ticket ${id} not found` });
+  const result = await startPlanGateNow(id, { mode: 'one-pass' });
+  if (!result.ok) return res.status(409).json({ error: result.message, reason: result.reason });
+  res.json({ ok: true, message: result.message });
+});
+
+// FLUX-1303: "Send for re-grooming" — the portal's atomic revise entry point (AttentionDock body /
+// ChatPlanApprovalCard / PlanApprovalPanel). One call records the user's notes as an attributed
+// comment, stamps the changes-requested verdict + planReviewBodyHash, dispatches the grooming
+// revise session, and registers it with the gate runner so the revision is re-reviewed — replacing
+// the old two-step portal flow that could strand a stale verdict (see startPlanReviseNow).
+router.post('/:id/plan-review/revise', async (req, res) => {
+  const { id } = req.params;
+  if (!tasksCache[id]) return res.status(404).json({ error: `Ticket ${id} not found` });
+  const { notes, user } = (req.body ?? {}) as { notes?: unknown; user?: unknown };
+  const result = await startPlanReviseNow(id, {
+    ...(typeof notes === 'string' ? { notes } : {}),
+    ...(typeof user === 'string' ? { user } : {}),
+  });
+  if (!result.ok) return res.status(409).json({ error: result.message, reason: result.reason });
+  res.json({ ok: true, message: result.message });
 });
 
 // Update a stale PR branch by merging the default branch into it (FLUX-559). Conservative:

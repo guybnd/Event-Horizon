@@ -156,13 +156,53 @@ export function setObservedWorktrees(ticketIds: readonly (string | null)[]): voi
  */
 export function globalSlotsInUse(): number {
   const batches = Object.values(cache);
-  const reserved = batches.flatMap((b) => furnaceReservedTicketIds(b));
-  return computeSlotsInUse(reserved, { count: observedWorktreeCount, ticketIds: [...observedWorktreeTicketIds] });
+  const reserved = new Set([...batches.flatMap((b) => furnaceReservedTicketIds(b)), ...temperReservedTicketIds]);
+  return computeSlotsInUse([...reserved], { count: observedWorktreeCount, ticketIds: [...observedWorktreeTicketIds] });
 }
 
 /** Free worktree slots right now (cap − in-use), floored at 0. */
 export function freeSlots(cap: number = FURNACE_SLOT_CAP): number {
   return Math.max(0, cap - globalSlotsInUse());
+}
+
+/**
+ * FLUX-1244: does this ticket ALREADY hold an observed worktree on disk? A re-spawn on such a ticket
+ * (Temper re-implement/re-review, a resumed session) reuses that worktree via the shared branch — it
+ * claims NO new slot — so a slot-availability gate must exempt it, otherwise the ticket's own worktree
+ * counts against it and a full pool self-stalls its in-flight loop. Reads the identity set maintained by
+ * {@link setObservedWorktrees} (FLUX-1067); pair it with a `refreshWorktreePool()` when freshness matters.
+ */
+export function ticketHasObservedWorktree(ticketId: string): boolean {
+  return observedWorktreeTicketIds.has(ticketId);
+}
+
+/**
+ * FLUX-1239: Temper's own in-memory pending-slot reservations. A Furnace batch's active tickets count
+ * toward {@link globalSlotsInUse} synchronously via `furnaceReservedTicketIds` the instant a ticket's
+ * state flips to implementing/reviewing — but Temper has no persisted batch state to derive a reservation
+ * from, and the on-disk worktree it will eventually claim isn't observed until a later
+ * `refreshWorktreePool()`. Without this, a same-tick/same-TTL burst of `spawnTemper` calls (several branch
+ * tickets entering Ready within the TTL-coalesced refresh window) all read the same stale free-slot count
+ * and can all pass the gate, over-committing the pool. `spawnTemper` checks-then-reserves synchronously (no
+ * await in between), so the next sibling call in the same burst sees the slot as taken. Released on spawn
+ * failure (no worktree was actually claimed) or once Temper stops driving the ticket; while the reservation
+ * and an observed worktree overlap for the same id, the identity-based dedup in `computeSlotsInUse` counts
+ * it once.
+ */
+const temperReservedTicketIds = new Set<string>();
+
+export function setTemperReserved(ticketId: string, reserved: boolean): void {
+  if (reserved) temperReservedTicketIds.add(ticketId);
+  else temperReservedTicketIds.delete(ticketId);
+}
+
+export function isTemperReserved(ticketId: string): boolean {
+  return temperReservedTicketIds.has(ticketId);
+}
+
+/** FLUX-1257: snapshot of every ticket Temper currently holds a slot reservation for — see {@link setTemperReserved}. */
+export function getTemperReservedTicketIds(): string[] {
+  return [...temperReservedTicketIds];
 }
 
 // ── Persist / mutate ───────────────────────────────────────────────────────────
@@ -379,6 +419,7 @@ export function __resetFurnaceStoreForTests(): void {
   iconCursor = 0;
   observedWorktreeCount = 0;
   observedWorktreeTicketIds = new Set<string>();
+  temperReservedTicketIds.clear();
   chains.clear();
 }
 

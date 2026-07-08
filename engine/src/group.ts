@@ -96,7 +96,7 @@ function isNonEmptyString(value: unknown): value is string {
  * shared across a team, so an unsafe name is a cross-machine injection vector.
  */
 const SAFE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-function isSafeName(value: string): boolean {
+export function isSafeName(value: string): boolean {
   return value !== '.' && value !== '..' && SAFE_NAME_PATTERN.test(value);
 }
 

@@ -2,6 +2,7 @@ import { log } from './log.js';
 import fs from 'fs/promises';
 import { renameSync } from 'fs';
 import { getConfigFile } from './workspace.js';
+import { DEFAULT_GATE_POLICY, UNMIGRATED_GATE_POLICY_DEFAULT } from './models/gate-policy.js';
 
 /**
  * Minimal shape of the raw config.json payload this loader touches directly before merging
@@ -104,19 +105,25 @@ export let configCache: any = {
     claudeCode: {
       groomingModel: '',
       implementationModel: '',
-      // FLUX-482: default model for DELEGATED subagents (delegate_to_agent / delegate_parallel)
-      // when neither a per-call `model` param nor the persona's own `model` is set. Empty/undefined
+      // FLUX-482/931: default model for DELEGATED subagents (the `delegate` MCP tool) when
+      // neither a per-call `model` param nor the persona's own `modelTier` is set. Empty/undefined
       // = no override → fall back to the status-derived grooming/implementation model. Set a cheap
-      // tier (e.g. 'sonnet') to make all un-overridden delegates cheap by default.
+      // model (e.g. 'sonnet') to make all un-overridden delegates cheap by default.
       delegateModel: '',
     },
     geminiCli: {
       groomingModel: '',
       implementationModel: '',
+      // FLUX-931: same delegate-model default as claudeCode.delegateModel above, resolved when
+      // the board's framework is gemini.
+      delegateModel: '',
     },
     copilotCli: {
       groomingModel: '',
       implementationModel: '',
+      // FLUX-931: same delegate-model default as claudeCode.delegateModel above, resolved when
+      // the board's framework is copilot.
+      delegateModel: '',
     }
   },
   syncSettings: {
@@ -136,6 +143,30 @@ export let configCache: any = {
     // SMELTER_MODE_CONTRACTS in orchestration-personas.ts for the composed prompt text.
     smelterMode: 'drafting',
   },
+  // FLUX-1261: per-gate autonomy policy — `plan` (Grooming) and `review` (Ready) each dial
+  // Auto / Auto→You / You. Replaces Temper's (FLUX-1071) board-wide `temperEnabled` boolean
+  // (migrated once via `gatePolicyMigrated`, see loadConfig below); `review: 'auto'` drives the
+  // exact same loop `temperEnabled: true` used to (temper.ts). `merge` is never a representable
+  // key here — the merge-lock is structural, not a runtime check.
+  // FLUX-1292: seeded to UNMIGRATED_GATE_POLICY_DEFAULT (auto/auto), not DEFAULT_GATE_POLICY —
+  // this literal is the ONE in-memory value a board whose gatePolicy has never been migrated ever
+  // sees (a fresh install's ENOENT path, and an existing config.json that predates the `gatePolicy`
+  // field, both leave this seed untouched all the way into the migration block below). A board with
+  // an explicit, already-migrated gatePolicy on disk overrides this via the `{...configCache, ...loaded}`
+  // spread in loadConfig() and never observes the seed at all.
+  gatePolicy: { boardDefault: { ...UNMIGRATED_GATE_POLICY_DEFAULT.boardDefault } },
+  // FLUX-1263: column-level fixed override for the `plan` gate's review depth/breadth ('auto' — the
+  // default — picks Quick/Standard/Thorough from the ticket's effort; a fixed value forces that depth
+  // for every plan review regardless of effort). Dialed in the same Grooming-column ⚙ modal as the
+  // gate policy itself (FLUX-1261).
+  planReviewDepth: 'auto',
+  // FLUX-1290: gates the `finish_ticket` merge-lock's `hasHumanGateTouch` runtime check
+  // (mcp-server.ts, backed by models/gate-policy.ts). Default `false` — an agent session can merge
+  // a branch/PR ticket with no prior human touch; a user who wants today's always-on lock back can
+  // flip this to `true`. Deliberately a plain boolean, not a `gatePolicy` key — `merge` stays
+  // structurally unrepresentable in `GateValue` per the FLUX-1247 decision, this is a separate
+  // on/off switch in front of the one runtime check, not a new gate.
+  blockAgentPrMerges: false,
   agentProgress: {
     enabled: true,
     inlineDelay: 2,
@@ -156,6 +187,20 @@ export let configCache: any = {
     { id: 'git-status', label: 'Git status', command: 'git status', runMode: 'current' },
   ] as Array<{ id: string; label: string; command: string; runMode: 'current' | 'new' }>,
 };
+
+/**
+ * FLUX-889/1263: the status immediately after `name` in the configured column order (case-insensitive
+ * name match), or `undefined` if `name` isn't found / is the last column. Single source of truth for the
+ * "what comes after Grooming/Todo" derivation duplicated ad hoc elsewhere (mcp-server's `change_status`,
+ * furnace-stoker's `inProgressStatus`) — new callers should use this rather than re-deriving it locally.
+ */
+export function nextColumnAfter(name: string): string | undefined {
+  const columnNames: string[] = (configCache.columns || [])
+    .map((c: { name?: unknown }) => c?.name)
+    .filter((n: unknown): n is string => typeof n === 'string');
+  const i = columnNames.findIndex((c) => c.toLowerCase() === name.toLowerCase());
+  return i >= 0 && i + 1 < columnNames.length ? columnNames[i + 1] : undefined;
+}
 
 export async function loadConfig() {
   try {
@@ -235,6 +280,28 @@ export async function loadConfig() {
     configCache.chatOpenDefaultMigrated = true;
     await saveConfig(configCache);
     log.info('[config] applied chat-open-default migration (boardCardOpenMode →', configCache.boardCardOpenMode + ')');
+  }
+
+  // FLUX-1261: one-time migration of Temper's board-wide `temperEnabled` boolean into
+  // `gatePolicy.boardDefault.review` (the generalized per-gate autonomy dial). `true` maps to
+  // `'auto'` (the same loop-forever behavior `temper.ts` already drives); `false`/absent maps to
+  // `'you'` (the safe default — matches a board that never turned Temper on). Guarded by
+  // `gatePolicyMigrated` so a later deliberate dial change is never re-clobbered, mirroring the
+  // `chatOpenDefaultMigrated` idiom above. Runs exactly once, and only past the corrupt/unreadable
+  // config early-returns above, so it can never overwrite a recoverable file with a bad migration.
+  if (!configCache.gatePolicyMigrated) {
+    const legacyTemperOn = configCache.temperEnabled === true;
+    const priorBoardDefault = configCache.gatePolicy?.boardDefault as { plan?: unknown; review?: unknown } | undefined;
+    configCache.gatePolicy = {
+      boardDefault: {
+        plan: priorBoardDefault?.plan ?? DEFAULT_GATE_POLICY.boardDefault.plan,
+        review: legacyTemperOn ? 'auto' : (priorBoardDefault?.review ?? DEFAULT_GATE_POLICY.boardDefault.review),
+      },
+    };
+    delete configCache.temperEnabled;
+    configCache.gatePolicyMigrated = true;
+    await saveConfig(configCache);
+    log.info(`[config] migrated temperEnabled (${legacyTemperOn}) → gatePolicy.boardDefault.review='${configCache.gatePolicy.boardDefault.review}'`);
   }
 }
 

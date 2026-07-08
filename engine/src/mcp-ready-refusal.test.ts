@@ -88,4 +88,40 @@ describe('evaluateWorktreeReadyRefusal (FLUX-730 commit-before-Ready)', () => {
     });
     expect(r.refuse).toBe(false);
   });
+
+  // FLUX-1267: noDiffExpected escape hatch for legitimately zero-diff (verification-only) tickets.
+  it('ALLOWS a worktree branch with 0 commits ahead when noDiffAcknowledged and the tree is clean', () => {
+    const r = evaluateWorktreeReadyRefusal({
+      ...base,
+      worktreePath: 'C:/wt/EventHorizon-FLUX-1',
+      branchStatus: { exists: true, aheadCount: 0 },
+      changeCount: 0,
+      noDiffAcknowledged: true,
+    });
+    expect(r.refuse).toBe(false);
+    expect(r.message).toBeUndefined();
+  });
+
+  it('STILL REFUSES when noDiffAcknowledged is true but the worktree has uncommitted changes', () => {
+    const r = evaluateWorktreeReadyRefusal({
+      ...base,
+      worktreePath: 'C:/wt/EventHorizon-FLUX-1',
+      branchStatus: { exists: true, aheadCount: 0 },
+      changeCount: 3,
+      noDiffAcknowledged: true,
+    });
+    expect(r.refuse).toBe(true);
+    expect(r.message).toContain('3 uncommitted changes');
+  });
+
+  it('mentions the noDiffExpected escape hatch in the refusal message', () => {
+    const r = evaluateWorktreeReadyRefusal({
+      ...base,
+      worktreePath: 'C:/wt/EventHorizon-FLUX-1',
+      branchStatus: { exists: true, aheadCount: 0 },
+      changeCount: 0,
+    });
+    expect(r.refuse).toBe(true);
+    expect(r.message).toContain('noDiffExpected:true');
+  });
 });

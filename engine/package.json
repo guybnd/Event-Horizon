@@ -1,6 +1,6 @@
 {
   "name": "engine",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "Event Horizon engine — Express + TypeScript API, MCP server, and agent orchestration for the local-first ticket board.",
   "main": "dist/index.js",
   "bin": "dist/index.js",
@@ -70,7 +70,7 @@
     "@yao-pkg/pkg": "^6.19.0",
     "esbuild": "^0.27.7",
     "postject": "1.0.0-alpha.6",
-    "tsx": "^4.21.0",
+    "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
   }

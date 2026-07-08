@@ -913,6 +913,9 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
   }, 15000);
 
   proc.on('exit', async (code, signal) => {
+    // FLUX-1207: best-effort reap of any orphaned descendants (e.g. a Bash-tool-launched vitest
+    // run) on every exit, not only engine-initiated stop().
+    killProcessTree(proc, undefined, { label: id });
     if (!telemetryEmitted) {
       telemetryEmitted = true;
       const spawnEndedAt = Date.now();
@@ -1287,6 +1290,11 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   replyProc.on('error', async (error) => {
+    // FLUX-1204: Node can fire both 'error' and 'exit' for one failed spawn — guard
+    // raiseNeedsAction on whether THIS handler is the first to observe the outcome (mirrors the
+    // initial-spawn path), so a healthy 'exit' that already ran first can't be overridden by a
+    // spurious later 'error' flagging a resumed turn that actually succeeded.
+    const isFirstOutcome = !telemetryEmitted;
     if (!telemetryEmitted) {
       telemetryEmitted = true;
       emitOperationEvent({
@@ -1311,7 +1319,8 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     if (!session.requestedStop) {
       appendErrorToSession(session, `Failed to resume agent: ${error.message}`);
       // S10 (epic FLUX-996): same needsAction + notification surfacing as the initial-spawn path.
-      void raiseNeedsAction(id, `Failed to resume agent: ${error.message}`);
+      // Only raise when this handler is the first to observe the outcome (FLUX-1204).
+      if (isFirstOutcome) void raiseNeedsAction(id, `Failed to resume agent: ${error.message}`);
     }
     flushSessionOutput(session, true);
     // FLUX-849: a crashed resumed turn (reply spawn error) was previously invisible on the board —
@@ -1326,6 +1335,13 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   replyProc.on('exit', async (code, signal) => {
+    // FLUX-1207: best-effort reap of any orphaned descendants (e.g. a Bash-tool-launched vitest
+    // run) on every exit, not only engine-initiated stop().
+    killProcessTree(replyProc, undefined, { label: id });
+    // FLUX-1204: mirror the initial-spawn path — guard raiseNeedsAction below on whether THIS
+    // handler is the first to observe the outcome, so a spurious 'error' that already fired (and
+    // raised needsAction) can't be double-counted by a subsequent non-zero/signalled 'exit'.
+    const isFirstOutcome = !telemetryEmitted;
     if (!telemetryEmitted) {
       telemetryEmitted = true;
       const spawnEndedAt = Date.now();
@@ -1378,7 +1394,9 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       appendErrorToSession(session, stderrHint ? `${replyOutcome}\n${stderrHint}` : replyOutcome);
       teeDispatchActivityToBoard(session, id, 'failed', DISPATCH_LIFECYCLE_LABEL['failed']);
       // S10 (epic FLUX-996): same needsAction + notification surfacing as the initial-spawn path.
-      void raiseNeedsAction(id, replyOutcome);
+      // Only raise when this handler is the first to observe the outcome (FLUX-1204) — a spurious
+      // 'error' that already fired must not be double-counted by this non-zero/signalled 'exit'.
+      if (isFirstOutcome) void raiseNeedsAction(id, replyOutcome);
     }
     broadcastEvent('taskUpdated', { id });
   });

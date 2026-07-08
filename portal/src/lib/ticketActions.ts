@@ -50,6 +50,18 @@ export function buildStatusChangeHistory(
 }
 
 /**
+ * FLUX-1303: the plan-approval target status — the VISIBLE column right after Grooming, falling
+ * back to 'Todo'. One derivation shared by every "Approve plan" writer (`approvePlanToTodo` in
+ * pendingInteractions.tsx, `PlanApprovalPanel.handleApprove`) so all surfaces route an approved
+ * plan to the same column. Matches the engine gate's own approve move (`nextColumnAfter`,
+ * engine/src/config.ts) exactly: visible columns only (never a hidden status), case-insensitive.
+ */
+export function statusAfterGrooming(visibleColumns: string[]): string {
+  const i = visibleColumns.findIndex((c) => c.toLowerCase() === 'grooming');
+  return (i >= 0 && i + 1 < visibleColumns.length ? visibleColumns[i + 1] : undefined) || 'Todo';
+}
+
+/**
  * Detect the engine's "comment required for this status transition" rejection (FLUX-847),
  * regardless of whether the caller has the structured `err.code` (api.ts attaches it from
  * `errorPayload.error`) or only the prose `message` (older call sites / generic Error).
@@ -79,7 +91,7 @@ export function applyOptimisticStatusChange(
   const now = new Date().toISOString();
   const prior: HistoryDigest = base ?? {
     length: 0, lastEntry: null, lastActivityAt: '', enteredCurrentStatusAt: null,
-    isSpeedDemon: false, statusChanges24h: [], comments: [], requireInput: null,
+    isSpeedDemon: false, statusChanges24h: [], comments: [], requireInput: null, planReviewComment: null,
   };
   return {
     ...prior,
@@ -211,7 +223,7 @@ export interface TicketActionContext {
 }
 
 /** PR/commit url if it's an actual link (commit-hash implementationLinks aren't openable). */
-function prLink(task: Task): string | undefined {
+export function prLink(task: Task): string | undefined {
   const link = task.implementationLink;
   return link && /^https?:\/\//.test(link) ? link : undefined;
 }

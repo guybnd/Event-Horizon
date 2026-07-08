@@ -59,6 +59,15 @@ export interface BuildBatchOptions {
   tickets?: string[];
   /** Non-terminal (`draft`/`burning`) batches already in the store, for the one-active-batch guard. */
   activeBatches?: FurnaceBatch[];
+  /**
+   * FLUX-1235: ids of candidates that currently have a LIVE (running/pending) roleless interactive
+   * session — the caller resolves these from the session store (kept out of this pure builder). A
+   * loaded ticket carrying one is SOFT-flagged (a `note`, like the file-overlap heuristic), never
+   * excluded: the Furnace can't take over a live session (it 409s and parks mid-burn), so surfacing it
+   * before ignite lets the user resolve the chat first. An IDLE (waiting-input) session is NOT flagged —
+   * the start route takes it over on dispatch (`supersedeParked`).
+   */
+  liveSessionTicketIds?: Set<string>;
 }
 
 // Cap how much of a body we scan for path mentions — a huge body could otherwise pin the single-threaded
@@ -255,12 +264,20 @@ export function buildBatchTickets(tickets: BuildCandidate[], opts: BuildBatchOpt
     for (const t of ordered.slice(opts.limit)) excludeWithReason(excluded, t, 'capped by limit');
   }
 
+  const liveSessionIds = opts.liveSessionTicketIds ?? new Set<string>();
   const batchTickets: BatchTicket[] = capped.map((t, i) => {
     const entry = newBatchTicket(t.id, i, t.title);
+    const notes: string[] = [];
     const withSet = overlapWith.get(t.id);
     if (withSet && withSet.size) {
-      entry.note = `may touch ${[...(overlapFiles.get(t.id) ?? [])].join(', ')} (shared with ${[...withSet].join(', ')})`;
+      notes.push(`may touch ${[...(overlapFiles.get(t.id) ?? [])].join(', ')} (shared with ${[...withSet].join(', ')})`);
     }
+    // FLUX-1235: soft-flag (don't exclude) a candidate with a live interactive session — the Furnace
+    // would 409 and park it mid-burn; surface it so the user can resolve the chat before igniting.
+    if (liveSessionIds.has(t.id)) {
+      notes.push('has a live session — resolve it before burning (the Furnace can only take over an idle one)');
+    }
+    if (notes.length) entry.note = notes.join('; ');
     return entry;
   });
 
@@ -273,8 +290,10 @@ export function buildBatchTickets(tickets: BuildCandidate[], opts: BuildBatchOpt
   if (opts.statuses && !isDefaultStatuses) notes.push(`Scan window overridden: ${statuses.join('/')}.`);
   if (isCapped) notes.push(`Capped to ${opts.limit} of ${ordered.length} eligible tickets.`);
   if (parentChildExcluded.length) notes.push(`${parentChildExcluded.length} excluded to avoid a parent/child pairing.`);
-  const overlapCount = batchTickets.filter((e) => e.note).length;
+  const overlapCount = batchTickets.filter((e) => overlapWith.get(e.ticketId)?.size).length;
   if (overlapCount) notes.push(`${overlapCount} ticket(s) flagged for possible file overlap — ordered apart, not blocked (each burns in its own worktree).`);
+  const liveSessionCount = batchTickets.filter((e) => liveSessionIds.has(e.ticketId)).length;
+  if (liveSessionCount) notes.push(`${liveSessionCount} ticket(s) have a live session — flagged, not blocked; resolve the chat before igniting or the burn will park them.`);
 
   // Lead with a warning when tagged tickets were skipped — the drift a silent filter used to hide.
   const loadedIds = new Set(batchTickets.map((t) => t.ticketId));

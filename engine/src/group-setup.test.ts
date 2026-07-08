@@ -5,12 +5,14 @@ import path from 'path';
 import os from 'os';
 import {
   validateGitRemote,
+  sanitizeMemberName,
+  deriveSafeMemberNames,
   planGroupSetup,
   applyGroupSetup,
   ensureGroupRegistered,
   type GitRunner,
 } from './group-setup.js';
-import { GROUP_CONFIG_FILENAME, GROUP_STORE_DIRNAME } from './group.js';
+import { GROUP_CONFIG_FILENAME, GROUP_STORE_DIRNAME, isSafeName } from './group.js';
 
 async function makeTempRoot(): Promise<string> {
   // Create a parent dir, then a child that acts as the EH parent repo, so that
@@ -69,6 +71,54 @@ describe('validateGitRemote', () => {
     expect(validateGitRemote(local).ok).toBe(false);
     expect(validateGitRemote(local, { allowLocal: true }).ok).toBe(true);
     expect(validateGitRemote('file:///tmp/some-repo', { allowLocal: true }).ok).toBe(true);
+  });
+});
+
+describe('sanitizeMemberName (FLUX-543)', () => {
+  it('strips a trailing parenthetical', () => {
+    expect(sanitizeMemberName('anzu_server-master(anzu logic)')).toBe('anzu_server-master');
+    expect(sanitizeMemberName('web (frontend)')).toBe('web');
+  });
+
+  it('replaces unsafe characters and collapses/trims separators', () => {
+    expect(sanitizeMemberName('my repo')).toBe('my-repo');
+    expect(sanitizeMemberName('a  -  b')).toBe('a-b');
+    expect(sanitizeMemberName('  api!!service  ')).toBe('api-service');
+    expect(sanitizeMemberName('-leading.trailing-')).toBe('leading.trailing');
+  });
+
+  it('preserves an already-safe name unchanged (idempotent)', () => {
+    for (const n of ['engine', 'api.v2', 'shared_lib', 'a-b-c']) {
+      expect(sanitizeMemberName(n)).toBe(n);
+      expect(isSafeName(sanitizeMemberName(n))).toBe(true);
+    }
+  });
+
+  it('returns empty when nothing usable remains', () => {
+    expect(sanitizeMemberName('(╯°□°)╯')).toBe('');
+    expect(sanitizeMemberName('   ')).toBe('');
+    expect(isSafeName(sanitizeMemberName('!!!'))).toBe(false);
+  });
+
+  it('every sanitized non-empty result satisfies isSafeName', () => {
+    for (const raw of ['anzu (logic)', 'a b c', '.hidden', '123-start', 'Foo_Bar.baz']) {
+      const out = sanitizeMemberName(raw);
+      if (out) expect(isSafeName(out)).toBe(true);
+    }
+  });
+});
+
+describe('deriveSafeMemberNames (FLUX-543)', () => {
+  it('de-dupes collisions with a numeric suffix, preserving order', () => {
+    expect(deriveSafeMemberNames(['web (app)', 'web!', 'web'])).toEqual(['web', 'web-2', 'web-3']);
+  });
+
+  it('leaves distinct safe names untouched', () => {
+    expect(deriveSafeMemberNames(['engine', 'portal', 'api'])).toEqual(['engine', 'portal', 'api']);
+  });
+
+  it('yields empty for an unsalvageable name (caller rejects by index)', () => {
+    expect(deriveSafeMemberNames(['ok', '!!!'])).toEqual(['ok', '']);
   });
 });
 

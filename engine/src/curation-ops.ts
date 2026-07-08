@@ -117,16 +117,54 @@ export async function readCurationOps(): Promise<CurationOpEntry[]> {
  * survivor. In both cases the stream's transcript is a function of substrate + op-log, NOT just
  * its own `readTurns`.
  *
- * This is the single source of truth for the invariant "folding stream X as a merge source would
- * silently drop turns" — `gatherTurnsForView` folds a source by its substrate alone, composing no
- * ops on it (transcript.ts), so any stream with a derived view loses its re-derived part when
- * folded. The `mergeTickets` source guard (merge.ts) rejects every member of this set, and the
- * fold loop's safety rests on that guard. Deriving the predicate ONCE here means a future
- * re-deriving op-kind that adds a new `into` is covered automatically — it can't reopen the gap by
- * being known to the fold path but not the guard.
+ * FLUX-861 (Fix B): this no longer gates `mergeTickets`'s source guard — `gatherTurnsForView` now
+ * folds a merge source by its own re-derived VIEW (recursing through prior ops), so a stream in
+ * this set is a valid `from` source again (promote→fold composes). The predicate itself stays —
+ * it's still an accurate answer to "does this stream's transcript depend on the op-log, not just
+ * its own substrate" — see `reachableFoldSources` below for the guard that replaced its old use.
  */
 export function streamsWithDerivedView(ops: CurationOpEntry[]): Set<string> {
   const derived = new Set<string>();
   for (const op of ops) if (op.into) derived.add(op.into);
   return derived;
+}
+
+/**
+ * FLUX-861 (Fix B): the "depends on" closure over the curation op-log, starting from `streamId` —
+ * every stream whose turns `streamId`'s re-derived VIEW transitively includes. An edge `into ->
+ * from` exists for every `extract` op (`into` depends on its single `from`) and every `merge` op
+ * (`into` depends on each of its `from[]`).
+ *
+ * Folding now composes (`gatherTurnsForView` recurses a merge source's own view, not just its
+ * substrate), so appending a new `merge` op `into <- from` is only safe if none of the candidate
+ * `from` sources already has `into` in this closure — otherwise `into`'s view would end up
+ * depending on itself and `gatherTurnsForView` would recurse forever. `mergeTickets` calls this
+ * once per candidate source (`reachableFoldSources(ops, f).has(into)`) BEFORE appending the op, so
+ * a cycle is rejected with a clear error instead of ever reaching the read path.
+ */
+export function reachableFoldSources(ops: CurationOpEntry[], streamId: string): Set<string> {
+  const edges = new Map<string, string[]>();
+  for (const op of ops) {
+    if (op.op === 'extract') {
+      const list = edges.get(op.into);
+      if (list) list.push(op.from);
+      else edges.set(op.into, [op.from]);
+    } else if (op.op === 'merge' && Array.isArray(op.from)) {
+      const list = edges.get(op.into);
+      if (list) list.push(...op.from);
+      else edges.set(op.into, [...op.from]);
+    }
+  }
+  const seen = new Set<string>();
+  const stack = [streamId];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    for (const next of edges.get(cur) ?? []) {
+      if (!seen.has(next)) {
+        seen.add(next);
+        stack.push(next);
+      }
+    }
+  }
+  return seen;
 }

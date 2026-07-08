@@ -11,8 +11,12 @@ import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
   ArrowRight,
+  Ban,
+  Check,
   CheckCheck,
   ChevronDown,
+  ClipboardCheck,
+  ClipboardX,
   ExternalLink,
   FileWarning,
   GitMerge,
@@ -23,10 +27,10 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useAppSelector, useAppActions, useTaskById } from '../../store/useAppSelector';
-import { API_URL, resolvePermission } from '../../api';
+import { API_URL, resolvePermission, updateTask } from '../../api';
 import { useNotificationPrefs, isNotificationVisible } from '../../hooks/useNotificationPrefs';
 import { useDockActions, useDockOpenIds } from '../DockProvider';
-import { usePendingInteractions, requireInputMeta } from '../pendingInteractions';
+import { usePendingInteractions, requireInputMeta, PlanReviewActions, PlanReviewFeedbackBlock } from '../pendingInteractions';
 import { ApprovalCard } from '../ApprovalPrompts';
 import { QuestionCard } from '../AskQuestionPrompts';
 import { RebaseCard, RebaseFailureCard } from '../BoardRebasePanel';
@@ -35,7 +39,7 @@ import { NotificationPanel } from '../NotificationPanel';
 import { TicketRefChip } from '../TicketRefChip';
 import { ActivityPanel } from '../ActivityPanel';
 import { ParseErrorBanner } from '../ParseErrorBanner';
-import { useAttentionAck, deriveDockLabel, type AttentionTab } from './attentionAck';
+import { useAttentionAck, usePlanReviewDockDismiss, deriveDockLabel, type AttentionTab } from './attentionAck';
 
 /**
  * FLUX-898: the unified, dock-anchored attention surface.
@@ -53,9 +57,22 @@ import { useAttentionAck, deriveDockLabel, type AttentionTab } from './attention
  * actions + a minimize that tucks it back unacknowledged. Read ≠ resolved: acknowledging stops the
  * glow but an item leaves only when actually acted on. Replaces the old `PendingTab` +
  * `PendingInteractionFallback` floating window; inline-in-chat answering is unchanged.
+ *
+ * FLUX-1262 (gate-policy epic FLUX-1247): two more reasons a ticket needs you, same surface —
+ * `plan-approval` 📋 (a `plan` gate's `auto-then-you` pass ran and awaits your confirm) and
+ * `gate-parked` ⛔ (Furnace/Temper parked a ticket mid gate-`auto` loop, e.g. retryCap exhaustion).
+ * No new inbox: both are just more `NeedsItem`s sourced from `usePendingInteractions`.
  */
 
-type ItemKind = 'approval' | 'question' | 'rebase' | 'rebase-failure' | 'require-input' | 'system';
+type ItemKind =
+  | 'approval'
+  | 'question'
+  | 'rebase'
+  | 'rebase-failure'
+  | 'require-input'
+  | 'plan-approval'
+  | 'gate-parked'
+  | 'system';
 
 interface NeedsItem {
   key: string;
@@ -148,8 +165,10 @@ function NeedsCard({
   );
 }
 
-/** A pinned require-input ticket rendered as a needs-you item: free-form question + open-to-answer. */
-function RequireInputBody({ ticketId, onOpen }: { ticketId: string; onOpen: (id: string) => void }) {
+/** A pinned require-input ticket rendered as a needs-you item: free-form question + an open action.
+ *  `label` lets FLUX-1262's gate-parked kind reuse this body with wording that fits a stalled auto-loop
+ *  better than "answer" (there's no question — the ticket parked itself). */
+function RequireInputBody({ ticketId, onOpen, label = 'Open to answer' }: { ticketId: string; onOpen: (id: string) => void; label?: string }) {
   const task = useTaskById(ticketId);
   if (!task) return null;
   const question = requireInputMeta(task).question;
@@ -162,8 +181,96 @@ function RequireInputBody({ ticketId, onOpen }: { ticketId: string; onOpen: (id:
         onClick={() => onOpen(ticketId)}
         className="mt-2 inline-flex items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-primary-hover"
       >
-        <ExternalLink className="h-3.5 w-3.5" /> Open to answer
+        <ExternalLink className="h-3.5 w-3.5" /> {label}
       </button>
+    </>
+  );
+}
+
+/** FLUX-1262/FLUX-1289/FLUX-1303: a `plan` gate's `auto-then-you` pass ran and is waiting for a
+ *  human. FLUX-1303 unified this body onto the shared `PlanReviewFeedbackBlock` + `PlanReviewActions`
+ *  (the exact same verbs as `ChatPlanApprovalCard` and the panel): attributed feedback + plan TL;DR,
+ *  an inline notes composer behind **Send for re-grooming** (the atomic revise endpoint), Approve /
+ *  Approve-anyway, and "Re-run review" lives only in the plan-approval panel, gated on the plan
+ *  actually having changed.
+ *
+ *  FLUX-1312: the ✕ here is the NON-DESTRUCTIVE dock-only hide ("I don't want to look at this right
+ *  now") — `onDockHide`, keyed by ticket+verdict — NOT the verdict-clearing "Set aside". The "Needs
+ *  You" panel is a cross-ticket triage inbox; dismissing an item snoozes it (it re-appears on a
+ *  fresh verdict) and leaves the ticket's `planReviewState` intact. The real Set aside stays on the
+ *  chat card and the full plan panel, where the user is actually working the ticket. */
+function PlanApprovalBody({
+  ticketId, onOpen, onDockHide,
+}: {
+  ticketId: string;
+  onOpen: (id: string) => void;
+  onDockHide: () => void;
+}) {
+  const task = useTaskById(ticketId);
+  if (!task) return null;
+  const changesRequested = task.planReviewState === 'changes-requested';
+
+  return (
+    <>
+      <div className="mb-2 text-[12px] leading-snug text-[var(--eh-text-secondary)]">
+        {changesRequested ? (
+          <PlanReviewFeedbackBlock task={task} clip={220} />
+        ) : (
+          <>Auto-reviewed — verdict: <span className="font-semibold text-[var(--eh-text-primary)]">approved</span>. Confirm to continue.</>
+        )}
+      </div>
+      <PlanReviewActions
+        task={task}
+        onOpenFull={() => onOpen(ticketId)}
+        openLabel="Open to confirm"
+        onSetAside={onDockHide}
+        setAsideTitle="Hide from this list for now — keeps the verdict on the ticket; reappears on a new review pass"
+      />
+    </>
+  );
+}
+
+/** FLUX-1297: a Furnace/Temper-authored park (see `isGateParkedTicket`) is a stalled auto-loop, not a
+ *  human-facing question — so unlike `RequireInputBody`, it can be dismissed outright ("I've got
+ *  this") in addition to opening the ticket. Clears the `require-input` swimlane directly (mirrors
+ *  `useTicketActions`'s `clearSwimlane`) — no batch/owner gating at all, since Temper's parks never
+ *  belong to a Furnace batch in the first place (the FurnaceDrawer per-batch Dismiss can't reach them). */
+export function GateParkedBody({ ticketId, onOpen }: { ticketId: string; onOpen: (id: string) => void }) {
+  const task = useTaskById(ticketId);
+  const currentUser = useAppSelector((s) => s.currentUser);
+  const [busy, setBusy] = useState(false);
+  if (!task) return null;
+  const question = requireInputMeta(task).question;
+  const clipped = question.length > 280 ? `${question.slice(0, 280).trimEnd()}…` : question;
+
+  async function dismiss() {
+    if (busy) return;
+    setBusy(true);
+    try { await updateTask(ticketId, { swimlane: null, updatedBy: currentUser }); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <>
+      <div className="whitespace-pre-wrap break-words text-[12px] leading-snug text-[var(--eh-text-secondary)]">{clipped}</div>
+      <div className="mt-2 flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => onOpen(ticketId)}
+          className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-primary-hover"
+        >
+          <ExternalLink className="h-3.5 w-3.5" /> Open to resolve
+        </button>
+        <button
+          type="button"
+          onClick={() => void dismiss()}
+          disabled={busy}
+          title="Dismiss — I've got this"
+          className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-[var(--eh-border)] px-3 py-1.5 text-[12px] font-semibold text-[var(--eh-text-secondary)] transition-colors hover:bg-black/5 disabled:opacity-40 dark:hover:bg-white/5"
+        >
+          <Check className="h-3.5 w-3.5" /> Dismiss
+        </button>
+      </div>
     </>
   );
 }
@@ -195,6 +302,7 @@ export function AttentionDock() {
   const pi = usePendingInteractions();
   const {
     approvals, questions, rebases, rebaseFailures, requireInputTickets, singleActiveConversationId,
+    planApprovalTickets, gateParkedTickets,
     removeApproval, removeQuestion, removeRebase, reportRebaseFailure, dismissRebaseFailure,
   } = pi;
   // FLUX-923: which chat windows are open right now. Drives the dynamic attention handoff — a prompt
@@ -207,9 +315,12 @@ export function AttentionDock() {
   const parseErrors = useAppSelector((s) => s.parseErrors);
   const restartPending = useAppSelector((s) => s.restartPending);
   const { refreshNotifications } = useAppActions();
-  const { openChat, openTicket } = useDockActions();
+  const { openChat, openTicket, openPlanApproval } = useDockActions();
   const { prefs } = useNotificationPrefs();
   const ack = useAttentionAck();
+  // FLUX-1312: non-destructive dock-only dismiss for plan-approval items — snoozes them from this
+  // panel without touching the ticket's verdict (restored from FLUX-1289; see usePlanReviewDockDismiss).
+  const dockDismiss = usePlanReviewDockDismiss();
 
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<AttentionTab>('needs');
@@ -230,6 +341,12 @@ export function AttentionDock() {
 
   const jumpToChat = useCallback((id: string) => { openChat(id); setOpen(false); }, [openChat]);
   const openToAnswer = useCallback((id: string) => { openTicket(id); setOpen(false); }, [openTicket]);
+  // FLUX-1273: a plan-approval item opens the full-screen plan-approval panel (not just the plain
+  // ticket view) — `openTicket` still ensures the chat window (and its controller) mounts first.
+  const openToApprovePlan = useCallback(
+    (id: string) => { openTicket(id); openPlanApproval(id); setOpen(false); },
+    [openTicket, openPlanApproval],
+  );
 
   // Remember a peeked key so it doesn't peek again this session — capped to bound growth.
   const rememberDismissedPeek = useCallback((key: string) => {
@@ -285,6 +402,36 @@ export function AttentionDock() {
         body: <RequireInputBody ticketId={t.id} onOpen={openToAnswer} />,
       });
     }
+    // FLUX-1262: a `plan` gate's auto-review pass ran under `auto-then-you` and awaits your confirm.
+    // FLUX-1289: verdict-aware — `changes-requested` gets a distinct amber item, separate from the
+    // approved 📋 confirm item. FLUX-1312: the body's ✕ is a NON-DESTRUCTIVE dock-only hide (keyed by
+    // ticket+verdict) — dock-dismissed items drop out here without touching the ticket's verdict, and
+    // a fresh verdict (a new key) re-arms the item.
+    for (const t of planApprovalTickets) {
+      const changesRequested = t.planReviewState === 'changes-requested';
+      const verdict = changesRequested ? 'changes-requested' : 'approved';
+      if (dockDismiss.isDockDismissed(t.id, verdict)) continue;
+      list.push({
+        key: `plan-approval:${t.id}:${verdict}`, kind: 'plan-approval', conversationId: t.id, ticketId: t.id,
+        createdAt: t.historyDigest?.lastActivityAt || '',
+        Icon: changesRequested ? ClipboardX : ClipboardCheck,
+        iconClass: changesRequested ? 'text-amber-500' : 'text-sky-500',
+        title: changesRequested ? 'Plan review requested changes' : 'Plan ready for your approval',
+        kindLabel: 'plan', summary: changesRequested ? 'Changes requested — review feedback' : 'Auto-reviewed — approved', peekStyle: 'open',
+        body: <PlanApprovalBody ticketId={t.id} onOpen={openToApprovePlan} onDockHide={() => dockDismiss.dockDismiss(t.id, verdict)} />,
+      });
+    }
+    // FLUX-1262: Furnace/Temper parked this ticket mid gate-`auto` loop (e.g. retryCap exhaustion) —
+    // split out of `requireInputTickets` so a stalled auto-loop reads as ⛔, not a plain question.
+    for (const t of gateParkedTickets) {
+      const meta = requireInputMeta(t);
+      list.push({
+        key: `gate-parked:${t.id}:${meta.setDate}`, kind: 'gate-parked', conversationId: t.id, ticketId: t.id,
+        createdAt: meta.setDate || '', Icon: Ban, iconClass: 'text-rose-500',
+        title: 'Gate parked — stuck retrying', kindLabel: 'parked', summary: meta.question, peekStyle: 'open',
+        body: <GateParkedBody ticketId={t.id} onOpen={openToAnswer} />,
+      });
+    }
     // Pinned system items — global one-off banners folded into the surface.
     if (parseErrors.length > 0) {
       list.push({
@@ -302,8 +449,12 @@ export function AttentionDock() {
       });
     }
     return list;
-  }, [approvals, questions, rebases, rebaseFailures, requireInputTickets, parseErrors, restartPending,
-      removeApproval, removeQuestion, removeRebase, reportRebaseFailure, dismissRebaseFailure, openToAnswer]);
+    // FLUX-1312: dockDismiss.isDockDismissed/dockDismiss are useCallbacks keyed on the dismissed set,
+    // so the list rebuilds when a plan-approval item is dock-hidden (and re-arms on a fresh verdict).
+  }, [approvals, questions, rebases, rebaseFailures, requireInputTickets, planApprovalTickets, gateParkedTickets,
+      parseErrors, restartPending,
+      removeApproval, removeQuestion, removeRebase, reportRebaseFailure, dismissRebaseFailure, openToAnswer, openToApprovePlan,
+      dockDismiss.isDockDismissed, dockDismiss.dockDismiss]);
 
   const needsYouCount = items.length;
   const label = deriveDockLabel(needsYouCount, unreadNotifications);

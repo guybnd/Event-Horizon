@@ -8,7 +8,7 @@ import {
   classifyRole,
   projectTranscript,
 } from './projection.js';
-import { readCurationOps } from './curation-ops.js';
+import { readCurationOps, type CurationOpEntry } from './curation-ops.js';
 
 export type { Turn, TranscriptMessage } from './projection.js';
 
@@ -339,6 +339,14 @@ function compareTurnsChrono(a: Turn, b: Turn): number {
 }
 
 /**
+ * FLUX-861 (Fix B): bound the recursive fold composition below against a corrupted or
+ * race-created op-log cycle that slipped past `mergeTickets`'s write-time cycle check
+ * (`reachableFoldSources` in curation-ops.ts) — deep enough for any real curation chain a human
+ * would ever build by hand, shallow enough to never blow the stack.
+ */
+const MAX_FOLD_DEPTH = 32;
+
+/**
  * Gather the full turn list for a stream's VIEW: its own substrate turns, plus any turns
  * folded in by a curation op. Two op kinds contribute:
  *
@@ -346,22 +354,48 @@ function compareTurnsChrono(a: Turn, b: Turn): number {
  *   `readCurationOps()` finds the ops whose `into === taskId`; each range is fetched via
  *   `sliceTurns(from, …)` from its *source* substrate and prepended in op order, ahead of the
  *   card's own turns.
- * - `merge` (FLUX-657): one or more WHOLE source streams folded into this survivor. Each
- *   `from` stream's full turns are read and unioned with the survivor's own turns, then ordered
- *   CHRONOLOGICALLY by `ts` (tie-break `(streamId, seq)`) — the natural reading of "fold three
- *   chats into one effort." Foreign turns keep their own `streamId`, so the projector tags them
- *   with a `sourceStream` attribution when handed `homeStreamId = taskId`.
+ * - `merge` (FLUX-657/861): one or more WHOLE source streams folded into this survivor. Each
+ *   `from` stream is folded by its own re-derived VIEW — recursing into this same resolution,
+ *   not just reading its substrate (FLUX-861 Fix B; see `resolveStreamView` below) — then unioned
+ *   with the survivor's own turns and ordered CHRONOLOGICALLY by `ts` (tie-break `(streamId,
+ *   seq)`) — the natural reading of "fold three chats into one effort." Foreign turns keep their
+ *   own `streamId`, so the projector tags them with a `sourceStream` attribution when handed
+ *   `homeStreamId = taskId`.
  *
  * Both gathered slices and folded streams are ADDITIVE — the source substrate is never touched,
  * so removing the op reverts the view (the un-doable guarantee the epic rests on). This is the
  * cross-stream RESOLUTION layer; it lives in the reader so `projectTranscript` stays pure over a
  * flat turn list. Returns the gathered turns and the op-log (so the caller can hand both to the
  * projector).
+ *
+ * Accepts an optional pre-fetched `ops` for a caller that already read the op-log for its own
+ * guards in the same call (e.g. `mergeTickets`) — skips the redundant re-read per source.
  */
 export async function gatherTurnsForView(
   taskId: string,
-): Promise<{ turns: Turn[]; ops: Awaited<ReturnType<typeof readCurationOps>> }> {
-  const ops = await readCurationOps();
+  ops?: CurationOpEntry[],
+): Promise<{ turns: Turn[]; ops: CurationOpEntry[] }> {
+  const resolvedOps = ops ?? (await readCurationOps());
+  const turns = await resolveStreamView(taskId, resolvedOps, new Set(), 0);
+  return { turns, ops: resolvedOps };
+}
+
+/**
+ * FLUX-861 (Fix B): recursive worker behind `gatherTurnsForView`. `ancestors` is the set of
+ * stream ids already being resolved higher up this call chain, and `depth` the recursion depth —
+ * both exist purely as a defense-in-depth backstop. `mergeTickets` rejects, at write time, any new
+ * merge op that would make `into` reachable from one of its `from` sources (`reachableFoldSources`
+ * in curation-ops.ts), so a genuine cycle should never reach this function; if one does anyway (a
+ * hand-edited op-log, or two merges racing past the write-time check), `ancestors`/`depth` stop the
+ * recursion instead of looping forever, falling back to the offending stream's plain substrate for
+ * that one branch rather than throwing mid-read.
+ */
+async function resolveStreamView(
+  taskId: string,
+  ops: CurationOpEntry[],
+  ancestors: ReadonlySet<string>,
+  depth: number,
+): Promise<Turn[]> {
   const extractedHere = ops.filter(
     (o): o is Extract<typeof o, { op: 'extract' }> => o.op === 'extract' && o.into === taskId,
   );
@@ -382,34 +416,40 @@ export async function gatherTurnsForView(
   }
   if (foldedFrom.size === 0) {
     // No merge folding — preserve extract's exact ordering (gathered slices ahead of own turns).
-    return { turns: [...gathered, ...own], ops };
+    return [...gathered, ...own];
   }
-  // A source is folded by its *substrate* turns (`readTurns`), NOT its re-derived view — folds do
-  // not compose here. A source whose view ≠ substrate (a prior merge survivor OR an extracted card)
-  // would therefore drop its re-derived turns when folded, so `mergeTickets` (merge.ts) rejects any
-  // such stream as a source via the shared `streamsWithDerivedView` predicate (and rejects folding
-  // into an already-merged-away card). Those guards keep this single-level fold loss-free;
-  // recursive/transitive folding would be the alternative if that constraint is ever lifted.
+  // FLUX-861: a source is now folded by its own re-derived VIEW (recursing into
+  // `resolveStreamView`), NOT its raw substrate — folds compose, so a prior merge survivor or an
+  // extracted card carries its own folded-in/gathered turns through instead of dropping them.
+  const nextAncestors = new Set(ancestors);
+  nextAncestors.add(taskId);
   const folded: Turn[] = [];
-  for (const f of foldedFrom) folded.push(...(await readTurns(f)));
+  for (const f of foldedFrom) {
+    if (ancestors.has(f) || depth >= MAX_FOLD_DEPTH) {
+      folded.push(...(await readTurns(f)));
+      continue;
+    }
+    folded.push(...(await resolveStreamView(f, ops, nextAncestors, depth + 1)));
+  }
   // Merge the folded foreign turns into the survivor's OWN turns chronologically WITHOUT reordering
   // own turns among themselves: own keeps its substrate (seq) order, and each folded turn is placed
   // at the first own turn it chronologically precedes. A global re-sort would let a survivor's own
   // turns reorder (e.g. legacy turns with `ts === ''` floating to the front) purely because the card
   // became a merge target; this stable insertion keeps own's order invariant (FLUX-657 review).
-  // Folded turns are chrono-sorted among themselves first. Extract slices (if any also target this
-  // card) still prepend in op order, ahead of the chronological body.
-  const foldedSorted = [...folded].sort(compareTurnsChrono);
+  // Folded turns (including anything a recursed source itself gathered/folded) are chrono-sorted
+  // among themselves first. Extract slices (if any also target this card) still prepend in op
+  // order, ahead of the chronological body.
+  folded.sort(compareTurnsChrono);
   const union: Turn[] = [];
   let fi = 0;
   for (const o of own) {
-    while (fi < foldedSorted.length && compareTurnsChrono(foldedSorted[fi]!, o) <= 0) {
-      union.push(foldedSorted[fi++]!);
+    while (fi < folded.length && compareTurnsChrono(folded[fi]!, o) <= 0) {
+      union.push(folded[fi++]!);
     }
     union.push(o);
   }
-  while (fi < foldedSorted.length) union.push(foldedSorted[fi++]!);
-  return { turns: [...gathered, ...union], ops };
+  while (fi < folded.length) union.push(folded[fi++]!);
+  return [...gathered, ...union];
 }
 
 /**

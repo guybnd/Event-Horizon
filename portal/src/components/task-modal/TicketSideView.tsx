@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import {
-  AlignLeft, ChevronDown, ChevronRight, LayoutTemplate, ListTree, Maximize2, MessageSquare, Minimize2,
+  AlignLeft, ChevronDown, ChevronRight, ClipboardCheck, LayoutTemplate, ListTree, Maximize2, MessageSquare, Minimize2,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { SubtasksPanel } from './SubtasksPanel';
@@ -133,7 +133,7 @@ function SideviewPane({
  * misleading for a post-implementation recap.
  */
 function ArtifactSection({ c, onSendToChat }: { c: SideViewController; onSendToChat?: (text: string) => void }) {
-  const { sectionOpen, setSectionOpen } = useDock();
+  const { sectionOpen, setSectionOpen, openPlanApproval } = useDock();
   const open = sectionOpen['artifact'] ?? true;
   const arts = c.task.artifacts;
   const latestRev =
@@ -142,16 +142,28 @@ function ArtifactSection({ c, onSendToChat }: { c: SideViewController; onSendToC
   const label = isRecap ? 'Visual Recap' : 'Artifact';
   return (
     <section className="eh-border shrink-0 overflow-hidden rounded-xl border bg-[var(--eh-input-bg)]">
-      <button
-        type="button"
-        onClick={() => setSectionOpen('artifact', !open)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-secondary)]"
-      >
-        {open ? <ChevronDown className="h-3.5 w-3.5 flex-shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 flex-shrink-0" />}
-        <LayoutTemplate className="h-3.5 w-3.5 flex-shrink-0" />
-        <span>{label}</span>
-      </button>
+      <div className="flex w-full items-center gap-2 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => setSectionOpen('artifact', !open)}
+          aria-expanded={open}
+          className="flex flex-1 items-center gap-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-secondary)]"
+        >
+          {open ? <ChevronDown className="h-3.5 w-3.5 flex-shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 flex-shrink-0" />}
+          <LayoutTemplate className="h-3.5 w-3.5 flex-shrink-0" />
+          <span>{label}</span>
+        </button>
+        {/* FLUX-1273: the plan-approval panel stays reachable long after the flagged moment resolves —
+            mirrors this section's own always-on-when-an-artifact-exists precedent (no status gate). */}
+        <button
+          type="button"
+          onClick={() => openPlanApproval(c.task.id)}
+          title="Open the full plan-review panel — view, annotate, and (if unresolved) approve or send it back"
+          className="flex flex-shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-secondary)] dark:hover:bg-white/5"
+        >
+          <ClipboardCheck className="h-3 w-3 flex-shrink-0" /> View Plan
+        </button>
+      </div>
       {/* FLUX-1136: stay mounted while collapsed (display:none, not unmounted) — an instant unmount
           would eat an in-progress annotation batch living inside the iframe. ArtifactPanel itself
           stops paying any reload/compile cost while `visible` is false; a genuinely long collapse
@@ -160,6 +172,30 @@ function ArtifactSection({ c, onSendToChat }: { c: SideViewController; onSendToC
         <ArtifactPanel task={c.task} onSendToChat={onSendToChat} visible={open} />
       </div>
     </section>
+  );
+}
+
+/**
+ * FLUX-1278: a persistent "View Plan" entry point for tickets with no published artifact.
+ * `ArtifactSection` already carries its own "View Plan" button in its header (FLUX-1273), but that
+ * whole section is gated on `artifacts.revisions.length > 0` — so a ticket that never had an
+ * artifact published (bug fixes, XS/S tickets, backend plumbing — `publish_artifact`'s own stated
+ * skip cases) had no way back into the plan-approval panel once the plan-review flag resolved. This
+ * renders in `ArtifactSection`'s place (mutually exclusive, never alongside it) so there's always
+ * exactly one entry point.
+ */
+function PlanAccessRow({ taskId }: { taskId: string }) {
+  const { openPlanApproval } = useDock();
+  return (
+    <button
+      type="button"
+      onClick={() => openPlanApproval(taskId)}
+      title="Open the full plan-review panel — view, annotate, and (if unresolved) approve or send it back"
+      className="eh-border flex shrink-0 items-center gap-2 rounded-xl border bg-[var(--eh-input-bg)] px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-secondary)]"
+    >
+      <ClipboardCheck className="h-3.5 w-3.5 flex-shrink-0" />
+      <span>View Plan</span>
+    </button>
   );
 }
 
@@ -208,7 +244,9 @@ export function TicketSideView({ c, onSendToChat }: { c: SideViewController; onS
       {/* Panes: Description → Activity → Hierarchy. Each primary pane scrolls internally; the column
           keeps `overflow-y-auto` as a fallback so an expanded Hierarchy stays reachable. */}
       <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-3 py-3">
-        {(c.task.artifacts?.revisions?.length ?? 0) > 0 && <ArtifactSection c={c} onSendToChat={onSendToChat} />}
+        {(c.task.artifacts?.revisions?.length ?? 0) > 0
+          ? <ArtifactSection c={c} onSendToChat={onSendToChat} />
+          : <PlanAccessRow taskId={c.task.id} />}
         <SideviewPane id="description" title="Description" icon={AlignLeft} focus={focus} setFocus={setFocus}>
           <div className="flex min-h-0 flex-1 flex-col px-2 pb-2">
             <TaskDescriptionSurface

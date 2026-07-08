@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Archive, ArrowRightLeft, Bot, ChevronRight, CircleX, Code2, ExternalLink, Filter, Flame,
+  Archive, ArrowRightLeft, Bot, ChevronRight, CircleX, Code2, ClipboardX, ExternalLink, Filter, Flame,
   FolderGit2, GitBranch, GitCompare, GitMerge, GitPullRequest, Link2, Loader2, MessageCircle, Play, Plus, Search, Square, Trash2, Undo2, X,
 } from 'lucide-react';
 import type { Task } from '../types';
@@ -14,6 +14,7 @@ import { getArchiveStatus, getReadyForMergeStatus } from '../workflow';
 import { searchTasks } from '../taskSearch';
 import { useTicketActions } from '../hooks/useTicketActions';
 import { useEscapeKey } from '../hooks/useEscapeKey';
+import { isPlanApprovalPending, dismissPlanReview } from './pendingInteractions';
 
 interface Props {
   task: Task;
@@ -40,6 +41,7 @@ const PRIMARY_LABEL: Record<string, string> = {
 export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   const { setFilterWorktree, setView, setChangesFocus } = useAppActions();
   const config = useAppSelector((s) => s.config);
+  const currentUser = useAppSelector((s) => s.currentUser);
   const readComments = useAppSelector((s) => s.readComments);
   const worktrees = useAppSelector((s) => s.worktrees);
   const worktreeBranches = useAppSelector((s) => s.worktreeBranches);
@@ -134,6 +136,11 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   const commentIds = (task.historyDigest?.comments ?? []).map((c) => c.id);
   const readIds = new Set(readComments[task.id] ?? []);
   const hasUnread = commentIds.some((id) => !readIds.has(id));
+  // FLUX-1289: the "Pending Approval" lane is a COMPUTED grouping (isPlanApprovalPending), not an
+  // actual task.swimlane value, so the existing task.swimlane && Clear Swimlane item below never
+  // fires for it — this needs its own conditional entry, calling the same "full dismiss" op as
+  // ChatPlanApprovalCard's Dismiss button (clears planReviewState, no revise dispatch).
+  const planApprovalPending = isPlanApprovalPending(task, config);
   // ─── Phase templates (Launch agent flyout) — from the registry's resolved single/multi/other set ─
   const launchTemplates = ctl.launchTemplates;
   // Hoisted once (the way TemplateMenu does it) — the index of the first "other" template, so the
@@ -176,6 +183,7 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   const handleDelete = () => { onClose(); void ctl.ops.deleteTicket(); };
   const handleMarkRead = () => { ctl.ops.markCommentsRead(); onClose(); };
   const handleClearSwimlane = () => { onClose(); void ctl.ops.clearSwimlane(); };
+  const handleDismissPlanReview = () => { onClose(); void dismissPlanReview(task.id, currentUser); };
 
   // FLUX-909: terminate the ticket's agent session from the card. The stop route already
   // terminalizes parked (waiting-input / pending) sessions and tree-kills the process; the
@@ -525,12 +533,15 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
         )}
       </Flyout>
 
-      {(hasUnread || task.swimlane) && <Divider />}
+      {(hasUnread || task.swimlane || planApprovalPending) && <Divider />}
       {hasUnread && (
         <MenuItem icon={<MessageCircle className="h-3.5 w-3.5" />} onClick={handleMarkRead}>Mark comments as read</MenuItem>
       )}
       {task.swimlane && (
         <MenuItem icon={<CircleX className="h-3.5 w-3.5" />} onClick={handleClearSwimlane}>Clear Swimlane</MenuItem>
+      )}
+      {planApprovalPending && (
+        <MenuItem icon={<ClipboardX className="h-3.5 w-3.5" />} onClick={handleDismissPlanReview}>Dismiss plan review</MenuItem>
       )}
 
       <Divider />

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -89,6 +89,41 @@ describe('deleteTicketBranch', () => {
   it('swallows a missing remote ref (best-effort) — no throw when neither local nor remote exists', async () => {
     // Branch never created anywhere: local absent → skipped; remote `push --delete` errors → swallowed.
     await expect(deleteTicketBranch(BRANCH, true)).resolves.toBeUndefined();
+  });
+
+  it('FLUX-1231: a branch still held by a worktree is a tolerated force-delete failure — resolves, still deletes the remote, and logs at debug (one line, no raw git stderr) rather than warn', async () => {
+    await gitC(repo, ['branch', BRANCH, 'master']);
+    await gitC(repo, ['push', 'origin', BRANCH]);
+    // A worktree checks out the branch → a local `git branch -D` is guaranteed to fail with
+    // git's "cannot delete branch '…' used by worktree at '…'" — the case this ticket quiets.
+    const wt = path.join(tmp, 'held-worktree');
+    await gitC(repo, ['worktree', 'add', wt, BRANCH]);
+    expect(await localBranchExists(BRANCH)).toBe(true);
+
+    // Capture the real diagnostic surface: both `log.*` (log.ts) and `console.warn` write to
+    // process.stderr, so intercepting it catches whatever this actually logs — no reliance on
+    // module-singleton spying (the `log` instance the test imports isn't the one the source uses).
+    const stderr: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    try {
+      await expect(deleteTicketBranch(BRANCH, true)).resolves.toBeUndefined();
+    } finally {
+      stderrSpy.mockRestore();
+    }
+    const logged = stderr.join('');
+
+    // Tolerated: the worktree still holds the local branch, but the remote ref is still cleaned.
+    expect(await localBranchExists(BRANCH)).toBe(true);
+    expect(await remoteBranchExists(BRANCH)).toBe(false);
+    // Quieted: no raw multi-line git stderr, no warn-level line — just a terse debug line.
+    expect(logged).not.toMatch(/error: cannot delete branch/i);
+    expect(logged).not.toContain('[warn]');
+    expect(logged).not.toContain('forced local delete');
+    expect(logged).toMatch(/\[debug\].*deferred local delete/i);
+    expect(logged).toContain(BRANCH);
   });
 
   it('non-force delete of an unmerged branch rethrows (the "refuses unmerged" safety the caller wants)', async () => {

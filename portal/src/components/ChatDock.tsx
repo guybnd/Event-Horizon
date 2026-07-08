@@ -7,13 +7,14 @@ import type { DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, sortableKeyboardCoordinates, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
-import { FURNACE_ACCENT } from './FurnaceDrawer';
+import { FURNACE_ACCENT, SmelterModeToggle } from './FurnaceDrawer';
 import { useChatSession } from '../hooks/useChatSession';
 import { ChatView } from './task-modal/ChatView';
 import { ChatPresenceRail, ChatOrchestrationBlock } from './task-modal/ChatOrchestration';
 import { selectChatRunGroup, isActiveSession } from '../orchestration';
 import { ChatDiffPanel } from './task-modal/ChatDiffPanel';
 import { TicketSideView } from './task-modal/TicketSideView';
+import { PlanApprovalPanel } from './task-modal/PlanApprovalPanel';
 import { ChatArtifactCard } from './task-modal/ChatArtifactCard';
 import { getPriorityIcon } from './task-modal/taskModalHelpers';
 import { TicketContextCard, BoardSnapshotCard, SessionMeter } from './task-modal/chatContext';
@@ -30,7 +31,7 @@ import { useEscapeKey } from '../hooks/useEscapeKey';
 import { fireDesktopNotification } from '../hooks/useDesktopNotifications';
 import { getStatusTint, getStatusColorClass } from '../statusStyles';
 import { getRequireInputStatus } from '../workflow';
-import { BOARD_CONVERSATION_ID, FURNACE_CONVERSATION_ID, fetchTaskCliSession, fetchTaskTranscript, stopTaskCliSession, clearTaskTranscript, fetchBranchStatus, fetchTriageSignals, type BranchStatus } from '../api';
+import { BOARD_CONVERSATION_ID, FURNACE_CONVERSATION_ID, createTask, updateTask, fetchTaskCliSession, fetchTaskTranscript, stopTaskCliSession, clearTaskTranscript, fetchBranchStatus, fetchTriageSignals, type BranchStatus } from '../api';
 import { setTranscript } from '../transcriptCache';
 import type { CliSessionStatus, CliSessionSummary, Config, Task } from '../types';
 
@@ -190,9 +191,11 @@ function useVirtualConversationSession(conversationId: string): CliSessionSummar
 // unrelated AppContent toggle (terminal, furnace, the 5s furnace-status poll) despite its own
 // dock state being read through context/hooks rather than props.
 export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, furnaceBurning, furnaceBurningCount }: { onToggleFurnace?: () => void; furnaceOpen?: boolean; furnaceBurning?: boolean; furnaceBurningCount?: number } = {}) {
-  const { subscribeToEvent } = useAppActions();
+  const { subscribeToEvent, triggerRefresh } = useAppActions();
   const tasks = useAppSelector((s) => s.tasks);
   const config = useAppSelector((s) => s.config);
+  const currentUser = useAppSelector((s) => s.currentUser);
+  const currentProject = useAppSelector((s) => s.currentProject);
   // FLUX-720: conversations with an unresolved pending interaction (approval / question /
   // board-rebase). Drives the hard-gated tab: a chat awaiting your answer is force-pinned with a
   // distinct prompt icon and can't be closed/removed until it's resolved.
@@ -201,7 +204,7 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
   const { pendingPromptConversationIds, requireInputConversationIds } = usePendingInteractions();
   // Window/open state lives in the app-root DockProvider (FLUX-603) so a card can drive it
   // and it survives view switches. `anchors` records where each window should spawn from.
-  const { open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, windowGeometry, toggle, closeCard, reopenFromHistory, setDraft, setSelections, reorder, promoteToFront, toggleSideView, openSideView, setSideviewWidth, seedSideviewWidth, setSectionOpen, setWindowGeometry, openTicket, openChat, raise } = useDock();
+  const { open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, windowGeometry, toggle, closeCard, reopenFromHistory, setDraft, setSelections, reorder, promoteToFront, toggleSideView, openSideView, setSideviewWidth, seedSideviewWidth, setSectionOpen, setWindowGeometry, openTicket, openChat, raise, planApprovalOpen, closePlanApproval } = useDock();
 
   // FLUX-744: open-ticket bridge. `openTask` (AppContext, which lives ABOVE the DockProvider) can't
   // call dock actions directly, so for the default 'chat' open mode it dispatches a `flux:open-ticket`
@@ -216,6 +219,45 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
     window.addEventListener('flux:open-ticket', onOpenTicket);
     return () => window.removeEventListener('flux:open-ticket', onOpenTicket);
   }, [openTicket]);
+
+  // FLUX-1225: spawn a fresh Scratch Chat straight from the dock — no ticket picker. Creating a
+  // `kind:'scratch'` entity mints its own SCRATCH-n id (engine side); we then `openChat` it, which
+  // both surfaces its tab (via manuallyOpened) and opens the window, and `triggerRefresh` so the
+  // freshly-created task lands in the store list backing the tab. `creatingScratch` guards against a
+  // double-click minting two entities.
+  const [creatingScratch, setCreatingScratch] = useState(false);
+  const handleNewScratch = useCallback(async () => {
+    if (creatingScratch) return;
+    setCreatingScratch(true);
+    try {
+      const task = await createTask({
+        kind: 'scratch',
+        title: 'Scratch',
+        status: 'Todo',
+        projectKey: currentProject,
+        author: currentUser,
+      });
+      // FLUX-1241: the engine mints the id off its own `SCRATCH-n` counter — reuse that same n as
+      // a human-readable title ("Scratch 7") so multiple open scratch chats are distinguishable by
+      // title (tabs/history), not just by the raw id that's only visible once it's uncompacted.
+      // FLUX-1255: the rename is cosmetic, so its failure shouldn't abort the flow — the task is
+      // already persisted server-side at this point, and failing the whole handler here would leave
+      // it orphaned (never opened) while looking to the user like the click did nothing.
+      const n = task.id.replace(/^SCRATCH-/, '');
+      try {
+        await updateTask(task.id, { title: `Scratch ${n}` });
+      } catch (err) {
+        console.error('Failed to set scratch chat title, opening with default title:', err);
+      }
+      openChat(task.id);
+      triggerRefresh();
+    } catch (err) {
+      console.error('Failed to create scratch chat:', err);
+    } finally {
+      setCreatingScratch(false);
+    }
+  }, [creatingScratch, currentProject, currentUser, openChat, triggerRefresh]);
+
   const [showHistory, setShowHistory] = useState(false);
   // FLUX-1209: the board orchestrator and the Furnace-chat both track their live session the same
   // way — see useVirtualConversationSession above.
@@ -602,6 +644,10 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
           // a resize/drag survives minimize/reopen + reload; committed back on the resize/drag gesture.
           windowGeometry={windowGeometry[id]}
           onGeometryChange={setWindowGeometry}
+          // FLUX-1273: the full-screen plan-approval panel — a per-id boolean (not the raw shared
+          // id) so ChatWindow's memo bails for every OTHER open window when one ticket's panel toggles.
+          planApprovalPanelOpen={planApprovalOpen === id}
+          onClosePlanApproval={closePlanApproval}
           onMinimize={toggle}
           // FLUX-720: the window's close (X) is hidden while a prompt is pending, mirroring the
           // tab gate — the chat can't be retired until you resolve it. Minimize stays available.
@@ -632,6 +678,21 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
           onOpen={(el) => toggle(BOARD_CONVERSATION_ID, el)}
           onContextMenu={(e) => setMenu({ id: BOARD_CONVERSATION_ID, x: e.clientX, y: e.clientY })}
         />
+
+        {/* FLUX-1225: "+ New Scratch" — spawn a freeform Scratch Chat straight from the dock, no
+            ticket picker. Pinned right of the Orchestrator; mints a kind:'scratch' entity and opens
+            its tab. */}
+        <button
+          type="button"
+          onClick={() => void handleNewScratch()}
+          disabled={creatingScratch}
+          aria-label="New scratch chat"
+          title="New scratch chat"
+          className="eh-border flex h-9 flex-shrink-0 items-center gap-1 rounded-lg border bg-[var(--eh-input-bg)] px-2 text-xs font-medium text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] disabled:cursor-not-allowed disabled:opacity-60 dark:hover:bg-white/5"
+        >
+          {creatingScratch ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+          <span className="whitespace-nowrap">New Scratch</span>
+        </button>
 
         {/* FLUX-1035 / FLUX-1209 / FLUX-1212: the Furnace icon — a small square button pinned right of
             the Orchestrator tab, plus a hover flyout offering "Open Furnace" (today's drawer) and
@@ -698,10 +759,16 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
             </div>
 
             {furnaceFlyoutOpen && (
-              <div
-                role="menu"
-                className="eh-border eh-surface absolute bottom-full left-0 mb-2 w-56 overflow-hidden rounded-xl border p-1 shadow-2xl"
-              >
+              <>
+                {/* Hover bridge (FLUX-1212): fill the mb-2 gap between the icon and the flyout so moving
+                    the pointer up into the menu never crosses empty space — that empty band is outside
+                    the container's subtree, so crossing it fired onMouseLeave and snapped the menu shut
+                    before a row could be clicked. Can't live inside the overflow-hidden menu below. */}
+                <span aria-hidden="true" className="absolute bottom-full left-0 h-2 w-56" />
+                <div
+                  role="menu"
+                  className="eh-border eh-surface absolute bottom-full left-0 mb-2 w-56 overflow-hidden rounded-xl border p-1 shadow-2xl"
+                >
                 <button
                   type="button"
                   role="menuitem"
@@ -730,7 +797,8 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
                     <span aria-hidden="true" className="h-2 w-2 flex-shrink-0 rounded-full bg-primary" />
                   ) : null}
                 </button>
-              </div>
+                </div>
+              </>
             )}
           </div>
         )}
@@ -1768,6 +1836,129 @@ function BoardHealthAction({ busy, onFire }: { busy: boolean; onFire: (prompt: s
 // ChatWindow instance now bails out unless its OWN props changed. This only works because the
 // callback props below are the raw, referentially-stable DockActions (see the call site in ChatDock),
 // not a fresh per-id closure — a new closure every render would defeat this memo entirely.
+/** FLUX-1283: the chat window's draggable header bar — icon + title slot + the row of task/window
+ *  action buttons. Extracted so the title slot (plain text for the orchestrator/Furnace-chat windows,
+ *  an editable input bound to the shared ticket controller for task windows) can differ between
+ *  `ChatWindow`'s task-bound and taskless render branches without duplicating the button JSX in both. */
+function ChatWindowHeader({
+  id,
+  orchestrator,
+  isFurnaceChat,
+  task,
+  titleSlot,
+  startDrag,
+  onToggleSideView,
+  sideViewOpen,
+  onMinimize,
+  canClose,
+  onClose,
+  openTaskFullView,
+  onResetOrchestrator,
+}: {
+  id: string;
+  orchestrator: boolean;
+  isFurnaceChat: boolean;
+  task?: Task;
+  titleSlot: ReactNode;
+  startDrag: (e: React.PointerEvent) => void;
+  onToggleSideView?: (id: string) => void;
+  sideViewOpen: boolean;
+  onMinimize: (id: string) => void;
+  canClose: boolean;
+  onClose?: (id: string) => void;
+  openTaskFullView: (task: Task) => void;
+  onResetOrchestrator: () => void;
+}) {
+  return (
+    <div
+      onPointerDown={startDrag}
+      className="eh-border-subtle flex cursor-move select-none items-center justify-between border-b px-3.5 py-2.5 pr-9"
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px] font-semibold text-[var(--eh-text-primary)]">
+        {orchestrator ? (
+          <Sparkles className="h-3.5 w-3.5 flex-shrink-0 text-primary" />
+        ) : isFurnaceChat ? (
+          <Flame className="h-3.5 w-3.5 flex-shrink-0" style={{ color: FURNACE_ACCENT }} />
+        ) : (
+          <MessageSquare className="h-3.5 w-3.5 flex-shrink-0 text-[var(--eh-text-muted)]" />
+        )}
+        {titleSlot}
+      </div>
+      <div className="flex flex-shrink-0 items-center gap-0.5">
+        {/* FLUX-1234: the Smelter's drafting/operator authority toggle lives here — in the Smelter
+            chat header, the surface where that authority is exercised — instead of the Furnace
+            drawer. Persists workspace-wide to config.furnaceSettings.smelterMode. Furnace chat only. */}
+        {isFurnaceChat && (
+          <div className="mr-1.5" onPointerDown={(e) => e.stopPropagation()}>
+            <SmelterModeToggle />
+          </div>
+        )}
+        {/* Orchestrator can't be closed (it's pinned) — instead it can be reset to a clean
+            slate: stop the live turn and wipe the transcript. */}
+        {orchestrator && (
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={onResetOrchestrator}
+            title="Reset conversation (clears history)"
+            className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+          </button>
+        )}
+        {/* FLUX-744: open the ticket in the legacy full-screen modal (ticket windows only). Opening it
+            collapses (minimizes) this chat so the two surfaces don't draw over each other. */}
+        {task && (
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => { openTaskFullView(task); onMinimize(id); }}
+            title="Open in full view"
+            className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+          </button>
+        )}
+        {/* FLUX-734: open/close the ticket sideview beside the chat (ticket windows only). */}
+        {task && onToggleSideView && (
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => onToggleSideView(id)}
+            title={sideViewOpen ? 'Hide ticket panel' : 'Show ticket panel'}
+            aria-pressed={sideViewOpen}
+            className={`rounded-md p-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${
+              sideViewOpen ? 'text-primary' : 'text-[var(--eh-text-muted)] hover:text-[var(--eh-text-primary)]'
+            }`}
+          >
+            {sideViewOpen ? <PanelRightClose className="h-3.5 w-3.5" /> : <PanelRight className="h-3.5 w-3.5" />}
+          </button>
+        )}
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => onMinimize(id)}
+          title="Minimize"
+          className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
+        >
+          <Minus className="h-3.5 w-3.5" />
+        </button>
+        {canClose && onClose && (
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => onClose(id)}
+            title="Close (move to recent chats)"
+            className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-500 dark:hover:bg-red-500/15"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const ChatWindow = memo(function ChatWindow({
   id,
   orchestrator,
@@ -1791,6 +1982,8 @@ const ChatWindow = memo(function ChatWindow({
   seedSideviewWidth,
   windowGeometry,
   onGeometryChange,
+  planApprovalPanelOpen = false,
+  onClosePlanApproval,
   onMinimize,
   canClose = true,
   onClose,
@@ -1839,6 +2032,10 @@ const ChatWindow = memo(function ChatWindow({
   /** FLUX-920: commit a window-footprint change (merge-patched + persisted in DockProvider). Called on
    *  the resize-grip commit (`{w,h}`) and the title-bar drag commit (`{left,bottom}`). */
   onGeometryChange?: (id: string, geom: Partial<WindowGeometry>) => void;
+  /** FLUX-1273: whether the full-screen plan-approval panel is open for THIS window's ticket. */
+  planApprovalPanelOpen?: boolean;
+  /** FLUX-1273: close the plan-approval panel (stable DockActions reference — see the FLUX-1200 memo note above). */
+  onClosePlanApproval?: () => void;
   onMinimize: (id: string) => void;
   /** FLUX-1200: whether the close (X) affordance is enabled — replaces the old pattern of the
    *  parent passing `onClose={undefined}` to disable it, which required a fresh closure per-id. */
@@ -2250,6 +2447,12 @@ const ChatWindow = memo(function ChatWindow({
     />
   );
 
+  const handleResetOrchestrator = () => {
+    if (window.confirm('Reset the orchestrator conversation? This clears its chat history.')) {
+      void chat.reset();
+    }
+  };
+
   return (
     <motion.div
       ref={windowRef}
@@ -2268,141 +2471,118 @@ const ChatWindow = memo(function ChatWindow({
         <span className="h-2.5 w-2.5 rounded-tr border-r-2 border-t-2 border-[var(--eh-text-muted)] opacity-40 transition-opacity group-hover/resize:opacity-90" />
       </div>
 
-      <div
-        onPointerDown={startDrag}
-        className="eh-border-subtle flex cursor-move select-none items-center justify-between border-b px-3.5 py-2.5 pr-9"
-      >
-        <div className="flex min-w-0 items-center gap-1.5 text-[13px] font-semibold text-[var(--eh-text-primary)]">
-          {orchestrator ? (
-            <Sparkles className="h-3.5 w-3.5 flex-shrink-0 text-primary" />
-          ) : isFurnaceChat ? (
-            <Flame className="h-3.5 w-3.5 flex-shrink-0" style={{ color: FURNACE_ACCENT }} />
-          ) : (
-            <MessageSquare className="h-3.5 w-3.5 flex-shrink-0 text-[var(--eh-text-muted)]" />
-          )}
-          <span className="truncate">
-            {/* FLUX-1209: the Furnace-chat window title is the persona's resolved label (e.g.
-                "Furnace Operator (Smelter)"), same identity contract the board used to special-case
-                for an in-persona session — now scoped to its own conversation. */}
-            {orchestrator ? 'Orchestrator' : isFurnaceChat ? session?.label ?? 'Furnace chat' : task?.title ?? id}
-          </span>
-        </div>
-        <div className="flex flex-shrink-0 items-center gap-0.5">
-          {/* Orchestrator can't be closed (it's pinned) — instead it can be reset to a clean
-              slate: stop the live turn and wipe the transcript. */}
-          {orchestrator && (
-            <button
-              type="button"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={() => {
-                if (window.confirm('Reset the orchestrator conversation? This clears its chat history.')) {
-                  void chat.reset();
-                }
-              }}
-              title="Reset conversation (clears history)"
-              className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-            </button>
-          )}
-          {/* FLUX-744: open the ticket in the legacy full-screen modal (ticket windows only). Opening it
-              collapses (minimizes) this chat so the two surfaces don't draw over each other. */}
-          {task && (
-            <button
-              type="button"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={() => { openTaskFullView(task); onMinimize(id); }}
-              title="Open in full view"
-              className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
-            >
-              <Maximize2 className="h-3.5 w-3.5" />
-            </button>
-          )}
-          {/* FLUX-734: open/close the ticket sideview beside the chat (ticket windows only). */}
-          {task && onToggleSideView && (
-            <button
-              type="button"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={() => onToggleSideView(id)}
-              title={sideViewOpen ? 'Hide ticket panel' : 'Show ticket panel'}
-              aria-pressed={sideViewOpen}
-              className={`rounded-md p-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${
-                sideViewOpen ? 'text-primary' : 'text-[var(--eh-text-muted)] hover:text-[var(--eh-text-primary)]'
-              }`}
-            >
-              {sideViewOpen ? <PanelRightClose className="h-3.5 w-3.5" /> : <PanelRight className="h-3.5 w-3.5" />}
-            </button>
-          )}
-          <button
-            type="button"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => onMinimize(id)}
-            title="Minimize"
-            className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
-          >
-            <Minus className="h-3.5 w-3.5" />
-          </button>
-          {canClose && onClose && (
-            <button
-              type="button"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={() => onClose(id)}
-              title="Close (move to recent chats)"
-              className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-500 dark:hover:bg-red-500/15"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
-      </div>
-      {/* FLUX-734/740: chat column on the left; the ticket sideview docks on the right when open. For
-          ticket windows the shared controller is lifted (TicketControllerScope) so the editable
-          metadata bar and the sideview drive one form state + one save flow. */}
+      {/* FLUX-734/740/1283: chat column on the left; the ticket sideview docks on the right when open. For
+          ticket windows the shared controller is lifted (TicketControllerScope) so the editable header
+          title, metadata bar, and sideview all drive one form state + one save flow. */}
       {task ? (
         <TicketControllerScope task={task}>
           {(c) => (
-            <div className="flex min-h-0 flex-1 overflow-hidden">
-              <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                <ChatMetadataBar c={c} />
-                <ChatDiffPanel task={task} />
-                <div className="flex min-h-0 flex-1 flex-col px-3 py-3">{chatViewEl}</div>
+            <>
+              <ChatWindowHeader
+                id={id}
+                orchestrator={orchestrator}
+                isFurnaceChat={isFurnaceChat}
+                task={task}
+                startDrag={startDrag}
+                onToggleSideView={onToggleSideView}
+                sideViewOpen={sideViewOpen}
+                onMinimize={onMinimize}
+                canClose={canClose}
+                onClose={onClose}
+                openTaskFullView={openTaskFullView}
+                onResetOrchestrator={handleResetOrchestrator}
+                titleSlot={
+                  <input
+                    type="text"
+                    value={c.title}
+                    onChange={(e) => c.setTitle(e.target.value)}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                    placeholder="Task title..."
+                    className="w-full min-w-0 truncate border-none bg-transparent p-0 text-[13px] font-semibold text-[var(--eh-text-primary)] outline-none focus:ring-0"
+                  />
+                }
+              />
+              <div className="flex min-h-0 flex-1 overflow-hidden">
+                <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                  <ChatMetadataBar c={c} />
+                  <ChatDiffPanel task={task} />
+                  <div className="flex min-h-0 flex-1 flex-col px-3 py-3">{chatViewEl}</div>
+                </div>
+                {/* FLUX-740/744: the ticket sideview + the draggable divider that rebalances it vs the
+                    chat. The wrapper is a flex item that STRETCHES to the body row's (definite) height,
+                    then becomes a `relative` positioning context. TicketSideView fills it via
+                    `absolute inset-0` (see below) instead of a flex-basis chain — that binds the scroll
+                    region's height DIRECTLY to this stretched box, so it no longer depends on `flex-1`
+                    propagating a definite height down two nested levels (the one structural difference
+                    from the chat column, which scrolls fine). Without this the column grew past the
+                    window and got clipped instead of scrolling (FLUX-744). */}
+                {showSideView && (
+                  <>
+                    <SideviewDivider onResize={startSideviewResize} />
+                    <div
+                      className="relative flex-shrink-0 overflow-hidden"
+                      style={{ width: sideviewWidth }}
+                    >
+                      {/* FLUX-874: route an artifact-region annotation into THIS chat — enqueue if a
+                          turn is live (FIFO), otherwise send straight away (starts/resumes a session). */}
+                      <TicketSideView
+                        c={c}
+                        onSendToChat={(text) => {
+                          if (working || chat.busy) chat.enqueue(text);
+                          else void chat.send(text);
+                        }}
+                      />
+                    </div>
+                  </>
+                )}
+                {/* FLUX-1273: full-screen plan-approval panel, mounted inside this SAME controller scope
+                    so its staged header edits share one form state with ChatMetadataBar/TicketSideView,
+                    and its "Ask in chat" / annotation posting reuses this exact live-send routing. */}
+                {planApprovalPanelOpen && (
+                  <PlanApprovalPanel
+                    c={c}
+                    onClose={() => onClosePlanApproval?.()}
+                    onSendToChat={(text) => {
+                      if (working || chat.busy) chat.enqueue(text);
+                      else void chat.send(text);
+                    }}
+                  />
+                )}
               </div>
-              {/* FLUX-740/744: the ticket sideview + the draggable divider that rebalances it vs the
-                  chat. The wrapper is a flex item that STRETCHES to the body row's (definite) height,
-                  then becomes a `relative` positioning context. TicketSideView fills it via
-                  `absolute inset-0` (see below) instead of a flex-basis chain — that binds the scroll
-                  region's height DIRECTLY to this stretched box, so it no longer depends on `flex-1`
-                  propagating a definite height down two nested levels (the one structural difference
-                  from the chat column, which scrolls fine). Without this the column grew past the
-                  window and got clipped instead of scrolling (FLUX-744). */}
-              {showSideView && (
-                <>
-                  <SideviewDivider onResize={startSideviewResize} />
-                  <div
-                    className="relative flex-shrink-0 overflow-hidden"
-                    style={{ width: sideviewWidth }}
-                  >
-                    {/* FLUX-874: route an artifact-region annotation into THIS chat — enqueue if a
-                        turn is live (FIFO), otherwise send straight away (starts/resumes a session). */}
-                    <TicketSideView
-                      c={c}
-                      onSendToChat={(text) => {
-                        if (working || chat.busy) chat.enqueue(text);
-                        else void chat.send(text);
-                      }}
-                    />
-                  </div>
-                </>
-              )}
-            </div>
+            </>
           )}
         </TicketControllerScope>
       ) : (
-        <div className="flex min-h-0 flex-1 overflow-hidden">
-          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            <div className="flex min-h-0 flex-1 flex-col px-3 py-3">{chatViewEl}</div>
+        <>
+          <ChatWindowHeader
+            id={id}
+            orchestrator={orchestrator}
+            isFurnaceChat={isFurnaceChat}
+            task={task}
+            startDrag={startDrag}
+            onToggleSideView={onToggleSideView}
+            sideViewOpen={sideViewOpen}
+            onMinimize={onMinimize}
+            canClose={canClose}
+            onClose={onClose}
+            openTaskFullView={openTaskFullView}
+            onResetOrchestrator={handleResetOrchestrator}
+            titleSlot={
+              <span className="truncate">
+                {/* FLUX-1209: the Furnace-chat window title is the persona's resolved label (e.g.
+                    "Furnace Operator (Smelter)"), same identity contract the board used to special-case
+                    for an in-persona session — now scoped to its own conversation. */}
+                {orchestrator ? 'Orchestrator' : isFurnaceChat ? session?.label ?? 'Furnace chat' : id}
+              </span>
+            }
+          />
+          <div className="flex min-h-0 flex-1 overflow-hidden">
+            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+              <div className="flex min-h-0 flex-1 flex-col px-3 py-3">{chatViewEl}</div>
+            </div>
           </div>
-        </div>
+        </>
       )}
     </motion.div>
   );

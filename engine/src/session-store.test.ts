@@ -34,6 +34,7 @@ import {
   getAllSessionSummariesForTask,
   getListSessionSummariesForTask,
   getActiveSessionsForTask,
+  getLiveStandaloneSessionForTask,
   slimSessionSummaryForAgent,
   checkPathConflicts,
   validatePatternSupport,
@@ -160,6 +161,37 @@ describe('session-store', () => {
 
     it('returns undefined when no sessions exist', () => {
       expect(getCliSessionSummaryForTask('FLUX-NONE')).toBeUndefined();
+    });
+  });
+
+  describe('getLiveStandaloneSessionForTask (FLUX-1235)', () => {
+    function register(task: string, s: CliSessionRecord) {
+      cliSessionsById.set(s.id, s);
+      registerSession(task, s.id);
+    }
+
+    it('returns a roleless running session (the one that blocks a Furnace dispatch)', () => {
+      register('FLUX-1', createMockSession({ id: 'sess-a', taskId: 'FLUX-1', status: 'running' }));
+      expect(getLiveStandaloneSessionForTask('FLUX-1')?.id).toBe('sess-a');
+    });
+
+    it('returns a roleless pending session', () => {
+      register('FLUX-1', createMockSession({ id: 'sess-a', taskId: 'FLUX-1', status: 'pending' }));
+      expect(getLiveStandaloneSessionForTask('FLUX-1')?.id).toBe('sess-a');
+    });
+
+    it('ignores an IDLE (waiting-input) session — the Furnace takes it over, never a live block', () => {
+      register('FLUX-1', createMockSession({ id: 'sess-a', taskId: 'FLUX-1', status: 'waiting-input', resumeSessionId: 'r1' }));
+      expect(getLiveStandaloneSessionForTask('FLUX-1')).toBeUndefined();
+    });
+
+    it('ignores a roleful (multi-session) live session — it does not block a roleless dispatch', () => {
+      register('FLUX-1', createMockSession({ id: 'sess-a', taskId: 'FLUX-1', status: 'running', role: 'reviewer' }));
+      expect(getLiveStandaloneSessionForTask('FLUX-1')).toBeUndefined();
+    });
+
+    it('returns undefined when the task has no sessions', () => {
+      expect(getLiveStandaloneSessionForTask('FLUX-NONE')).toBeUndefined();
     });
   });
 

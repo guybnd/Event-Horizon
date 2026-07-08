@@ -951,6 +951,12 @@ button:not(:disabled):active {
   pointer-events: none;
   box-shadow: 0 0 0 3px var(--eh-accent-glow), 0 0 14px var(--eh-accent-glow);
   opacity: 0;
+  /* FLUX-1266: explicit will-change so Blink promotes this to its own compositor layer up
+     front rather than deciding lazily — same belt-and-suspenders treatment FLUX-1189 gave
+     the matrix CRT overlays. A real-headed-Chrome CDP trace isolating this animation from
+     every other page animation measured 0 Paint/Commit events either way (already
+     compositor-only), so this removes any doubt without changing behavior. */
+  will-change: opacity;
   animation: eh-logo-breathe 7s ease-in-out infinite;
 }
 

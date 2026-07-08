@@ -24,7 +24,8 @@ import {
   fetchFurnaceBatches, fetchFurnaceSlots, createFurnaceBatch, updateFurnaceBatch,
   appendFurnaceTicket, removeFurnaceTicket, igniteFurnaceBatch, stopFurnaceBatch, deleteFurnaceBatch,
   mergeFurnaceBatch, retryFurnaceTicket, resumeFurnaceBatch, dismissFurnaceTicket,
-  takeoverFurnaceTicket, handBackFurnaceTicket, startTaskCliSessionEx, FURNACE_CONVERSATION_ID,
+  takeoverFurnaceTicket, handBackFurnaceTicket, startTaskCliSessionEx, fetchTaskCliSession,
+  FURNACE_CONVERSATION_ID,
 } from '../api';
 import type {
   FurnaceBatch, BatchTicket, BatchTicketState, BatchStatus, BatchKind, SlotInfo, BatchPr, FurnaceSlotHolder, BatchTrigger,
@@ -94,23 +95,13 @@ export function FurnaceDrawer({ onClose }: DrawerProps) {
   // authority mode. The mode is a workspace-wide setting (config.furnaceSettings.smelterMode,
   // default 'drafting') — the engine composes the matching authority contract into the
   // Smelter's resolved prompt at launch (see resolvePersonaPrompt in orchestration-personas.ts).
+  // FLUX-1234: the interactive mode *control* now lives in the Smelter chat header (see
+  // SmelterModeToggle, rendered by ChatDock for the Furnace conversation) — it governs the Smelter
+  // agent, so it belongs with the agent. The drawer keeps only a read-only indicator of the mode.
   const config = useConfig();
   const { openChat } = useDockActions();
-  const { saveConfig } = useAppActions();
   const [startingSmelter, setStartingSmelter] = useState(false);
   const smelterMode = config?.furnaceSettings?.smelterMode === 'operator' ? 'operator' : 'drafting';
-
-  const setSmelterMode = useCallback(async (mode: 'drafting' | 'operator') => {
-    if (!config || mode === smelterMode) return;
-    await saveConfig({
-      ...config,
-      furnaceSettings: {
-        rateLimitRetryIntervalMs: config.furnaceSettings?.rateLimitRetryIntervalMs ?? 20 * 60 * 1000,
-        rateLimitMaxWaitMs: config.furnaceSettings?.rateLimitMaxWaitMs ?? 5 * 60 * 60 * 1000,
-        smelterMode: mode,
-      },
-    });
-  }, [config, smelterMode, saveConfig]);
 
   // FLUX-1209: Smelter's chat now launches on its own FURNACE_CONVERSATION_ID — a distinct,
   // resumable conversation — instead of riding on (and relabeling) the board orchestrator's.
@@ -118,6 +109,18 @@ export function FurnaceDrawer({ onClose }: DrawerProps) {
     setStartingSmelter(true);
     setError(null);
     try {
+      // FLUX-1238: if a Smelter chat already exists, just reopen/focus the window — never
+      // re-launch. Mirror the engine's own start guard (cli-session.ts): a running/pending
+      // session would 409 ("already active"), and a waiting-input session would be cancelled
+      // and re-prompted. Only a missing (null) or terminal session falls through to cold-start.
+      const existing = await fetchTaskCliSession(FURNACE_CONVERSATION_ID).catch(() => null);
+      const alreadyOpen = existing && (
+        existing.status === 'running' || existing.status === 'pending' || existing.status === 'waiting-input'
+      );
+      if (alreadyOpen) {
+        openChat(FURNACE_CONVERSATION_ID);
+        return; // reopen only — never re-launch
+      }
       await startTaskCliSessionEx(FURNACE_CONVERSATION_ID, {
         personaId: 'smelter',
         phase: 'chat',
@@ -185,7 +188,10 @@ export function FurnaceDrawer({ onClose }: DrawerProps) {
         )}
       </div>
 
-      {/* FLUX-1175: the Furnace Operator ("Smelter") — chat entry point + its authority mode.
+      {/* FLUX-1175: the Furnace Operator ("Smelter") — chat entry point.
+          FLUX-1234: the drafting/operator authority *control* moved into the Smelter chat header
+          (SmelterModeToggle). The drawer keeps a read-only indicator of the current mode, so the
+          batch surface still communicates the Smelter's authority without owning the setting.
           Drafting (default): every real ignite/stop/resume/retry needs your confirmation in-chat.
           Operator: full autonomous burn-lifecycle authority once you ask it to manage a burn. */}
       <div className="flex items-center gap-2 px-3 py-1.5 border-b flex-shrink-0" style={{ borderColor: 'var(--eh-border)' }}>
@@ -199,20 +205,14 @@ export function FurnaceDrawer({ onClose }: DrawerProps) {
           <Bot className="h-3.5 w-3.5" /> {startingSmelter ? 'Starting…' : 'Chat with Smelter'}
         </button>
         <span className="flex-1" />
-        <span className="text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>Mode</span>
-        <div className="inline-flex rounded overflow-hidden" style={{ border: '1px solid var(--eh-border)' }}>
-          {(['drafting', 'operator'] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => void setSmelterMode(m)}
-              className="px-2 py-0.5 text-[10px] font-medium"
-              title={m === 'drafting' ? 'Manual — every real burn action needs your confirmation' : 'Autonomous — full burn-lifecycle authority once asked to manage a burn'}
-              style={{ background: smelterMode === m ? FURNACE_ACCENT : 'transparent', color: smelterMode === m ? '#fff' : 'var(--eh-text-secondary)' }}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
+        <span
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium"
+          title={`Smelter mode: ${smelterMode}. Change it in the Smelter chat (Chat with Smelter). Drafting = every real burn action needs confirmation; Operator = autonomous burn-lifecycle authority.`}
+          style={{ border: '1px solid var(--eh-border)', color: 'var(--eh-text-secondary)' }}
+        >
+          <span style={{ color: 'var(--eh-text-muted)' }}>Mode</span>
+          <span style={{ color: FURNACE_ACCENT }}>{smelterMode}</span>
+        </span>
       </div>
 
       <SlotBar slots={slots} />
@@ -269,6 +269,52 @@ export function FurnaceDrawer({ onClose }: DrawerProps) {
   );
 }
 
+// FLUX-1234: the Smelter's authority toggle (drafting vs operator). Moved out of the Furnace drawer
+// header (where it read like a batch-level control) into the Smelter chat header — ChatDock renders
+// this for the Furnace conversation, so the setting sits with the agent it governs. It reads/writes
+// the SAME workspace-wide config.furnaceSettings.smelterMode (no schema change); the engine composes
+// the matching authority contract into the Smelter's prompt at launch. Compact, so it fits the chat
+// title bar; pointer-down is stopped so a click doesn't start dragging the title bar (the parent
+// title bar is a drag handle in ChatDock).
+export function SmelterModeToggle() {
+  const config = useConfig();
+  const { saveConfig } = useAppActions();
+  const smelterMode = config?.furnaceSettings?.smelterMode === 'operator' ? 'operator' : 'drafting';
+
+  const setSmelterMode = useCallback(async (mode: 'drafting' | 'operator') => {
+    if (!config || mode === smelterMode) return;
+    await saveConfig({
+      ...config,
+      furnaceSettings: {
+        rateLimitRetryIntervalMs: config.furnaceSettings?.rateLimitRetryIntervalMs ?? 20 * 60 * 1000,
+        rateLimitMaxWaitMs: config.furnaceSettings?.rateLimitMaxWaitMs ?? 5 * 60 * 60 * 1000,
+        smelterMode: mode,
+      },
+    });
+  }, [config, smelterMode, saveConfig]);
+
+  return (
+    <div className="inline-flex items-center gap-1">
+      <span className="text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>Mode</span>
+      <div className="inline-flex rounded overflow-hidden" style={{ border: '1px solid var(--eh-border)' }}>
+        {(['drafting', 'operator'] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => void setSmelterMode(m)}
+            className="px-2 py-0.5 text-[10px] font-medium"
+            title={m === 'drafting' ? 'Manual — every real burn action needs your confirmation' : 'Autonomous — full burn-lifecycle authority once asked to manage a burn'}
+            style={{ background: smelterMode === m ? FURNACE_ACCENT : 'transparent', color: smelterMode === m ? '#fff' : 'var(--eh-text-secondary)' }}
+          >
+            {m}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return <div className="px-1 pt-1 text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--eh-text-muted)' }}>{children}</div>;
 }
@@ -313,20 +359,23 @@ function resolveTriggerLabel(trigger: BatchTrigger | undefined, allBatches: Furn
 }
 
 /** The informative trigger badge + (when not burning) its editor popover (FLUX-1142). */
-function TriggerControl({ batch, allBatches, disabled, onChanged }: { batch: FurnaceBatch; allBatches: FurnaceBatch[]; disabled: boolean; onChanged: () => Promise<void> }) {
+export function TriggerControl({ batch, allBatches, disabled, onChanged }: { batch: FurnaceBatch; allBatches: FurnaceBatch[]; disabled: boolean; onChanged: () => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const resolved = resolveTriggerLabel(batch.trigger, allBatches);
+  // FLUX-1199: `disabled` (non-draft) blocks ARMING a new trigger, but a batch that left draft
+  // with a trigger already armed still needs a way to clear the now-inert badge. Keep the resolved
+  // badge clickable and open the popover in clear-only mode; arming a fresh trigger stays blocked.
+  const clearOnly = disabled && !!batch.trigger;
 
   return (
     <div className="relative">
       {resolved ? (
         <button
           data-trigger-toggle
-          onClick={() => !disabled && setOpen((o) => !o)}
-          disabled={disabled}
-          title={disabled ? resolved.tooltip : `${resolved.tooltip} Click to change.`}
+          onClick={() => setOpen((o) => !o)}
+          title={clearOnly ? `${resolved.tooltip} Click to clear.` : `${resolved.tooltip} Click to change.`}
           className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px]"
-          style={{ background: 'rgba(167,139,250,.12)', color: '#a78bfa', cursor: disabled ? 'default' : 'pointer' }}
+          style={{ background: 'rgba(167,139,250,.12)', color: '#a78bfa', cursor: 'pointer' }}
         >
           <Clock className="h-2.5 w-2.5" /> after: {resolved.label}
         </button>
@@ -341,15 +390,15 @@ function TriggerControl({ batch, allBatches, disabled, onChanged }: { batch: Fur
           <Clock className="h-2.5 w-2.5" /> + trigger
         </button>
       ) : null}
-      {open && !disabled && (
-        <TriggerPopover batch={batch} allBatches={allBatches} onChanged={onChanged} onClose={() => setOpen(false)} />
+      {open && (
+        <TriggerPopover batch={batch} allBatches={allBatches} clearOnly={clearOnly} onChanged={onChanged} onClose={() => setOpen(false)} />
       )}
     </div>
   );
 }
 
 /** Popover editor for a batch's auto-ignite trigger — "after batch" or "after PR", plus a clear action. */
-function TriggerPopover({ batch, allBatches, onChanged, onClose }: { batch: FurnaceBatch; allBatches: FurnaceBatch[]; onChanged: () => Promise<void>; onClose: () => void }) {
+function TriggerPopover({ batch, allBatches, clearOnly, onChanged, onClose }: { batch: FurnaceBatch; allBatches: FurnaceBatch[]; clearOnly: boolean; onChanged: () => Promise<void>; onClose: () => void }) {
   const [mode, setMode] = useState<'batch' | 'pr'>(batch.trigger?.type ?? 'batch');
   const [batchRef, setBatchRef] = useState(batch.trigger?.type === 'batch' ? batch.trigger.ref : '');
   const [prRef, setPrRef] = useState(batch.trigger?.type === 'pr' ? batch.trigger.ref : '');
@@ -400,6 +449,22 @@ function TriggerPopover({ batch, allBatches, onChanged, onClose }: { batch: Furn
       setSaving(false);
     }
   }, [batch.id, onChanged, onClose]);
+
+  // FLUX-1199: the batch has left draft, so the armed trigger is inert and can no longer be
+  // re-armed — only cleared. Skip the mode toggle / picker / Save and expose Clear alone.
+  if (clearOnly) {
+    return (
+      <div ref={boxRef} className="absolute left-0 top-full z-30 mt-1 w-56 rounded-lg p-2" style={{ background: 'var(--eh-surface)', border: `1px solid ${FURNACE_ACCENT}`, boxShadow: '0 4px 16px rgba(0,0,0,.3)' }}>
+        <div className="mb-1.5 text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>This batch has left draft — the trigger is inert and can only be cleared.</div>
+        {err && <div className="mb-1.5 text-[10px]" style={{ color: '#ef4444' }}>{err}</div>}
+        <div className="flex items-center gap-1.5">
+          <button disabled={saving} onClick={() => void save(null)} className="rounded px-1.5 py-1 text-[10px]" style={{ border: '1px solid var(--eh-border)', color: 'var(--eh-text-secondary)' }}>Clear</button>
+          <span className="flex-1" />
+          <button onClick={onClose} className="rounded px-1.5 py-1 text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div ref={boxRef} className="absolute left-0 top-full z-30 mt-1 w-56 rounded-lg p-2" style={{ background: 'var(--eh-surface)', border: `1px solid ${FURNACE_ACCENT}`, boxShadow: '0 4px 16px rgba(0,0,0,.3)' }}>
@@ -692,7 +757,7 @@ const BatchCard = memo(function BatchCard({ batch, allBatches, slots, onChanged 
         <DndContext collisionDetection={closestCenter} onDragEnd={onReorderTickets}>
           <SortableContext items={batch.tickets.map((t) => t.ticketId)} strategy={verticalListSortingStrategy}>
             {batch.tickets.map((t) => (
-              <TicketRow key={t.ticketId} ticket={t} batch={batch} onChanged={onChanged} onRemove={removeTicket} />
+              <TicketRow key={t.ticketId} ticket={t} batchId={batch.id} batchStatus={batch.status} onChanged={onChanged} onRemove={removeTicket} />
             ))}
           </SortableContext>
         </DndContext>
@@ -795,9 +860,13 @@ const BatchCard = memo(function BatchCard({ batch, allBatches, slots, onChanged 
   prev.slots.max === next.slots.max &&
   triggerRelevantBatchesEqual(prev.allBatches, next.allBatches));
 
-const TicketRow = memo(function TicketRow({ ticket, batch, onChanged, onRemove }: { ticket: BatchTicket; batch: FurnaceBatch; onChanged: () => Promise<void>; onRemove: (ticketId: string) => void }) {
+// FLUX-1203: takes `batchId`/`batchStatus` as primitives rather than the whole `batch` object. The
+// batch reference changes on every write (`mutateFurnaceBatch` structuredClones it), so a `batch`
+// prop would defeat the shallow-prop memo for every row whenever any sibling ticket changed — even
+// with per-ticket identity reuse in `mergeFurnaceBatches`. Primitives keep the memo gating per-ticket.
+export const TicketRow = memo(function TicketRow({ ticket, batchId, batchStatus, onChanged, onRemove }: { ticket: BatchTicket; batchId: string; batchStatus: BatchStatus; onChanged: () => Promise<void>; onRemove: (ticketId: string) => void }) {
   const meta = STATE_META[ticket.state];
-  const canRemove = !(batch.status === 'burning' && ticket.state !== 'queued');
+  const canRemove = !(batchStatus === 'burning' && ticket.state !== 'queued');
   // FLUX-1082: only a still-queued ticket may be dragged to reorder — one that's started/finished
   // burning is fixed in place (draft batches have every ticket `queued`, so all rows are draggable there).
   const draggable = ticket.state === 'queued';
@@ -847,24 +916,26 @@ const TicketRow = memo(function TicketRow({ ticket, batch, onChanged, onRemove }
 
         {/* Recovery actions (FLUX-1066) */}
         {isHuman && (
-          <button disabled={busy} onClick={() => void act(() => handBackFurnaceTicket(batch.id, ticket.ticketId))} title="Hand back to the Furnace" aria-label={`Hand ${ticket.ticketId} back to the Furnace`} className="flex-shrink-0">
+          <button disabled={busy} onClick={() => void act(() => handBackFurnaceTicket(batchId, ticket.ticketId))} title="Hand back to the Furnace" aria-label={`Hand ${ticket.ticketId} back to the Furnace`} className="flex-shrink-0">
             <Undo2 className="h-3 w-3" style={{ color: '#a78bfa' }} />
           </button>
         )}
         {!isHuman && isParkedOrFailed && (
           <>
-            <button disabled={busy} onClick={() => void act(() => retryFurnaceTicket(batch.id, ticket.ticketId))} title="Retry — fresh attempt" aria-label={`Retry ${ticket.ticketId}`} className="flex-shrink-0">
+            <button disabled={busy} onClick={() => void act(() => retryFurnaceTicket(batchId, ticket.ticketId))} title="Retry — fresh attempt" aria-label={`Retry ${ticket.ticketId}`} className="flex-shrink-0">
               <RotateCcw className="h-3 w-3" style={{ color: '#38bdf8' }} />
             </button>
-            <button disabled={busy} onClick={() => void act(() => takeoverFurnaceTicket(batch.id, ticket.ticketId))} title="Take over — you drive it" aria-label={`Take over ${ticket.ticketId}`} className="flex-shrink-0">
+            <button disabled={busy} onClick={() => void act(() => takeoverFurnaceTicket(batchId, ticket.ticketId))} title="Take over — you drive it" aria-label={`Take over ${ticket.ticketId}`} className="flex-shrink-0">
               <Hand className="h-3 w-3" style={{ color: '#a78bfa' }} />
             </button>
-            {!ticket.flagDismissed && (
-              <button disabled={busy} onClick={() => void act(() => dismissFurnaceTicket(batch.id, ticket.ticketId))} title="Dismiss flag — I've got this" aria-label={`Dismiss the flag on ${ticket.ticketId}`} className="flex-shrink-0">
-                <Check className="h-3 w-3" style={{ color: 'var(--eh-text-muted)' }} />
-              </button>
-            )}
           </>
+        )}
+        {/* FLUX-1297: Dismiss is NOT gated on !isHuman — a taken-over ticket (owner: 'human') can still
+            carry a stuck parked/failed flag with no other escape than handing it back to the Furnace. */}
+        {isParkedOrFailed && !ticket.flagDismissed && (
+          <button disabled={busy} onClick={() => void act(() => dismissFurnaceTicket(batchId, ticket.ticketId))} title="Dismiss flag — I've got this" aria-label={`Dismiss the flag on ${ticket.ticketId}`} className="flex-shrink-0">
+            <Check className="h-3 w-3" style={{ color: 'var(--eh-text-muted)' }} />
+          </button>
         )}
 
         {canRemove && (

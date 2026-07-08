@@ -341,10 +341,18 @@ Every ticket is owned by `furnace` (autonomous — an undefined `owner`) or `hum
 |---|---|---|---|
 | **transient** | rate limit / 429 | `cooling-down` | cooldown + auto-retry (FLUX-1063) — never reaches a park |
 | **recoverable** | context exhausted | (in-flight) | fresh session (FLUX-1047) — never reaches a park |
-| **needs-input** | review changes-requested past `retryCap`; agent left it in Require Input; waiting-input | `parked` | legit Require Input — a human decides. **Does NOT feed the circuit breaker** (M4) |
-| **hard-fail** | crash/cancel, no-verdict, watchdog timeout, spawn failure, cooldown ceiling exceeded | `failed` | offer **Retry / Take over / Dismiss**. **Feeds the circuit breaker** (`countsTowardBreaker`) |
+| **needs-input** | review changes-requested past `retryCap`; agent left it in Require Input; waiting-input; a **live session** blocking a dispatch (FLUX-1235) | `parked` | legit Require Input — a human decides. **Does NOT feed the circuit breaker** (M4) |
+| **hard-fail** | crash/cancel, no-verdict, watchdog timeout, a **transient** spawn failure past `MAX_SPAWN_ATTEMPTS`, a deterministic bad-request spawn refusal (unknown persona / framework), cooldown ceiling exceeded | `failed` | offer **Retry / Take over / Dismiss**. **Feeds the circuit breaker** (`countsTowardBreaker`) |
 
 Both park classes raise the board `require-input` flag; the drawer badge (`needs input` amber vs `failed` red vs `you're driving` violet) and the burn report's `parked`/`failed` lists split by class.
+
+**Spawn-refusal classification (FLUX-1235).** `dispatchSession` posts to the per-ticket `cli-session/start` route with `supersedeParked: true`, so an **idle** (`waiting-input`) session on the ticket — even a resumable one — is *taken over* and the worker starts (the same grooming→implementation handoff the portal does). `spawnOrCount` then classifies any refusal (`classifySpawnRefusal`) into deterministic (park **immediately** with the real reason — retrying can't help) vs transient (keep counting toward `MAX_SPAWN_ATTEMPTS`, then the generic *"the environment may be broken"* hard-fail):
+
+- **`409` — a LIVE (`running`/`pending`) session** on the ticket: park **now** as **needs-input** with *"ticket already has a live session — resolve it before burning"*, and — crucially — **without stopping the live session** (`parkTicket({ stopSessions: false })`); the human resolves their chat, then retries. This is the FLUX-1071 fix: no 6-retry spin, no misleading *"environment broken"*, and the live turn is never killed by the park.
+- **`400`/`404` — a deterministic bad request** (unknown persona/framework, task not found): park **now** as **hard-fail** with the server's real error.
+- **`5xx` / transport error / unknown**: transient — increment `spawnFailures`, keep retrying to `MAX_SPAWN_ATTEMPTS`, then the *"environment may be broken"* hard-fail. `no_slots` (worktree-pool exhaustion) never reaches here (slots are gated before dispatch; worktree creation is backgrounded) — it stays on its own cooldown path.
+
+As defense-in-depth, `furnace_build` **soft-flags** (a `note`, never an exclusion — mirrors the file-overlap heuristic) any candidate that currently has a live interactive session, so the drawer surfaces *"resolve the chat before igniting"* before the burn even starts. An idle session is not flagged — it self-resolves via the take-over above.
 
 ### 4. Manual recovery actions (the escape hatch)
 
@@ -387,7 +395,10 @@ apply to `role: 'lead'` personas):
   burn lifecycle.
 
 **Drawer entry point.** The portal's Furnace drawer (`FurnaceDrawer.tsx`) has a **Chat with Smelter** button
-+ a drafting/operator toggle. There is no ticket-independent, non-`__board__` conversation surface in the
+plus a **read-only** indicator of the current mode. FLUX-1234 moved the interactive drafting/operator
+*control* out of the drawer header into the Smelter chat header (`SmelterModeToggle`, rendered by
+`ChatDock.tsx` for the Furnace conversation) — it governs the Smelter agent, so it lives with the agent;
+it still reads/writes the same workspace-wide `config.furnaceSettings.smelterMode`. There is no ticket-independent, non-`__board__` conversation surface in the
 portal, so the chat rides on the existing board-orchestrator conversation (`BOARD_CONVERSATION_ID`) rather
 than a new sentinel: the button calls `startTaskCliSessionEx(BOARD_CONVERSATION_ID, { personaId: 'smelter', phase: 'chat', ... })`,
 and the engine's `__board__` branch of `POST /:id/cli-session/start` (`routes/cli-session.ts`) resolves the

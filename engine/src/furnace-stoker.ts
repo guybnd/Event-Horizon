@@ -40,6 +40,7 @@ import {
   freeSlots,
   setObservedWorktrees,
   globalSlotsInUse,
+  getTemperReservedTicketIds,
   FURNACE_SLOT_CAP,
 } from './furnace-store.js';
 import {
@@ -85,8 +86,11 @@ function findTicket(batch: FurnaceBatch, ticketId: string): BatchTicket | undefi
 /** The worktree-slot cap the Furnace enforces globally (kept in sync with the task-worktree pool). */
 export const FURNACE_WORKTREE_CAP = DEFAULT_MAX_TASK_WORKTREES;
 
-/** The focus handed to a re-implementation session (after changes-requested, or a rate-limit retry of one). */
-const REIMPLEMENT_FOCUS = 'Address the latest review feedback (changes-requested), commit, and return the ticket to Ready.';
+/**
+ * The focus handed to a re-implementation session (after changes-requested, or a rate-limit retry of one).
+ * FLUX-1071: also reused by the Temper single-ticket reconciler (temper.ts), so it is exported.
+ */
+export const REIMPLEMENT_FOCUS = 'Address the latest review feedback (changes-requested), commit, and return the ticket to Ready.';
 
 /**
  * FLUX-1078: every built-in reviewer persona prompt (orchestration-personas.ts) says "do NOT call
@@ -98,12 +102,26 @@ const REIMPLEMENT_FOCUS = 'Address the latest review feedback (changes-requested
  */
 const SOLE_REVIEWER_FOCUS = 'You are the ONLY reviewer for this ticket in this Furnace run — no orchestrator will synthesize other reviews, so you own the decision. Your review is not complete until you call `change_status` with `reviewState` set to "approved" or "changes-requested" to match your verdict. Posting a comment that starts with **APPROVED** or **CHANGES NEEDED** is not enough by itself — without the `change_status` call, the ticket will be parked for a human to unblock even though your review already happened.';
 
-/** FLUX-1078: the one-shot corrective focus for a review session whose prior pass left a verdict-shaped comment but never called `change_status`. */
-const REVIEW_NUDGE_FOCUS = 'Your previous review comment on this ticket already reads like a verdict (it started with **APPROVED** or **CHANGES NEEDED**), but `change_status` was never called to record it, so the ticket was about to be parked for a human over that alone. You are the sole reviewer for this ticket. Read your own last review comment, then call `change_status` now with `reviewState` set to match it (\'approved\' or \'changes-requested\'), and end your turn. Do not re-review the diff from scratch.';
+/**
+ * FLUX-1078: the one-shot corrective focus for a review session whose prior pass left a verdict-shaped
+ * comment but never called `change_status`. FLUX-1071: also reused by Temper (temper.ts) — exported.
+ */
+export const REVIEW_NUDGE_FOCUS = 'Your previous review comment on this ticket already reads like a verdict (it started with **APPROVED** or **CHANGES NEEDED**), but `change_status` was never called to record it, so the ticket was about to be parked for a human over that alone. You are the sole reviewer for this ticket. Read your own last review comment, then call `change_status` now with `reviewState` set to match it (\'approved\' or \'changes-requested\'), and end your turn. Do not re-review the diff from scratch.';
 
-/** Furnace review-phase dispatch options: the configured persona (if any) plus the sole-reviewer focus every review session needs to actually record its verdict. */
+/**
+ * FLUX-1218: name the batch the reviewer is running inside so it can queue a genuine, scoped follow-up
+ * straight back into this same burn (`create_ticket` + `furnace_ticket` action:'add') — same trust level
+ * as its own `reviewState` verdict, no human gate. Without the batch id threaded in here, the reviewer has
+ * no way to identify the batch it is reviewing inside, so the mechanism the review skill documents would be
+ * unreachable. See `.docs/skills/event-horizon-review.md`.
+ */
+export function furnaceFollowupFocus(batch: FurnaceBatch): string {
+  return ` This review is running inside Furnace batch \`${batch.id}\` (a ${batch.kind} burn). If you spot a genuine, small, clearly-related follow-up worth doing in this same burn, you may \`create_ticket\` for it and then \`furnace_ticket\` (action:'add', batchId:'${batch.id}') to queue it into this batch immediately — no approval needed, same trust as your verdict. Keep it scoped and note the addition (and why) in your review comment; tangential ideas still go to the normal backlog.`;
+}
+
+/** Furnace review-phase dispatch options: the configured persona (if any) plus the sole-reviewer focus every review session needs to actually record its verdict, and the batch-follow-up affordance (FLUX-1218). */
 function reviewDispatchOpts(batch: FurnaceBatch): { personaId?: string; focusComment: string } {
-  return { ...(batch.reviewPersonaId ? { personaId: batch.reviewPersonaId } : {}), focusComment: SOLE_REVIEWER_FOCUS };
+  return { ...(batch.reviewPersonaId ? { personaId: batch.reviewPersonaId } : {}), focusComment: SOLE_REVIEWER_FOCUS + furnaceFollowupFocus(batch) };
 }
 
 /** Exported for tests (FLUX-1080): assert this exact string is what reaches the outgoing dispatch body. */
@@ -174,7 +192,13 @@ export type TicketAction =
   // FLUX-1078: the review session completed with `reviewState` unset, but its last comment matched the
   // known verdict-marker convention — give it ONE corrective pass to record the verdict via
   // `change_status` before falling back to a park. Capped by `ticket.reviewNudgeSent`.
-  | { type: 'review-nudge' };
+  | { type: 'review-nudge' }
+  // FLUX-1297: a CANCELLED session (a deliberate stop, not a crash) on a ticket whose board status
+  // already reads merged/terminal — something else (a finish/merge flow) intentionally killed this
+  // session because the ticket's work already landed, not a failure to report. Settle it the same way
+  // `decideReconcile`'s board-success reflection treats a ticket a human took to Ready/Done/merged,
+  // rather than parking a ticket that already succeeded.
+  | { type: 'yield'; reason: string };
 
 /**
  * Decide what to do next for a single active ticket, given its session status + the ticket's review
@@ -253,6 +277,12 @@ export function decideTicketAction(input: {
 
   // Terminal but unsuccessful — a crash/cancel is a bad state, not a human question.
   if (sessionStatus === 'failed' || sessionStatus === 'cancelled') {
+    // FLUX-1297: a CANCELLED session (a deliberate stop, not a crash) whose ticket already reads
+    // Done/Released means a finish/merge flow killed this session on purpose because the work already
+    // landed — not a failure. Yield instead of parking a ticket that already succeeded.
+    if (sessionStatus === 'cancelled' && isBoardMergedStatus(ticketStatus)) {
+      return { type: 'yield', reason: `the ${currentPhase} session was stopped and the ticket is already ${ticketStatus}` };
+    }
     const reason = input.sessionOutcome
       ? `the ${currentPhase} session ended ${sessionStatus} — ${input.sessionOutcome}`
       : `the ${currentPhase} session ended ${sessionStatus}`;
@@ -293,7 +323,7 @@ export function isTerminalSession(status: CliSessionStatus): boolean {
 }
 
 /** Pure: pick the active session that belongs to a Furnace phase (never the persistent chat session). */
-export function pickSessionForPhase<T extends { phase?: string }>(sessions: readonly T[], phase: FurnacePhase): T | undefined {
+export function pickSessionForPhase<T extends { phase?: string }>(sessions: readonly T[], phase: FurnacePhase | 'grooming'): T | undefined {
   return sessions.find((s) => s.phase === phase);
 }
 
@@ -312,7 +342,8 @@ interface TicketWithPrLinks {
   pullRequest?: { url?: string };
 }
 
-function extractPrUrl(task: TicketWithPrLinks | null | undefined): string | undefined {
+// FLUX-1071: exported for the Temper reconciler (temper.ts), which reads the same PR-link fields.
+export function extractPrUrl(task: TicketWithPrLinks | null | undefined): string | undefined {
   if (!task) return undefined;
   return task.implementationLink || task.prUrl || task.pr?.url || task.pullRequest?.url || undefined;
 }
@@ -337,14 +368,33 @@ export function findSessionOutcome(task: { history?: unknown[] } | null | undefi
 }
 
 /**
- * Spawn a phase session for a ticket on the loopback engine, reusing the sanctioned start route
- * (server-side worktree isolation/reuse). Returns the new session id, or null if the spawn was refused.
+ * The outcome of a dispatch attempt. `sid` is set on success. On a refusal, `status` is the HTTP status
+ * and `error` the server's reason (used by `spawnOrCount` to tell a deterministic refusal — a live
+ * session, a bad persona — that must park immediately from a transient one worth retrying). `status` is
+ * undefined on a transport-level failure (engine unreachable), which is always treated as transient.
+ * `sessionLabel`/`sessionStatus` echo the blocking session from a 409 so the park reason can name it.
  */
-async function dispatchSession(
+export interface DispatchOutcome {
+  sid: string | null;
+  status?: number;
+  error?: string;
+  sessionLabel?: string;
+  sessionStatus?: string;
+}
+
+/**
+ * Spawn a phase session for a ticket on the loopback engine, reusing the sanctioned start route
+ * (server-side worktree isolation/reuse). Returns the new session id, or a classified refusal.
+ */
+export async function dispatchSession(
   ticketId: string,
-  phase: FurnacePhase,
+  // FLUX-1263: widened from `FurnacePhase` to also accept 'grooming' — the plan-review gate runner
+  // dispatches a 'grooming'-phase session for its "revise the plan" step (there is no code/diff to
+  // review, so 'implementation' doesn't fit; 'grooming' is the phase that already knows how to read +
+  // rewrite a ticket's plan). Furnace/Temper callers only ever pass 'implementation' | 'review'.
+  phase: FurnacePhase | 'grooming',
   opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean } = {},
-): Promise<string | null> {
+): Promise<DispatchOutcome> {
   // A sequential follower reuses the anchor's shared worktree (resolved server-side by the shared
   // branch), so it must NOT request isolation — that would check the same branch out twice.
   const body: Record<string, unknown> = {
@@ -353,6 +403,9 @@ async function dispatchSession(
     skipPermissions: true,
     patternPosition: 'standalone',
     user: 'Furnace',
+    // FLUX-1235: the Furnace is the authoritative driver — take over an IDLE (waiting-input) session
+    // even if it is resumable (the grooming→implementation handoff). A LIVE session still 409s.
+    supersedeParked: true,
   };
   if (opts.personaId) body.personaId = opts.personaId;
   if (opts.focusComment) body.focusComment = opts.focusComment;
@@ -363,20 +416,29 @@ async function dispatchSession(
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      const err = (await res.json().catch(() => ({}))) as { error?: string; session?: { label?: string; status?: string } };
       log.warn(`[furnace] spawn ${phase} for ${ticketId} refused (${res.status}): ${err?.error || res.statusText}`);
-      return null;
+      return {
+        sid: null,
+        status: res.status,
+        error: err?.error || res.statusText,
+        ...(err?.session?.label ? { sessionLabel: err.session.label } : {}),
+        ...(err?.session?.status ? { sessionStatus: err.session.status } : {}),
+      };
     }
     const j = (await res.json().catch(() => ({}))) as { session?: { id?: string } };
-    return j.session?.id ?? null;
+    return { sid: j.session?.id ?? null };
   } catch (e: unknown) {
     log.warn(`[furnace] spawn ${phase} for ${ticketId} failed: ${e instanceof Error ? e.message : String(e)}`);
-    return null;
+    return { sid: null, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
-/** Clear a stale review verdict before dispatching a fresh review (it persists across re-impl by design). */
-async function clearReviewState(ticketId: string): Promise<void> {
+/**
+ * Clear a stale review verdict before dispatching a fresh review (it persists across re-impl by design).
+ * FLUX-1071: exported for the Temper reconciler (temper.ts), which dispatches its own review passes.
+ */
+export async function clearReviewState(ticketId: string): Promise<void> {
   const t = tasksCache[ticketId];
   if (t && t.reviewState != null) {
     try {
@@ -394,11 +456,21 @@ function inProgressStatus(): string {
   return (i >= 0 && i + 1 < columnNames.length ? columnNames[i + 1] : undefined) || 'In Progress';
 }
 
-/** Park a ticket for a human: keep it in its working column and raise the `require-input` swimlane. */
-async function parkTicketOnBoard(ticketId: string, reason: string): Promise<void> {
+/**
+ * Park a ticket for a human: keep it in its working column and raise the `require-input` swimlane.
+ * FLUX-1235: `stopSessions` (default true) tears down the ticket's sessions as part of the park — the
+ * usual case, where the park settles a broken/finished burn. Pass `false` when parking BECAUSE the
+ * ticket has a live interactive session we must not kill (the whole point is to hand it back to the
+ * human intact); killing it here is exactly the FLUX-1071 defect this ticket fixes.
+ * FLUX-1071: exported for the Temper reconciler (temper.ts), which parks single tickets the same way.
+ * FLUX-1263: `status` overrides the target status (defaults to `inProgressStatus()`, the Furnace/Temper
+ * convention) — the plan-review gate parks a Grooming-stage ticket in place rather than jumping it to
+ * In Progress, since no implementation has started yet.
+ */
+export async function parkTicketOnBoard(ticketId: string, reason: string, opts: { stopSessions?: boolean; status?: string } = {}): Promise<void> {
   try {
     await updateTaskWithHistory(ticketId, {
-      nextStatus: inProgressStatus(),
+      nextStatus: opts.status ?? inProgressStatus(),
       entries: [{
         type: 'comment',
         user: 'Furnace',
@@ -411,7 +483,27 @@ async function parkTicketOnBoard(ticketId: string, reason: string): Promise<void
   } catch (e: unknown) {
     log.warn(`[furnace] park ${ticketId} swimlane flag failed: ${e instanceof Error ? e.message : String(e)}`);
   }
-  try { stopAllSessionsForTask(ticketId, 'furnace parked ticket'); } catch { /* best effort */ }
+  if (opts.stopSessions !== false) {
+    try { stopAllSessionsForTask(ticketId, 'furnace parked ticket'); } catch { /* best effort */ }
+  }
+}
+
+/**
+ * FLUX-1245: append a chat-visible `activity` note to a ticket. Furnace progress that previously lived only
+ * in the engine log (or nowhere) — e.g. "waiting for a worktree slot" — is surfaced in the ticket timeline,
+ * which renders `activity` entries. Best-effort: a failed note must never break the burn loop.
+ */
+async function addTicketActivity(ticketId: string, comment: string): Promise<boolean> {
+  try {
+    await updateTaskWithHistory(ticketId, {
+      entries: [{ type: 'activity', user: 'Furnace', comment, date: nowIso() }],
+      updatedBy: 'Furnace',
+    });
+    return true;
+  } catch (e: unknown) {
+    log.warn(`[furnace] activity note on ${ticketId} failed: ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
 }
 
 // ── Reconciliation against ground truth (FLUX-1066 §1–2) ──────────────────────────
@@ -832,11 +924,11 @@ async function recordSession(batchId: string, ticketId: string, sessionId: strin
  * `hard-fail` rests in `failed` (a bad state, offer Retry/Take over/Dismiss). Both raise the board flag.
  * A ticket a human has already taken over is NOT parked — the Furnace has yielded it.
  */
-async function parkTicket(batchId: string, ticketId: string, reason: string, failureClass: FailureClass = 'hard-fail'): Promise<void> {
+async function parkTicket(batchId: string, ticketId: string, reason: string, failureClass: FailureClass = 'hard-fail', opts: { stopSessions?: boolean } = {}): Promise<void> {
   const pre = getFurnaceBatch(batchId);
   const preT = pre ? findTicket(pre, ticketId) : undefined;
   if (preT && isHumanOwned(preT)) return; // yielded to a human — don't park under them.
-  await parkTicketOnBoard(ticketId, reason);
+  await parkTicketOnBoard(ticketId, reason, opts);
   await mutateFurnaceBatch(batchId, (b) => {
     const t = findTicket(b, ticketId);
     if (t) {
@@ -868,9 +960,49 @@ async function parkTicket(batchId: string, ticketId: string, reason: string, fai
 }
 
 /**
- * Spawn a phase session for a ticket, counting consecutive failures. On success returns the session id;
- * on failure it increments `spawnFailures` and, once past MAX_SPAWN_ATTEMPTS, PARKS the ticket so a
- * broken environment can never wedge the batch non-terminal.
+ * Classify a dispatch refusal as DETERMINISTIC (retrying can't help → park immediately with the real
+ * reason) or transient (`null` → keep counting toward MAX_SPAWN_ATTEMPTS). FLUX-1235: this is what stops
+ * a ticket that merely has a live chat session from spinning 6 pointless retries and parking with the
+ * misleading "the environment may be broken" — the generic message is now reserved for genuinely
+ * transient/unknown failures (5xx, engine unreachable) that ARE worth retrying.
+ *   - 409 → a LIVE (running/pending) session (the route already took over any idle one). Needs the human
+ *           to resolve that session first — a legitimate `needs-input` park, NOT a broken environment
+ *           (so it must not trip the circuit breaker), and we must NOT kill the live session.
+ *   - 400/404 → a deterministic bad request (unknown persona, unknown framework, task not found): a
+ *           `hard-fail` bad state offering Retry/Take over/Dismiss.
+ * A `no_slots` worktree-pool exhaustion never reaches here (slots are gated before dispatch and worktree
+ * creation is backgrounded), so it stays on its own cooldown/retry path — not folded into an immediate park.
+ */
+export function classifySpawnRefusal(
+  phase: FurnacePhase,
+  outcome: DispatchOutcome,
+): { reason: string; failureClass: FailureClass; stopSessions: boolean } | null {
+  const { status, error } = outcome;
+  if (status === 409) {
+    const who = outcome.sessionLabel || outcome.sessionStatus
+      ? ` (${[outcome.sessionLabel, outcome.sessionStatus].filter(Boolean).join(', ')})`
+      : '';
+    return {
+      reason: `ticket already has a live session${who} — resolve it before burning`,
+      failureClass: 'needs-input',
+      stopSessions: false, // never kill the live session we are refusing to clobber
+    };
+  }
+  if (status === 400 || status === 404) {
+    return {
+      reason: `could not start a ${phase} session: ${error || `HTTP ${status}`}`,
+      failureClass: 'hard-fail',
+      stopSessions: true,
+    };
+  }
+  return null; // 5xx / transport error / unknown → transient, worth retrying
+}
+
+/**
+ * Spawn a phase session for a ticket, counting consecutive failures. On success returns the session id.
+ * A DETERMINISTIC refusal (live session, bad persona) parks IMMEDIATELY with the real reason (FLUX-1235);
+ * only a transient/unknown failure increments `spawnFailures` and, once past MAX_SPAWN_ATTEMPTS, parks
+ * with the "environment may be broken" hard-fail so a truly broken environment can never wedge the batch.
  */
 async function spawnOrCount(
   batchId: string,
@@ -881,8 +1013,15 @@ async function spawnOrCount(
   const batch0 = getFurnaceBatch(batchId);
   const t0 = batch0 ? findTicket(batch0, ticketId) : undefined;
   const skipIsolation = !!(batch0 && t0 && isSequentialFollower(batch0, t0));
-  const sid = await dispatchSession(ticketId, phase, { ...opts, ...(skipIsolation ? { skipIsolation: true } : {}) });
-  if (sid) return { sid, parked: false };
+  const outcome = await dispatchSession(ticketId, phase, { ...opts, ...(skipIsolation ? { skipIsolation: true } : {}) });
+  if (outcome.sid) return { sid: outcome.sid, parked: false };
+
+  const deterministic = classifySpawnRefusal(phase, outcome);
+  if (deterministic) {
+    await parkTicket(batchId, ticketId, deterministic.reason, deterministic.failureClass, { stopSessions: deterministic.stopSessions });
+    return { sid: null, parked: true };
+  }
+
   await mutateFurnaceBatch(batchId, (b) => {
     const t = findTicket(b, ticketId);
     if (t) t.spawnFailures = (t.spawnFailures || 0) + 1;
@@ -994,6 +1133,27 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
 
     case 'park': {
       await parkTicket(batchId, ticketId, action.reason, action.failureClass);
+      break;
+    }
+
+    case 'yield': {
+      // FLUX-1297: mirror `decideReconcile`'s board-success reflection — the ticket already succeeded
+      // outside this loop's control, so settle it as `pr-open` rather than parking it.
+      await mutateFurnaceBatch(batchId, (b) => {
+        const t = findTicket(b, ticketId);
+        if (t) {
+          t.state = 'pr-open';
+          t.lastReviewState = 'approved';
+          if (!t.endedAt) t.endedAt = nowIso();
+          t.note = `completed outside the Furnace — ${action.reason}`;
+          delete t.failureClass;
+          delete t.currentSessionId;
+          delete t.currentPhase;
+          clearCooldownState(t);
+        }
+        b.consecutiveFailures = 0;
+      });
+      log.info(`[furnace] ${ticketId} yielded — ${action.reason}.`);
       break;
     }
 
@@ -1367,9 +1527,35 @@ async function feedCoal(batchId: string): Promise<void> {
     if (activeTicketCount(batch) >= effectiveConcurrency(batch)) return;
     // Parallel batches consume a fresh worktree slot per burning ticket — respect the global cap.
     // Sequential batches already hold their single reserved slot for the whole burn.
-    if (batch.kind === 'parallel' && freeSlots() < 1) return;
+    if (batch.kind === 'parallel' && freeSlots() < 1) {
+      // FLUX-1245: the shared pool is full. This used to `return` silently, leaving a queued ticket
+      // invisibly blocked on the board. Surface it in chat ONCE per waiting transition (dedup via the
+      // head-of-queue ticket's `waitingForSlot` flag); the flag is cleared when it's finally fed, below.
+      const blocked = nextQueuedTicket(batch);
+      if (blocked && !blocked.waitingForSlot) {
+        // FLUX-1250: write the (best-effort) note FIRST and only set the dedup flag once it lands — the
+        // note write can fail (swallowed by `addTicketActivity` so it never breaks the burn loop), and
+        // setting the flag beforehand would suppress every future attempt, announcing the wait nowhere.
+        const noted = await addTicketActivity(blocked.ticketId, 'Furnace: waiting for a free worktree slot — the shared worktree pool is full. This ticket will start automatically as soon as a slot frees.');
+        if (noted) {
+          await mutateFurnaceBatch(batchId, (b) => {
+            const t = b.tickets.find((x) => x.ticketId === blocked.ticketId);
+            if (t) t.waitingForSlot = true;
+          });
+        }
+      }
+      return;
+    }
     const next = nextQueuedTicket(batch);
     if (!next) return;
+    // FLUX-1245: about to feed this ticket — clear any prior "waiting for a slot" flag so that if it is
+    // ever blocked again later it re-announces (one chat entry per waiting transition, never per tick).
+    if (next.waitingForSlot) {
+      await mutateFurnaceBatch(batchId, (b) => {
+        const t = b.tickets.find((x) => x.ticketId === next.ticketId);
+        if (t) delete t.waitingForSlot;
+      });
+    }
 
     if (batch.kind === 'sequential') await ensureBatchBranchAssigned(batchId);
 
@@ -1492,6 +1678,7 @@ const UNRECLAIMABLE_LABEL: Record<UnreclaimableReason, string> = {
  */
 export async function describeSlotHolders(workspaceRoot: string): Promise<FurnaceSlotHolder[]> {
   const burning = new Set(getBurningBatches().flatMap((b) => furnaceReservedTicketIds(b)));
+  const temperReserved = new Set(getTemperReservedTicketIds());
   const worktrees = await listTaskWorktrees(workspaceRoot).catch(() => []);
   const holders: FurnaceSlotHolder[] = [];
   const seen = new Set<string>();
@@ -1514,8 +1701,16 @@ export async function describeSlotHolders(workspaceRoot: string): Promise<Furnac
   // batch flips to `burning` (via furnaceReservedTicketIds), but its worktree may not be materialized on
   // disk yet (several batches igniting back-to-back). Without this, such a reservation is invisible to
   // the loop above — a `no_slots` refusal could name fewer tickets than `used` implies. Name it too.
-  for (const ticketId of burning) {
-    if (!seen.has(ticketId)) holders.push({ ticketId, reason: 'reserved — worktree not yet created' });
+  // FLUX-1257: the same unmaterialized-reservation window applies to Temper's own reservations
+  // (`temperReservedTicketIds` via `getTemperReservedTicketIds`) — a same-tick Temper burst reserves a
+  // slot before its worktree lands on disk, so fold both reservation sets into this naming pass.
+  for (const ticketId of new Set([...burning, ...temperReserved])) {
+    if (!seen.has(ticketId)) {
+      holders.push({
+        ticketId,
+        reason: burning.has(ticketId) ? 'reserved — worktree not yet created' : 'Temper-reserved — worktree not yet created',
+      });
+    }
   }
   return holders;
 }
@@ -1538,10 +1733,17 @@ export function __resetSlotHealthLatchForTests(): void {
  * took a manual `furnace_get` + `git worktree list` to notice; now it fires a `log.warn` plus a portal
  * notification naming which tickets/worktrees are holding the slots (reusing `describeSlotHolders`'s
  * naming, same as the FLUX-1157 `no_slots` refusal). Advisory only — never blocks or halts anything.
+ *
+ * FLUX-1257: FLUX-1239 gave Temper its own in-memory reservation (`temperReservedTicketIds`), held for
+ * the ticket's ENTIRE time under Temper's control (released only in `stopTemper` or on a spawn failure —
+ * not just the brief pre-materialization window). So with zero Furnace batches burning, `used` can be
+ * fully accounted for by a legitimate Temper burst alone — not a leak. Only flag exhaustion when some
+ * usage is unaccounted for by either reservation source (i.e. `used` exceeds what Temper itself reserves).
  */
 export async function checkFurnaceSlotHealth(): Promise<void> {
   const used = globalSlotsInUse();
-  const exhausted = getBurningBatches().length === 0 && used >= FURNACE_SLOT_CAP;
+  const temperReservedCount = getTemperReservedTicketIds().length;
+  const exhausted = getBurningBatches().length === 0 && used > temperReservedCount && used >= FURNACE_SLOT_CAP;
   if (!exhausted) {
     slotExhaustionNotified = false;
     return;
@@ -1847,6 +2049,10 @@ export async function retryTicket(batchId: string, ticketId: string, opts: { for
     delete x.currentSessionId;
     delete x.currentPhase;
     delete x.prUrl;
+    // FLUX-1250: drop a stale `waitingForSlot` from before this ticket left `queued` (e.g. a human
+    // takeover while it was blocked on the pool) — otherwise it re-enters the queue already "seen" and
+    // `feedCoal` won't re-announce a fresh block until it has been fed once.
+    delete x.waitingForSlot;
     clearCooldownState(x);
   });
   if (batch.status === 'burning') void stokerTick(batchId);
@@ -1875,7 +2081,10 @@ export async function resumeBatch(id: string): Promise<BatchControlResult> {
     delete b.report;
     delete b.completedAt;
     for (const t of b.tickets) {
-      if (t.state === 'skipped') { t.state = 'queued'; t.owner = 'furnace'; delete t.note; delete t.endedAt; delete t.failureClass; }
+      // FLUX-1256: also drop a stale `waitingForSlot` from before the halt/stop skipped this ticket —
+      // otherwise it re-enters `queued` already "seen" and `feedCoal` won't re-announce a fresh block
+      // (silently suppressed by the leftover dedup flag) until it has been fed once.
+      if (t.state === 'skipped') { t.state = 'queued'; t.owner = 'furnace'; delete t.note; delete t.endedAt; delete t.failureClass; delete t.waitingForSlot; }
     }
   });
 

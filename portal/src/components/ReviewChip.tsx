@@ -103,7 +103,8 @@ export function internalApprovedChip(): JSX.Element {
   );
 }
 
-/** FLUX-1089: some but not all current members approved internally — mid-batch progress. */
+/** FLUX-1089: progress toward internal approval across current members — mid-batch, or not yet
+ *  started (0/N, FLUX-1310) so the chip is visible as soon as a PR has members. */
 export function reviewProgressChip(approvedCount: number, total: number): JSX.Element {
   return (
     <span
@@ -130,7 +131,8 @@ export function reviewProgressChip(approvedCount: number, total: number): JSX.El
  *     agent-internal approval must never be mistaken for a GitHub-recorded one (this is what makes
  *     mid-batch Furnace progress visible: a sequential batch's earlier members post comment-only
  *     approvals, so GitHub itself stays quiet until the final member's real `--approve`).
- *  4. some but not all members approved → 'progress'.
+ *  4. any current members exist and aren't all approved → 'progress' — shown from the moment a
+ *     PR has members, even at 0 approved (FLUX-1310), not just once the first approval lands.
  *  5. otherwise → 'fallback' (the pre-FLUX-1089 signal: GitHub `reviewDecision` — e.g.
  *     REVIEW_REQUIRED — falling back to the PR ticket's own `reviewState`).
  */
@@ -157,7 +159,7 @@ export function selectPrReviewChip(
   if (memberReview.total > 0 && memberReview.approvedCount === memberReview.total) {
     return { kind: 'internal-approved' };
   }
-  if (memberReview.approvedCount > 0) {
+  if (memberReview.total > 0) {
     return { kind: 'progress', approvedCount: memberReview.approvedCount, total: memberReview.total };
   }
   const signal = task.reviewDecision || task.reviewState || null;

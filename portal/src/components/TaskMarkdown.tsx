@@ -422,6 +422,16 @@ function extractText(node: ReactNode): string {
   return '';
 }
 
+// FLUX-1298: matches a blockquote whose flattened text opens with the TL;DR label (from the
+// grooming convention's `> **TL;DR** — …`), tolerant of the bold markup and an optional colon/dash.
+const TLDR_RE = /^tl;?dr\b/i;
+
+/** Whether a blockquote's rendered children open with the TL;DR label, so it can render as a
+ *  prominent callout instead of an ordinary quote. */
+function isTldrBlockquote(children: ReactNode): boolean {
+  return TLDR_RE.test(extractText(children).trim());
+}
+
 /** FLUX-683: fenced code block with a hover-revealed copy button. The `pre` is wrapped in a
  *  positioned container so the button can pin to the top-right without scrolling away with the
  *  (horizontally-scrollable) code. The source is recovered from the rendered children and the
@@ -500,11 +510,23 @@ export const TaskMarkdown = memo(function TaskMarkdown({
             return <MarkdownInlineCode linkify={linkifyTickets}>{children}</MarkdownInlineCode>;
           },
           pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-          blockquote: ({ children }) => (
-            <blockquote className="mb-4 border-l-4 border-primary/40 pl-4 italic text-gray-600 dark:text-gray-400">
-              {lt(children)}
-            </blockquote>
-          ),
+          blockquote: ({ children }) => {
+            // FLUX-1298: a TL;DR blockquote renders as a prominent callout — bigger, non-italic,
+            // soft accent box — so it stands out from ordinary quotes. Bold phrases inside keep
+            // their inherited text color (no per-word recoloring); the box carries the emphasis.
+            if (isTldrBlockquote(children)) {
+              return (
+                <blockquote className="mb-4 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 text-base not-italic text-gray-800 [&>p]:mb-0 dark:border-primary/30 dark:bg-primary/10 dark:text-gray-100">
+                  {lt(children)}
+                </blockquote>
+              );
+            }
+            return (
+              <blockquote className="mb-4 border-l-4 border-primary/40 pl-4 italic text-gray-600 dark:text-gray-400">
+                {lt(children)}
+              </blockquote>
+            );
+          },
           table: ({ children }) => <table className="mb-4 w-full border-collapse overflow-hidden rounded-lg">{children}</table>,
           thead: ({ children }) => <thead className="bg-gray-100 dark:bg-white/5">{children}</thead>,
           th: ({ children }) => <th className="border border-gray-200 px-3 py-2 text-left dark:border-white/10">{lt(children)}</th>,

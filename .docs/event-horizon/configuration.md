@@ -32,6 +32,8 @@ This is your primary workspace configuration file. It is tracked in your reposit
 | `enableBacklogScreen` | `boolean` | Toggles the visibility of the Backlog navigation item. |
 | `requireInputStatus` | `string` | The exact status name agents use when they need clarification (default: `"Require Input"`). |
 | `readyForMergeStatus` | `string` | The status name indicating a ticket is awaiting user review before merging (default: `"Ready"`). |
+| `gatePolicy` | `object` | **FLUX-1261.** Per-gate autonomy policy — see below. Replaces the old `temperEnabled` boolean (migrated once via the `gatePolicyMigrated` marker). |
+| `blockAgentPrMerges` | `boolean` | **FLUX-1290.** Gates the `finish_ticket` merge-lock's runtime "a human touched this" check — see below (default `false`). |
 | `boardCardOpenMode` | `"full" \| "preview"` | Controls whether clicking a board card opens the full modal or the side preview. |
 | `animationsEnabled` | `boolean` | Toggles micro-animations on the board interface. |
 | `docsRoot` | `string` | The directory relative to the workspace root where documentation is stored (default: `.docs`). |
@@ -51,6 +53,38 @@ The `permissions` object sets the default permission mode for each session surfa
 | `permissions.ticketDefault` | `"gated" \| "skip"` | `skip` | Default mode for per-ticket chat sessions. |
 
 > Delegated/headless sessions (combiner, relay) cannot block on a human and always run ungated, regardless of this setting.
+
+### Gate Policy (per-gate autonomy dial)
+
+**FLUX-1261.** `gatePolicy` sets the autonomy level for each workflow gate — `plan` (Grooming → Todo) and `review` (→ Ready) — replacing Temper's (FLUX-1071) single board-wide `temperEnabled` boolean. Edited from the ⚙ shown on the Grooming and Ready columns. `merge` is never a representable key — that's the structural half of the merge-lock. **FLUX-1264** adds the runtime half: `finish_ticket` independently refuses to merge a branch ticket unless a human-authored `comment`/`status_change` shows up somewhere in its history (`hasHumanGateTouch`, `models/gate-policy.ts`) — belt-and-suspenders in case a future code path ever reaches a merge call without going through this schema at all; the portal's own merge buttons are already human-gated REST routes, not MCP tools, so they don't need the same check.
+
+**FLUX-1292 default boundary.** The real dividing line is "has this board's `gatePolicy` ever been migrated/configured at all" (`gatePolicyMigrated`, `config.ts`) — **not** "new install" vs. "existing install":
+
+- **Never migrated** — a genuinely fresh workspace (no `config.json` yet) **or** an existing `config.json` that predates the `gatePolicy` field entirely (including a pre-FLUX-1261 Temper-era config, regardless of what `temperEnabled` was set to) — defaults to **`auto`/`auto`** (Autonomous) the first time the engine loads it, persisted once via `gatePolicyMigrated: true`.
+- **Already migrated** — a board that has completed this migration once, on any resulting value (including landing on `you`/`you`), or that has an explicit `gatePolicy` choice on disk — is **never** retroactively touched.
+
+**FLUX-1264 presets.** The same ⚙ modal opens with a "Presets — both gates" row above the per-gate control: **Manual** (`you`/`you`), **Guided** (`auto-then-you`/`auto-then-you`), **Autonomous** (`auto`/`auto`). Clicking one writes both `boardDefault.plan` and `boardDefault.review` in a single `saveConfig` call; a board default that doesn't exactly match one of the three shows no preset as active ("Custom" — a legitimate state, e.g. mixed `plan`/`review` values). Presets only ever touch `boardDefault` — a ticket's own `gatePolicyOverride` is untouched, and the modal surfaces a live "N tickets override this" count (`countGatePolicyOverrides`, `portal/src/lib/gatePolicyPresets.ts`) so a stale per-ticket override isn't silently confusing after a board-wide preset change. Custom presets are explicitly out of scope.
+
+| Field | Type | Default (never-migrated board) | Description |
+|-------|------|---------|-------------|
+| `gatePolicy.boardDefault.plan` | `"auto" \| "auto-then-you" \| "you"` | `auto` | Autonomy level for the plan-review gate (Grooming → Todo). |
+| `gatePolicy.boardDefault.review` | `"auto" \| "auto-then-you" \| "you"` | `auto` | Autonomy level for the code-review gate (→ Ready). `auto` drives the same loop `temperEnabled: true` used to (`temper.ts`). |
+
+> `you`/`you` remains the ultra-safe hard-coded fallback (`DEFAULT_GATE_POLICY`) used only as a last resort if `gatePolicy` is somehow missing entirely on an already-migrated board — it is never the seed a never-migrated board actually lands on.
+
+Values: `auto` clears the gate silently and loops to completion (re-tried up to the shared retry cap, then parks for a human); `you` always waits for a human. `auto-then-you` is asymmetric across gates (**FLUX-1288**): on the `plan` gate it loops review → revise the same way `auto` does, but an approved verdict always stops the loop and flags a human to confirm the move to Todo instead of moving it automatically — only the terminal action is manual, not the iteration; on the `review` gate it instead runs exactly one automated pass and always stops, win or lose (never loops on its own — that gate's own loop-then-confirm shape is a separate sibling ticket, the code-review-gate dial, still open). A ticket may also carry its own `gatePolicyOverride` (frontmatter, engine-internal in v1) that wins over the board default for that ticket only. **FLUX-1263:** the `plan` gate is now fully wired (`gate-runner.ts`) — all three values drive real behavior on the Grooming → Todo move (see [`change_status`](mcp-tools.md#change_status)'s plan-review gate redirect). `review`'s `auto` value drives Temper's existing loop unchanged.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `planReviewDepth` | `"auto" \| "quick" \| "standard" \| "thorough"` | `auto` | **FLUX-1263.** Column-level fixed override for the `plan` gate's review depth/breadth. `auto` picks Quick (XS/S effort, anchor-existence check only) / Standard (M effort, + reground + acceptance-criteria coverage) / Thorough (L/XL effort, + duplicate-ticket check + adversarial self-review) from the ticket's own `effort`; a fixed value forces that depth for every plan review regardless of effort. Dialed in the same Grooming-column ⚙ modal as `gatePolicy`. |
+
+### Block agent PR merges
+
+**FLUX-1290.** `blockAgentPrMerges` (default **`false`**) gates the `finish_ticket` merge-lock's runtime "a human touched this" check (`hasHumanGateTouch`, FLUX-1264 above) — the ONE runtime check, not the schema-level guarantee that `merge` is never a `gatePolicy` key, which is untouched. When `false` (the default), `finish_ticket` skips the check entirely: an agent session can merge a branch/PR ticket with no prior human-authored history touch — e.g. to carry out an explicitly-requested batch merge sweep. When `true`, behavior is byte-for-byte identical to the always-on lock described above. A deliberate default-behavior change for every board (previously there was no way to disable the lock at all) — flip it to `true` to keep the pre-FLUX-1290 always-human-gated merge behavior. Dialed as a plain on/off toggle in the same Ready-column ⚙ modal (review gate) as `gatePolicy`, since it isn't itself a `gatePolicy` key.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `blockAgentPrMerges` | `boolean` | `false` | Gates the `finish_ticket` merge-lock's `hasHumanGateTouch` runtime check. `false` skips it (agent-driven merges allowed); `true` restores the always-on refusal. |
 
 ### Integration Settings
 

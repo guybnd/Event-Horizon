@@ -41,7 +41,11 @@ if (!version) {
   console.error('Usage: node scripts/publish-public.mjs <version>  (e.g. v0.24.0)');
   process.exit(1);
 }
+// Version convention (FLUX-1317): release artifacts (notes files/headers, git tags, public
+// releases) are v-prefixed; package.json is bare semver. Either input form is accepted — we
+// normalize to a v-tag here and derive the bare form to locate a (possibly bare-named) notes file.
 const tag = version.startsWith('v') ? version : `v${version}`;
+const bareVersion = tag.replace(/^v/, '');
 
 console.log(`\n→ Publishing ${tag} to public remote…\n`);
 
@@ -65,9 +69,15 @@ if (publicTree === headTree) {
 }
 
 // 3. Build commit message — prefer release notes, fall back to git log.
-const releaseNotesPath = path.join(root, '.docs', 'release-notes', `${tag}.md`);
+//    flux:release writes v-prefixed note files, but tolerate a bare-named file too so a prefix
+//    mismatch never silently drops us to the git-log fallback (FLUX-1317).
+const notesDir = path.join(root, '.docs', 'release-notes');
+const releaseNotesPath = [
+  path.join(notesDir, `${tag}.md`),
+  path.join(notesDir, `${bareVersion}.md`),
+].find(existsSync);
 let commitMsg;
-if (existsSync(releaseNotesPath)) {
+if (releaseNotesPath) {
   const raw = readFileSync(releaseNotesPath, 'utf-8');
   const body = raw.replace(/^---[\s\S]*?---\n/, '').trim();
   commitMsg = `Release ${tag}\n\n${body}`;

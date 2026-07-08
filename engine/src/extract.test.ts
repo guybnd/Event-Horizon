@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { setWorkspaceRoot } from './workspace.js';
+import { setWorkspaceRoot, getActiveFluxDir } from './workspace.js';
 import {
   appendTranscriptEvent,
   flushTranscript,
@@ -14,7 +14,7 @@ import {
 import { projectTranscript } from './projection.js';
 import { extractTicket } from './extract.js';
 import { readCurationOps, getCurationOpsFile } from './curation-ops.js';
-import { tasksCache } from './task-store.js';
+import { createTask, tasksCache } from './task-store.js';
 import { proposeBoardRebase, resolveBoardRebase } from './board-rebase.js';
 
 /**
@@ -191,5 +191,101 @@ describe('extract verb (FLUX-656)', () => {
     expect(resolved!.results[0]!.ok).toBe(false);
     expect(resolved!.results[0]!.message).toMatch(/fromSeq and toSeq are required/);
     expect(await readCurationOps()).toHaveLength(0);
+  });
+
+  /**
+   * FLUX-1249 — promoting a `kind:"scratch"` source CONSUMES it: the scratch is tombstoned +
+   * archived after the new card is minted, so exactly one live card remains. Promoting any
+   * non-scratch source stays purely additive (the scratch kind guard is the only trigger).
+   */
+  describe('scratch consume (FLUX-1249)', () => {
+    /** Create a `kind:"scratch"` scratchpad and seed its stream with N user turns. */
+    async function makeScratch(n: number): Promise<string> {
+      await fs.mkdir(getActiveFluxDir(), { recursive: true });
+      const { id } = await createTask({ title: 'Scratch pad', author: 'Tester', kind: 'scratch', skipBroadcast: true });
+      for (let i = 0; i < n; i++) appendTranscriptEvent(id, { type: 'user', text: `s${i}` });
+      await flushTranscript(id);
+      return id;
+    }
+
+    it('promoting a scratch archives it (mergedInto + pinned tombstone) and mints a real FLUX-###', async () => {
+      const scratch = await makeScratch(3);
+      expect(scratch).toMatch(/^SCRATCH-\d+$/);
+
+      const res = await extractTicket({ from: scratch, fromSeq: 0, toSeq: 2, title: 'Promoted from scratch' });
+      // AC: the promoted card is a real FLUX-### (not SCRATCH-n), and consume is reported.
+      expect(res.id).toMatch(/^FLUX-\d+$/);
+      expect(res.turnsExtracted).toBe(3);
+      expect(res.sourceConsumed).toBe(true);
+      expect(res.consumeError).toBeUndefined();
+
+      // AC: the scratch is tombstoned (mergedInto pointer + pinned comment) and archived — not deleted.
+      const src = tasksCache[scratch];
+      expect(src).toBeTruthy();
+      expect(src.mergedInto).toBe(res.id);
+      expect(src.status).toBe('Archived');
+      const pinned = ((src.history || []) as Array<{ type?: string; pin?: boolean; comment?: string }>).find(
+        (h) => h.type === 'comment' && h.pin && /Promoted into/.test(h.comment || ''),
+      );
+      expect(pinned).toBeTruthy();
+
+      // AC: the promoted card's transcript STILL re-derives from the (untouched) scratch substrate
+      // after the archive — a status change never touches the transcript files.
+      expect(await readTranscriptMessages(res.id)).toEqual([
+        { role: 'user', text: 's0', ts: '', sourceStream: scratch },
+        { role: 'user', text: 's1', ts: '', sourceStream: scratch },
+        { role: 'user', text: 's2', ts: '', sourceStream: scratch },
+      ]);
+    });
+
+    it('the board-rebase promote gate consumes a scratch too (shared engine path)', async () => {
+      const scratch = await makeScratch(2);
+      const batch = proposeBoardRebase(
+        [{ kind: 'promote', targets: [scratch], summary: 'Promote scratch', fromSeq: 0, toSeq: 1, title: 'Promoted' }],
+        null,
+      );
+      const resolved = await resolveBoardRebase(batch.id, [batch.items[0]!.id]);
+      expect(resolved!.results[0]!.ok).toBe(true);
+
+      const newId = (await readCurationOps())[0]!.into;
+      expect(newId).toMatch(/^FLUX-\d+$/);
+      // The scratch was consumed via the same extractTicket path.
+      expect(tasksCache[scratch].mergedInto).toBe(newId);
+      expect(tasksCache[scratch].status).toBe('Archived');
+    });
+
+    it('promoting a NON-scratch source (__board__) leaves the source untouched (no regression)', async () => {
+      await seedBoard(4);
+      const res = await extractTicket({ from: '__board__', fromSeq: 0, toSeq: 1, title: 'Additive promote' });
+      // Non-scratch: no consume — the additive contract is preserved.
+      expect(res.sourceConsumed).toBeUndefined();
+      expect(res.consumeError).toBeUndefined();
+      // __board__ has no card, so nothing to archive; the op stands and the view re-derives.
+      expect(await readTranscriptMessages(res.id)).toEqual([
+        { role: 'user', text: 't0', ts: '', sourceStream: '__board__' },
+        { role: 'user', text: 't1', ts: '', sourceStream: '__board__' },
+      ]);
+    });
+
+    it('is best-effort: an archive failure leaves the promote intact (card + op stand)', async () => {
+      const scratch = await makeScratch(2);
+      // Force the archive WRITE to fail while leaving the scratch card in the cache (so the kind
+      // guard still fires and the read falls back to cache): replace its on-disk .md with a
+      // DIRECTORY at the same path, so updateTaskWithHistory's atomic rename onto it rejects.
+      const scratchPath = tasksCache[scratch]._path as string;
+      await fs.rm(scratchPath, { force: true });
+      await fs.mkdir(scratchPath, { recursive: true });
+
+      const res = await extractTicket({ from: scratch, fromSeq: 0, toSeq: 1, title: 'Promote despite archive fail' });
+      // The promote still succeeded: real card + a durable extract op + a re-derivable view.
+      expect(res.id).toMatch(/^FLUX-\d+$/);
+      expect(res.sourceConsumed).toBeUndefined();
+      expect(res.consumeError).toBeTruthy();
+      expect((await readCurationOps()).some((o) => o.op === 'extract' && o.into === res.id)).toBe(true);
+      expect(await readTranscriptMessages(res.id)).toEqual([
+        { role: 'user', text: 's0', ts: '', sourceStream: scratch },
+        { role: 'user', text: 's1', ts: '', sourceStream: scratch },
+      ]);
+    });
   });
 });

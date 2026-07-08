@@ -8,7 +8,7 @@ import {
   createDedicatedParent,
   type GitRunner,
 } from './group-discovery.js';
-import { GROUP_CONFIG_FILENAME, GROUP_STORE_DIRNAME } from './group.js';
+import { GROUP_CONFIG_FILENAME, GROUP_STORE_DIRNAME, validateGroupConfig, isSafeName } from './group.js';
 
 async function makeFolder(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'eh-discover-'));
@@ -171,6 +171,23 @@ describe('createDedicatedParent', () => {
     }
   });
 
+  it('rejects a member with an empty-string role before writing group.json (validateGroupConfig gate)', async () => {
+    const folder = await makeFolder();
+    const parentPath = path.join(folder, 'g');
+    try {
+      await expect(
+        createDedicatedParent(
+          { parentPath, groupName: 'g', members: [{ name: 'engine', role: '', remote: 'https://h/e.git' }] },
+          { gitRunner: noopGit, registerWorkspace: fakeRegistry().registerWorkspace },
+        ),
+      ).rejects.toThrow(/invalid group config/i);
+      // The loader would reject this config too — never let it reach disk.
+      expect(existsSync(path.join(parentPath, GROUP_CONFIG_FILENAME))).toBe(false);
+    } finally {
+      await fs.rm(folder, { recursive: true, force: true });
+    }
+  });
+
   it('skips git init when the directory is already a repo', async () => {
     const folder = await makeFolder();
     const parentPath = path.join(folder, 'prerepo');
@@ -263,6 +280,84 @@ describe('createDedicatedParent', () => {
       expect(reg.entries).not.toContain(path.join(folder, 'nope'));
       // group.local.json still pins the supplied (even if missing) path for ghost.
       expect(result.wroteLocalConfig).toBe(true);
+    } finally {
+      await fs.rm(folder, { recursive: true, force: true });
+    }
+  });
+
+  it('sanitizes unsafe folder-derived names into a loader-valid group.json (FLUX-543)', async () => {
+    const folder = await makeFolder();
+    const parentPath = path.join(folder, 'product-group');
+    // Real on-disk folder carries spaces + a parenthetical the loader rejects.
+    const memberDir = path.join(folder, 'anzu server (logic)');
+    const reg = fakeRegistry();
+    try {
+      await fakeGitRepo(memberDir);
+      const result = await createDedicatedParent(
+        {
+          parentPath,
+          groupName: 'Anzu',
+          members: [{ name: 'anzu server (logic)', role: 'api', remote: 'https://h/a.git', path: memberDir }],
+        },
+        { gitRunner: noopGit, registerWorkspace: reg.registerWorkspace },
+      );
+
+      const cfg = JSON.parse(await fs.readFile(path.join(parentPath, GROUP_CONFIG_FILENAME), 'utf-8'));
+      // The written config now passes the SAME validator the loader runs — the
+      // FLUX-543 dead end (created but invalid) is gone.
+      expect(validateGroupConfig(cfg)).toEqual([]);
+      expect(cfg.members[0].name).toBe('anzu-server');
+      expect(isSafeName(cfg.members[0].name)).toBe(true);
+
+      // The human-readable folder is preserved via the safe-name → real-path map.
+      const local = JSON.parse(await fs.readFile(path.join(parentPath, 'group.local.json'), 'utf-8'));
+      expect(local.paths['anzu-server']).toBe(path.resolve(memberDir));
+
+      // Registration + report both use the safe name.
+      expect(result.memberRegistrations[0]?.name).toBe('anzu-server');
+      expect(result.memberRegistrations[0]?.registered).toBe(true);
+      expect(reg.labels.get(path.resolve(memberDir))).toBe('anzu-server');
+    } finally {
+      await fs.rm(folder, { recursive: true, force: true });
+    }
+  });
+
+  it('de-dupes member names that sanitize to the same value (FLUX-543)', async () => {
+    const folder = await makeFolder();
+    const parentPath = path.join(folder, 'g');
+    try {
+      const result = await createDedicatedParent(
+        {
+          parentPath,
+          groupName: 'g',
+          members: [
+            { name: 'web (app)', role: 'app', remote: 'https://h/w1.git' },
+            { name: 'web!', role: 'app2', remote: 'https://h/w2.git' },
+          ],
+        },
+        { gitRunner: noopGit, registerWorkspace: fakeRegistry().registerWorkspace },
+      );
+      const cfg = JSON.parse(await fs.readFile(path.join(parentPath, GROUP_CONFIG_FILENAME), 'utf-8'));
+      expect(cfg.members.map((m: { name: string }) => m.name)).toEqual(['web', 'web-2']);
+      expect(validateGroupConfig(cfg)).toEqual([]);
+      expect(result.memberRegistrations.map((m) => m.name)).toEqual(['web', 'web-2']);
+    } finally {
+      await fs.rm(folder, { recursive: true, force: true });
+    }
+  });
+
+  it('fails the create when a member name cannot be made safe (FLUX-543)', async () => {
+    const folder = await makeFolder();
+    const parentPath = path.join(folder, 'g');
+    try {
+      await expect(
+        createDedicatedParent(
+          { parentPath, groupName: 'g', members: [{ name: '!!!', role: 'api', remote: 'https://h/e.git' }] },
+          { gitRunner: noopGit, registerWorkspace: fakeRegistry().registerWorkspace },
+        ),
+      ).rejects.toThrow(/safe name/i);
+      // Nothing was written for the rejected input.
+      expect(existsSync(path.join(parentPath, GROUP_CONFIG_FILENAME))).toBe(false);
     } finally {
       await fs.rm(folder, { recursive: true, force: true });
     }

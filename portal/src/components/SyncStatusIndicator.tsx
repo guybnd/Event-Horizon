@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Cloud, CloudOff, RefreshCw, AlertCircle, WifiOff, Lock, Copy, Check, X } from 'lucide-react';
 import { ConflictResolutionModal } from './ConflictResolutionModal';
 import * as api from '../api';
-import type { ConflictInfo, SyncRemediation } from '../api';
+import type { ConflictInfo, ResolutionStrategy, SyncRemediation } from '../api';
 
 export type SyncStatus =
   | { state: 'idle' }
@@ -434,7 +434,7 @@ export function SyncStatusIndicator() {
     );
   };
 
-  const handleResolve = async (resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'rename-local' | 'manual'; newContent?: string }>) => {
+  const handleResolve = async (resolutions: Array<{ ticketId: string; strategy: ResolutionStrategy; newContent?: string }>) => {
     // Call api.resolveConflicts directly instead of duplicating
     await api.resolveConflicts(resolutions);
     setShowConflictModal(false);

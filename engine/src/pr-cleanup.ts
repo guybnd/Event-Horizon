@@ -7,6 +7,12 @@ import { tasksCache, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { configCache } from './config.js';
 import { TERMINAL_TICKET_STATUSES } from './schema.js';
+// FLUX-1297: disarm Temper before this module stops a ticket's sessions itself (see
+// `disarmTemperForExternalStop`'s doc comment). Deliberately a function-body-only cross-import —
+// furnace-stoker.ts already imports from this module (reclaimReadyWorktrees), so this closes a
+// 3-file cycle (pr-cleanup -> temper -> furnace-stoker -> pr-cleanup) that is safe because none of
+// the three touch each other's exports at module-evaluation time, only inside function bodies.
+import { disarmTemperForExternalStop } from './temper.js';
 // FLUX-998 (epic FLUX-996): route every git/gh call in the post-merge cleanup + PR-reconcile
 // path through the S1 runner — a hung `git fetch`/`gh pr list` here used to block the merge
 // and the 90s reconcile poller forever (no timeout, no non-interactive env).
@@ -355,6 +361,13 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
     return { outcome: 'noop', branch, advanced, masterSynced: false, worktreeRemoved: false, branchDeleted: false, reason: 'reopened' };
   }
 
+  // FLUX-1297: disarm Temper on every ticket on this branch BEFORE stopping their sessions —
+  // otherwise Temper's own tick can observe the resulting 'cancelled' review session and park a
+  // ticket whose work just landed (the finish/merge race). Best-effort: never blocks cleanup.
+  for (const t of branchTickets) {
+    try { await disarmTemperForExternalStop(t.id); } catch { /* best effort */ }
+  }
+
   // 2. Stop sessions on the worktree.
   for (const t of branchTickets) stopAllSessionsForTask(t.id, 'Post-merge worktree cleanup');
 
@@ -421,12 +434,21 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
   }
 
   // Force-delete the branch (local + remote) — squash merge ⇒ `-d` won't recognise it.
+  // FLUX-1231: if a worktree still holds this branch (it read clean above but removeTaskWorktree
+  // couldn't remove it — a lock/leftover), a `git branch -D` is GUARANTEED to fail ("used by
+  // worktree"). Skip the doomed local+remote delete entirely; the next reconcile retries once the
+  // worktree is gone. This keeps the log clean at the source instead of relying only on
+  // deleteTicketBranch's quieted catch.
   let branchDeleted = false;
-  try {
-    await deleteTicketBranch(branch, true);
-    branchDeleted = true;
-  } catch {
-    // Already gone, or still checked out somewhere — best-effort; reconcile will retry.
+  if (worktree && !worktreeRemoved) {
+    log.debug(`[pr-cleanup] deferred branch delete for ${branch} — a worktree still holds it; will retry once removed`);
+  } else {
+    try {
+      await deleteTicketBranch(branch, true);
+      branchDeleted = true;
+    } catch {
+      // Already gone, or still checked out somewhere — best-effort; reconcile will retry.
+    }
   }
 
   return { outcome: 'cleaned', branch, advanced, masterSynced, worktreeRemoved, branchDeleted };

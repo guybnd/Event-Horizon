@@ -26,14 +26,32 @@ interface GroupWizardProps {
 type Step = 'source' | 'select' | 'configure' | 'result';
 type Source = 'registry' | 'folder';
 
-/** A discovered repo plus the user's selection + role assignment. */
+/** A discovered repo plus the user's selection + role + safe-name assignment. */
 interface RepoChoice extends DiscoveredRepo {
   selected: boolean;
   role: string;
+  /** Sanitized, editable member name written to group.json (FLUX-543). */
+  memberName: string;
 }
 
 const slugify = (s: string): string =>
   s.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+
+// Mirrors the engine's SAFE_NAME_PATTERN / sanitizeMemberName (group.ts,
+// group-setup.ts). Member names double as a path segment (`../<name>`) and a
+// doc-path prefix, so an unsafe name makes group.json fail its own loader and
+// the group silently renders flat (FLUX-543). We derive a safe name here so the
+// user sees + can edit it; the engine re-sanitizes authoritatively on create.
+const SAFE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const isSafeName = (v: string): boolean => v !== '.' && v !== '..' && SAFE_NAME_RE.test(v);
+const sanitizeMemberName = (raw: string): string =>
+  (raw ?? '')
+    .trim()
+    .replace(/\s*\([^)]*\)\s*$/, '') // drop a trailing parenthetical: foo(bar) → foo
+    .replace(/[^A-Za-z0-9._-]+/g, '-') // unsafe runs → single '-'
+    .replace(/-+/g, '-') // collapse repeated '-'
+    .replace(/^[^A-Za-z0-9]+/, '') // first char must be alphanumeric
+    .replace(/[._-]+$/, ''); // no trailing separator
 
 /**
  * Group onboarding/migration wizard (FLUX-407). Guides a user from "a folder of
@@ -70,7 +88,7 @@ export function GroupWizard({ onComplete, onCancel }: GroupWizardProps) {
   }, [groupName, choices, parentTouched]);
 
   const toChoices = (repos: DiscoveredRepo[]): RepoChoice[] =>
-    repos.map((r) => ({ ...r, selected: false, role: '' }));
+    repos.map((r) => ({ ...r, selected: false, role: '', memberName: sanitizeMemberName(r.name) }));
 
   const loadRegistry = useCallback(async () => {
     setBusy(true);
@@ -115,11 +133,23 @@ export function GroupWizard({ onComplete, onCancel }: GroupWizardProps) {
   function setRole(path: string, role: string) {
     setChoices((prev) => prev.map((c) => (c.path === path ? { ...c, role } : c)));
   }
+  function setMemberName(path: string, memberName: string) {
+    setChoices((prev) => prev.map((c) => (c.path === path ? { ...c, memberName } : c)));
+  }
 
   const selected = choices.filter((c) => c.selected);
   const selectedParents = selected.filter((c) => c.isGroupParent);
   const membersMissingRemote = selected.filter((c) => !c.remote);
   const membersMissingRole = selected.filter((c) => !c.role.trim());
+  // Member names must satisfy the engine's SAFE_NAME_PATTERN and be unique, or
+  // the written group.json fails its own loader (FLUX-543).
+  const membersBadName = selected.filter((c) => !isSafeName(c.memberName.trim()));
+  const nameCounts = selected.reduce<Record<string, number>>((acc, c) => {
+    const n = c.memberName.trim();
+    acc[n] = (acc[n] ?? 0) + 1;
+    return acc;
+  }, {});
+  const membersDupName = selected.filter((c) => nameCounts[c.memberName.trim()] > 1);
 
   const selectValid =
     selected.length > 0 &&
@@ -130,14 +160,16 @@ export function GroupWizard({ onComplete, onCancel }: GroupWizardProps) {
     selectValid &&
     groupName.trim().length > 0 &&
     parentPath.trim().length > 0 &&
-    membersMissingRole.length === 0;
+    membersMissingRole.length === 0 &&
+    membersBadName.length === 0 &&
+    membersDupName.length === 0;
 
   async function handleCreate() {
     setBusy(true);
     setError(null);
     try {
       const members = selected.map((c) => ({
-        name: c.name,
+        name: c.memberName.trim(),
         role: c.role.trim(),
         remote: c.remote as string,
         path: c.path,
@@ -197,11 +229,14 @@ export function GroupWizard({ onComplete, onCancel }: GroupWizardProps) {
         )}
         <div className="rounded-lg border border-gray-200 dark:border-white/10 divide-y divide-gray-100 dark:divide-white/5">
           {selected.map((m) => {
-            const result = memberResults.find((r) => r.name === m.name);
+            // Match + display by the SAFE member name — the engine writes and
+            // reports that, not the raw folder basename (FLUX-543).
+            const safeName = m.memberName.trim();
+            const result = memberResults.find((r) => r.name === safeName);
             return (
               <div key={m.path} className="flex items-center gap-2 px-3 py-2 text-sm">
                 <FolderGit2 className="w-4 h-4 text-gray-400" />
-                <span className="font-medium">{m.name}</span>
+                <span className="font-medium">{safeName}</span>
                 <span className="text-xs text-gray-400">{m.role.trim()}</span>
                 {result && (
                   <span
@@ -411,13 +446,34 @@ export function GroupWizard({ onComplete, onCancel }: GroupWizardProps) {
           </div>
           <div className="rounded-lg bg-gray-50 dark:bg-white/5 p-3 text-xs text-gray-500">
             <div className="font-semibold text-gray-600 dark:text-gray-300 mb-1">{selected.length} member{selected.length === 1 ? '' : 's'}</div>
-            <ul className="space-y-0.5">
-              {selected.map((m) => (
-                <li key={m.path} className="flex items-center gap-2">
-                  <span className="font-medium text-gray-700 dark:text-gray-200">{m.name}</span>
-                  <span>{m.role.trim() || <span className="text-red-500">needs a role</span>}</span>
-                </li>
-              ))}
+            <p className="mb-2 text-[11px] text-gray-400">
+              Each member gets a short <span className="font-medium">name</span> (used in the docs tree and paths). Unsafe folder
+              names (spaces, parentheses) are auto-adjusted — edit if you like; the real folder is preserved.
+            </p>
+            <ul className="space-y-1.5">
+              {selected.map((m) => {
+                const name = m.memberName.trim();
+                const bad = !isSafeName(name);
+                const dup = nameCounts[name] > 1;
+                return (
+                  <li key={m.path} className="flex items-center gap-2">
+                    <input
+                      value={m.memberName}
+                      onChange={(e) => setMemberName(m.path, e.target.value)}
+                      placeholder="name"
+                      className={`w-40 rounded border bg-white dark:bg-black/20 px-2 py-1 text-xs font-mono outline-none focus:border-primary ${
+                        bad || dup ? 'border-red-400' : 'border-gray-200 dark:border-white/10'
+                      }`}
+                    />
+                    <span className="text-gray-400">{m.role.trim() || <span className="text-red-500">needs a role</span>}</span>
+                    {sanitizeMemberName(m.name) !== m.name.trim() && (
+                      <span className="truncate text-[10px] text-gray-400">from “{m.name}”</span>
+                    )}
+                    {bad && <span className="text-[10px] text-red-500">invalid name</span>}
+                    {!bad && dup && <span className="text-[10px] text-red-500">duplicate</span>}
+                  </li>
+                );
+              })}
             </ul>
           </div>
           <div className="flex justify-between pt-1">

@@ -12,12 +12,9 @@ export default defineConfig([
       globals: globals.node,
     },
     rules: {
-      // FLUX-351: the engine can run as a stdio MCP server, where the JSON-RPC framing
-      // is written to STDOUT by the SDK transport. ANY stray stdout write corrupts that
-      // framing, so `console.log` (which goes to stdout) is banned in engine source.
-      // Route diagnostics through the stderr-only `log` helper (`engine/src/log.ts`).
-      // `console.warn`/`console.error` already go to stderr and are allowed; the
-      // deliberate transport stdout writes live in the SDK, not in engine source.
+      // FLUX-351: `console.log` (which goes to stdout) is banned in engine source — route
+      // diagnostics through the stderr-only `log` helper (`engine/src/log.ts`) instead.
+      // `console.warn`/`console.error` already go to stderr and are allowed.
       'no-console': ['error', { allow: ['warn', 'error'] }],
       // Match the `_`-prefix unused convention used across the codebase (see portal config).
       '@typescript-eslint/no-unused-vars': ['error', {

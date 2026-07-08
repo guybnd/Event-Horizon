@@ -24,6 +24,7 @@ import {
   setObservedWorktrees,
   globalSlotsInUse,
   ensureFurnaceLoaded,
+  setTemperReserved,
   __resetFurnaceStoreForTests,
 } from './furnace-store.js';
 import { newBatchTicket } from './models/furnace.js';
@@ -44,7 +45,7 @@ vi.mock('./pr-cleanup.js', () => ({
   worktreeUnreclaimableReason: (ticketId: string) => worktreeUnreclaimableReasonMock(ticketId),
 }));
 
-import { igniteBatch } from './furnace-stoker.js';
+import { igniteBatch, describeSlotHolders } from './furnace-stoker.js';
 import { taskWorktreeDir } from './task-worktree.js';
 
 describe('Furnace ignite-time reclaim + slot-holder naming (FLUX-1157)', () => {
@@ -145,5 +146,18 @@ describe('Furnace ignite-time reclaim + slot-holder naming (FLUX-1157)', () => {
       const holder = r.holders?.find((h) => h.ticketId === `FILLER-${i}`);
       expect(holder?.reason).toBe('reserved — worktree not yet created');
     }
+  });
+
+  // FLUX-1257: FLUX-1239 gave Temper its own in-memory reservation (`temperReservedTicketIds`), held
+  // during the same window a Furnace reservation is — before its worktree is materialized on disk. Without
+  // this, a same-tick Temper burst would be invisible to describeSlotHolders, undercounting holders vs.
+  // the reported `used` figure exactly like the pre-FLUX-1158 Furnace gap above.
+  it('names a Temper reservation whose worktree is not yet on disk', async () => {
+    setTemperReserved('TEMPER-1', true);
+    expect(worktreesOnDisk).toEqual([]);
+
+    const holders = await describeSlotHolders(root);
+
+    expect(holders).toEqual([{ ticketId: 'TEMPER-1', reason: 'Temper-reserved — worktree not yet created' }]);
   });
 });

@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { broadcastEvent } from './events.js';
-import { createTask, deleteTask } from './task-store.js';
+import { createTask, deleteTask, tasksCache, updateTaskWithHistory } from './task-store.js';
+import { configCache } from './config.js';
 import { sliceTurns } from './transcript.js';
 import { appendCurationOp, type ExtractOp } from './curation-ops.js';
 import { BOARD_CONVERSATION_ID } from './agents/board.js';
@@ -17,6 +18,13 @@ import { BOARD_CONVERSATION_ID } from './agents/board.js';
  * so removing the op reverts the view. "The orchestrator proposes, never silently
  * restructures": this is reached only through the human-approved board-rebase ritual or a
  * direct call that hits the FLUX-605 CONFIRM gate.
+ *
+ * ONE EXCEPTION (FLUX-1249): when the source is a `kind:"scratch"` disposable scratchpad,
+ * promotion CONSUMES it — the scratch is tombstoned + archived after the new card is minted,
+ * mirroring how `mergeTickets` consumes its sources. A scratch is disposable, so leaving it
+ * live would surface every new scratch turn in BOTH cards. Archiving (never deleting) keeps
+ * the promoted card's live re-derivation intact — `sliceTurns` reads the substrate transcript,
+ * which a status change does not touch. Promoting any non-scratch source stays purely additive.
  */
 
 /** The orchestrator stream id — the default source stream for an extract. (FLUX-904: now the
@@ -42,6 +50,12 @@ export interface ExtractTicketResult {
   id: string;
   title: string;
   turnsExtracted: number;
+  /** FLUX-1249: true when the source was a `kind:"scratch"` scratchpad that was consumed
+   *  (tombstoned + archived) by this promote. Absent/false for a non-scratch source. */
+  sourceConsumed?: boolean;
+  /** FLUX-1249: set when the best-effort scratch-consume failed (the promote still stands —
+   *  new card + op-log are durable; the scratch can be re-archived). */
+  consumeError?: string;
 }
 
 /**
@@ -103,5 +117,48 @@ export async function extractTicket(opts: ExtractTicketOptions): Promise<Extract
   // The new card's transcript view now re-derives the slice from substrate + op-log.
   broadcastEvent('taskUpdated', { id });
 
-  return { id, title: task.title, turnsExtracted: slice.length };
+  // FLUX-1249: consume a promoted SCRATCH source. A scratch is disposable, so leaving it live
+  // would surface every new scratch turn in BOTH cards (the extract op re-derives the slice
+  // live on each read). Tombstone + archive it the same way `mergeTickets` consumes its sources
+  // — but ONLY for a `kind:"scratch"` source; promoting `__board__`/a real ticket slice stays
+  // purely additive (the kind guard is inherently safe, no opt-in flag needed). Best-effort: the
+  // extract op already stands, so a failure here leaves the promoted card intact — surface it in
+  // the result rather than undoing the promote. Archiving (never deleting) keeps the promoted
+  // card's live re-derivation intact: `sliceTurns` reads the substrate transcript, untouched by
+  // a status change (do NOT switch to `deleteTask` — that fs.unlinks the card).
+  let sourceConsumed = false;
+  let consumeError: string | undefined;
+  if (tasksCache[from]?.kind === 'scratch') {
+    try {
+      const archiveStatus = configCache.archiveStatus || 'Archived';
+      const tombstone =
+        `🔗 Promoted into ${id}. This scratch chat was consumed by promotion; its turns are ` +
+        `preserved in the immutable substrate and now re-derive in ${id}'s view. A scratch is ` +
+        `disposable, so promotion takes the whole thing — exactly one live card remains.`;
+      const extraFields: Record<string, unknown> = { mergedInto: id };
+      if (tasksCache[from]?.swimlane) extraFields.swimlane = null; // drop any stale blocked flag
+      const result = await updateTaskWithHistory(from, {
+        entries: [{ type: 'comment', user: by, comment: tombstone, pin: true, date: new Date().toISOString() }],
+        updatedBy: by,
+        nextStatus: archiveStatus,
+        extraFields,
+      });
+      if (result) {
+        sourceConsumed = true;
+        broadcastEvent('taskUpdated', { id: from });
+      } else {
+        consumeError = `failed to archive scratch source ${from}`;
+      }
+    } catch (err) {
+      consumeError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  return {
+    id,
+    title: task.title,
+    turnsExtracted: slice.length,
+    ...(sourceConsumed ? { sourceConsumed: true } : {}),
+    ...(consumeError ? { consumeError } : {}),
+  };
 }

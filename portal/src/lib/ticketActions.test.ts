@@ -12,6 +12,7 @@ function makeDigest(overrides: Partial<HistoryDigest> = {}): HistoryDigest {
     statusChanges24h: [{ from: 'Todo', to: 'In Progress', date: '2026-06-18T00:00:00.000Z' }],
     comments: [{ id: 'c1', user: 'Guy', date: '2026-06-18T00:00:00.000Z' }],
     requireInput: null,
+    planReviewComment: null,
     ...overrides,
   };
 }

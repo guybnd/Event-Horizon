@@ -151,6 +151,44 @@ describe('merge verb (FLUX-657)', () => {
     expect(texts).toEqual(expected);
   });
 
+  describe('fold composition (FLUX-861 Fix B — folds compose, promote→fold round-trips)', () => {
+    it("chains a fold (B→A then A→C) and preserves B's turns in C's view", async () => {
+      const a = await makeTicket('A');
+      const b = await makeTicket('B');
+      const c = await makeTicket('C');
+      await seed(c, [{ text: 'c-own', ts: '2025-01-01T00:00:03.000Z' }]);
+      await seed(a, [{ text: 'a1', ts: '2025-01-01T00:00:02.000Z' }]);
+      await seed(b, [{ text: 'b1', ts: '2025-01-01T00:00:01.000Z' }]);
+
+      await mergeTickets({ into: a, from: [b] }); // a is now a survivor folding b
+      // Folding a (a prior survivor) into c now composes instead of being rejected: c's view
+      // carries b1 through via a's re-derived view, not just a's own substrate.
+      const res = await mergeTickets({ into: c, from: [a] });
+      expect(res.turnsFolded).toBe(2); // a's re-derived view: a1 + folded-in b1
+
+      expect(await readCurationOps()).toHaveLength(2);
+      const texts = (await readTranscriptMessages(c)).map((m) => m.text);
+      expect(texts).toEqual(['b1', 'a1', 'c-own']);
+    });
+
+    it('folds an extracted card as a source, surfacing its re-derived slice (promote→fold round-trip)', async () => {
+      const survivor = await makeTicket('S');
+      await seed('__board__', [
+        { text: 'orch-0', ts: '2025-01-01T00:00:00.000Z' },
+        { text: 'orch-1', ts: '2025-01-01T00:00:01.000Z' },
+      ]);
+      const { id: x } = await extractTicket({ from: '__board__', fromSeq: 0, toSeq: 1, title: 'Extracted X' });
+      await seed(survivor, [{ text: 's-own', ts: '2025-01-01T00:00:02.000Z' }]);
+
+      // X re-derives its slice from __board__; folding it now composes via X's own view.
+      const res = await mergeTickets({ into: survivor, from: [x] });
+      expect(res.turnsFolded).toBe(2); // X's re-derived view: the extracted orch-0/orch-1 slice
+
+      const texts = (await readTranscriptMessages(survivor)).map((m) => m.text);
+      expect(texts).toEqual(['orch-0', 'orch-1', 's-own']);
+    });
+  });
+
   describe('guards (no op recorded, no partial state)', () => {
     async function expectRejected(p: Promise<unknown>): Promise<void> {
       await expect(p).rejects.toThrow();
@@ -189,39 +227,33 @@ describe('merge verb (FLUX-657)', () => {
       expect(await readCurationOps()).toHaveLength(1);
     });
 
-    // FLUX-657 chaining guards: `gatherTurnsForView` folds a source by reading its *substrate*,
-    // not its re-derived view, so chaining merges through a prior survivor would silently drop
-    // turns. Both directions are rejected before any second op, keeping the view loss-free.
-    it("rejects a prior survivor reused as a source (would lose the survivor's folded-in turns)", async () => {
-      const a = await makeTicket('A');
-      const b = await makeTicket('B');
-      const c = await makeTicket('C');
-      await seed(a, [{ text: 'a1', ts: '2025-01-01T00:00:01.000Z' }]);
-      await seed(b, [{ text: 'b1', ts: '2025-01-01T00:00:02.000Z' }]);
-      await mergeTickets({ into: a, from: [b] }); // a is now a survivor folding b
-      // Folding a (a survivor) into c would lose b1 → refused, no second op.
-      await expect(mergeTickets({ into: c, from: [a] })).rejects.toThrow(/prior merge survivor/);
-      expect(await readCurationOps()).toHaveLength(1);
-    });
-
-    // FLUX-657 review (BLOCKER): an extracted card's view re-derives its seed slice from the SOURCE
-    // stream via the extract op — its own substrate is empty at birth. Folding it as a merge source
-    // reads only that (empty/work-only) substrate, so the slice would silently vanish from the
-    // survivor. Generalizing the guard from merge-survivors to ALL derived-view streams
-    // (`streamsWithDerivedView`) rejects it loudly instead of losing turns.
-    it('rejects folding an extracted card as a source (its re-derived slice would be lost)', async () => {
-      const survivor = await makeTicket('S');
-      await seed('__board__', [
-        { text: 'orch-0', ts: '2025-01-01T00:00:00.000Z' },
-        { text: 'orch-1', ts: '2025-01-01T00:00:01.000Z' },
-      ]);
-      const { id: x } = await extractTicket({ from: '__board__', fromSeq: 0, toSeq: 1, title: 'Extracted X' });
-      // X re-derives the slice from __board__; folding it would read only X's own substrate.
-      await expect(mergeTickets({ into: survivor, from: [x] })).rejects.toThrow(/re-derived view/);
-      // Only the extract op exists — no merge op was appended (no partial state).
+    // FLUX-861 (Fix B): folds compose now, but a genuine cycle is still rejected — folding a
+    // source back in when its own re-derived view already (transitively) includes the survivor
+    // would make the survivor's view depend on itself and recurse forever.
+    it('rejects folding a source that would create a cycle (an extracted card folded back into its own source)', async () => {
+      const x = await makeTicket('X');
+      await seed(x, [{ text: 'x1', ts: '2025-01-01T00:00:01.000Z' }]);
+      const { id: y } = await extractTicket({ from: x, fromSeq: 0, toSeq: 0, title: 'Extracted Y' });
+      // Y's view re-derives its slice from X's own substrate; folding Y into X would make X's
+      // view depend on itself (X → Y → X) — rejected as a cycle before any second op is appended.
+      await expect(mergeTickets({ into: x, from: [y] })).rejects.toThrow(/cycle/);
       const ops = await readCurationOps();
       expect(ops).toHaveLength(1);
-      expect(ops[0]).toMatchObject({ op: 'extract', into: x });
+      expect(ops[0]).toMatchObject({ op: 'extract', into: y });
+    });
+
+    // Cycle detection must walk the FULL transitive closure of the op-log graph, not just direct
+    // edges: X → Y (extract) → Z (merge) is two hops, mixing both op kinds.
+    it('rejects a transitive (multi-hop, mixed extract+merge) cycle', async () => {
+      const x = await makeTicket('X');
+      const z = await makeTicket('Z');
+      await seed(x, [{ text: 'x1', ts: '2025-01-01T00:00:01.000Z' }]);
+      await seed(z, [{ text: 'z1', ts: '2025-01-01T00:00:02.000Z' }]);
+      const { id: y } = await extractTicket({ from: x, fromSeq: 0, toSeq: 0, title: 'Extracted Y' });
+      await mergeTickets({ into: z, from: [y] }); // z now folds y (which re-derives a slice of x)
+      // z's view already (transitively) includes x via y; folding z into x would loop.
+      await expect(mergeTickets({ into: x, from: [z] })).rejects.toThrow(/cycle/);
+      expect(await readCurationOps()).toHaveLength(2);
     });
 
     it('rejects folding into a survivor that was itself already merged away', async () => {

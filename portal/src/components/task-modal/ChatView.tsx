@@ -1785,6 +1785,12 @@ function Composer({
   const [internalModel, setInternalModel] = useState('');
   const [internalEffort, setInternalEffort] = useState('');
   const [internalPermission, setInternalPermission] = useState('');
+  // FLUX-1236: has the user touched the Perms chip in this composer's life? The chip can't tell
+  // "left at Default ('')" from "explicitly chose Default ('')", and DockProvider.setSelections
+  // normalizes/prunes '' ↔ undefined so persisted selections can't carry the distinction either.
+  // Gate the permission field on this flag: only a touched chip transmits a mode; an untouched
+  // follow-up omits it so the engine leaves the session's mode alone (see submit + api.ts).
+  const [permissionTouched, setPermissionTouched] = useState(false);
   // FLUX-674: pasted/dropped/picked images staged for the next turn, plus upload state.
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [uploading, setUploading] = useState(0);
@@ -1835,6 +1841,11 @@ function Composer({
   const setPermission = selectionsControlled
     ? (v: string) => onSelectionsChange!({ model, effort, permission: v })
     : setInternalPermission;
+  // FLUX-1236: mark the chip touched on any user change so `submit` transmits the mode only then.
+  const changePermission = (v: string) => {
+    setPermissionTouched(true);
+    setPermission(v);
+  };
 
   const canAttach = !!onUploadImage;
   const isUploading = uploading > 0;
@@ -1956,7 +1967,15 @@ function Composer({
       return;
     }
     if ((!text && attachments.length === 0) || isUploading) return;
-    const opts: ChatSendOptions = { model, effort, permissionMode: permission, attachments };
+    // FLUX-1236: only send the permission chip when the user actually touched it this session.
+    // Otherwise every ordinary follow-up would transmit the chip's '' → 'default' sentinel and
+    // wipe the session's mode on resume. `undefined` is dropped by the api layer ("unchanged").
+    const opts: ChatSendOptions = {
+      model,
+      effort,
+      permissionMode: permissionTouched ? permission : undefined,
+      attachments,
+    };
     // FLUX-748: mid-turn (working) or mid-POST (busy) → queue instead of erroring; it auto-dispatches
     // when the turn finishes. When no queue is wired, keep the old gate (block while working/busy).
     if (working || busy) {
@@ -1966,16 +1985,20 @@ function Composer({
       void onSend(text, opts);
     }
     setValue('');
-    // FLUX-666: reset the chip selections after a send, consistent with clearing the text draft.
-    // On the controlled (dock) path one write to all-empty prunes the persisted entry; on the
-    // uncontrolled path reset the three internal states directly (calling the per-field controlled
-    // setters in sequence would each see a stale closure of the other two).
+    // FLUX-666: reset the model/effort chips after a send, consistent with clearing the text draft
+    // (they are per-turn overrides that otherwise fall back to the session defaults).
+    // FLUX-1236: but the permission chip is a STICKY session mode, not a per-turn override —
+    // preserve its value (and its touched flag) so the picker keeps showing the chosen mode and the
+    // next send re-emits it (an idempotent no-op on the engine). Resetting it to Default would make
+    // the following send transmit the 'default' sentinel and silently revert the mode the user set.
+    // On the controlled (dock) path one write prunes to nothing when all three are empty; on the
+    // uncontrolled path reset the internal states directly (calling the per-field controlled setters
+    // in sequence would each see a stale closure of the other two).
     if (selectionsControlled) {
-      onSelectionsChange!({});
+      onSelectionsChange!({ permission });
     } else {
       setInternalModel('');
       setInternalEffort('');
-      setInternalPermission('');
     }
     setAttachments([]);
     setAttachError(null);
@@ -2128,7 +2151,7 @@ function Composer({
         <div className="flex min-w-0 items-center gap-0.5">
           <ChipSelect icon={Cpu} name="Model" value={model} options={MODEL_OPTS} onChange={setModel} />
           <ChipSelect icon={Gauge} name="Effort" value={effort} options={EFFORT_OPTS} onChange={setEffort} />
-          <ChipSelect icon={Shield} name="Perms" value={permission} options={PERM_OPTS} onChange={setPermission} />
+          <ChipSelect icon={Shield} name="Perms" value={permission} options={PERM_OPTS} onChange={changePermission} />
           {canAttach && (
             <>
               <button

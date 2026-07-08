@@ -8,20 +8,14 @@ Event Horizon includes an MCP (Model Context Protocol) server that exposes ticke
 
 ## Quick Start
 
-The MCP server is configured automatically by the workflow installer (real installs connect to the running engine over the in-process HTTP `/mcp` mount — see [MCP Tools](reference/mcp-tools.md)). To smoke-test the headless **stdio** fallback manually:
-
-```bash
-npx tsx engine/src/index.ts --mcp --workspace .
-```
-
-That headless entry reads JSON-RPC from stdin and writes responses to stdout. (Running `engine/src/mcp-server.ts` directly does nothing — it has no entry point of its own; the server is started by `index.ts`.)
+The MCP server is configured automatically by the workflow installer: real installs connect to the running engine over the in-process HTTP `/mcp` mount — see [MCP Tools](reference/mcp-tools.md). There is no headless / no-engine mode — start the Event Horizon engine (tray app or `npm run dev`) and the MCP endpoint comes up with it.
 
 ## Architecture
 
 ```
 Agent CLI (Claude Code / Gemini / Copilot)
-    ↕ stdio (JSON-RPC)
-MCP Server (engine/src/mcp-server.ts)
+    ↕ HTTP (JSON-RPC, loopback)
+MCP Server (engine/src/mcp-server.ts), mounted in-process on the engine
     ↓ imports
 Shared internals: task-store, schema, config, events, workspace
     ↓ reads/writes
@@ -32,11 +26,9 @@ The MCP server shares all internals with the HTTP engine:
 
 - **task-store.ts**: `tasksCache` for reads, `updateTaskWithHistory()` for atomic writes
 - **schema.ts**: `validateTicketFrontmatter()` for validation before save
-- **events.ts**: `broadcastEvent()` for portal sync (when HTTP engine also running)
+- **events.ts**: `broadcastEvent()` for portal sync
 - **config.ts**: `configCache` for board configuration
 - **workspace.ts**: workspace resolution and `.flux/` directory management
-
-Console logging is redirected to stderr so it doesn't corrupt the MCP protocol stream on stdout.
 
 ## Tools
 
@@ -74,42 +66,32 @@ The workflow installer (`engine/src/workflow-installer.ts`) generates MCP config
 
 | Framework | Config Path | Format |
 |-----------|------------|--------|
-| Claude Code | `.mcp.json` (project root) | `{ mcpServers: { "event-horizon": { command, args } } }` |
+| Claude Code | `.mcp.json` (project root) | `{ mcpServers: { "event-horizon": { type, url, alwaysLoad } } }` |
 | Gemini | `.gemini/settings.json` | Merged into `mcpServers` key |
 | Copilot | `.github/copilot/mcp.json` | Same as Claude |
 | Cursor | `.cursor/mcp.json` | Same as Claude |
 | Cline | `.cline/mcp.json` | Same as Claude |
 | Windsurf | `.windsurf/mcp.json` | Same as Claude |
 
-### Dev mode config example
+### Config example (dev and packaged, identical shape)
 
 ```json
 {
   "mcpServers": {
     "event-horizon": {
-      "command": "npx",
-      "args": ["tsx", "engine/src/index.ts", "--mcp", "--workspace", "."]
+      "type": "http",
+      "url": "http://127.0.0.1:3067/mcp",
+      "alwaysLoad": true
     }
   }
 }
 ```
 
-### Packaged binary config
-
-```json
-{
-  "mcpServers": {
-    "event-horizon": {
-      "command": "./event-horizon",
-      "args": ["--mcp", "--workspace", "."]
-    }
-  }
-}
-```
+The port is rendered by the installer from the engine's actual listen port and re-written on every engine start, so a port change is picked up automatically — no `command`/`args`/`--workspace` needed, dev or packaged.
 
 ## Build
 
-The MCP server ships **inside** `engine/dist/index.js`. `index.ts` statically imports it (FLUX-705), so `npm run build`'s esbuild pass inlines `mcp-server.ts` into the engine bundle — there is no separate `dist/mcp-server.js` artifact (FLUX-710). Both the HTTP `/mcp` mount and the `--mcp` stdio entry run from `index.js`.
+The MCP server ships **inside** `engine/dist/index.js`. `index.ts` statically imports it (FLUX-705), so `npm run build`'s esbuild pass inlines `mcp-server.ts` into the engine bundle — there is no separate `dist/mcp-server.js` artifact (FLUX-710). The HTTP `/mcp` mount runs from `index.js`.
 
 ## Relationship to REST API
 
@@ -123,21 +105,16 @@ The MCP tools and REST API coexist:
 
 **Tools don't appear in agent's tool list:**
 
-- Verify the MCP config file exists in the correct location for your CLI
-- Check that `npx tsx` is available (requires Node.js and tsx installed)
-- Try running the headless entry manually: `npx tsx engine/src/index.ts --mcp --workspace .` — should output nothing on stdout until it receives input
+- Verify the Event Horizon engine is running — the HTTP `/mcp` mount only exists while the engine is up (there is no standalone/headless MCP process).
+- Verify the MCP config file exists in the correct location for your CLI and its `url` port matches the running engine (`GET /api/health`).
+- Running `npx tsx engine/src/index.ts --mcp` (with the engine down) now fails fast with an informative error instead of hanging — that's expected; it's not a way to run the MCP server standalone.
 
 **"Workspace is activating, please retry":**
 
 - The server is still loading tickets from disk. Wait and retry.
 
-**Protocol errors / garbled output:**
-
-- Ensure no other process is writing to the same stdout. The MCP server redirects all `console.log` to stderr.
-
 ## Key Files
 
-- `engine/src/mcp-server.ts` — MCP server implementation (10 tools)
+- `engine/src/mcp-server.ts` — MCP server implementation
 - `.mcp.json` — Root MCP config for this repo
 - `engine/src/workflow-installer.ts` — Generates MCP config during workflow installation
-- `engine/scripts/build.js` — Bundles MCP server as separate entry point

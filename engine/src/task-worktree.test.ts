@@ -27,6 +27,8 @@ import {
   stashDirtyTree,
   writeWorktreeSerenaOverride,
 } from './task-worktree.js';
+import { cliSessionsById } from './session-store.js';
+import type { CliSessionRecord } from './agents/types.js';
 
 // Real git worktree ops are slow on Windows under parallel suite load — the default 5000ms
 // testTimeout intermittently overruns when the full engine suite runs concurrently (FLUX-749).
@@ -276,6 +278,68 @@ describe('task-worktree', () => {
       // The folder must be fully gone — a leftover shell would later block re-add.
       expect(existsSync(wt)).toBe(false);
     });
+
+    // FLUX-1207: the leftover-directory sweep gets the same best-effort reap before its `fs.rm`.
+    it('reaps a known session pid for the derived ticket id before sweeping a leftover directory (FLUX-1207)', async () => {
+      const ticketId = 'FLUX-61';
+      const worktreePath = taskWorktreeDir(repo, ticketId);
+      // Simulate `git worktree remove` reporting success but leaving a shell dir behind (a held
+      // handle) by injecting a gitRunner that never touches the filesystem — the worktree was
+      // never registered with real git for this test, so the directory we create by hand is what
+      // survives the (faked) remove/prune, exactly the "leftover" condition the sweep guards.
+      await fs.mkdir(worktreePath, { recursive: true });
+      await fs.writeFile(path.join(worktreePath, 'shell.txt'), 'leftover\n', 'utf8');
+
+      cliSessionsById.set('fake-sess-61', {
+        id: 'fake-sess-61',
+        taskId: ticketId,
+        pid: 535353,
+      } as CliSessionRecord);
+
+      try {
+        const gitRunner = async () => ({ stdout: '', stderr: '' });
+        const reapDescendantsByPid = vi.fn(async (_pid: number) => [] as number[]);
+
+        await removeTaskWorktree(repo, worktreePath, { gitRunner, reapDescendantsByPid });
+
+        expect(reapDescendantsByPid).toHaveBeenCalledWith(535353);
+        // Same end-state as the pre-existing sweep test: the leftover dir is gone.
+        expect(existsSync(worktreePath)).toBe(false);
+      } finally {
+        cliSessionsById.delete('fake-sess-61');
+      }
+    });
+
+    // FLUX-1207 review fix: an unidentifiable leftover dir must fail CLOSED (reap nothing),
+    // never fall back to reaping every tracked session's pid engine-wide.
+    it('never reaps any pid when the leftover directory name does not match <repo>-<ticketId> (FLUX-1207)', async () => {
+      // Doesn't match the `<repo>-<ticketId>` naming convention, so ticketIdFromWorktreePath
+      // returns null for it — the exact condition that must fail closed, not open.
+      const worktreePath = path.join(taskWorktreesBaseDir(repo), 'not-a-ticket-worktree');
+      expect(ticketIdFromWorktreePath(repo, worktreePath)).toBeNull();
+
+      await fs.mkdir(worktreePath, { recursive: true });
+      await fs.writeFile(path.join(worktreePath, 'shell.txt'), 'leftover\n', 'utf8');
+
+      // An unrelated, live session tracked by the engine — must NOT be touched by this sweep.
+      cliSessionsById.set('fake-sess-unrelated', {
+        id: 'fake-sess-unrelated',
+        taskId: 'FLUX-999',
+        pid: 646464,
+      } as CliSessionRecord);
+
+      try {
+        const gitRunner = async () => ({ stdout: '', stderr: '' });
+        const reapDescendantsByPid = vi.fn(async (_pid: number) => [] as number[]);
+
+        await removeTaskWorktree(repo, worktreePath, { gitRunner, reapDescendantsByPid });
+
+        expect(reapDescendantsByPid).not.toHaveBeenCalled();
+        expect(existsSync(worktreePath)).toBe(false);
+      } finally {
+        cliSessionsById.delete('fake-sess-unrelated');
+      }
+    });
   });
 
   describe('createTaskWorktree', () => {
@@ -344,6 +408,64 @@ describe('task-worktree', () => {
       expect(realpathSync(resolved)).toBe(realpathSync(taskWorktreeDir(repo, 'FLUX-51')));
       expect(existsSync(resolved)).toBe(true);
       expect(await currentBranch(resolved)).toBe(branch);
+    });
+
+    it('reclaims an empty leftover directory at the target instead of refusing (FLUX-1277)', async () => {
+      const branch = 'flux/FLUX-52-empty';
+      const target = taskWorktreeDir(repo, 'FLUX-52');
+      // Simulate a Windows cleanup that emptied the dir but couldn't rmdir the top level
+      // (e.g. a lingering handle) — the dir exists, isn't a registered worktree, and has
+      // no `.git` link file for `git worktree repair` to re-link.
+      await fs.mkdir(target, { recursive: true });
+
+      const resolved = await createTaskWorktree(repo, 'FLUX-52', branch);
+      expect(realpathSync(resolved)).toBe(realpathSync(target));
+      expect(await currentBranch(resolved)).toBe(branch);
+    });
+
+    it('still refuses a non-empty directory at the target that is not a valid/repairable worktree (FLUX-1277)', async () => {
+      const branch = 'flux/FLUX-53-nonempty';
+      const target = taskWorktreeDir(repo, 'FLUX-53');
+      // Same leftover scenario, but with real content still sitting in it — never auto-delete.
+      await fs.mkdir(target, { recursive: true });
+      await fs.writeFile(path.join(target, 'leftover.txt'), 'un-pushed work\n', 'utf8');
+
+      await expect(createTaskWorktree(repo, 'FLUX-53', branch)).rejects.toThrow(
+        /not a valid git worktree and could not be repaired/i,
+      );
+    });
+
+    // FLUX-1207: repair can fail because an orphaned descendant of a killed session (e.g. a
+    // Bash-tool-launched vitest run) still holds a Windows file-handle lock on the worktree dir.
+    // The no-known-session case is already covered by the FLUX-53 test above (unchanged behavior);
+    // this covers the NEW reap-and-retry wiring that fires when a session pid IS known.
+    it('reaps a known session pid for the ticket before retrying repair, and still throws when repair genuinely cannot succeed (FLUX-1207)', async () => {
+      const branch = 'flux/FLUX-60-reap';
+      const ticketId = 'FLUX-60';
+      const target = taskWorktreeDir(repo, ticketId);
+      // Same non-empty, non-repairable leftover scenario as the FLUX-53 test above.
+      await fs.mkdir(target, { recursive: true });
+      await fs.writeFile(path.join(target, 'leftover.txt'), 'un-pushed work\n', 'utf8');
+
+      cliSessionsById.set('fake-sess-60', {
+        id: 'fake-sess-60',
+        taskId: ticketId,
+        pid: 424242,
+      } as CliSessionRecord);
+
+      try {
+        const reapDescendantsByPid = vi.fn(async (_pid: number) => [] as number[]);
+
+        await expect(
+          createTaskWorktree(repo, ticketId, branch, { reapDescendantsByPid }),
+        ).rejects.toThrow(/not a valid git worktree and could not be repaired/i);
+
+        // The wiring fired: the known session pid was reaped before the retry (and the retry
+        // still failed since nothing about the underlying corruption changed in this test).
+        expect(reapDescendantsByPid).toHaveBeenCalledWith(424242);
+      } finally {
+        cliSessionsById.delete('fake-sess-60');
+      }
     });
 
     it('enforces the configurable concurrency cap', async () => {

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { setWorkspaceRoot } from './workspace.js';
 
 // FLUX-1033 — postPrReview mirrors an internal verdict onto the real GitHub PR, falling back to a
 // plain `--comment` review when GitHub rejects a self-review (the Furnace opens the PR under the
@@ -14,6 +15,9 @@ const { postPrReview } = await import('./branch-manager.js');
 
 beforeEach(() => {
   runGh.mockReset();
+  // FLUX-1276: postPrReview's runGh calls now route through branch-manager's gh() wrapper, which
+  // resolves cwd via requireWorkspaceRoot() — an unbound workspace throws before ever reaching gh.
+  setWorkspaceRoot('/tmp/fake-repo');
 });
 
 describe('postPrReview (FLUX-1033)', () => {

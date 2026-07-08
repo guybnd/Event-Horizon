@@ -2,7 +2,7 @@
   "name": "event-horizon-desktop",
   "version": "1.4.1",
   "private": true,
-  "description": "Electron desktop shell for Event Horizon — runs the local engine + portal in its own window (FLUX-793, opt-in build).",
+  "description": "Event Horizon desktop app",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

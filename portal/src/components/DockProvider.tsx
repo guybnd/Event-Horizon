@@ -8,6 +8,12 @@ const ORDER_KEY = 'eh-dock-order';
 /** FLUX-728: cap on the manual tab order — applied to both the in-memory state and the localStorage
  *  write so inactive remembered ids can't accumulate unboundedly. */
 const ORDER_CAP = 50;
+/** FLUX-1252: localStorage key for the manually-opened tab set (ids surfaced as a tab even with no
+ *  active/recent CLI session, e.g. a freshly-created Scratch Chat). Without this, a full reload reset
+ *  the in-memory set to `[]`, dropping the tab of any chat with no "surfaced" session status. */
+const MANUALLY_OPENED_KEY = 'eh-dock-manually-opened';
+/** FLUX-1252: cap on the manually-opened set, mirroring `ORDER_CAP`. */
+const MANUALLY_OPENED_CAP = 50;
 /** FLUX-734: localStorage key for the per-chat ticket-sideview open set. */
 const SIDEVIEW_KEY = 'eh-dock-sideview';
 /** FLUX-740: localStorage key for the (global) sideview panel width, set by the chat↔panel divider. */
@@ -214,13 +220,21 @@ export interface DockActions {
    *  survives minimize/reopen (which unmounts the window) and a full reload. Merge-patched: a size-only
    *  update (`{w,h}`) keeps any stored position and vice-versa. Pruned in `closeCard`. */
   setWindowGeometry: (id: string, geom: Partial<WindowGeometry>) => void;
+  /** FLUX-1273: open the full-screen plan-approval panel for a ticket (AttentionDock's 📋 item, the
+   *  in-chat plan-approval card, and the ticket sideview's persistent "View Plan" affordance all route
+   *  here) — mounted inside that ticket's chat window scope so it can post straight into the live
+   *  conversation via the same `chat.send`/`chat.enqueue` the artifact annotator already uses. */
+  openPlanApproval: (id: string) => void;
+  /** FLUX-1273: close the plan-approval panel. */
+  closePlanApproval: () => void;
 }
 
 export interface DockState {
   open: string[];
   acked: string[];
   dismissed: string[];
-  /** Ids opened from a card/modal that may have no live session — surfaced as cards anyway. */
+  /** Ids opened from a card/modal that may have no live session — surfaced as cards anyway.
+   *  FLUX-1252: persisted, so a Scratch Chat (whose only surface is this tab) survives a reload. */
   manuallyOpened: string[];
   /** Per-chat x-center of the element that triggered the open, so a window spawns "out of" it. */
   anchors: Record<string, number>;
@@ -255,6 +269,9 @@ export interface DockState {
    *  `selections` this is localStorage-persisted, so a resized/moved window also survives a full reload.
    *  Pruned in `closeCard` when a chat is retired to History. */
   windowGeometry: Record<string, WindowGeometry>;
+  /** FLUX-1273: the ticket id whose full-screen plan-approval panel is open, or null. In-memory only
+   *  (like `anchors`) — an open panel doesn't need to survive a reload. */
+  planApprovalOpen: string | null;
 }
 
 const DockActionsContext = createContext<DockActions | null>(null);
@@ -283,7 +300,9 @@ export function DockProvider({ children }: { children: ReactNode }) {
     () => readBool(SIDEVIEW_WIDTH_USERSET_KEY, false),
   );
   const [sectionOpen, setSectionOpenState] = useState<Record<string, boolean>>(() => readBoolRecord(SECTION_OPEN_KEY));
-  const [manuallyOpened, setManuallyOpened] = useState<string[]>([]);
+  // FLUX-1252: rehydrate the manually-opened tab set so a Scratch Chat (or any manually-opened chat
+  // with no SURFACE_STATUSES-qualifying session) doesn't lose its only tab-bar surface on reload.
+  const [manuallyOpened, setManuallyOpened] = useState<string[]>(() => readStringArray(MANUALLY_OPENED_KEY));
   const [anchors, setAnchors] = useState<Record<string, number>>({});
   // FLUX-801: full source rects (parallel to `anchors`) for the pop-open/close animation.
   const [anchorRects, setAnchorRects] = useState<Record<string, AnchorRect>>({});
@@ -298,6 +317,8 @@ export function DockProvider({ children }: { children: ReactNode }) {
   const [windowGeometry, setWindowGeometryState] = useState<Record<string, WindowGeometry>>(
     () => readGeomRecord(WINDOW_GEOM_KEY),
   );
+  // FLUX-1273: the ticket id whose full-screen plan-approval panel is open (null = none).
+  const [planApprovalOpen, setPlanApprovalOpen] = useState<string | null>(null);
 
   // FLUX-635: persist dismissals on change. Cap to bound growth (History only shows HISTORY_CAP).
   useEffect(() => {
@@ -316,6 +337,15 @@ export function DockProvider({ children }: { children: ReactNode }) {
       /* quota exceeded / private mode — order just won't persist this load */
     }
   }, [order]);
+
+  // FLUX-1252: persist the manually-opened tab set on change. Capped like `order` to bound growth.
+  useEffect(() => {
+    try {
+      localStorage.setItem(MANUALLY_OPENED_KEY, JSON.stringify(manuallyOpened.slice(0, MANUALLY_OPENED_CAP)));
+    } catch {
+      /* quota exceeded / private mode — manually-opened set just won't persist this load */
+    }
+  }, [manuallyOpened]);
 
   // FLUX-734: persist the sideview open set on change.
   useEffect(() => {
@@ -538,12 +568,15 @@ export function DockProvider({ children }: { children: ReactNode }) {
           }
           return { ...prev, [id]: next };
         }),
+      // FLUX-1273: open the plan-approval panel for a ticket (idempotent — just (re)sets the id).
+      openPlanApproval: (id) => setPlanApprovalOpen(id),
+      closePlanApproval: () => setPlanApprovalOpen(null),
     };
   }, []);
 
   const state = useMemo<DockState>(
-    () => ({ open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen, windowGeometry }),
-    [open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen, windowGeometry],
+    () => ({ open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen, windowGeometry, planApprovalOpen }),
+    [open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen, windowGeometry, planApprovalOpen],
   );
 
   return (

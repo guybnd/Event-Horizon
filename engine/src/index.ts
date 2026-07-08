@@ -5,13 +5,17 @@ for (const key of Object.keys(process.env)) {
   if (key.toUpperCase() === 'NODE_OPTIONS') delete process.env[key];
 }
 
-// MCP mode guard — redirect stdout before any module-level code can corrupt JSON-RPC framing.
-// ESM static imports are hoisted so we can't prevent those from running first, but this ensures
-// no downstream execution (workspace activation, doc loading, etc.) reaches stdout in MCP mode.
-const MCP_MODE = process.argv.includes('--mcp');
-if (MCP_MODE) {
-  // eslint-disable-next-line no-console -- intentional MCP stdout shim: redirects stray console.log to stderr so it can't corrupt JSON-RPC framing
-  console.log = (...args: unknown[]) => console.error(...args);
+// FLUX-646: the stdio `--mcp` entry point was retired — HTTP-on-engine (FLUX-645) is the
+// only MCP transport now. Fail fast, before importing the rest of the app, so a stale
+// `--mcp` flag (old config, muscle memory) gets a clear error instead of silently booting
+// the wrong thing or hanging on stdin.
+if (process.argv.includes('--mcp')) {
+  console.error(
+    '[eh] --mcp (stdio MCP transport) has been removed. Start the EventHorizon engine ' +
+    '(tray app or `npm run dev`) and point your MCP client at its HTTP endpoint ' +
+    '(http://127.0.0.1:<port>/mcp) instead.'
+  );
+  process.exit(1);
 }
 
 import { log } from './log.js';
@@ -37,7 +41,7 @@ import { activateWorkspace, tasksCache } from './task-store.js';
 // makes the MCP tools and the engine one instance — in the packaged SEA build the old
 // lazy `seaRequire('mcp-server.js')` loaded a SECOND, never-activated task-store, so MCP
 // writes threw "Received null" and MCP reads were blind to tickets REST had written.
-import { handleMcpHttpRequest, startMcpServer } from './mcp-server.js';
+import { handleMcpHttpRequest } from './mcp-server.js';
 import { stopAllCliSessions, setAutoRestartCallback, getAllActiveSessions, getActiveSessionsForTask, syncActiveSessionStubs } from './session-store.js';
 import { requestApproval, resolveApproval, listPendingApprovals } from './permission-prompts.js';
 import { requestAnswer, resolveAnswer, listPendingQuestions } from './ask-questions.js';
@@ -72,6 +76,8 @@ import orchestrationRouter from './routes/orchestration.js';
 import workflowsRouter from './routes/workflows.js';
 import furnaceRouter from './routes/furnace.js';
 import { startStoker } from './furnace-stoker.js';
+import { startTemper } from './temper.js';
+import { startGateRunnerLoop } from './gate-runner.js';
 import agentsRouter from './routes/agents.js';
 import bootstrapRouter from './routes/bootstrap.js';
 import groupRouter from './routes/group.js';
@@ -268,8 +274,13 @@ app.get('/api/board/state', requireWorkspace, (_req, res) => {
 // folded into the always-on buildBoardDigest(). Portal bakes the returned fragment into the canned
 // prompt it sends to the board orchestrator.
 app.get('/api/board/triage-signals', requireWorkspace, async (_req, res) => {
-  const fragment = await buildTriageFragment();
-  res.json({ fragment });
+  try {
+    const fragment = await buildTriageFragment();
+    res.json({ fragment });
+  } catch (err) {
+    console.error('[board-triage] fragment computation failed:', err);
+    res.status(500).json({ error: 'Failed to compute board-health signals' });
+  }
 });
 
 // FLUX-833 (Phase 2): the `claude --resume` pointer for the live session on a conversation, if
@@ -723,6 +734,16 @@ async function startServer() {
     // The Furnace (FLUX-1008 / S3): background Stoker loop. A no-op until a run is ignited
     // (it drives only the single `burning` run each tick), so it's always safe to start here.
     startStoker();
+
+    // Temper (FLUX-1071): background loop that drives the single-ticket auto-review mode. A no-op
+    // until a ticket enters Ready with Temper on; rehydrates any in-flight loops from frontmatter so
+    // they survive an engine restart. Safe to start unconditionally.
+    startTemper();
+
+    // Plan-review gate runner (FLUX-1263): background loop driving the `plan` gate's `auto`/
+    // `auto-then-you` runs. A no-op until `change_status` redirects a Grooming -> Todo move into it;
+    // rehydrates any in-flight runs from frontmatter so they survive an engine restart.
+    startGateRunnerLoop();
   });
 
   // Terminal WebSocket upgrade handler — handles /api/terminal/ws/:sessionId.
@@ -812,15 +833,8 @@ process.on('unhandledRejection', (reason, promise) => {
 // this file), so the engine and the in-process HTTP mount share ONE task-store instance.
 // It is no longer lazy-loaded as a separate SEA bundle — that second instance, never
 // workspace-activated, was the root of the packaged-build "Received null" / blind-cache bug.
-if (MCP_MODE) {
-  startMcpServer().catch(err => {
-    console.error('MCP server failed:', err);
-    process.exit(1);
-  });
-} else {
-  startServer().catch(err => {
-    console.error('Failed to start Event Horizon:', err);
-    stopAllCliSessions('startup-failure');
-    process.exit(1);
-  });
-}
+startServer().catch(err => {
+  console.error('Failed to start Event Horizon:', err);
+  stopAllCliSessions('startup-failure');
+  process.exit(1);
+});

@@ -1,6 +1,16 @@
 import { describe, it, expect } from 'vitest';
+import { promises as fs } from 'fs';
+import os from 'os';
+import path from 'path';
 import matter from 'gray-matter';
-import { deriveGist, buildDoneIndexBlock, hasExistingVersionBlock, type ReleaseTask } from './release.js';
+import {
+  deriveGist,
+  buildDoneIndexBlock,
+  hasExistingVersionBlock,
+  normalizeReleaseVersion,
+  bumpPackageJsonVersions,
+  type ReleaseTask,
+} from './release.js';
 
 function task(id: string, title: string, history: unknown[]): ReleaseTask {
   const parsed = matter(`---\nid: ${id}\ntitle: ${title}\nstatus: Done\n---\nbody`);
@@ -49,6 +59,39 @@ describe('deriveGist', () => {
   it('ignores malformed entries without throwing', () => {
     expect(deriveGist([null, 42, 'string-entry', { type: 'comment', comment: 123 }])).toBeUndefined();
   });
+
+  it('prefers the tagged completion comment over a later untagged one (FLUX-1205)', () => {
+    const history = [
+      { type: 'comment', comment: 'The actual completion summary.', completionComment: true },
+      { type: 'status_change', from: 'Ready', to: 'Done' },
+      { type: 'comment', comment: 'A stray note added while sitting in Done.' },
+    ];
+    expect(deriveGist(history)).toBe('The actual completion summary.');
+  });
+
+  it('picks the latest tagged completion comment when several are present', () => {
+    const history = [
+      { type: 'comment', comment: 'Ready-time summary.', completionComment: true },
+      { type: 'comment', comment: 'finish_ticket summary.', completionComment: true },
+    ];
+    expect(deriveGist(history)).toBe('finish_ticket summary.');
+  });
+
+  it('falls back to the last comment for tickets that predate the completion tag', () => {
+    const history = [
+      { type: 'comment', comment: 'older comment' },
+      { type: 'comment', comment: 'newest comment' },
+    ];
+    expect(deriveGist(history)).toBe('newest comment');
+  });
+
+  it('skips a blank tagged completion comment and falls back to a real comment', () => {
+    const history = [
+      { type: 'comment', comment: 'real gist' },
+      { type: 'comment', comment: '   ', completionComment: true },
+    ];
+    expect(deriveGist(history)).toBe('real gist');
+  });
 });
 
 describe('buildDoneIndexBlock', () => {
@@ -88,5 +131,68 @@ describe('hasExistingVersionBlock', () => {
 
   it('still matches when the version contains regex-special characters', () => {
     expect(hasExistingVersionBlock('## Release v1.2.0+build.1 — 2026-01-01\n', 'v1.2.0+build.1')).toBe(true);
+  });
+});
+
+describe('normalizeReleaseVersion', () => {
+  it('accepts a bare semver and derives both forms', () => {
+    expect(normalizeReleaseVersion('1.5.0')).toEqual({ input: '1.5.0', bare: '1.5.0', v: 'v1.5.0', valid: true });
+  });
+
+  it('accepts a v-prefixed semver identically (leading v stripped for bare)', () => {
+    expect(normalizeReleaseVersion('v1.5.0')).toEqual({ input: 'v1.5.0', bare: '1.5.0', v: 'v1.5.0', valid: true });
+  });
+
+  it('trims surrounding whitespace before normalizing', () => {
+    expect(normalizeReleaseVersion('  v2.0.0  ')).toMatchObject({ bare: '2.0.0', v: 'v2.0.0', valid: true });
+  });
+
+  it('accepts prerelease and build metadata', () => {
+    expect(normalizeReleaseVersion('v1.5.0-rc.1')).toMatchObject({ bare: '1.5.0-rc.1', valid: true });
+    expect(normalizeReleaseVersion('1.5.0+build.7')).toMatchObject({ bare: '1.5.0+build.7', valid: true });
+  });
+
+  it('marks a non-semver arg invalid (partial version, freeform tag, empty)', () => {
+    expect(normalizeReleaseVersion('1.5').valid).toBe(false);
+    expect(normalizeReleaseVersion('hotfix').valid).toBe(false);
+    expect(normalizeReleaseVersion('').valid).toBe(false);
+  });
+
+  it('does not strip a leading "v" that is not a version prefix', () => {
+    // `vnext` is a tag, not `v` + version — leave it intact and report invalid.
+    expect(normalizeReleaseVersion('vnext')).toMatchObject({ bare: 'vnext', valid: false });
+  });
+});
+
+describe('bumpPackageJsonVersions', () => {
+  async function makeRepo(): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-release-'));
+    await fs.writeFile(path.join(dir, 'package.json'), '{\n  "name": "root",\n  "version": "1.4.1"\n}\n');
+    await fs.mkdir(path.join(dir, 'engine'));
+    await fs.writeFile(path.join(dir, 'engine', 'package.json'), '{\n  "name": "engine",\n  "version": "1.4.1"\n}\n');
+    await fs.mkdir(path.join(dir, 'portal'));
+    await fs.writeFile(path.join(dir, 'portal', 'package.json'), '{\n  "name": "portal",\n  "version": "1.4.1"\n}\n');
+    return dir;
+  }
+  const readVersion = async (p: string) => JSON.parse(await fs.readFile(p, 'utf-8')).version as string;
+
+  it('bumps all three package.json files in lockstep, preserving formatting', async () => {
+    const dir = await makeRepo();
+    await bumpPackageJsonVersions(dir, '1.5.0');
+    expect(await readVersion(path.join(dir, 'package.json'))).toBe('1.5.0');
+    expect(await readVersion(path.join(dir, 'engine', 'package.json'))).toBe('1.5.0');
+    expect(await readVersion(path.join(dir, 'portal', 'package.json'))).toBe('1.5.0');
+    // Only the version line changed — the file is still valid JSON with its other keys intact.
+    const root = await fs.readFile(path.join(dir, 'package.json'), 'utf-8');
+    expect(root).toContain('"name": "root"');
+    expect(root.endsWith('}\n')).toBe(true);
+  });
+
+  it('is a no-op for a missing package.json without throwing', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-release-'));
+    await fs.writeFile(path.join(dir, 'package.json'), '{\n  "version": "1.4.1"\n}\n');
+    // engine/ and portal/ deliberately absent.
+    await expect(bumpPackageJsonVersions(dir, '1.5.0')).resolves.toBeUndefined();
+    expect(await readVersion(path.join(dir, 'package.json'))).toBe('1.5.0');
   });
 });

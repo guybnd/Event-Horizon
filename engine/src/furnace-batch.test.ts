@@ -260,6 +260,30 @@ describe('decideTicketAction (pure decision core)', () => {
     expect(a.type).toBe('park');
     expect((a as { reason: string }).reason).toBe('the review session ended cancelled — Claude Code session stopped by user.');
   });
+
+  // FLUX-1297: a cancelled session (a deliberate stop, not a crash) whose ticket already reads a
+  // merged/terminal board status means a finish/merge flow killed the session on purpose because the
+  // work already landed — yield instead of parking a ticket that already succeeded.
+  it('yields (does not park) a cancelled session when the ticket board status is already Done', () => {
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'cancelled', ticketStatus: 'Done', retryCap: 2 });
+    expect(a).toEqual({ type: 'yield', reason: 'the review session was stopped and the ticket is already Done' });
+  });
+  it('yields a cancelled session when the ticket board status is already Released', () => {
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'implementing' }), sessionStatus: 'cancelled', ticketStatus: 'Released', retryCap: 2 });
+    expect(a.type).toBe('yield');
+  });
+  it('still parks a cancelled session when the ticket board status is NOT merged/terminal', () => {
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'cancelled', ticketStatus: 'In Progress', retryCap: 2 });
+    expect(a.type).toBe('park');
+  });
+  it('still parks a cancelled session with no ticketStatus at all (unknown board state)', () => {
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'cancelled', retryCap: 2 });
+    expect(a.type).toBe('park');
+  });
+  it('a FAILED (crashed) session still parks even when the ticket board status already reads Done — only a deliberate cancel yields', () => {
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'failed', ticketStatus: 'Done', retryCap: 2 });
+    expect(a.type).toBe('park');
+  });
 });
 
 describe('findSessionOutcome (FLUX-1156)', () => {

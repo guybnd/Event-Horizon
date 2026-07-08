@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { FolderGit2, FolderX, ExternalLink, Loader2, RefreshCw, GitCompare } from 'lucide-react';
 import { fetchWorktrees, detachWorktree, openWorktreeWindow, type WorktreeInfo } from '../../api';
+import { useAppActions } from '../../store/useAppSelector';
 
 /**
  * Worktrees management surface (FLUX-516): the one place worktrees get their own
@@ -9,6 +10,7 @@ import { fetchWorktrees, detachWorktree, openWorktreeWindow, type WorktreeInfo }
  * cleanup / disk awareness.
  */
 export function WorktreesPanel() {
+  const { refreshWorktrees } = useAppActions();
   const [worktrees, setWorktrees] = useState<WorktreeInfo[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -30,6 +32,7 @@ export function WorktreesPanel() {
       const r = await detachWorktree(w.ticketId);
       setMsg(r.message);
       await load();
+      refreshWorktrees();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : 'Failed to detach worktree');
     } finally { setBusy(null); }

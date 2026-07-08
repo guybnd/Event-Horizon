@@ -6,7 +6,9 @@ export type RelationType =
   | 'refactors'
   | 'refactored-by'
   | 'duplicates'
-  | 'duplicated-by';
+  | 'duplicated-by'
+  | 'continues'
+  | 'continued-by';
 
 export const RELATION_TYPES = new Set<RelationType>([
   'relates',
@@ -17,6 +19,8 @@ export const RELATION_TYPES = new Set<RelationType>([
   'refactored-by',
   'duplicates',
   'duplicated-by',
+  'continues',
+  'continued-by',
 ]);
 
 export const INVERSE_RELATION: Record<RelationType, RelationType> = {
@@ -28,6 +32,8 @@ export const INVERSE_RELATION: Record<RelationType, RelationType> = {
   'refactored-by': 'refactors',
   'duplicates': 'duplicated-by',
   'duplicated-by': 'duplicates',
+  'continues': 'continued-by',
+  'continued-by': 'continues',
 };
 
 // Terminal ticket statuses — a ticket in one of these has no live work a branch merge would

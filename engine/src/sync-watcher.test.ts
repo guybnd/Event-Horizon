@@ -577,6 +577,20 @@ describe('resolveConflicts / revalidateConflictState — mutex + stale-conflict 
     expect(subject.trim()).toBe('flux: sync (resolved conflicts)');
   }, 30_000);
 
+  it('resolveConflicts("use-local") writes the local content and completes the commit/push tail', async () => {
+    await makeLocalDiverge();
+    await runSync(storeDir);
+    expect(getSyncStatus().state).toBe('conflict');
+
+    await resolveConflicts([{ ticketId: 'FLUX-1', strategy: 'use-local' }]);
+
+    expect(getSyncStatus().state).toBe('synced');
+    const written = await fs.readFile(path.join(storeDir, TICKET), 'utf8');
+    expect(written).toContain('status: In Progress');
+    const { stdout: subject } = await git(storeDir, ['show', '-s', '--format=%s', 'HEAD']);
+    expect(subject.trim()).toBe('flux: sync (resolved conflicts)');
+  }, 30_000);
+
   it('revalidateConflictState() clears a conflict once the worktree is fixed out-of-band', async () => {
     await makeLocalDiverge();
     await runSync(storeDir);

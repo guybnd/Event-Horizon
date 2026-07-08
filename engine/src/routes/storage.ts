@@ -66,8 +66,8 @@ router.post('/resolve-conflicts', async (req, res) => {
     if (!resolution.ticketId || typeof resolution.ticketId !== 'string') {
       return res.status(400).json({ error: 'Each resolution must have a ticketId string' });
     }
-    if (!resolution.strategy || !['use-remote', 'rename-local', 'manual'].includes(resolution.strategy)) {
-      return res.status(400).json({ error: `Invalid strategy for ${resolution.ticketId}: must be "use-remote", "rename-local", or "manual"` });
+    if (!resolution.strategy || !['use-remote', 'use-local', 'rename-local', 'manual'].includes(resolution.strategy)) {
+      return res.status(400).json({ error: `Invalid strategy for ${resolution.ticketId}: must be "use-remote", "use-local", "rename-local", or "manual"` });
     }
     if (resolution.strategy === 'manual' && (!resolution.newContent || typeof resolution.newContent !== 'string')) {
       return res.status(400).json({ error: `Manual resolution for ${resolution.ticketId} requires newContent string` });

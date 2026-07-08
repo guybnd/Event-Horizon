@@ -78,6 +78,32 @@ export const MODEL_FAMILIES: Record<CliFramework, string[]> = {
   gemini: ['gemini'],
 };
 
+// FLUX-931: generic cheap/strong tier for delegated subagents, replacing the Claude-only
+// literal `persona.model = 'sonnet'` (FLUX-482). 'strong' is the floor — no override, the
+// adapter falls back to its own status-derived grooming/implementation model. 'cheap' resolves
+// to the concrete per-framework model below.
+export type ModelTier = 'cheap' | 'strong';
+
+// FLUX-931: the concrete model each framework's CLI understands for the 'cheap' tier — the
+// per-adapter analogue of the old Claude-only persona.model='sonnet'. No 'copilot' entry: no
+// cheap-tier alias is confirmed for the Copilot CLI (unlike gemini's 'flash', already validated
+// against KNOWN_GEMINI_MODELS in gemini.ts), so a cheap-tier persona on a Copilot board falls
+// through to `integrations.copilotCli.delegateModel` / the status-derived model instead —
+// same as leaving the tier unmapped, never a guessed model string that could 404.
+export const TIER_MODELS: Partial<Record<CliFramework, string>> = {
+  claude: 'sonnet',
+  gemini: 'flash',
+};
+
+// FLUX-931: framework -> its config key under `integrations.*` (config.ts: claudeCode/geminiCli/
+// copilotCli). Lets callers outside agents/ (e.g. the delegate route) read a framework's own
+// integration config generically instead of a hardcoded per-framework literal at each call site.
+export const INTEGRATION_CONFIG_KEYS: Record<CliFramework, string> = {
+  claude: 'claudeCode',
+  gemini: 'geminiCli',
+  copilot: 'copilotCli',
+};
+
 export interface AgentProcess {
   proc: ChildProcessWithoutNullStreams;
   sessionId: string;

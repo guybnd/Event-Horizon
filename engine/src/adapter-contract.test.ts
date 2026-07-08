@@ -473,6 +473,56 @@ describe('B.8 __board__ orchestrator contract (FLUX-904 — lifted into a BoardA
 // one-line call site with nothing failing. This calls the real startCliSession/sendCliSessionInput
 // for copilot and gemini (mocks above stub out the git/filesystem/HTTP collaborators only) and reads
 // the `-p` value straight off the mocked `spawn()` call.
+function fakeChatSession(taskId: string, framework: CliFramework): CliSessionRecord {
+  return {
+    id: 'sess-1',
+    taskId,
+    framework,
+    command: framework,
+    phase: 'chat',
+    skipPermissions: true,
+    label: framework === 'copilot' ? 'Copilot CLI' : 'Gemini CLI',
+    status: 'running',
+    sessionHistoryEntry: { sessionId: 'sess-1', progress: [] },
+    writeQueue: Promise.resolve(),
+    pendingAssistantText: '',
+    liveOutputBuffer: '',
+    outputBuffer: '',
+    cumulativeOutput: '',
+  } as unknown as CliSessionRecord;
+}
+
+/** Loads the two spawn-side entry points for a framework via a literal dynamic `import()` path
+ *  (not a template literal) — required to stay outside the adapter-boundary guard's
+ *  `adapter-deep-import` pattern, same technique the A.1 fixtures above already use. */
+async function loadAdapter(framework: 'copilot' | 'gemini'): Promise<{
+  startCliSession: (session: CliSessionRecord, task: { id?: string; status?: string }, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) => Promise<void>;
+  sendCliSessionInput: (session: CliSessionRecord, message: string, user: string, workspaceRoot: string) => Promise<void>;
+}> {
+  return framework === 'copilot' ? import('./agents/copilot.js') : import('./agents/gemini.js');
+}
+
+/** Pulls the `-p` value out of a mocked spawn() call's args array, regardless of which
+ *  binary-resolution branch (node+entry / exe / cmd.exe shell fallback) fired. */
+function promptArgFromLastSpawnCall(): string {
+  const call = mockSpawn.mock.calls[mockSpawn.mock.calls.length - 1];
+  expect(call, 'spawn() was never called').toBeDefined();
+  const args = call![1] as string[];
+  const idx = args.indexOf('-p');
+  expect(idx, `-p not found in spawn args: ${JSON.stringify(args)}`).toBeGreaterThanOrEqual(0);
+  return args[idx + 1]!;
+}
+
+/** Pulls the `--model` value out of a mocked spawn() call's args array, or undefined if the
+ *  flag wasn't passed at all (the adapter had nothing to override with). */
+function modelArgFromLastSpawnCall(): string | undefined {
+  const call = mockSpawn.mock.calls[mockSpawn.mock.calls.length - 1];
+  expect(call, 'spawn() was never called').toBeDefined();
+  const args = call![1] as string[];
+  const idx = args.indexOf('--model');
+  return idx >= 0 ? args[idx + 1] : undefined;
+}
+
 describe('FLUX-1193: chat edit-gate note reaches the real spawn -p arg', () => {
   // gemini's startCliSession/sendCliSessionInput pre-flight `checkBinaryInstalled('gemini')` for
   // real; on a machine without the Gemini CLI (the CI norm — see the per-adapter spawn smoke tests
@@ -486,46 +536,6 @@ describe('FLUX-1193: chat edit-gate note reaches the real spawn -p arg', () => {
   afterAll(() => {
     vi.restoreAllMocks();
   });
-
-  function fakeChatSession(taskId: string, framework: CliFramework): CliSessionRecord {
-    return {
-      id: 'sess-1',
-      taskId,
-      framework,
-      command: framework,
-      phase: 'chat',
-      skipPermissions: true,
-      label: framework === 'copilot' ? 'Copilot CLI' : 'Gemini CLI',
-      status: 'running',
-      sessionHistoryEntry: { sessionId: 'sess-1', progress: [] },
-      writeQueue: Promise.resolve(),
-      pendingAssistantText: '',
-      liveOutputBuffer: '',
-      outputBuffer: '',
-      cumulativeOutput: '',
-    } as unknown as CliSessionRecord;
-  }
-
-  /** Loads the two spawn-side entry points for a framework via a literal dynamic `import()` path
-   *  (not a template literal) — required to stay outside the adapter-boundary guard's
-   *  `adapter-deep-import` pattern, same technique the A.1 fixtures above already use. */
-  async function loadAdapter(framework: 'copilot' | 'gemini'): Promise<{
-    startCliSession: (session: CliSessionRecord, task: { id?: string; status?: string }, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) => Promise<void>;
-    sendCliSessionInput: (session: CliSessionRecord, message: string, user: string, workspaceRoot: string) => Promise<void>;
-  }> {
-    return framework === 'copilot' ? import('./agents/copilot.js') : import('./agents/gemini.js');
-  }
-
-  /** Pulls the `-p` value out of a mocked spawn() call's args array, regardless of which
-   *  binary-resolution branch (node+entry / exe / cmd.exe shell fallback) fired. */
-  function promptArgFromLastSpawnCall(): string {
-    const call = mockSpawn.mock.calls[mockSpawn.mock.calls.length - 1];
-    expect(call, 'spawn() was never called').toBeDefined();
-    const args = call![1] as string[];
-    const idx = args.indexOf('-p');
-    expect(idx, `-p not found in spawn args: ${JSON.stringify(args)}`).toBeGreaterThanOrEqual(0);
-    return args[idx + 1]!;
-  }
 
   for (const framework of ['copilot', 'gemini'] as const) {
     it(`${framework}: initial spawn's -p arg carries the framework-appropriate gate note for a gated chat session`, async () => {
@@ -562,4 +572,62 @@ describe('FLUX-1193: chat edit-gate note reaches the real spawn -p arg', () => {
       expect(prompt).toContain('continue please');
     });
   }
+});
+
+// ─── FLUX-931: session.model reaches the real spawn --model arg on Gemini/Copilot ───
+// FLUX-482 threaded a delegate's resolved model onto `session.model`, but only claude-code.ts
+// read it (`session.model || selectedModel`) — Gemini/Copilot ignored it and always used their own
+// configured grooming/implementation model. gemini.ts/copilot.ts now honor it the same way; this
+// locks the wiring against the real spawn args (not just a unit test of the ternary in isolation),
+// mirroring the FLUX-1193 block above.
+describe('FLUX-931: session.model reaches the real spawn --model arg', () => {
+  beforeAll(async () => {
+    const shared = await import('./agents/shared.js');
+    vi.spyOn(shared, 'checkBinaryInstalled').mockResolvedValue(undefined);
+  });
+  afterAll(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("gemini: session.model overrides the (unset) configured model — validated against KNOWN_GEMINI_MODELS", async () => {
+    const { startCliSession } = await loadAdapter('gemini');
+    const taskId = 'FLUX-TEST-gemini-delegate-model';
+    const task = { id: taskId, status: 'Todo' };
+    const session = fakeChatSession(taskId, 'gemini');
+    session.model = 'flash'; // a delegate's cheap-tier model (TIER_MODELS.gemini)
+
+    mockSpawn.mockClear();
+    await startCliSession(session, task, '', '', '/tmp/test-repo');
+    if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
+
+    expect(modelArgFromLastSpawnCall()).toBe('flash');
+  });
+
+  it('gemini: an unrecognized session.model is nulled out (same guard as the configured model)', async () => {
+    const { startCliSession } = await loadAdapter('gemini');
+    const taskId = 'FLUX-TEST-gemini-delegate-model-bad';
+    const task = { id: taskId, status: 'Todo' };
+    const session = fakeChatSession(taskId, 'gemini');
+    session.model = 'not-a-real-gemini-model';
+
+    mockSpawn.mockClear();
+    await startCliSession(session, task, '', '', '/tmp/test-repo');
+    if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
+
+    expect(modelArgFromLastSpawnCall()).toBeUndefined();
+  });
+
+  it('copilot: session.model overrides the (unset) configured model', async () => {
+    const { startCliSession } = await loadAdapter('copilot');
+    const taskId = 'FLUX-TEST-copilot-delegate-model';
+    const task = { id: taskId, status: 'Todo' };
+    const session = fakeChatSession(taskId, 'copilot');
+    session.model = 'gpt-5-mini';
+
+    mockSpawn.mockClear();
+    await startCliSession(session, task, '', '', '/tmp/test-repo');
+    if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
+
+    expect(modelArgFromLastSpawnCall()).toBe('gpt-5-mini');
+  });
 });

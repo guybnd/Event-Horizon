@@ -3,14 +3,18 @@ import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { TaskCard } from './TaskCard';
 import { EpicStackDeck } from './EpicStackDeck';
-import type { ColumnLiveEvent, Task, TaskLiveEvent } from '../types';
+import type { ColumnLiveEvent, GateName, GateValue, Task, TaskLiveEvent } from '../types';
 import type { CrossColumnCluster } from '../lib/decks';
 import { computeEpicRollup, getDoneStatuses } from '../lib/epics';
-import { Plus, CirclePause, Bot, Clock, Terminal, GitPullRequest, HandHelping, X, ArrowRight, ArrowLeft, Rocket } from 'lucide-react';
+import { Plus, CirclePause, Bot, Clock, Terminal, GitPullRequest, HandHelping, ClipboardCheck, X, ArrowRight, ArrowLeft, Rocket, Settings } from 'lucide-react';
+import { GatePolicyModal } from './GatePolicyModal';
 import { updateTask } from '../api';
 import { useAppSelector, useAppActions, useLiveSession } from '../store/useAppSelector';
 import { getStatusTint, tintColumnWash } from '../statusStyles';
 import { isTaskAwaitingInput, needsAction } from '../workflow';
+import { isPlanApprovalPending } from './pendingInteractions';
+
+const GATE_VALUE_SHORT_LABEL: Record<GateValue, string> = { auto: 'Auto', 'auto-then-you': 'Auto → You', you: 'You' };
 
 /** Compact running-duration label, e.g. "4s", "3m 12s", "1h 04m". */
 function formatElapsed(startedAt: string | undefined, now: number): string {
@@ -160,6 +164,10 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
   const config = useAppSelector((s) => s.config);
   const readComments = useAppSelector((s) => s.readComments);
   const prByBranch = useAppSelector((s) => s.prByBranch);
+  // FLUX-1300: a still-pinned task must escape whichever swimlane bucket it'd otherwise land in
+  // (Running/Awaiting Input/Pending Approval/Needs Action/Open PRs all render above `restTasks`
+  // regardless of the incoming sort order) — read directly from the store like the selectors above.
+  const pinnedTasks = useAppSelector((s) => s.pinnedTasks);
 
   const openTaskByMode = useCallback((task: Task) => openTask(task), [openTask]);
 
@@ -186,6 +194,15 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
   const tint = getStatusTint(config, title);
   const boardFx = config?.boardFx;
 
+  // FLUX-1261: the gate-policy ⚙ lives only on the two gated columns — Grooming (`plan`) and Ready
+  // (`review`, generalizing Temper's old board-wide toggle). No other column has a defined gate.
+  const gateForColumn: GateName | null =
+    id === 'Grooming' ? 'plan'
+    : id === (config?.readyForMergeStatus || 'Ready') ? 'review'
+    : null;
+  const currentGateValue: GateValue = (gateForColumn && config?.gatePolicy?.boardDefault?.[gateForColumn]) || 'you';
+  const [gateModalOpen, setGateModalOpen] = useState(false);
+
   // doneStreakCount is computed once at the Board level (FLUX-724) and passed in — the Done column
   // is the only consumer. Previously every Column subscribed to the whole `s.tasks` array here,
   // re-rendering all columns on any task change.
@@ -202,12 +219,30 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
             live on the row below, and nothing here is conditional-height, so every column header is
             identical and the cards line up (FLUX-723). */}
         <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1">
-          {/* LEFT: the Done streak ribbon (inline, no height shift). */}
+          {/* LEFT: the Done streak ribbon, or (on Grooming/Ready) the gate-policy ⚙ — both inline, no height shift. */}
           <span className="flex items-center justify-start">
             {id === 'Done' && streakTier && (
               <span title={`${streakTier.label} streak — ${doneStreakCount} done today`} className={`select-none whitespace-nowrap text-[11px] leading-none ${streakTier.cls}`}>
                 {streakTier.icon}{doneStreakCount}
               </span>
+            )}
+            {gateForColumn && (
+              <button
+                type="button"
+                onClick={() => setGateModalOpen(true)}
+                title={`${gateForColumn === 'plan' ? 'Plan review' : 'Code review'} gate: ${GATE_VALUE_SHORT_LABEL[currentGateValue]} — click to change`}
+                className="flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider leading-none text-gray-500 bg-gray-200 hover:bg-gray-300 dark:bg-white/10 dark:text-gray-400 dark:hover:bg-white/20 transition-colors"
+              >
+                <Settings className="h-2.5 w-2.5" />
+                <span
+                  aria-hidden
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    currentGateValue === 'auto' ? 'bg-orange-500'
+                    : currentGateValue === 'auto-then-you' ? 'bg-amber-500'
+                    : 'bg-gray-400'
+                  }`}
+                />
+              </button>
             )}
           </span>
 
@@ -315,8 +350,19 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
         )}
 
         {tasks.length > 0 && (() => {
+          // FLUX-1300: a still-pinned task is pulled out of every other bucket below and rendered
+          // in its own section above ALL of them (including `runningTasks`) — otherwise a freshly
+          // created ticket (no cliSession, not awaiting input/PR/needs-action) always falls into
+          // `restTasks`, the last group rendered, defeating the pin on exactly the busy/swimlane-
+          // stacked boards it exists to fix.
+          const pinnedAt = Date.now();
+          const isPinned = (t: Task) => {
+            const until = pinnedTasks[t.id];
+            return typeof until === 'number' && until > pinnedAt;
+          };
+          const pinnedTaskList = tasks.filter(isPinned);
           const runningTasks = tasks.filter(
-            t => t.cliSession && ['pending', 'running', 'waiting-input'].includes(t.cliSession.status)
+            t => !isPinned(t) && t.cliSession && ['pending', 'running', 'waiting-input'].includes(t.cliSession.status)
           );
           const isRunning = (t: Task) => !!t.cliSession && ['pending', 'running', 'waiting-input'].includes(t.cliSession.status);
           const isPr = (t: Task) => t.kind === 'pr';
@@ -324,18 +370,24 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
           // still renders as a deck card, but in its normal column with no Open-PRs header
           // (FLUX-567: don't show a Done PR under "Open PRs").
           const isOpenPr = (t: Task) => isPr(t) && t.status !== 'Done';
-          const swimlaneTasks = tasks.filter(t => isTaskAwaitingInput(t) && !isRunning(t) && !isPr(t));
+          const swimlaneTasks = tasks.filter(t => !isPinned(t) && isTaskAwaitingInput(t) && !isRunning(t) && !isPr(t));
+          // FLUX-1273: plan-approval-pending tickets get their own "Pending Approval" lane, distinct
+          // from both "Awaiting Input" (a real question) and "Needs Action" (a generic parked flag) —
+          // excluded from both below so a ticket never double-renders across lanes.
+          const planApprovalTasks = tasks.filter(t => !isPinned(t) && isPlanApprovalPending(t, config) && !isRunning(t) && !isPr(t));
           // Only the `PR-<n>` deck cards group under "Open PRs" now — the FLUX-558 glow that
           // pulled normal tickets in via the `open-pr` swimlane is retired (FLUX-569).
-          const openPrTasks = tasks.filter(t => isOpenPr(t) && !isRunning(t) && !isTaskAwaitingInput(t));
+          const openPrTasks = tasks.filter(t => !isPinned(t) && isOpenPr(t) && !isRunning(t) && !isTaskAwaitingInput(t));
           // FLUX-651: agent parked without taking an action — surfaced as its own group. Excludes
-          // running (it's working again) and awaiting-input (that's a real question, shown above).
-          const needsActionTasks = tasks.filter(t => needsAction(t) && !isRunning(t) && !isPr(t) && !isTaskAwaitingInput(t));
+          // running (it's working again), awaiting-input (that's a real question, shown above), and
+          // plan-approval-pending (FLUX-1273: those get their own lane even though the gate-runner's
+          // one-shot stop also sets needsAction).
+          const needsActionTasks = tasks.filter(t => !isPinned(t) && needsAction(t) && !isRunning(t) && !isPr(t) && !isTaskAwaitingInput(t) && !isPlanApprovalPending(t, config));
           // rest = the literal COMPLEMENT of the grouped sets, so no task can ever be silently
           // dropped by a future swimlane value (FLUX-567 QA hardening).
-          const groupedIds = new Set([...runningTasks, ...swimlaneTasks, ...needsActionTasks, ...openPrTasks].map(t => t.id));
+          const groupedIds = new Set([...pinnedTaskList, ...runningTasks, ...swimlaneTasks, ...planApprovalTasks, ...needsActionTasks, ...openPrTasks].map(t => t.id));
           const restTasks = tasks.filter(t => !groupedIds.has(t.id));
-          const sortedTasks = [...runningTasks, ...swimlaneTasks, ...needsActionTasks, ...openPrTasks, ...restTasks];
+          const sortedTasks = [...pinnedTaskList, ...runningTasks, ...swimlaneTasks, ...planApprovalTasks, ...needsActionTasks, ...openPrTasks, ...restTasks];
           // Everything renders through TaskCard now — PR tickets (kind:'pr') render their
           // PR-specific body inside the same card shell (FLUX-567 pivot). A non-PR ticket whose
           // branch belongs to a PR (but isn't folded — a Todo/Grooming/Backlog "pile" ticket)
@@ -376,6 +428,7 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
           };
           return (
             <SortableContext items={sortedTasks.map(t => t.id)} strategy={verticalListSortingStrategy}>
+              {pinnedTaskList.map(renderTask)}
               {runningTasks.map(renderTask)}
               {runningTasks.length > 0 && (swimlaneTasks.length > 0 || restTasks.length > 0) && (
                 <div className="flex items-center gap-2 my-1 px-1 shrink-0">
@@ -393,6 +446,18 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
                   </div>
                   <div className="rounded-lg border border-amber-200 dark:border-amber-800/40 bg-amber-50/50 dark:bg-amber-900/10 p-1.5 mb-1">
                     {swimlaneTasks.map(renderTask)}
+                  </div>
+                </>
+              )}
+              {planApprovalTasks.length > 0 && (
+                <>
+                  <div className="flex items-center gap-1.5 my-1 px-1 shrink-0">
+                    <ClipboardCheck className="w-3 h-3 text-sky-500" />
+                    <span className="text-[10px] font-semibold uppercase tracking-widest text-sky-500 dark:text-sky-400">Pending Approval</span>
+                    <div className="flex-1 h-px bg-sky-200 dark:bg-sky-800/40" />
+                  </div>
+                  <div className="rounded-lg border border-sky-200 dark:border-sky-800/40 bg-sky-50/50 dark:bg-sky-900/10 p-1.5 mb-1">
+                    {planApprovalTasks.map(renderTask)}
                   </div>
                 </>
               )}
@@ -435,6 +500,10 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
 
         {showLiveFooter && <ColumnLiveFooter runningTasks={runningTasks} />}
       </div>
+
+      {gateForColumn && gateModalOpen && (
+        <GatePolicyModal gate={gateForColumn} onClose={() => setGateModalOpen(false)} />
+      )}
     </div>
   );
 });

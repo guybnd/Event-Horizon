@@ -492,9 +492,12 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
 
   const geminiIntegration = configCache.integrations?.geminiCli;
   const groomingStatuses = [configCache.requireInputStatus || 'Require Input', 'Grooming'];
-  const selectedModelRaw = geminiIntegration && framework === 'gemini'
+  // FLUX-931: session.model carries a delegate's resolved model (routes/cli-session.ts
+  // /delegate) — honor it over the status-derived grooming/implementation model, mirroring
+  // claude-code.ts's `session.model || selectedModel`.
+  const selectedModelRaw = session.model || (geminiIntegration && framework === 'gemini'
     ? (groomingStatuses.includes(task.status) ? geminiIntegration.groomingModel : geminiIntegration.implementationModel)
-    : null;
+    : null);
 
   // Validate the model name against known Gemini CLI models
   const KNOWN_GEMINI_MODELS = [
@@ -642,6 +645,9 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
   }, 15000);
 
   proc.on('exit', async (code, signal) => {
+    // FLUX-1207: best-effort reap of any orphaned descendants (e.g. a Bash-tool-launched vitest
+    // run) on every exit, not only engine-initiated stop().
+    killProcessTree(proc, undefined, { label: id });
     // Clear heartbeat timer
     if (session.progressHeartbeat) {
       clearInterval(session.progressHeartbeat);
@@ -885,6 +891,9 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   replyProc.on('exit', async (code, signal) => {
+    // FLUX-1207: best-effort reap of any orphaned descendants (e.g. a Bash-tool-launched vitest
+    // run) on every exit, not only engine-initiated stop().
+    killProcessTree(replyProc, undefined, { label: id });
     commitReplyPending();
     flushSessionOutput(session, true, 'text');
     // FLUX-981: a crashed resumed turn (nonzero/signal, not user-stopped) was silent in the chat.

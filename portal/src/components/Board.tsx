@@ -8,7 +8,7 @@ import { arrayMove } from '@dnd-kit/sortable';
 import { Column } from './Column';
 import { StatusBadge } from './StatusBadge';
 import { TaskCardInner } from './TaskCard';
-import { createTask, updateTask } from '../api';
+import { createTask, updateTask, TASK_CREATED_LOCALLY_EVENT } from '../api';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { buildStatusChangeHistory, applyOptimisticStatusChange, isMissingCommentError } from '../lib/ticketActions';
 import type { Task } from '../types';
@@ -74,6 +74,7 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
   const tasksLoading = useAppSelector((s) => s.tasksLoading);
   const taskLiveEvents = useAppSelector((s) => s.taskLiveEvents);
   const columnLiveEvents = useAppSelector((s) => s.columnLiveEvents);
+  const pinnedTasks = useAppSelector((s) => s.pinnedTasks);
   const config = useAppSelector((s) => s.config);
   const boardFx = config?.boardFx;
   const currentUser = useAppSelector((s) => s.currentUser);
@@ -145,6 +146,33 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
       return task;
     }));
   }, [liveTasks, movingTaskIds, optimisticTasks, activeTask]);
+
+  // FLUX-1300: when THIS tab's own createTask() resolves, scroll the new card into view once it
+  // mounts (creation triggers an immediate `triggerRefresh()`, but the card only renders a beat
+  // later via that async task-list fetch). Bounded wait so a card that never renders here (e.g.
+  // created into a status this board doesn't show) doesn't leave a dangling pending scroll.
+  const pendingScrollTaskRef = useRef<{ id: string; expiresAt: number } | null>(null);
+  useEffect(() => {
+    const handleCreatedLocally = (e: Event) => {
+      const id = (e as CustomEvent<{ id: string }>).detail?.id;
+      if (id) pendingScrollTaskRef.current = { id, expiresAt: Date.now() + 8000 };
+    };
+    window.addEventListener(TASK_CREATED_LOCALLY_EVENT, handleCreatedLocally);
+    return () => window.removeEventListener(TASK_CREATED_LOCALLY_EVENT, handleCreatedLocally);
+  }, []);
+
+  useEffect(() => {
+    const pending = pendingScrollTaskRef.current;
+    if (!pending) return;
+    if (Date.now() > pending.expiresAt) {
+      pendingScrollTaskRef.current = null;
+      return;
+    }
+    const card = document.querySelector(`[data-task-id="${pending.id}"]`);
+    if (!card) return;
+    pendingScrollTaskRef.current = null;
+    card.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+  }, [tasks]);
 
   // Clean up movingTaskIds once liveTasks catches up to the optimistic state
   useEffect(() => {
@@ -225,6 +253,10 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
   const boardTasks = useMemo(() => config ? tasks.filter((task) =>
     task.status !== 'Released' &&
     task.status !== archiveStatus &&
+    // FLUX-1225: a Scratch Chat (kind:'scratch') is a freeform conversation, not board work — it
+    // never renders in a column or contributes a column. Excluding it here (the same choke point
+    // that drops Released/Archived) keeps it out of decks, allColumns, and columnTasksByStatus.
+    task.kind !== 'scratch' &&
     !config.hiddenStatuses?.some((hiddenStatus) => hiddenStatus.name === task.status)
   ) : [], [tasks, config, archiveStatus]);
   const allColumns = useMemo(() => {
@@ -291,7 +323,8 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
     worktreeBranches,
     readComments,
     requireInputStatus: getRequireInputStatus(config),
-  }) : [], [boardTasks, config, deferredSearchQuery, deferredSortOption, deferredFilterAssignee, deferredFilterPriority, deferredFilterTag, deferredFilterUnreadOnly, deferredFilterWorktree, worktreeBranches, readComments]);
+    pinnedTasks,
+  }) : [], [boardTasks, config, deferredSearchQuery, deferredSortOption, deferredFilterAssignee, deferredFilterPriority, deferredFilterTag, deferredFilterUnreadOnly, deferredFilterWorktree, worktreeBranches, readComments, pinnedTasks]);
 
   // Cross-column subtask clusters (FLUX-677): ≥2 subtasks of one epic that piled up in a column
   // the epic isn't in collapse under a proxy deck there. Computed over visibleTasks so search/

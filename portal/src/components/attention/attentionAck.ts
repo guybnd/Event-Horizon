@@ -62,6 +62,74 @@ export function useAttentionAck(): AttentionAck {
   return { isAcked, acknowledge };
 }
 
+/**
+ * FLUX-1289 / restored FLUX-1312: dock-only dismiss for a plan-approval item — "stop showing this in
+ * the tray, I don't want to look at it right now", distinct from the "full" Set aside
+ * (`dismissPlanReview` in `pendingInteractions.tsx`), which clears `planReviewState` everywhere. This
+ * one touches NOTHING durable on the ticket — it only hides the AttentionDock "Needs You" tray item,
+ * leaving the ticket's verdict / Column lane / `ChatPlanApprovalCard` / board-card chip reflecting
+ * real state. Keyed by ticket id + verdict (not just ticket id) so a fresh review pass — a new
+ * verdict — re-arms the item even though the ticket id is unchanged. Same localStorage-backed
+ * durability tier as `useAttentionAck` above (a nicety, not load-bearing).
+ *
+ * FLUX-1303 briefly retired this in favor of a single verdict-clearing dismiss on every surface;
+ * FLUX-1312 restores it for the attention panel only (the cross-ticket triage inbox — dismissing
+ * there means "snooze", not "resolve"), while the chat card and full plan panel keep the real
+ * "Set aside".
+ */
+const DOCK_DISMISS_KEY = 'eh-plan-review-dock-dismissed';
+const DOCK_DISMISS_CAP = 200;
+
+function dockDismissKey(ticketId: string, verdict: string): string {
+  return `${ticketId}:${verdict}`;
+}
+
+function loadDockDismissed(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = localStorage.getItem(DOCK_DISMISS_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return new Set(Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDockDismissed(set: Set<string>): void {
+  try {
+    localStorage.setItem(DOCK_DISMISS_KEY, JSON.stringify([...set].slice(-DOCK_DISMISS_CAP)));
+  } catch {
+    /* storage full/disabled — dismiss is a nicety, not load-bearing */
+  }
+}
+
+export interface PlanReviewDockDismiss {
+  /** Has this ticket's CURRENT verdict been dock-dismissed? */
+  isDockDismissed: (ticketId: string, verdict: string) => boolean;
+  /** Dismiss this ticket's current verdict from the dock tray only. */
+  dockDismiss: (ticketId: string, verdict: string) => void;
+}
+
+export function usePlanReviewDockDismiss(): PlanReviewDockDismiss {
+  const [dismissed, setDismissed] = useState<Set<string>>(loadDockDismissed);
+  const isDockDismissed = useCallback(
+    (ticketId: string, verdict: string) => dismissed.has(dockDismissKey(ticketId, verdict)),
+    [dismissed],
+  );
+  const dockDismiss = useCallback((ticketId: string, verdict: string) => {
+    const key = dockDismissKey(ticketId, verdict);
+    setDismissed((prev) => {
+      if (prev.has(key)) return prev;
+      let next = new Set(prev);
+      next.add(key);
+      if (next.size > DOCK_DISMISS_CAP) next = new Set([...next].slice(-DOCK_DISMISS_CAP));
+      saveDockDismissed(next);
+      return next;
+    });
+  }, []);
+  return { isDockDismissed, dockDismiss };
+}
+
 export type AttentionTab = 'needs' | 'updates' | 'activity';
 
 /** The derived dock-button state: label, tone, icon, count and the tab it opens to. */

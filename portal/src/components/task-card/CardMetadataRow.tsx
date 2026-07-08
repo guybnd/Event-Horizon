@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Layers } from 'lucide-react';
+import { Layers, Hammer } from 'lucide-react';
 import type { Task } from '../../types';
 import { StatusBadge } from '../StatusBadge';
 import { reviewChip } from '../ReviewChip';
@@ -121,6 +121,20 @@ export function CardMetadataRow({ task, isOverlay, c }: { task: Task; isOverlay?
             PrDeckSection (from reviewDecision ?? reviewState), so this is non-PR only to avoid
             double-badging. null reviewState → no badge (never a false "approved"). */}
         {task.kind !== 'pr' && reviewChip(task.reviewState)}
+        {/* FLUX-1289: the plan-review gate's verdict, reusing the exact same reviewChip() component
+            (red/green pill) already shipped for the post-Todo review gate — same visual vocabulary,
+            distinct field. null/absent planReviewState → no badge. */}
+        {task.kind !== 'pr' && reviewChip(task.planReviewState)}
+        {/* FLUX-1071 (Temper): this ticket is in the engine-driven auto-review loop. */}
+        {task.kind !== 'pr' && task.tempering && (
+          <span
+            title={`Temper — auto-reviewing this ticket in a loop until the reviewer approves (PR left open, never merged) or it parks.${typeof task.temperAttempts === 'number' && task.temperAttempts > 0 ? ` Re-implementation attempts so far: ${task.temperAttempts}.` : ''}`}
+            className="flex items-center gap-0.5 rounded-full bg-orange-100 px-1.5 py-0.5 text-[9px] font-bold text-orange-600 dark:bg-orange-500/15 dark:text-orange-300"
+          >
+            <Hammer className="w-2.5 h-2.5" />
+            tempering…
+          </span>
+        )}
         {isEpic && task.kind !== 'pr' && (
           <span className="flex items-center gap-0.5 rounded-full bg-indigo-100 px-1.5 py-0.5 text-[9px] font-bold text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300">
             <Layers className="w-2.5 h-2.5" />

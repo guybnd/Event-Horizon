@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { fetchTask, updateTask } from '../api';
 import { isAgentSession, normalizeSubtaskId } from '../types';
-import type { HistoryEntry, InlineSubtask, Task } from '../types';
+import type { HistoryEntry, HistoryEntryDraft, InlineSubtask, Task } from '../types';
 import { getRequireInputStatus } from '../workflow';
 import { useTaskForm } from './useTaskForm';
 import { useImageAttachment } from './useImageAttachment';
@@ -71,6 +71,10 @@ export function useTicketSideView(task: Task) {
     // metadata field above) still triggers this reconcile — otherwise the side panel misses a
     // freshly published artifact until the chat window is minimized/reopened.
     task.artifacts?.latest ?? 0, task.artifacts?.revisions?.length ?? 0,
+    // FLUX-963: include the description body so an external `update_ticket` body change surfaces
+    // live too — every other field already did, `body` was the one gap. The raw string is already
+    // in memory (the list endpoint returns it), so this costs no round-trip.
+    task.body ?? '',
   ].join('|');
   const lastLiveMetaRef = useRef(liveMetaSig);
   useEffect(() => {
@@ -96,6 +100,7 @@ export function useTicketSideView(task: Task) {
         && (prev.parentId ?? '') === (task.parentId ?? '')
         && sameTags
         && sameArtifacts
+        && (prev.body ?? '') === (task.body ?? '')
       ) return prev;
       return {
         ...prev,
@@ -109,6 +114,7 @@ export function useTicketSideView(task: Task) {
         implementationLink: task.implementationLink,
         parentId: task.parentId,
         artifacts: task.artifacts,
+        body: task.body,
       };
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the live metadata signature; `task` fields are read inside via that snapshot.
@@ -209,16 +215,24 @@ export function useTicketSideView(task: Task) {
   ).length;
 
   // ── Persistence (same updateTask write path as the modal) ─────────────────────────────────
-  const persist = useCallback(async (updates: Partial<Task>) => {
-    if (!fullTask.id) return;
+  // FLUX-1303: accepts `appendHistory` deltas (preferred over rebuilding a full `history` array)
+  // and returns the updated task, or null on failure, so callers like PlanApprovalPanel can tell a
+  // failed save apart from success instead of closing over a swallowed error. FLUX-1308: the engine
+  // now reconciles a submitted full `history` array by entry identity (not array length), so a
+  // stale snapshot no longer silently drops entries either way — appendHistory remains preferred
+  // since it never depends on a snapshot at all.
+  const persist = useCallback(async (updates: Partial<Task> & { appendHistory?: HistoryEntryDraft[] }): Promise<Task | null> => {
+    if (!fullTask.id) return null;
     form.setSaving(true);
     form.setSaveError(null);
     try {
       const updated = await updateTask(fullTask.id, { ...updates, updatedBy: currentUser });
       setFullTask(updated);
       triggerRefresh();
+      return updated;
     } catch (error) {
       form.setSaveError(error instanceof Error ? error.message : 'Failed to save. Is the engine running?');
+      return null;
     } finally {
       form.setSaving(false);
     }
@@ -259,7 +273,7 @@ export function useTicketSideView(task: Task) {
       subtasks: form.subtasks,
       parentId: form.parentId || undefined,
       order: fullTask.order,
-      history: [...(fullTask.history || []), ...historyUpdates],
+      appendHistory: historyUpdates,
     });
   }, [fullTask, form.title, form.body, form.status, form.assignee, form.tags, form.priority, form.effort, form.effortLevel, form.implementationLink, form.subtasks, form.parentId, currentUser, persist]);
 
@@ -288,8 +302,8 @@ export function useTicketSideView(task: Task) {
    *  "annotate the ticket" cleanly separate from the dirty-form Save flow. */
   const appendComment = useCallback(async (entry: HistoryEntry) => {
     if (!fullTask.id) return;
-    await persist({ history: [...(fullTask.history || []), entry] });
-  }, [fullTask.id, fullTask.history, persist]);
+    await persist({ appendHistory: [entry] });
+  }, [fullTask.id, persist]);
 
   const sendComment = useCallback(async () => {
     const text = commentBoxRef.current?.getValue()?.trim() ?? '';
@@ -350,7 +364,12 @@ export function useTicketSideView(task: Task) {
     handleCommentPaste, handleCommentDragOver, handleCommentDrop,
     handleReplyPaste, handleReplyDragOver, handleReplyDrop,
     // handlers
-    save, discard, sendComment, sendReply,
+    // FLUX-1273: `persist` is exposed (raw, alongside the higher-level `save`) so a caller that needs
+    // to bundle staged header-field edits together with its OWN commit-specific fields (e.g. the plan-
+    // approval panel's Approve/Send-back/Ask-in-chat, which also set `planReviewState`/`status`/a
+    // verdict-specific history entry) can do so in ONE write — `save()` itself doesn't know about
+    // fields outside the standard ticket form.
+    persist, save, discard, sendComment, sendReply,
     handleToggleReply, handleCancelReply, handleToggleCollapsed, handleClearReplyAssetError,
   };
 }

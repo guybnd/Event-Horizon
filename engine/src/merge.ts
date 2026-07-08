@@ -2,8 +2,8 @@ import { randomUUID } from 'crypto';
 import { broadcastEvent } from './events.js';
 import { tasksCache, updateTaskWithHistory } from './task-store.js';
 import { configCache } from './config.js';
-import { readTurns } from './transcript.js';
-import { appendCurationOp, readCurationOps, streamsWithDerivedView, type MergeOp } from './curation-ops.js';
+import { gatherTurnsForView } from './transcript.js';
+import { appendCurationOp, readCurationOps, reachableFoldSources, type MergeOp } from './curation-ops.js';
 
 /**
  * FLUX-657: the `merge` curation verb — fold several chat-streams/tickets into ONE survivor
@@ -18,6 +18,12 @@ import { appendCurationOp, readCurationOps, streamsWithDerivedView, type MergeOp
  * nothing is copied, so removing the op reverts the view. Each `from` ticket is then
  * tombstoned (a `mergedInto` frontmatter pointer + a pinned tombstone comment) and archived;
  * none are deleted and their original transcripts stay intact in the substrate.
+ *
+ * FLUX-861 (Fix B): folds COMPOSE — `gatherTurnsForView` folds a source by its own re-derived
+ * VIEW, not its raw substrate, so a prior merge survivor or an extracted card is a valid `from`
+ * source again (promote→fold round-trips, and fold chains carry every level's turns through).
+ * The one thing still refused is a genuine CYCLE — a source whose view already (transitively)
+ * includes the survivor — via `reachableFoldSources` (curation-ops.ts).
  *
  * "The orchestrator proposes, never silently restructures": this is reached only through the
  * human-approved board-rebase `fold` ritual or a direct call that hits the FLUX-605 CONFIRM gate.
@@ -47,7 +53,8 @@ export interface MergeTicketsResult {
  * Fold `from[]` into `into`. Validates every id/guard BEFORE appending the op or mutating any
  * ticket (AC: no partial state on a guard failure), then: appends one `merge` op, and for each
  * `from` sets a `mergedInto` pointer + a pinned tombstone comment and archives it. Throws on a
- * guard violation (unknown id, empty `from`, self-merge, or an already-merged source).
+ * guard violation (unknown id, empty `from`, self-merge, an already-merged source, or a source
+ * that would create a fold cycle).
  */
 export async function mergeTickets(opts: MergeTicketsOptions): Promise<MergeTicketsResult> {
   const into = opts.into;
@@ -68,13 +75,12 @@ export async function mergeTickets(opts: MergeTicketsOptions): Promise<MergeTick
   for (const op of ops) {
     if (op.op === 'merge' && Array.isArray(op.from)) for (const f of op.from) mergedAwaySources.add(f);
   }
-  // (2) Streams whose VIEW ≠ substrate — any curation op's `into`: a prior merge survivor OR an
-  // extracted card. `gatherTurnsForView` folds a source by its *substrate* alone (it composes no
-  // ops on a source), so folding such a stream would silently drop its re-derived turns. One shared
-  // predicate feeds this guard and the fold loop in transcript.ts, so a future re-deriving op-kind
-  // can't reopen the gap (FLUX-657 review — generalizes the old merge-only `priorSurvivors` set,
-  // which left extract targets unguarded).
-  const derivedViewSources = streamsWithDerivedView(ops);
+  // (2) FLUX-861 (Fix B): folds compose now — `gatherTurnsForView` folds a source by its own
+  // re-derived VIEW (recursing through prior extract/merge ops), so a prior merge survivor or an
+  // extracted card is a valid source again. The remaining risk is a CYCLE: if a candidate source's
+  // view already (transitively) includes `into` — via a chain of prior ops — folding it into
+  // `into` would make `into` depend on itself and recurse forever. Checked per-source below via
+  // `reachableFoldSources`, which walks the op-log's `into -> from` edges (both op kinds).
 
   // Survivor must be live: refuse folding into a card that was itself already merged away (it
   // carries a `mergedInto` redirect / sits in a prior op.from). Its own view redirects elsewhere,
@@ -100,19 +106,17 @@ export async function mergeTickets(opts: MergeTicketsOptions): Promise<MergeTick
 
   // Refuse a source that was already folded by a prior merge op OR already carries a `mergedInto`
   // pointer (re-merging it would double-tombstone and confuse the redirect), AND refuse a source
-  // whose view is re-derived from the op-log — a prior merge *survivor* or an *extracted* card.
-  // `gatherTurnsForView` folds a source by reading its *substrate* turns, not its re-derived view,
-  // so folding such a stream would silently drop the turns it only shows via an op (a survivor's
-  // folded-in turns, an extract target's seeded slice). Re-merge / re-promote those original
-  // sources directly into `into` instead.
+  // that would create a CYCLE — FLUX-861: folds compose (a prior merge survivor or an extracted
+  // card is folded by its own re-derived view now), so the only unsafe source left is one whose
+  // view already (transitively) includes `into` via a chain of prior extract/merge ops; folding it
+  // in would make `into`'s view depend on itself and recurse forever.
   for (const f of from) {
     if (mergedAwaySources.has(f)) throw new Error(`merge: source ${f} is already merged into another effort`);
-    if (derivedViewSources.has(f)) {
+    if (reachableFoldSources(ops, f).has(into)) {
       throw new Error(
-        `merge: source ${f} has a re-derived view — it is a prior merge survivor or an extracted ` +
-          `card whose turns come from the curation op-log, not its own substrate; folding it reads ` +
-          `only the substrate and would silently drop those turns — re-merge or re-promote its ` +
-          `original sources directly into ${into}`,
+        `merge: folding ${f} into ${into} would create a cycle — ${f}'s view already ` +
+          `(transitively) includes ${into} via a chain of prior extract/merge ops, so ${into} ` +
+          `would end up depending on itself and recurse forever`,
       );
     }
     if (tasksCache[f].mergedInto) {
@@ -120,10 +124,11 @@ export async function mergeTickets(opts: MergeTicketsOptions): Promise<MergeTick
     }
   }
 
-  // Count the turns being folded (also the per-stream substrate read; a source with no
-  // transcript yet folds 0 turns, which is valid).
+  // Count the turns being folded — FLUX-861: each source's own re-derived VIEW (not just its
+  // substrate), since a composed source (a prior survivor / an extracted card) now contributes
+  // more than its own substrate turns. A source with no transcript yet folds 0 turns, valid.
   let turnsFolded = 0;
-  for (const f of from) turnsFolded += (await readTurns(f)).length;
+  for (const f of from) turnsFolded += (await gatherTurnsForView(f, ops)).turns.length;
 
   // ── Append the single durable fact FIRST: the survivor's folded view is re-derivable from
   //    substrate + this op, independent of the cosmetic archive side-effects below. ──

@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { Send, ExternalLink } from 'lucide-react';
+import { Send, ExternalLink, ClipboardCheck } from 'lucide-react';
 import { useChatSession } from '../../hooks/useChatSession';
 import { ChatView } from './ChatView';
 import { ChatDiffPanel } from './ChatDiffPanel';
@@ -31,7 +31,7 @@ export function ChatPane({ task }: { task: Task }) {
   // FLUX-748: pass `working` (live running session) into the hook so its queue auto-dispatches on
   // the turn-completion edge.
   const chat = useChatSession(task.id, open, task.cliSession?.status === 'running');
-  const { openChat, openSideView, setSectionOpen } = useDockActions();
+  const { openChat, openSideView, setSectionOpen, openPlanApproval } = useDockActions();
   const { openTaskFullView } = useAppActions();
   const config = useConfig();
 
@@ -82,7 +82,18 @@ export function ChatPane({ task }: { task: Task }) {
 
   return (
     <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/20">
-      <div className="mb-2 flex items-center justify-end">
+      <div className="mb-2 flex items-center justify-between">
+        {/* FLUX-1285: this legacy modal has no ChatDock sideview of its own, so the plan-approval
+            panel (which mounts per-window inside ChatDock) needs its window opened first — mirrors
+            AttentionDock's openToApprovePlan (open the window, then flag it to show the panel). */}
+        <button
+          type="button"
+          onClick={() => { openChat(task.id); openPlanApproval(task.id); }}
+          title="Open the full plan-review panel — view, annotate, and (if unresolved) approve or send it back"
+          className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold text-gray-500 transition-colors hover:bg-black/5 hover:text-primary dark:text-gray-400 dark:hover:bg-white/5"
+        >
+          <ClipboardCheck className="h-3.5 w-3.5" /> View Plan
+        </button>
         <button
           type="button"
           onClick={(e) => openChat(task.id, e.currentTarget)}

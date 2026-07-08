@@ -12,7 +12,7 @@ Scope: Route the agent to the correct phase-specific skill based on ticket statu
 
 # Event Horizon Agent — Orchestrator
 
-Version: 2.9.0
+Version: 2.10.0
 
 ## Overview
 
@@ -48,9 +48,9 @@ Tickets have these fields (relevant when calling `update_ticket` or reading `get
 | `implementationLink` | string | Commit hash or PR URL — set by `finish_ticket` |
 | `branch` | string | Git branch name (e.g. `flux/FLUX-41-add-effort-field`) — set by `branch` (`action:'create'`) or portal Start Task prompt |
 
-**Body convention — lead with a TL;DR (FLUX-953).** Every time you write or rewrite a ticket `body` (via `update_ticket` or `create_ticket`), the FIRST thing in it MUST be a short, plain-language **TL;DR** — one to three jargon-free, ELI5 sentences saying what the ticket is and what "done" looks like — so the user (and the next agent) can grasp it at a glance without reading the whole body. Format it as a leading blockquote, then the detailed Problem / Plan prose follows:
+**Body convention — lead with a TL;DR (FLUX-953).** Every time you write or rewrite a ticket `body` (via `update_ticket` or `create_ticket`), the FIRST thing in it MUST be a short, plain-language **TL;DR** — one to three jargon-free, ELI5 sentences saying what the ticket is and what "done" looks like — so the user (and the next agent) can grasp it at a glance without reading the whole body. Format it as a leading blockquote, then the detailed Problem / Plan prose follows. Bold the 2-4 key words/phrases within the sentence(s) itself — the concrete subject, the deliverable, a sharp constraint — so a skimmer catches the gist from the bold words alone (FLUX-1298); cap it at 2-4 short phrases, not every noun, so it doesn't get visually noisy:
 
-> **TL;DR** — one to three plain sentences summarizing what the ticket is and what done looks like.
+> **TL;DR** — one to three plain sentences **summarizing what the ticket is** and what **done looks like**.
 
 Keep it honest and current: if a later body rewrite changes the gist, update the TL;DR in the same edit. Skip it only for a trivially short body (a line or two) where a TL;DR would just repeat it.
 
@@ -193,6 +193,36 @@ Because the artifact is a **real HTML page** rendered entirely by the sandboxed 
 - **SVG mockups** — hand-author inline `<svg>` (or inline-CSS-styled `<div>`s) for a UI wireframe the user can eyeball against their mental model.
 - **Charts / data shapes** — inline SVG or a chart lib from an allowed CDN (jsDelivr/unpkg). No network calls at runtime (`connect-src` is blocked), so inline the data.
 - **Clickable prototypes** — hand-written inline CSS plus a little inline `<script>` for tab/toggle interactions, so the user can click through a flow. Reach for the Tailwind Play CDN (`https://cdn.tailwindcss.com`) only for a complex, heavily-styled multi-state prototype where a utility framework earns its keep — it's a heavy last resort (see above), not the default.
+- **React / TSX component previews** (FLUX-961) — for a component-shaped UI ticket, render a live React component instead of hand-drawing it: load React + ReactDOM UMD + `@babel/standalone` from jsDelivr and transpile **one inline** `<script type="text/babel" data-presets="react,typescript">` block that defines the component and mounts it to `#root`. Copy this canonical, self-contained template and drop your component in:
+  ```html
+  <!doctype html>
+  <html>
+  <head>
+    <meta charset="utf-8" />
+    <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7/babel.min.js"></script>
+    <style> body { margin: 0; font-family: system-ui, sans-serif; } </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="text/babel" data-presets="react,typescript">
+      // Define your component inline — no imports of project modules (see caveat below).
+      type Props = { label: string };
+      function Preview({ label }: Props) {
+        const [n, setN] = React.useState(0);
+        return (
+          <button onClick={() => setN(n + 1)} style={{ padding: '8px 16px' }}>
+            {label}: {n}
+          </button>
+        );
+      }
+      ReactDOM.createRoot(document.getElementById('root')).render(<Preview label="clicks" />);
+    </script>
+  </body>
+  </html>
+  ```
+  **Inline-only — no exceptions.** `connect-src 'none'` kills every network fetch, so Babel's external `src=`-transform path and any in-iframe `import` resolution are dead. Do **not** `import` project modules (`AppContext`, design tokens, sibling `.tsx`) or fetch an external `.tsx` — the component, its types, and any mock data must all live in that one `text/babel` block. This is **additive/opt-in**: plain HTML, Mermaid, and SVG artifacts are unaffected and need none of this scaffolding. React/Babel load from the CDN at view time (`'unsafe-eval'` transpiles in-browser), so the artifact won't render offline — same tradeoff as every other CDN-backed kind. Keep the block lean so the transpile-then-mount first paint stays quick; the layout audit re-fires after the async React mount settles, so a late mount won't false-mask.
 
 Everything still renders inside the same opaque-origin sandbox (no portal/cookie/storage access, no fetch/XHR) — keep it self-contained.
 

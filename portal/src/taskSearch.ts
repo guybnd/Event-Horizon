@@ -14,6 +14,9 @@ export interface TaskFilterState {
   worktreeBranches?: Set<string>;
   readComments?: Record<string, string[]>;
   requireInputStatus?: string;
+  /** FLUX-1300: task id → epoch ms until which it should sort first in its column, overriding
+   *  `sortOption` — a temporary "just created" top-pin. */
+  pinnedTasks?: Record<string, number>;
 }
 
 export interface TaskSearchResult {
@@ -69,6 +72,13 @@ export function getTaskActivityTimestamp(task: Task) {
 export function filterAndSortTasks(tasks: Task[], config: Config, filters: TaskFilterState) {
   const normalizedQuery = normalizeText(filters.searchQuery);
   const priorityOrder = new Map(config.priorities.map((priority, index) => [priority.name, index]));
+  // FLUX-1300: pins are read once per call (not per comparison) so a task's pin can't flip
+  // mid-sort as the clock ticks across `Date.now()` calls.
+  const now = Date.now();
+  const pinnedAt = (task: Task) => {
+    const until = filters.pinnedTasks?.[task.id];
+    return until && until > now ? until : 0;
+  };
 
   return tasks
     .filter((task) => {
@@ -105,6 +115,13 @@ export function filterAndSortTasks(tasks: Task[], config: Config, filters: TaskF
       return matchesQuery && matchesAssignee && matchesPriority && matchesTag;
     })
     .sort((left, right) => {
+      const leftPinnedAt = pinnedAt(left);
+      const rightPinnedAt = pinnedAt(right);
+      if (leftPinnedAt || rightPinnedAt) {
+        // Both pinned (rare — a 15s window): most-recently-created first. One pinned: it wins.
+        return rightPinnedAt - leftPinnedAt;
+      }
+
       switch (filters.sortOption) {
         case 'priority': {
           const priorityDiff = (priorityOrder.get(left.priority || 'None') ?? Number.MAX_SAFE_INTEGER)

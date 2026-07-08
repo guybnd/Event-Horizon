@@ -2,7 +2,7 @@ import { memo, useMemo } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { DraggableAttributes, DraggableSyntheticListeners } from '@dnd-kit/core';
-import { AlertCircle, GripVertical, GitPullRequest, Layers, Circle } from 'lucide-react';
+import { AlertCircle, GripVertical, GitPullRequest, Layers, Circle, ClipboardCheck, ClipboardX, Ban } from 'lucide-react';
 import { motion } from 'framer-motion';
 import type { Task, TaskLiveEvent } from '../types';
 import { ContextMenu } from './ContextMenu';
@@ -10,6 +10,7 @@ import { TicketActionsLaunchers } from './ticket-actions/TicketActions';
 import type { StatusTint } from '../statusStyles';
 import { useTaskCardController } from '../hooks/useTaskCardController';
 import { useAppSelector } from '../store/useAppSelector';
+import { isPlanApprovalPending, isGateParkedTicket } from './pendingInteractions';
 import { CardCommentBadge } from './task-card/CardCommentBadge';
 import { CardMetadataRow } from './task-card/CardMetadataRow';
 import { CardClusterPanel } from './task-card/CardClusterPanel';
@@ -59,6 +60,7 @@ export const TaskCard = memo(function TaskCard(props: TaskCardProps) {
   return (
     <div
       ref={setNodeRef}
+      data-task-id={props.task.id}
       style={{ transform: CSS.Translate.toString(transform), transition, opacity: isDragging ? 0.3 : 1 }}
     >
       <TaskCardInner {...props} dndAttributes={attributes} dndListeners={listeners} dndIsDragging={isDragging} />
@@ -92,7 +94,16 @@ export const TaskCardInner = memo(function TaskCardInner({
 }: TaskCardInnerProps) {
   const c = useTaskCardController({ task, parentTask, isOverlay, liveEvent, travelDirection, columnTint, hideStatusBadge, attributes: dndAttributes, listeners: dndListeners, isDragging: dndIsDragging });
 
-  const boardFx = useAppSelector((s) => s.config?.boardFx);
+  const config = useAppSelector((s) => s.config);
+  const boardFx = config?.boardFx;
+  // FLUX-1273: plan-approval / gate-parked earn their own corner chip (mutually exclusive with the
+  // generic prompt-status badge below — gate-parked tickets already carry swimlane 'require-input',
+  // so without this they'd only ever show the generic amber "awaiting input" glyph).
+  const planApprovalPending = isPlanApprovalPending(task, config);
+  // FLUX-1289: verdict-color the corner badge — amber for changes-requested, sky for approved —
+  // instead of one color for either verdict.
+  const planChangesRequested = planApprovalPending && task.planReviewState === 'changes-requested';
+  const gateParked = !planApprovalPending && isGateParkedTicket(task);
 
   // Deterministic hue from ticket ID — stable across renders, unique per ticket.
   const foilHue = useMemo(() => {
@@ -154,7 +165,22 @@ export const TaskCardInner = memo(function TaskCardInner({
         {!isOverlay && (
           <CardCommentBadge task={task} c={c} compact={compact} />
         )}
-        {c.isPromptStatus && !compact && (
+        {planApprovalPending && !compact && (
+          <div
+            className="absolute -top-1.5 -right-1.5 z-10"
+            title={planChangesRequested ? 'Plan review requested changes' : 'Plan ready for your approval'}
+          >
+            {planChangesRequested
+              ? <ClipboardX className="w-5 h-5 text-amber-500 fill-amber-50 dark:fill-amber-950" />
+              : <ClipboardCheck className="w-5 h-5 text-sky-500 fill-sky-50 dark:fill-sky-950" />}
+          </div>
+        )}
+        {gateParked && !compact && (
+          <div className="absolute -top-1.5 -right-1.5 z-10" title="Gate parked — stuck retrying">
+            <Ban className="w-5 h-5 text-rose-500 fill-rose-50 dark:fill-rose-950" />
+          </div>
+        )}
+        {!planApprovalPending && !gateParked && c.isPromptStatus && !compact && (
           <div className="absolute -top-1.5 -right-1.5 z-10">
             <div className="relative">
               <AlertCircle className="w-5 h-5 text-amber-500 fill-amber-50 dark:fill-amber-950" />

@@ -12,7 +12,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { log } from '../log.js';
 import { broadcastEvent } from '../events.js';
-import { workspaceRoot as canonicalWorkspaceRoot, getTaskAssetsDir, getActiveFluxDir } from '../workspace.js';
+import { getTaskAssetsDir, getActiveFluxDir } from '../workspace.js';
 import { isPathInsideRoot } from '../file-utils.js';
 import { signConversation } from '../session-binding.js';
 import { configCache } from '../config.js';
@@ -51,7 +51,6 @@ export function cleanChildEnv(framework?: string, conversationId?: string): Node
     if (key.toUpperCase() === 'NODE_OPTIONS') delete env[key];
   }
   if (framework) env.EVENT_HORIZON_FRAMEWORK = framework;
-  if (canonicalWorkspaceRoot) env.EH_CANONICAL_WORKSPACE = canonicalWorkspaceRoot;
   // CRITICAL (FLUX-903 review): a child with no conversationId must be provably UNROUTED. The
   // spawning agent's OWN process carries EH_CONVERSATION_ID/TOKEN, and `{ ...process.env }` copies
   // them — so always CLEAR them first, then set fresh ones only when routed. Without this an

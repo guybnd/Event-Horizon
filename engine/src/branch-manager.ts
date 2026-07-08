@@ -1,18 +1,55 @@
-import { workspaceRoot } from './workspace.js';
+import { requireWorkspaceRoot } from './workspace.js';
 // FLUX-998 (epic FLUX-996): every git/gh call in this file used to be a bare execFileAsync —
 // no timeout, no non-interactive env — so a slow/unreachable remote or a stalled gh credential
 // prompt hung branch create/push/PR-raise/merge forever (the spawn/Ready/finish paths). Route
 // everything through the S1 runner (runGit/runGh), which always applies a bounded timeout,
 // buildGitSyncEnv's non-interactive+gh-authed env, and tree-kill on timeout/abort.
 import { runGit, runGh } from './git-exec.js';
+import { log } from './log.js';
 
+// FLUX-1276: every wrapper below resolves cwd via requireWorkspaceRoot() (not the raw nullable
+// `workspaceRoot!`) so an unbound workspace throws the FLUX-705 actionable error instead of
+// spawning with `cwd: null` — child_process silently treats a non-string cwd as "inherit the
+// engine PROCESS cwd", which happens to be the repo in dev (`npm run dev` runs from the repo
+// root) but is unrelated to the bound workspace in a packaged install, producing a confusing
+// "fatal: not a git repository" from a directory the caller never chose.
 function git(args: string[]): Promise<{ stdout: string; stderr: string }> {
-  return runGit(args, { cwd: workspaceRoot! });
+  const cwd = requireWorkspaceRoot();
+  return withRepoDiagnostics(runGit(args, { cwd }), cwd);
 }
 
 // Larger maxBuffer for `git diff` — defaults (1MB) truncate big diffs into ENOBUFS.
 function gitDiff(args: string[]): Promise<{ stdout: string; stderr: string }> {
-  return runGit(args, { cwd: workspaceRoot!, maxBuffer: 8 * 1024 * 1024 });
+  const cwd = requireWorkspaceRoot();
+  return withRepoDiagnostics(runGit(args, { cwd, maxBuffer: 8 * 1024 * 1024 }), cwd);
+}
+
+// gh's counterpart to git() above — every PR-flow `gh` spawn (pr view/create/edit/merge/review)
+// routes through this so it also runs with the workspace root as cwd. checkGhAuth()'s own probe
+// deliberately stays a bare runGh call (it needs `env: process.env`, not buildGitSyncEnv() — see
+// its comment for why routing it through the normal env path recurses infinitely).
+function gh(args: string[]): Promise<{ stdout: string; stderr: string }> {
+  const cwd = requireWorkspaceRoot();
+  return withRepoDiagnostics(runGh(args, { cwd }), cwd);
+}
+
+// Reword a raw "fatal: not a git repository" failure into one that names the actual workspace
+// path, so a misconfigured/unbound workspace reads as an actionable diagnosis rather than a
+// spawn failure that looks like a genuine git problem. Mutates the existing Error in place
+// (rather than throwing a new one) so callers reading `.stderr`/`.code` off it (e.g.
+// isMergeConflict) keep working unchanged.
+async function withRepoDiagnostics<T>(promise: Promise<T>, cwd: string): Promise<T> {
+  try {
+    return await promise;
+  } catch (err) {
+    if (err instanceof Error) {
+      const stderr = (err as { stderr?: string }).stderr ?? '';
+      if (/not a git repository/i.test(`${err.message}\n${stderr}`)) {
+        err.message = `workspace root ${cwd} is not a git repository — rebind the workspace in the Event Horizon portal (${err.message})`;
+      }
+    }
+    throw err;
+  }
 }
 
 export function slugify(title: string): string {
@@ -105,7 +142,17 @@ export async function deleteTicketBranch(name: string, force = false): Promise<v
       // NON-force (`-d`): rethrow — the failure is the "refuses unmerged" safety the caller wants.
       if (!force) throw err;
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[branch] forced local delete of ${name} failed (likely checked out): ${message}`);
+      // FLUX-1231: the overwhelmingly-common force-delete failure is "the branch is still held
+      // by a worktree / the main tree" — a tolerated, self-healing condition (post-merge cleanup
+      // keeps a dirty worktree and reconcile retries once it's gone). git's raw multi-line stderr
+      // ("error: cannot delete branch '…' used by worktree at '…'") recurs on EVERY reconcile
+      // tick and reads like a real failure. Quiet it to a single terse `debug` line with no raw
+      // stderr. Keep the loud `warn` for genuinely-unexpected force-delete failures.
+      if (/used by worktree|checked out/i.test(message)) {
+        log.debug(`[branch] deferred local delete of ${name} — still checked out by a worktree; will retry`);
+      } else {
+        console.warn(`[branch] forced local delete of ${name} failed: ${message}`);
+      }
     }
   }
   // Remote delete — attempted REGARDLESS of the local outcome (independent of it). Best-effort:
@@ -144,14 +191,14 @@ function ticketSectionMarker(ticketId: string): string {
 
 export async function createPullRequest(branch: string, title: string, body: string, ticketId?: string): Promise<string> {
   // Push latest commits on the branch before creating/updating the PR.
-  await runGit(['push', '-u', 'origin', branch], { cwd: workspaceRoot! });
+  await git(['push', '-u', 'origin', branch]);
 
   // If an OPEN PR already exists for this branch, return its URL rather than erroring. Gate on
   // state: `gh pr view <branch>` returns the most-recent PR regardless of state, so a previously
   // CLOSED/MERGED PR on this branch would otherwise be "reused" and block opening a fresh one
   // (a re-pushed branch whose old PR was closed never got a new PR — FLUX-597).
   try {
-    const { stdout: existing } = await runGh(['pr', 'view', branch, '--json', 'url,state,title,body']);
+    const { stdout: existing } = await gh(['pr', 'view', branch, '--json', 'url,state,title,body']);
     const pr = JSON.parse(existing) as { url?: string; state?: string; title?: string; body?: string };
     if (pr?.url && pr.state === 'OPEN') {
       // FLUX-1223: a shared (sequential-batch) branch can already carry an open PR opened for an
@@ -171,7 +218,7 @@ export async function createPullRequest(branch: string, title: string, body: str
           const editArgs = ['pr', 'edit', pr.url, '--body', newBody];
           if (pr.title) editArgs.push('--title', evolvedTitle(pr.title, ticketId));
           try {
-            await runGh(editArgs);
+            await gh(editArgs);
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             console.warn(`[branch] failed to append ${ticketId} to existing PR ${pr.url}: ${message}`);
@@ -184,7 +231,7 @@ export async function createPullRequest(branch: string, title: string, body: str
     // No existing PR (or unreadable) — fall through to create one.
   }
 
-  const { stdout } = await runGh(['pr', 'create', '--title', title, '--body', body, '--head', branch]);
+  const { stdout } = await gh(['pr', 'create', '--title', title, '--body', body, '--head', branch]);
   return stdout.trim();
 }
 
@@ -232,7 +279,7 @@ export async function postPrReview(
 ): Promise<PrReviewOutcome> {
   if (opts.commentOnly) {
     try {
-      await runGh(['pr', 'review', pr, '--comment', '--body', body]);
+      await gh(['pr', 'review', pr, '--comment', '--body', body]);
       return 'commented';
     } catch (commentErr) {
       const message = commentErr instanceof Error ? commentErr.message : String(commentErr);
@@ -242,13 +289,13 @@ export async function postPrReview(
   }
   const flag = verdict === 'approved' ? '--approve' : '--request-changes';
   try {
-    await runGh(['pr', 'review', pr, flag, '--body', body]);
+    await gh(['pr', 'review', pr, flag, '--body', body]);
     return verdict;
   } catch {
     // Most commonly self-approval rejection ("Can not approve your own pull request"); could also be
     // gh unavailable/unauthed. Fall back to a comment review so the verdict is still on the PR.
     try {
-      await runGh(['pr', 'review', pr, '--comment', '--body', body]);
+      await gh(['pr', 'review', pr, '--comment', '--body', body]);
       return 'commented';
     } catch (commentErr) {
       const message = commentErr instanceof Error ? commentErr.message : String(commentErr);
@@ -264,7 +311,7 @@ export async function mergePullRequest(branch: string): Promise<void> {
   // throw AFTER the merge had already landed (FLUX-574). Branch deletion is handled by the
   // post-merge cleanup (`cleanupMergedBranch`) in the correct order: free the branch
   // (remove worktree / switch the main tree off it) → then force-delete local + remote.
-  await runGh(['pr', 'merge', branch, '--squash']);
+  await gh(['pr', 'merge', branch, '--squash']);
 }
 
 /**
@@ -340,7 +387,7 @@ interface GhPrViewRaw {
  */
 export async function getPullRequestStatus(selector: string): Promise<PrStatus | null> {
   try {
-    const { stdout } = await runGh(
+    const { stdout } = await gh(
       ['pr', 'view', selector, '--json', 'number,state,url,title,reviewDecision,mergeable,statusCheckRollup,headRefName'],
     );
     const raw = JSON.parse(stdout) as GhPrViewRaw;

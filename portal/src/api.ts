@@ -634,6 +634,11 @@ export const bulkRename = async (payload: { tags?: Record<string, string>, statu
   return response.json();
 };
 
+/** FLUX-1300: fired on `window` right after `createTask` resolves, so the creating tab (and only
+ *  that tab) can scroll its new card into view — distinct from the `taskCreated` SSE broadcast,
+ *  which every OTHER tab uses to reconcile via `loadTasks()` but never triggers a scroll from. */
+export const TASK_CREATED_LOCALLY_EVENT = 'flux:task-created-locally';
+
 export async function createTask(taskData: Partial<Task> & { projectKey: string, author: string }): Promise<Task> {
   const res = await fetch(`${API_URL}/tasks`, {
     method: 'POST',
@@ -641,7 +646,9 @@ export async function createTask(taskData: Partial<Task> & { projectKey: string,
     body: JSON.stringify(taskData)
   });
   if (!res.ok) throw new Error('Failed to create task');
-  return res.json();
+  const task: Task = await res.json();
+  window.dispatchEvent(new CustomEvent(TASK_CREATED_LOCALLY_EVENT, { detail: { id: task.id } }));
+  return task;
 }
 
 export async function fetchTaskCliSession(taskId: string): Promise<CliSessionSummary | null> {
@@ -716,6 +723,31 @@ export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOp
   }
   const payload = await res.json();
   return payload.session;
+}
+
+/** FLUX-1289: "Re-run review" — the portal's manual entry point for one plan-review pass (the REST
+ *  twin of the `start_plan_review` MCP tool, for a human clicking a button instead of an agent). */
+export async function startPlanReview(taskId: string): Promise<{ ok: boolean; message: string }> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/plan-review/start`, { method: 'POST' });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || 'Failed to start plan review');
+  return payload;
+}
+
+/** FLUX-1303: "Send for re-grooming" — the atomic revise entry point. One engine call records the
+ *  user's notes as an attributed comment, stamps the changes-requested verdict, dispatches the
+ *  grooming revise session, and registers it with the plan-gate runner so the revision is
+ *  automatically re-reviewed. Replaces the old two-step (dispatch session, then a follow-up PUT to
+ *  clear the verdict) that could strand a stale changes-requested card when the second call failed. */
+export async function startPlanRevise(taskId: string, opts: { notes?: string; user?: string } = {}): Promise<{ ok: boolean; message: string }> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/plan-review/revise`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || 'Failed to send the plan for re-grooming');
+  return payload;
 }
 
 export interface RegisterCombinerOptions {
@@ -1295,7 +1327,11 @@ export async function sendTaskCliInput(taskId: string, message: string, user: st
   const body: Record<string, unknown> = { message, user };
   if (opts?.model) body.model = opts.model;
   if (opts?.effort) body.effortOverride = opts.effort;
-  if (opts?.permissionMode) body.permissionMode = opts.permissionMode;
+  // FLUX-1236: the "Default" chip is value '' — don't drop it. An explicit selection (including
+  // Default, sent as the 'default' sentinel) must reach the engine so it can re-inherit the surface
+  // default mode; only an omitted permissionMode (undefined) means "leave the mode unchanged". The
+  // composer omits it on untouched sends (permissionTouched), so ordinary follow-ups never wipe it.
+  if (opts?.permissionMode !== undefined) body.permissionMode = opts.permissionMode || 'default';
   if (opts?.attachments?.length) body.attachments = opts.attachments;
   const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/input`, {
     method: 'POST',
@@ -1378,6 +1414,8 @@ export interface ConflictInfo {
   remoteContent: string;
 }
 
+export type ResolutionStrategy = 'use-remote' | 'use-local' | 'rename-local' | 'manual';
+
 /** Engine-owned, copy-paste fix steps for an auth sync failure (FLUX-895). */
 export interface SyncRemediation {
   reason: string;
@@ -1442,7 +1480,7 @@ export async function triggerSync(): Promise<void> {
 const RESOLVE_CONFLICTS_TIMEOUT_MS = 95_000;
 
 export async function resolveConflicts(
-  resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'rename-local' | 'manual'; newContent?: string }>
+  resolutions: Array<{ ticketId: string; strategy: ResolutionStrategy; newContent?: string }>
 ): Promise<{ ok: boolean }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), RESOLVE_CONFLICTS_TIMEOUT_MS);

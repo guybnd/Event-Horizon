@@ -430,6 +430,18 @@ describe('buildHistoryDigest (FLUX-725)', () => {
     expect(d.length).toBe(3);
     expect(d.statusChanges24h).toEqual([]); // status_change with no from/to/date dropped
   });
+
+  it('FLUX-1289: pre-computes planReviewComment only when planReviewState is set (the trailing param)', () => {
+    const entries = [
+      comment('unrelated earlier comment', '2026-07-01T00:00:00.000Z'),
+      { type: 'comment', user: 'Plan Gate', comment: 'CHANGES NEEDED: the plan cites a symbol that no longer exists.', date: '2026-07-08T00:00:00.000Z' },
+    ];
+    expect(buildHistoryDigest(entries, 'Grooming', null, NOW, undefined, 'changes-requested').planReviewComment)
+      .toEqual({ text: 'CHANGES NEEDED: the plan cites a symbol that no longer exists.', date: '2026-07-08T00:00:00.000Z', user: 'Plan Gate' });
+    // planReviewState omitted/null ⇒ null (comment text not shipped board-wide otherwise)
+    expect(buildHistoryDigest(entries, 'Grooming', null, NOW).planReviewComment).toBeNull();
+    expect(buildHistoryDigest(entries, 'Grooming', null, NOW, undefined, null).planReviewComment).toBeNull();
+  });
 });
 
 describe('compactSessionProgress', () => {
@@ -497,6 +509,20 @@ describe('compactSessionProgress', () => {
     expect(compacted.finalMessage).toBe('done');
   });
 
+  it('returns true when it mutates the entry, false on an idempotent re-run (FLUX-1287)', () => {
+    const active: HistoryEntryLike = { type: 'agent_session', sessionId: 's1', status: 'active', progress: [prog('a', 'text')] };
+    expect(compactSessionProgress(active)).toBe(false);
+
+    const bloated: HistoryEntryLike = {
+      type: 'agent_session',
+      sessionId: 's2',
+      status: 'completed',
+      progress: [prog('chunk 1', 'text'), prog('Running tests', 'tool'), prog('chunk 2', 'text'), prog('chunk 3', 'text')],
+    };
+    expect(compactSessionProgress(bloated)).toBe(true);
+    expect(compactSessionProgress(bloated)).toBe(false); // already compacted — idempotent re-run is a no-op
+  });
+
   it('compacts progress that arrives after an early terminal write (stop path)', () => {
     // Stop flow: terminal status persisted with empty progress first…
     const entry: HistoryEntryLike = { type: 'agent_session', sessionId: 's1', status: 'cancelled', progress: [] };
@@ -527,5 +553,39 @@ describe('compactSessionProgress', () => {
     const noProgress: HistoryEntryLike = { type: 'agent_session', sessionId: 's2', status: 'completed' };
     compactSessionProgress(noProgress);
     expect(noProgress.originalProgressCount).toBeUndefined();
+  });
+
+  // FLUX-1202: a long session's `tool` milestones were kept in full forever, `data` payload
+  // (raw tool-call parameters, e.g. a full Edit's old_string/new_string) included — on one live
+  // ticket this alone accounted for ~60% of a 1.3MB persisted history and made its loadTask()
+  // call a multi-second synchronous outlier.
+  it('drops the data payload from tool entries beyond the most recent 20, keeping their message', () => {
+    const progress: AgentSessionProgress[] = Array.from({ length: 25 }, (_, i) =>
+      prog(`tool call ${i}`, 'tool', { toolName: 'Edit', parameters: { old_string: 'x'.repeat(1000) } }),
+    );
+    const entry: HistoryEntryLike = { type: 'agent_session', sessionId: 's1', status: 'completed', progress };
+    compactSessionProgress(entry);
+
+    expect(entry.progress).toHaveLength(25); // no entries dropped, just their `data`
+    const withData = entry.progress!.filter((p) => p.data !== undefined);
+    expect(withData).toHaveLength(20);
+    expect(withData.map((p) => p.message)).toEqual(
+      Array.from({ length: 20 }, (_, i) => `tool call ${i + 5}`), // last 20 of 25
+    );
+    // Older entries keep their message — only the heavy `data` is stripped.
+    expect(entry.progress![0]!.message).toBe('tool call 0');
+    expect(entry.progress![0]!.data).toBeUndefined();
+  });
+
+  it('never strips data from a tool entry that looks like an error, even outside the tail', () => {
+    const progress: AgentSessionProgress[] = [
+      prog('early failing call', 'tool', { error: 'boom' }),
+      ...Array.from({ length: 25 }, (_, i) => prog(`call ${i}`, 'tool', { toolName: 'Bash' })),
+    ];
+    const entry: HistoryEntryLike = { type: 'agent_session', sessionId: 's1', status: 'completed', progress };
+    compactSessionProgress(entry);
+
+    const early = entry.progress!.find((p) => p.message === 'early failing call');
+    expect(early?.data).toEqual({ error: 'boom' });
   });
 });

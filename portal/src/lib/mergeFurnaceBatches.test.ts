@@ -1,6 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import { mergeFurnaceBatches } from './mergeFurnaceBatches';
-import type { FurnaceBatch } from '../furnaceTypes';
+import type { FurnaceBatch, BatchTicket } from '../furnaceTypes';
+
+function makeTicket(overrides: Partial<BatchTicket> = {}): BatchTicket {
+  return {
+    ticketId: 'FLUX-1',
+    order: 0,
+    state: 'queued',
+    attempts: 0,
+    sessionIds: [],
+    ...overrides,
+  };
+}
 
 function makeBatch(overrides: Partial<FurnaceBatch> = {}): FurnaceBatch {
   return {
@@ -62,5 +73,56 @@ describe('mergeFurnaceBatches', () => {
     expect(merged).not.toBe(prev);
     expect(merged[0]).toBe(b);
     expect(merged[1]).toBe(a);
+  });
+
+  // FLUX-1203: within a changed batch, only the ticket that actually changed gets a fresh reference.
+  it('reuses unchanged ticket references when one ticket in a changed batch transitions', () => {
+    const t1 = makeTicket({ ticketId: 'FLUX-1', state: 'queued' });
+    const t2 = makeTicket({ ticketId: 'FLUX-2', state: 'implementing', sessionIds: ['s1'] });
+    const prev = [makeBatch({ tickets: [t1, t2] })];
+    // A fresh poll: the whole batch is structuredClone'd, so every ticket is a new object,
+    // and only FLUX-2 actually transitioned (implementing -> reviewing).
+    const next = [makeBatch({
+      updatedAt: '2026-07-05T00:00:05.000Z',
+      tickets: [{ ...t1, sessionIds: [...t1.sessionIds] }, { ...t2, state: 'reviewing', sessionIds: [...t2.sessionIds] }],
+    })];
+    const merged = mergeFurnaceBatches(prev, next);
+    expect(merged).not.toBe(prev);
+    expect(merged[0]).not.toBe(prev[0]);
+    // Unchanged sibling keeps its old reference; the transitioned ticket does not.
+    expect(merged[0].tickets[0]).toBe(t1);
+    expect(merged[0].tickets[1]).not.toBe(t2);
+    expect(merged[0].tickets[1].state).toBe('reviewing');
+  });
+
+  it('reuses the whole tickets array when only batch-level fields changed', () => {
+    const t1 = makeTicket({ ticketId: 'FLUX-1' });
+    const t2 = makeTicket({ ticketId: 'FLUX-2' });
+    const original = makeBatch({ tickets: [t1, t2] });
+    const prev = [original];
+    // burnRate changed, but no ticket did — even though the poll cloned every ticket object.
+    const next = [makeBatch({
+      updatedAt: '2026-07-05T00:00:05.000Z',
+      burnRate: 3,
+      tickets: [{ ...t1, sessionIds: [...t1.sessionIds] }, { ...t2, sessionIds: [...t2.sessionIds] }],
+    })];
+    const merged = mergeFurnaceBatches(prev, next);
+    expect(merged[0].burnRate).toBe(3);
+    expect(merged[0].tickets).toBe(original.tickets);
+  });
+
+  it('picks up an added ticket while keeping existing ticket references', () => {
+    const t1 = makeTicket({ ticketId: 'FLUX-1' });
+    const original = makeBatch({ tickets: [t1] });
+    const prev = [original];
+    const t2 = makeTicket({ ticketId: 'FLUX-2' });
+    const next = [makeBatch({
+      updatedAt: '2026-07-05T00:00:05.000Z',
+      tickets: [{ ...t1, sessionIds: [...t1.sessionIds] }, t2],
+    })];
+    const merged = mergeFurnaceBatches(prev, next);
+    expect(merged[0].tickets).toHaveLength(2);
+    expect(merged[0].tickets[0]).toBe(t1);
+    expect(merged[0].tickets[1]).toBe(t2);
   });
 });

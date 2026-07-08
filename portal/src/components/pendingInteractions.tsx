@@ -7,20 +7,25 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { useAppActions, useAppSelector, shallowEqual } from '../store/useAppSelector';
-import type { Task, CliSessionStatus } from '../types';
+import { ClipboardCheck, ClipboardX, ExternalLink, Check, Loader2, Undo2, X } from 'lucide-react';
+import { useAppActions, useAppSelector, useTaskById, shallowEqual } from '../store/useAppSelector';
+import type { Task, CliSessionStatus, GateValue, Config } from '../types';
 import {
   answerQuestion,
   fetchPendingApprovals,
   fetchPendingBoardRebases,
   fetchPendingQuestions,
   fetchTaskCliSession,
+  startPlanRevise,
+  updateTask,
   BOARD_CONVERSATION_ID,
   type PendingApproval,
   type PendingBoardRebase,
   type PendingQuestion,
   type BoardRebaseFailure,
 } from '../api';
+import { buildStatusChangeHistory, statusAfterGrooming } from '../lib/ticketActions';
+import { useDockActions } from './DockProvider';
 import { ChatApprovalPanel } from './ApprovalPrompts';
 import { ChatQuestionPicker } from './AskQuestionPrompts';
 import { ChatBoardRebasePanel } from './BoardRebasePanel';
@@ -43,6 +48,14 @@ import { ChatBoardRebasePanel } from './BoardRebasePanel';
  *  - `requireInputConversationIds` / `requireInputTickets` — tickets carrying the `require-input`
  *    swimlane, surfaced in the attention surface so a grooming "needs your input" lands in the
  *    same loud place as live prompts.
+ *
+ * FLUX-1262 (gate-policy epic FLUX-1247) extends this aggregation with two more reasons — same
+ * surface, no second inbox (see `AttentionDock`'s `plan-approval`/`gate-parked` item kinds):
+ *  - `planApprovalTickets` — a `plan` gate resolved to `auto-then-you` ran its one auto-review
+ *    pass and is waiting for a human to confirm (`planReviewState` set, still in `Grooming`).
+ *  - `gateParkedTickets` — a ticket the Furnace/Temper machinery parked (raised `require-input`)
+ *    while driving a gate's `auto` loop, e.g. retryCap exhaustion — split out of the plain
+ *    `requireInputTickets` bucket so a stalled auto-loop doesn't read as an ordinary question.
  */
 
 export interface PendingInteractionsValue {
@@ -64,8 +77,18 @@ export interface PendingInteractionsValue {
   requireInputConversationIds: Set<string>;
   /** Tickets currently carrying the `require-input` swimlane — surfaced in the same attention surface so a
    *  grooming "needs your input" lands in one loud place instead of only a quiet board-card flag. Derived
-   *  client-side from the task store; no engine change. */
+   *  client-side from the task store; no engine change. FLUX-1262: EXCLUDES gate-parked tickets (see
+   *  `gateParkedTickets`) so a stalled auto-loop isn't double-counted as a plain question. */
   requireInputTickets: Task[];
+  /** FLUX-1262: `plan` gate resolved to `auto-then-you`, its one auto-review pass ran, and it's sitting
+   *  in `Grooming` with `planReviewState` set awaiting a human confirm. Derived client-side (task store +
+   *  board config); no engine change in this ticket — `planReviewState` is written by the "Plan-review
+   *  runner" (FLUX-1263). */
+  planApprovalTickets: Task[];
+  /** FLUX-1262: tickets carrying `require-input` because Furnace/Temper parked them mid gate-`auto` loop
+   *  (e.g. retryCap exhaustion) rather than a human-facing question — split out of `requireInputTickets`
+   *  so the attention surface can give it the distinct ⛔ "gate-parked" treatment. */
+  gateParkedTickets: Task[];
   removeApproval: (id: string) => void;
   removeQuestion: (id: string) => void;
   removeRebase: (id: string) => void;
@@ -79,6 +102,162 @@ const PendingInteractionsContext = createContext<PendingInteractionsValue | null
 /** FLUX-923: CLI session statuses that mean "this chat could be the one currently awaiting you" — a
  *  session in any of these may have just parked an ask_user_question. Terminal states are excluded. */
 const LIVE_SESSION_STATUSES: CliSessionStatus[] = ['pending', 'running', 'waiting-input'];
+
+/** FLUX-1262: Furnace/Temper's `parkTicketOnBoard` (engine `furnace-stoker.ts`) is the only path that
+ *  raises `require-input` from machine code, and it always posts a comment with this fixed prefix.
+ *  That's the one signal available today to tell a stalled gate-`auto` loop apart from a genuine
+ *  human-facing question — both land on the same swimlane, and per the epic's decision #8 a gate
+ *  runner reuses this existing plumbing rather than adding a dedicated field for it. */
+const FURNACE_PARK_MARKER = 'Parked by the Furnace:';
+
+/** A `require-input` ticket that a gate's `auto` loop parked itself (e.g. retryCap exhaustion),
+ *  rather than a human-facing question an agent raised. See {@link FURNACE_PARK_MARKER}. */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper colocated with the require-input model it extends (FLUX-1262); shared with the attention surface.
+export function isGateParkedTicket(task: Task): boolean {
+  return task.swimlane === 'require-input' && requireInputMeta(task).question.startsWith(FURNACE_PARK_MARKER);
+}
+
+/** Resolve a ticket's effective `plan` gate value: its own override, else the board default, else the
+ *  hard-coded safe default — mirrors the engine's `resolveGateValue` (`models/gate-policy.ts`), which
+ *  the portal can't import directly (separate package, see FLUX-1261's duplicated GateName/GateValue). */
+function resolvePlanGateValue(task: Task, config: Config | null | undefined): GateValue {
+  return task.gatePolicyOverride?.plan ?? config?.gatePolicy?.boardDefault?.plan ?? 'you';
+}
+
+/** A `plan` gate resolved to `auto-then-you` whose one auto-review pass has run and is waiting on a
+ *  human to confirm — `planReviewState` set, ticket still in `Grooming` (see `Task.planReviewState`). */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper colocated with the pending-interactions model it feeds (FLUX-1262); shared with the attention surface.
+export function isPlanApprovalPending(task: Task, config: Config | null | undefined): boolean {
+  return task.status === 'Grooming'
+    && task.planReviewState != null
+    && resolvePlanGateValue(task, config) === 'auto-then-you';
+}
+
+/** FLUX-1319: the gate loop is ACTIVELY revising toward a verdict — `planGateRunning` AND the current
+ *  verdict is `changes-requested` (mid review→revise→re-review). Crucially an `approved` verdict is
+ *  NOT "revising": the loop has finished and only its cleanup lingers (`planGateRunning` stays true
+ *  until the next gate tick calls `stopGateRun`), so an approved plan is immediately actionable. All
+ *  surfaces gate their "Revising…" display — and the Needs-You inbox its exclusion — on THIS, not on
+ *  raw `planGateRunning`; otherwise an approved-but-not-yet-cleaned-up plan shows "approved" AND
+ *  "Revising…" at once with the confirm button suppressed (the reported bug). */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper colocated with the pending-interactions model it feeds (FLUX-1319); shared across surfaces.
+export function isPlanGateRevising(task: Task): boolean {
+  return !!task.planGateRunning && task.planReviewState === 'changes-requested';
+}
+
+/** FLUX-1319: does this plan-approval ticket belong in the blocking "Needs You" inbox RIGHT NOW?
+ *  Only when a verdict is pending AND the gate loop is NOT actively revising it (see
+ *  `isPlanGateRevising`). While the auto-loop revises/re-reviews a changes-requested plan the human
+ *  is not needed; but an APPROVED plan awaiting confirm belongs here even if `planGateRunning` is
+ *  briefly still true during cleanup. Distinct from `isPlanApprovalPending` (used by the in-chat card
+ *  / plan panel), which still reflects the in-flight "Revising…" state on those within-ticket
+ *  surfaces via the same `isPlanGateRevising` gate. */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper colocated with the pending-interactions model it feeds (FLUX-1319); shared with the attention surface.
+export function isPlanApprovalNeedsYou(task: Task, config: Config | null | undefined): boolean {
+  return isPlanApprovalPending(task, config) && !isPlanGateRevising(task);
+}
+
+/** FLUX-1289: the plan-review gate's latest feedback comment, for inline display on a
+ *  `changes-requested` verdict. Mirrors `requireInputMeta`'s dual-path pattern in this same file:
+ *  the pre-computed digest field for list-sourced surfaces (AttentionDock, ChatPlanApprovalCard),
+ *  falling back to scanning full `history` for a DETAIL task (PlanApprovalPanel via
+ *  `useTicketSideView`, which has no digest). Same "most recent comment" heuristic as
+ *  `computeRequireInputMeta`'s fallback — true for both the human send-back path and the
+ *  auto-review agent's own comment, which always precedes the `change_status` call recording it. */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper colocated with the pending-interactions model it feeds (FLUX-1289); shared with the attention surface.
+export function planReviewFeedback(task: Task): { text: string; date: string; user?: string } | null {
+  if (task.historyDigest) return task.historyDigest.planReviewComment ?? null;
+  const entries = task.history ?? [];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i] as { type?: string; comment?: string; date?: string; user?: string };
+    if (e?.type === 'comment' && e.comment) {
+      return { text: e.comment, date: e.date ?? '', ...(e.user ? { user: e.user } : {}) };
+    }
+  }
+  return null;
+}
+
+/** FLUX-1303: ONE attribution rule for plan-review feedback, shared by `PlanReviewFeedbackBlock`
+ *  and `PlanApprovalPanel`'s verdict strip — the reviewer-sentinel author names live here and
+ *  nowhere else, so the panel and the cards can never attribute the same comment differently. */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper colocated with the pending-interactions model it feeds (FLUX-1303); shared with the attention surface.
+export function feedbackAuthorLabel(who: string | undefined, currentUser: string): string {
+  if (who && who === currentUser) return 'You';
+  if (!who || who === 'Agent' || who === 'Plan Gate' || who === 'Furnace' || who === 'Temper') return '🤖 Reviewer';
+  return who;
+}
+
+/** FLUX-1303: the plan's own TL;DR line (the grooming convention's leading `> **TL;DR** — …`
+ *  blockquote), so the compact cards can show WHAT the feedback is about without opening the plan. */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper colocated with the pending-interactions model it feeds (FLUX-1303); shared with the attention surface.
+export function planTldr(body: string | undefined | null): string | null {
+  if (!body) return null;
+  const m = body.match(/^>\s*(?:\*\*)?TL;?DR(?:\*\*)?\s*[—:–-]?\s*(.+)$/im);
+  const text = m?.[1]?.replace(/\*\*|`/g, '').trim();
+  if (!text) return null;
+  return text.length > 200 ? `${text.slice(0, 200).trimEnd()}…` : text;
+}
+
+/**
+ * FLUX-1303: "Send for re-grooming" — THE primary action on a pending plan verdict, used by
+ * `PlanReviewActions` (so both the AttentionDock tray item and `ChatPlanApprovalCard` share it).
+ * `PlanApprovalPanel` calls `startPlanRevise` (the underlying `api.ts` function) directly instead —
+ * see its own module doc — but ends up at the exact same one atomic engine call (`POST
+ * /plan-review/revise`): records the user's notes as an attributed comment, stamps the
+ * changes-requested verdict + reviewed-body hash, dispatches the grooming revise session, and
+ * registers it with the plan-gate runner so the revision is automatically re-reviewed. Replaces
+ * FLUX-1289's two-step `revisePlan` (dispatch, then a follow-up PUT to clear the verdict) whose
+ * second call could fail silently and strand a stale card.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- action helper colocated with the pending-interactions model it operates on (FLUX-1303); shared with the AttentionDock/chat-card surfaces via PlanReviewActions.
+export async function revisePlan(taskId: string, currentUser: string, notes?: string): Promise<void> {
+  await startPlanRevise(taskId, { ...(notes?.trim() ? { notes: notes.trim() } : {}), user: currentUser });
+}
+
+/**
+ * FLUX-1303: shared "Approve → Todo" for a pending plan verdict (quick Approve on an `approved`
+ * verdict; the explicit "Approve anyway" override on `changes-requested`). Clears the verdict and
+ * its reviewed-body hash in the same write; history travels as an `appendHistory` delta (never a
+ * rebuilt full array — the stale-snapshot loss class from FLUX-1301).
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- action helper colocated with the pending-interactions model it operates on (FLUX-1303); shared across the dock/chat-card surfaces.
+export async function approvePlanToTodo(task: Task, config: Config | null | undefined, currentUser: string): Promise<void> {
+  const todoStatus = statusAfterGrooming((config?.columns ?? []).map((s) => s.name));
+  await updateTask(task.id, {
+    status: todoStatus,
+    appendHistory: buildStatusChangeHistory(task, todoStatus, currentUser),
+    planReviewState: null,
+    planReviewBodyHash: null,
+    updatedBy: currentUser,
+  });
+}
+
+/**
+ * FLUX-1289/FLUX-1303: "Set aside" — the ONE dismiss level for a pending plan verdict, reachable
+ * from every surface (chat card, AttentionDock tray item, board card's right-click context menu).
+ * Clears `planReviewState` with NO revise dispatch — the dock item, lane, chat card, and board chip
+ * all disappear together; the review comment stays in history as the record that it was seen and
+ * set aside. FLUX-1303 retired the old second level (the dock-only tray-hide that kept the verdict
+ * pending everywhere else) — two meanings for the same ✕ icon was a trap.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- action helper colocated with the pending-interactions model it operates on (FLUX-1289); shared across the chat-card/context-menu surfaces.
+export async function dismissPlanReview(taskId: string, currentUser: string): Promise<void> {
+  const now = new Date().toISOString();
+  await updateTask(taskId, {
+    planReviewState: null,
+    planReviewBodyHash: null,
+    // The one-pass gate stop writes a needsAction flag alongside the verdict — setting the verdict
+    // aside must clear it too, or the card keeps flashing "Needs Action" with no surface left to act.
+    needsAction: null,
+    updatedBy: currentUser,
+    appendHistory: [{
+      type: 'activity',
+      user: currentUser,
+      date: now,
+      comment: 'Plan review set aside — verdict cleared without a revise pass.',
+    }],
+  });
+}
 
 export function PendingInteractionsProvider({ children }: { children: ReactNode }) {
   const { subscribeToEvent } = useAppActions();
@@ -212,8 +391,31 @@ export function PendingInteractionsProvider({ children }: { children: ReactNode 
 
   // Tickets with the require-input swimlane, derived from the task store so a grooming "needs your
   // input" shows in the same attention surface (no engine change — the portal already has every ticket).
-  const requireInputTickets = useAppSelector(
+  // FLUX-1262: split into plain require-input vs. gate-parked (isGateParkedTicket) so a stalled
+  // gate-auto loop gets its own ⛔ kind instead of reading as a generic question.
+  const swimlaneRequireInputTickets = useAppSelector(
     (s) => s.tasks.filter((t) => t.swimlane === 'require-input'),
+    shallowEqual,
+  );
+  const requireInputTickets = useMemo(
+    () => swimlaneRequireInputTickets.filter((t) => !isGateParkedTicket(t)),
+    [swimlaneRequireInputTickets],
+  );
+  const gateParkedTickets = useMemo(
+    () => swimlaneRequireInputTickets.filter(isGateParkedTicket),
+    [swimlaneRequireInputTickets],
+  );
+
+  // FLUX-1262: a `plan` gate's auto-review pass ran under `auto-then-you` and is sitting in `Grooming`
+  // awaiting a human confirm (isPlanApprovalPending) — reads task + board config together since the
+  // resolved gate value cascades ticket override -> board default.
+  // FLUX-1319: `isPlanApprovalNeedsYou` excludes tickets the gate loop is actively driving
+  // (`planGateRunning`) — while the auto-loop is mid review→revise→re-review the human is not needed,
+  // so a "Revising…" item with no actions has no place in this blocking inbox (it appears here only
+  // once the loop STOPS and awaits a human). The in-chat card / plan panel still reflect the
+  // in-flight state via `isPlanApprovalPending`.
+  const planApprovalTickets = useAppSelector(
+    (s) => s.tasks.filter((t) => isPlanApprovalNeedsYou(t, s.config)),
     shallowEqual,
   );
 
@@ -228,15 +430,18 @@ export function PendingInteractionsProvider({ children }: { children: ReactNode 
   // Ticket ids with the require-input swimlane — the dock taskbar uses this to put a PERSISTENT
   // "needs your input" badge on the chat's tab (like a parked prompt). Unlike the ack-clearable
   // needs-input session state, it stays until the swimlane is cleared (answered) and shows even
-  // with no live session.
+  // with no live session. FLUX-1262: derived from the FULL swimlane set (incl. gate-parked) — a
+  // stalled auto-loop still deserves the chat-tab badge, only the tray splits it into its own kind.
   const requireInputConversationIds = useMemo(
-    () => new Set(requireInputTickets.map((t) => t.id)),
-    [requireInputTickets],
+    () => new Set(swimlaneRequireInputTickets.map((t) => t.id)),
+    [swimlaneRequireInputTickets],
   );
 
   const value = useMemo<PendingInteractionsValue>(
     () => ({
       requireInputTickets,
+      planApprovalTickets,
+      gateParkedTickets,
       approvals,
       questions,
       rebases,
@@ -256,6 +461,8 @@ export function PendingInteractionsProvider({ children }: { children: ReactNode 
     }),
     [
       requireInputTickets,
+      planApprovalTickets,
+      gateParkedTickets,
       approvals,
       questions,
       rebases,
@@ -329,6 +536,231 @@ export function useComposerAnswer(conversationId: string): {
 }
 
 /**
+ * FLUX-1303: the reviewer feedback + plan-TL;DR block shared by the in-chat card and the
+ * AttentionDock tray item. Feedback is ATTRIBUTED (reviewer vs "You" vs another human) instead of
+ * an anonymous blob — the FLUX-1298 incident rendered a stale reviewer `APPROVED…` comment under a
+ * "changes requested" banner with nothing saying who wrote it.
+ */
+export function PlanReviewFeedbackBlock({ task, clip = 300 }: { task: Task; clip?: number }) {
+  const currentUser = useAppSelector((s) => s.currentUser);
+  const changesRequested = task.planReviewState === 'changes-requested';
+  // Memoized: this block mounts on every flagged card and re-renders per SSE tick — don't re-scan
+  // a multi-KB body / full history each time.
+  const feedback = useMemo(
+    () => (changesRequested ? planReviewFeedback(task) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- feedback derives from exactly these two task facets
+    [changesRequested, task.historyDigest, task.history],
+  );
+  const tldr = useMemo(() => planTldr(task.body), [task.body]);
+  const label = feedbackAuthorLabel(feedback?.user, currentUser);
+  const text = feedback && feedback.text.length > clip ? `${feedback.text.slice(0, clip).trimEnd()}…` : feedback?.text;
+  return (
+    <div className="flex flex-col gap-1.5">
+      {changesRequested && (
+        text ? (
+          <div className="rounded-lg border-l-2 border-amber-400 bg-black/[0.03] px-2.5 py-1.5 dark:bg-white/[0.04]">
+            <div className="text-[10px] font-bold uppercase tracking-wide text-amber-600 dark:text-amber-400">{label}</div>
+            <div className="whitespace-pre-wrap break-words text-[12px] leading-snug text-gray-700 dark:text-gray-200">{text}</div>
+          </div>
+        ) : (
+          <div className="text-[12px] text-gray-600 dark:text-gray-300">Changes requested — open the plan to read the full review.</div>
+        )
+      )}
+      {tldr && (
+        <div className="text-[11.5px] leading-snug text-gray-500 dark:text-gray-400">
+          <span className="font-semibold text-gray-600 dark:text-gray-300">Plan TL;DR:</span> {tldr}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * FLUX-1303: the ONE action set for a pending plan verdict, shared by the in-chat card and the
+ * AttentionDock tray item (the panel composes the same verbs into its footer). One verb set on
+ * every surface, emphasis flipped by verdict:
+ *  - **Send for re-grooming** — expands an inline mini-composer, then one atomic engine call
+ *    (`revisePlan` → `POST /plan-review/revise`). Notes optional on `changes-requested` (the
+ *    reviewer's feedback already exists), REQUIRED on `approved` (overriding an approval needs a
+ *    stated reason). Primary on `changes-requested`.
+ *  - **Approve / Approve anyway** — Grooming → Todo, verdict cleared. Primary on `approved`.
+ *  - "Re-run review" deliberately does NOT exist here — it lives only in `PlanApprovalPanel`,
+ *    gated on the plan actually having changed since the verdict (re-reviewing an unchanged plan
+ *    can only re-produce the same verdict — including re-approving a plan a human just rejected).
+ * While `planGateRunning` (the gate loop or a dispatched revise in flight) everything collapses to
+ * a live "Revising…" line. Failures render inline — never a silent catch (FLUX-1302).
+ */
+export function PlanReviewActions({ task, onOpenFull, openLabel, onSetAside, setAsideTitle }: {
+  task: Task;
+  onOpenFull?: () => void;
+  openLabel?: string;
+  onSetAside?: () => void | Promise<void>;
+  /** FLUX-1312: ✕ tooltip override. The AttentionDock passes a "hide from this list" wording for its
+   *  non-destructive dock-only dismiss; the chat card keeps the default verdict-clearing "Set aside". */
+  setAsideTitle?: string;
+}) {
+  const config = useAppSelector((s) => s.config);
+  const currentUser = useAppSelector((s) => s.currentUser);
+  const { triggerRefresh } = useAppActions();
+  const [busy, setBusy] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const [notes, setNotes] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const changesRequested = task.planReviewState === 'changes-requested';
+  const notesRequired = !changesRequested;
+
+  async function run(action: () => Promise<void>) {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      triggerRefresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Action failed — is the engine running?');
+    } finally {
+      // Reset on success too — the card usually unmounts/flips via SSE right after, but if the
+      // refresh is slow (or the server accepted without a visible state change) the buttons must
+      // not stay wedged behind a permanent spinner.
+      setBusy(false);
+    }
+  }
+
+  if (isPlanGateRevising(task)) {
+    return (
+      <div className="flex items-center gap-1.5 text-[12px] italic text-gray-500 dark:text-gray-400">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Revising — a grooming session is addressing the feedback…
+      </div>
+    );
+  }
+
+  const regroomBtn = 'flex items-center gap-1 rounded-lg px-3 py-1 text-[12px] font-semibold transition-colors disabled:opacity-40';
+  const primaryAmber = `${regroomBtn} bg-amber-500 text-white hover:bg-amber-600`;
+  const quietAmber = `${regroomBtn} border border-amber-500/40 text-amber-700 hover:bg-amber-500/10 dark:text-amber-300`;
+  const primaryGreen = `${regroomBtn} bg-emerald-600 text-white hover:bg-emerald-500`;
+  const quietGreen = `${regroomBtn} border border-emerald-500/40 text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300`;
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      {composing && (
+        <textarea
+          autoFocus
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder={changesRequested ? 'Notes for the re-groom (optional — the reviewer feedback is included automatically)…' : 'What should change? Your notes become the re-groom instructions (required)…'}
+          rows={2}
+          className="w-full resize-none rounded-lg border border-black/10 bg-white/70 px-2.5 py-1.5 text-[12.5px] outline-none focus:border-amber-500 dark:border-white/10 dark:bg-black/20 dark:text-gray-100"
+        />
+      )}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {!composing ? (
+          <button type="button" onClick={() => setComposing(true)} disabled={busy} className={changesRequested ? primaryAmber : quietAmber}>
+            <Undo2 className="h-3.5 w-3.5" /> Send for re-grooming
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => void run(() => revisePlan(task.id, currentUser, notes))}
+              disabled={busy || (notesRequired && !notes.trim())}
+              title={notesRequired && !notes.trim() ? 'Add notes — overriding an approved plan needs a stated reason' : undefined}
+              className={primaryAmber}
+            >
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />} Send for re-grooming
+            </button>
+            <button
+              type="button"
+              onClick={() => { setComposing(false); setError(null); }}
+              disabled={busy}
+              className="rounded-lg px-2 py-1 text-[12px] font-semibold text-gray-500 hover:bg-black/5 dark:text-gray-400 dark:hover:bg-white/5"
+            >
+              Cancel
+            </button>
+          </>
+        )}
+        {!composing && (
+          <button
+            type="button"
+            onClick={() => void run(() => approvePlanToTodo(task, config, currentUser))}
+            disabled={busy}
+            title={changesRequested ? 'Explicit override — moves to Todo despite the changes-requested verdict' : 'Move to Todo'}
+            className={changesRequested ? quietGreen : primaryGreen}
+          >
+            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />} {changesRequested ? 'Approve anyway' : 'Approve'}
+          </button>
+        )}
+        {!composing && onOpenFull && (
+          <button
+            type="button"
+            onClick={onOpenFull}
+            disabled={busy}
+            className="flex items-center gap-1 rounded-lg px-2 py-1 text-[12px] font-semibold text-gray-500 underline-offset-2 hover:underline dark:text-gray-400"
+          >
+            <ExternalLink className="h-3.5 w-3.5" /> {openLabel ?? 'Open full plan'}
+          </button>
+        )}
+        {!composing && onSetAside && (
+          <button
+            type="button"
+            onClick={() => void run(async () => { await onSetAside(); })}
+            disabled={busy}
+            title={setAsideTitle ?? 'Set aside — clears the pending verdict everywhere; the review comment stays in history'}
+            className="ml-auto rounded p-1 text-gray-400 transition-colors hover:bg-black/5 hover:text-gray-600 dark:hover:bg-white/5 dark:hover:text-gray-200"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+      {error && <div className="text-[11.5px] font-medium text-red-600 dark:text-red-400">{error}</div>}
+    </div>
+  );
+}
+
+/**
+ * FLUX-1273/FLUX-1289/FLUX-1303: a flagged plan-approval ticket's in-chat card — additive to the
+ * AttentionDock tray item, reusing the same inline-in-chat surface `ChatApprovalPanel`/
+ * `ChatQuestionPicker` render (a themed card sitting above the composer). FLUX-1303 unified it onto
+ * the shared `PlanReviewFeedbackBlock` + `PlanReviewActions` (same verbs as the dock item and the
+ * panel): attributed feedback, plan TL;DR, an inline notes composer behind **Send for re-grooming**,
+ * Approve/Approve-anyway, and a single ✕ **Set aside** that clears the verdict everywhere.
+ */
+function ChatPlanApprovalCard({ conversationId }: { conversationId: string }) {
+  const task = useTaskById(conversationId);
+  const config = useAppSelector((s) => s.config);
+  const currentUser = useAppSelector((s) => s.currentUser);
+  const { triggerRefresh } = useAppActions();
+  const { openPlanApproval } = useDockActions();
+
+  if (!task || !isPlanApprovalPending(task, config)) return null;
+  const changesRequested = task.planReviewState === 'changes-requested';
+
+  return (
+    <div className={`rounded-xl border p-3 shadow-sm ${changesRequested ? 'border-amber-300 bg-amber-50 dark:border-amber-500/40 dark:bg-amber-950/50' : 'border-sky-300 bg-sky-50 dark:border-sky-500/40 dark:bg-sky-950/50'}`}>
+      <div className={`mb-1.5 flex items-center gap-1.5 text-xs font-bold ${changesRequested ? 'text-amber-700 dark:text-amber-300' : 'text-sky-700 dark:text-sky-300'}`}>
+        {changesRequested ? <ClipboardX className="h-3.5 w-3.5" /> : <ClipboardCheck className="h-3.5 w-3.5" />}
+        {changesRequested ? 'Plan review requested changes' : 'Plan ready for your approval'}
+      </div>
+      <div className="mb-2">
+        {changesRequested
+          ? <PlanReviewFeedbackBlock task={task} clip={400} />
+          : (
+            <div className="text-[12px] text-gray-700 dark:text-gray-200">
+              Auto-reviewed — verdict: <span className="font-semibold">approved</span>. Confirm to continue.
+            </div>
+          )}
+      </div>
+      <PlanReviewActions
+        task={task}
+        onOpenFull={() => openPlanApproval(task.id)}
+        openLabel="Review plan"
+        onSetAside={async () => { await dismissPlanReview(task.id, currentUser); triggerRefresh(); }}
+      />
+    </div>
+  );
+}
+
+/**
  * The unified inline prompt surface for one chat — mounted in a chat dock window and the task
  * modal's chat pane (the `questionPicker` slot of `ChatView`). Renders all three pending-prompt
  * types filtered to this `conversationId`. This is what makes every open chat a full prompt surface
@@ -342,6 +774,7 @@ export function ChatPendingInteractions({ conversationId }: { conversationId: st
       <ChatApprovalPanel conversationId={conversationId} />
       <ChatBoardRebasePanel conversationId={conversationId} />
       <ChatQuestionPicker conversationId={conversationId} />
+      <ChatPlanApprovalCard conversationId={conversationId} />
     </>
   );
 }

@@ -95,6 +95,10 @@ export interface HistoryDigest {
   comments: Array<{ id: string; user: string; date: string }>;
   /** Pre-computed Require-Input question + set-date — only set for require-input tickets. */
   requireInput: { question: string; setDate: string } | null;
+  /** FLUX-1289: the plan-review gate's latest feedback comment — only set while `planReviewState`
+   *  is non-null. Surfaced inline in the AttentionDock's plan-approval item + ChatPlanApprovalCard.
+   *  FLUX-1303: `user` attributes the feedback (reviewer vs the human's own re-groom notes). */
+  planReviewComment: { text: string; date: string; user?: string } | null;
 }
 
 // Type guard to check if a history entry is an agent session
@@ -120,7 +124,9 @@ export type RelationType =
   | 'refactors'
   | 'refactored-by'
   | 'duplicates'
-  | 'duplicated-by';
+  | 'duplicated-by'
+  | 'continues'
+  | 'continued-by';
 
 /** A typed relationship from one ticket to another (FLUX-593 / epic FLUX-596). */
 export interface TicketLink {
@@ -132,8 +138,10 @@ export interface TicketLink {
 export interface Task {
   id: string;
   status: string;
-  /** 'pr' = an engine-managed PR ticket (FLUX-566); undefined/'ticket' = a normal ticket. */
-  kind?: 'ticket' | 'pr';
+  /** 'pr' = an engine-managed PR ticket (FLUX-566); 'scratch' = a freeform Scratch Chat with its
+   *  own SCRATCH-n id, spawned from the ChatDock and hidden from board columns + list_tickets
+   *  (FLUX-1225); undefined/'ticket' = a normal ticket. */
+  kind?: 'ticket' | 'pr' | 'scratch';
   swimlane?: string | null;
   /** FLUX-651: set by the engine when an agent ended its turn leaving the ticket parked in a
    *  working status without taking a board action. Truthy = show as "Needs Action"; the string
@@ -155,6 +163,29 @@ export interface Task {
    *  when a ticket leaves Ready without a fresh verdict, so a bounced-back ticket never keeps
    *  showing a stale 'approved'. */
   reviewState?: 'approved' | 'changes-requested' | null;
+  /** FLUX-1071 (Temper): true while this ticket is in the auto-review loop (engine-driven). Drives the
+   *  "tempering…" card badge. `temperAttempts` is the re-implementation count so far. */
+  tempering?: boolean;
+  temperAttempts?: number;
+  /** FLUX-1261: per-ticket override of one or both gates — wins over `config.gatePolicy.boardDefault`
+   *  for this ticket only (board-default → ticket-override cascade). Engine-internal in v1: not yet
+   *  editable from a portal surface (the presets/merge-lock subtask surfaces override authorship). */
+  gatePolicyOverride?: Partial<Record<GateName, GateValue>>;
+  /** FLUX-1247 epic decision #2: verdict from the `plan` gate's auto-review pass, parallel to
+   *  `reviewState` (kept separate so `review`'s existing field/behavior is untouched). Written by
+   *  the "Plan-review runner" (FLUX-1263) when `plan` resolves to `auto`/`auto-then-you`; under
+   *  `auto-then-you` the ticket stays in `Grooming` with this set until a human confirms, which is
+   *  what the AttentionDock 📋 plan-approval item (FLUX-1262) detects. null/absent = no pending
+   *  auto-review verdict. */
+  planReviewState?: 'approved' | 'changes-requested' | null;
+  /** FLUX-1288: true while the plan gate's own auto-loop is actively re-driving this ticket (a
+   *  revise/re-review session in flight). Portal surfaces gate the manual "Revise plan"/"Re-run
+   *  review" affordances on this being falsy, so a human action never races the auto-loop's own. */
+  planGateRunning?: boolean;
+  /** FLUX-1303: djb2/base36 hash of the plan body at the moment the current `planReviewState`
+   *  verdict was recorded (see `planBodyHash` — engine + portal copies). Lets surfaces tell
+   *  whether the plan changed since that review; gates the panel's "Re-review plan" action. */
+  planReviewBodyHash?: string | null;
   isDraft?: boolean;
   members?: string[];
   /** Typed relationships to other tickets (FLUX-593 'retries'; generalized by epic FLUX-596). */
@@ -353,6 +384,16 @@ export interface ModuleDeclaration {
   };
 }
 
+/** FLUX-1261: per-gate autonomy dial value. `auto` loops to completion with no human click;
+ *  `you` always waits for a human. `merge` is never a representable gate — structural lock.
+ *  `auto-then-you` is asymmetric across gates (FLUX-1288): the `plan` gate loops review → revise
+ *  until approved, then always flags a human to confirm the move to Todo (only the terminal action
+ *  is manual); the `review` gate instead runs exactly one automated pass and always stops, win or
+ *  lose (it never loops on its own). */
+export type GateValue = 'auto' | 'auto-then-you' | 'you';
+/** The two gates with a dial in v1 — `plan` (Grooming → Todo) and `review` (→ Ready). */
+export type GateName = 'plan' | 'review';
+
 export type ProbeStatus = 'ok' | 'error' | 'checking' | 'unknown';
 
 export interface ProbeResult {
@@ -376,6 +417,23 @@ export interface Config {
   requireInputStatus?: string;
   readyForMergeStatus?: string;
   archiveStatus?: string;
+  /** FLUX-1261: per-gate autonomy policy — `plan` (Grooming) and `review` (Ready) each dial
+   *  Auto / Auto→You / You. Replaces Temper's (FLUX-1071) board-wide `temperEnabled` boolean;
+   *  `review: 'auto'` drives the exact loop `temperEnabled: true` used to. Edited from the ⚙ on
+   *  the Grooming/Ready columns. `merge` is never a representable key — the merge-lock is
+   *  structural, not a runtime check. */
+  gatePolicy?: {
+    boardDefault: Record<GateName, GateValue>;
+  };
+  /** FLUX-1263: column-level fixed override for the `plan` gate's review depth. `'auto'` (default) picks
+   *  Quick/Standard/Thorough from the ticket's effort; a fixed value forces that depth for every plan
+   *  review regardless of effort. Dialed in the same Grooming-column ⚙ modal as `gatePolicy`. */
+  planReviewDepth?: 'auto' | 'quick' | 'standard' | 'thorough';
+  /** FLUX-1290: gates the `finish_ticket` merge-lock's runtime "a human touched this" check.
+   *  Default `false` — an agent session can merge a branch/PR ticket with no prior human touch;
+   *  `true` restores the always-on refusal. A plain on/off switch, not a `gatePolicy` key — dialed
+   *  in the same Ready-column ⚙ modal (review gate) as `gatePolicy`. */
+  blockAgentPrMerges?: boolean;
   swimlanes?: SwimlaneDef[];
   docsEditPermissions?: DocsEditPermissions;
   docsAllowedUsers?: string[];
