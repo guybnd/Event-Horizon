@@ -1,3 +1,4 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -14,7 +15,7 @@ import {
 import { projectTranscript } from './projection.js';
 import { extractTicket } from './extract.js';
 import { readCurationOps, getCurationOpsFile } from './curation-ops.js';
-import { createTask, tasksCache } from './task-store.js';
+import { createTask } from './task-store.js';
 import { proposeBoardRebase, resolveBoardRebase } from './board-rebase.js';
 
 /**
@@ -130,7 +131,7 @@ describe('extract verb (FLUX-656)', () => {
   it('FLUX-738: if persisting the extract op fails, the just-created card is removed (no orphan)', async () => {
     await seedBoard(3);
     const before = await fs.readFile(getTranscriptFile('__board__'), 'utf8');
-    const cardsBefore = Object.keys(tasksCache).length;
+    const cardsBefore = Object.keys(getWorkspace().tasks).length;
 
     // Force appendCurationOp to throw a real I/O error of the class FLUX-738 protects against:
     // create the op-log PATH as a directory so the internal fs.appendFile rejects (EISDIR).
@@ -142,7 +143,7 @@ describe('extract verb (FLUX-656)', () => {
 
     // The card created mid-flight was compensated away — no orphan left in the cache.
     // The source substrate is still byte-for-byte untouched.
-    expect(Object.keys(tasksCache).length).toBe(cardsBefore);
+    expect(Object.keys(getWorkspace().tasks).length).toBe(cardsBefore);
     expect(await fs.readFile(getTranscriptFile('__board__'), 'utf8')).toBe(before);
 
     // Remove the blocker dir, then confirm no extract op was ever persisted (no orphan ref).
@@ -220,7 +221,7 @@ describe('extract verb (FLUX-656)', () => {
       expect(res.consumeError).toBeUndefined();
 
       // AC: the scratch is tombstoned (mergedInto pointer + pinned comment) and archived — not deleted.
-      const src = tasksCache[scratch];
+      const src = getWorkspace().tasks[scratch];
       expect(src).toBeTruthy();
       expect(src.mergedInto).toBe(res.id);
       expect(src.status).toBe('Archived');
@@ -250,8 +251,8 @@ describe('extract verb (FLUX-656)', () => {
       const newId = (await readCurationOps())[0]!.into;
       expect(newId).toMatch(/^FLUX-\d+$/);
       // The scratch was consumed via the same extractTicket path.
-      expect(tasksCache[scratch].mergedInto).toBe(newId);
-      expect(tasksCache[scratch].status).toBe('Archived');
+      expect(getWorkspace().tasks[scratch].mergedInto).toBe(newId);
+      expect(getWorkspace().tasks[scratch].status).toBe('Archived');
     });
 
     it('promoting a NON-scratch source (__board__) leaves the source untouched (no regression)', async () => {
@@ -272,7 +273,7 @@ describe('extract verb (FLUX-656)', () => {
       // Force the archive WRITE to fail while leaving the scratch card in the cache (so the kind
       // guard still fires and the read falls back to cache): replace its on-disk .md with a
       // DIRECTORY at the same path, so updateTaskWithHistory's atomic rename onto it rejects.
-      const scratchPath = tasksCache[scratch]._path as string;
+      const scratchPath = getWorkspace().tasks[scratch]._path as string;
       await fs.rm(scratchPath, { force: true });
       await fs.mkdir(scratchPath, { recursive: true });
 

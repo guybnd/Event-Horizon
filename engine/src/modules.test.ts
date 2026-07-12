@@ -1,14 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('./config.js', () => ({
-  configCache: {} as Record<string, unknown>,
-}));
+vi.mock('./config.js', () => {
+  const cfg: Record<string, unknown> = {};
+  return { getConfig: () => cfg };
+});
 
 vi.mock('./workspace.js', () => ({
   getActiveFluxDir: vi.fn(() => '/project/.flux-store'),
 }));
 
-import { configCache } from './config.js';
+import { getConfig } from './config.js';
 import { getActiveFluxDir } from './workspace.js';
 import {
   getActiveModules,
@@ -48,7 +49,7 @@ const FIXTURE_TAG_GATED = {
 };
 
 beforeEach(() => {
-  configCache.modules = [FIXTURE_PHASE_GATED, FIXTURE_DISABLED, FIXTURE_TAG_GATED];
+  getConfig().modules = [FIXTURE_PHASE_GATED, FIXTURE_DISABLED, FIXTURE_TAG_GATED];
 });
 
 // ── Phase gating ──────────────────────────────────────────────────────────────
@@ -92,7 +93,7 @@ describe('getActiveModules — tag gating', () => {
   });
 
   it('excludes module when only some required tags match (multiple requireTags)', () => {
-    configCache.modules = [{
+    getConfig().modules = [{
       ...FIXTURE_TAG_GATED,
       conditions: { requireTags: ['backend', 'api'] },
     }];
@@ -121,12 +122,12 @@ describe('getModuleMcpServers', () => {
   });
 
   it('returns empty object when no active modules', () => {
-    configCache.modules = [];
+    getConfig().modules = [];
     expect(getModuleMcpServers('implementation')).toEqual({});
   });
 
   it('resolves ${ACTIVE_FLUX_DIR} in mcpServer env values', () => {
-    configCache.modules = [{
+    getConfig().modules = [{
       id: 'mem',
       name: 'Memory',
       description: 'test',
@@ -142,7 +143,7 @@ describe('getModuleMcpServers', () => {
   });
 
   it('leaves unrecognised template vars unchanged', () => {
-    configCache.modules = [{
+    getConfig().modules = [{
       id: 'mem',
       name: 'Memory',
       description: 'test',
@@ -170,12 +171,12 @@ describe('getModulePromptFragments', () => {
   });
 
   it('returns empty string when no modules are active', () => {
-    configCache.modules = [];
+    getConfig().modules = [];
     expect(getModulePromptFragments('implementation')).toBe('');
   });
 
   it('returns empty string when active modules have no promptFragment', () => {
-    configCache.modules = [{
+    getConfig().modules = [{
       id: 'no-frag',
       name: 'No Fragment',
       description: 'desc',
@@ -185,7 +186,7 @@ describe('getModulePromptFragments', () => {
   });
 
   it('truncates promptFragment at 2000 characters', () => {
-    configCache.modules = [{
+    getConfig().modules = [{
       id: 'long',
       name: 'Long',
       description: 'desc',
@@ -306,7 +307,7 @@ describe('BUILTIN_MODULES — mem0 entry', () => {
 
 describe('loadModules — mcpServer shape validation (FLUX-447)', () => {
   it('keeps a module with a well-formed mcpServer', () => {
-    configCache.modules = [{
+    getConfig().modules = [{
       id: 'good', name: 'Good', description: 'd', enabled: true,
       mcpServer: { command: 'npx', args: ['-y', 'x'] },
     }];
@@ -314,7 +315,7 @@ describe('loadModules — mcpServer shape validation (FLUX-447)', () => {
   });
 
   it('drops a module whose mcpServer is missing command', () => {
-    configCache.modules = [{
+    getConfig().modules = [{
       id: 'bad', name: 'Bad', description: 'd', enabled: true,
       mcpServer: { args: ['-y', 'x'] },
     }];
@@ -322,7 +323,7 @@ describe('loadModules — mcpServer shape validation (FLUX-447)', () => {
   });
 
   it('drops a module whose mcpServer args are not all strings', () => {
-    configCache.modules = [{
+    getConfig().modules = [{
       id: 'bad2', name: 'Bad2', description: 'd', enabled: true,
       mcpServer: { command: 'npx', args: ['ok', 3] },
     }];
@@ -330,7 +331,7 @@ describe('loadModules — mcpServer shape validation (FLUX-447)', () => {
   });
 
   it('keeps a prompt-only module with no mcpServer', () => {
-    configCache.modules = [{
+    getConfig().modules = [{
       id: 'frag-only', name: 'Frag', description: 'd', enabled: true,
       promptFragment: 'hi',
     }];
@@ -338,7 +339,7 @@ describe('loadModules — mcpServer shape validation (FLUX-447)', () => {
   });
 
   it('drops a module whose sharedHttp is malformed', () => {
-    configCache.modules = [{
+    getConfig().modules = [{
       id: 'bad-http', name: 'BadHttp', description: 'd', enabled: true,
       mcpServer: { command: 'serena', args: [] },
       sharedHttp: { command: '', args: [] },
@@ -351,7 +352,7 @@ describe('loadModules — mcpServer shape validation (FLUX-447)', () => {
 
 describe('getModulePromptFragments — dedupe by id (FLUX-447)', () => {
   it('injects a duplicate-id module fragment only once', () => {
-    configCache.modules = [
+    getConfig().modules = [
       { id: 'dup', name: 'Dup', description: 'd', enabled: true, promptFragment: 'FRAGMENT_X' },
       { id: 'dup', name: 'Dup', description: 'd', enabled: true, promptFragment: 'FRAGMENT_X' },
     ];
@@ -365,7 +366,7 @@ describe('getModulePromptFragments — dedupe by id (FLUX-447)', () => {
 describe('getModuleMcpServers — uninitialised workspace', () => {
   it('preserves ${ACTIVE_FLUX_DIR} template verbatim when workspace is not initialised', () => {
     vi.mocked(getActiveFluxDir).mockImplementationOnce(() => { throw new Error('no workspace'); });
-    configCache.modules = [{
+    getConfig().modules = [{
       id: 'mem',
       name: 'Memory',
       description: 'test',

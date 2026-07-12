@@ -1,10 +1,9 @@
-import fs from 'fs/promises';
-import path from 'path';
-import { resolveSkillSourceRoot } from './workspace.js';
 import { buildInitialPrompt } from './agents/shared.js';
 import { getModulePromptFragments } from './modules.js';
 import { computeAgentPayloadMetrics, type AgentPayloadMetrics } from './agent-payload-metrics.js';
 import { getCliSessionSummaryForTask } from './session-store.js';
+import { buildCoreSkillDocument } from './skill-core.js';
+import { isInjectablePhaseModule, loadSkillModuleBodySync, skillModuleFallback } from './skill-modules.js';
 
 /**
  * Ticket/frontmatter-shaped input. There is no single canonical Task type in
@@ -26,8 +25,6 @@ function measure(value: string | undefined | null): { bytes: number; tokensEst: 
 function pct(bytes: number, total: number): number {
   return total ? Math.round((bytes / total) * 1000) / 10 : 0;
 }
-
-const SKILL_MODULES = ['orchestrator', 'grooming', 'implementation', 'review', 'release', 'mapping'] as const;
 
 function statusToPhase(status?: string): string | undefined {
   if (status === 'Grooming' || status === 'Require Input') return 'grooming';
@@ -64,15 +61,23 @@ export function computeLaunchPromptMetrics(task: MetricsTask): LaunchPromptMetri
   const total = measure(corePrompt);
 
   const moduleFragments = measure(getModulePromptFragments(phase, Array.isArray(task.tags) ? task.tags : undefined));
+  // FLUX-1377: buildInitialPrompt (default framework 'claude', no patternPosition — i.e. a real
+  // phase dispatch, not a delegate) now appends the phase's skill module body for
+  // grooming/implementation/review. Measure it separately so it doesn't get lumped into the
+  // boilerplate remainder below — this is the "phase guidance on demand" delta this ticket adds.
+  const injectedModule = measure(
+    isInjectablePhaseModule(phase) ? (loadSkillModuleBodySync(phase) ?? skillModuleFallback(phase)) : undefined,
+  );
   // The body is NOT echoed in the launch prompt (FLUX-498) — agents read it via
-  // get_ticket. moduleFragments appears verbatim; the remainder is the
+  // get_ticket. moduleFragments/injectedModule appear verbatim; the remainder is the
   // EH-generated mission/header/recent-activity/get_ticket-pointer/mcp-note.
-  const remainderBytes = Math.max(0, total.bytes - moduleFragments.bytes);
-  const remainderTokens = Math.max(0, total.tokensEst - moduleFragments.tokensEst);
+  const remainderBytes = Math.max(0, total.bytes - moduleFragments.bytes - injectedModule.bytes);
+  const remainderTokens = Math.max(0, total.tokensEst - moduleFragments.tokensEst - injectedModule.tokensEst);
 
   const sections: BudgetSection[] = [
     { name: 'EH instructions/boilerplate', bytes: remainderBytes, tokensEst: remainderTokens, pct: pct(remainderBytes, total.bytes) },
-    { name: 'module fragments', bytes: moduleFragments.bytes, tokensEst: moduleFragments.tokensEst, pct: pct(moduleFragments.bytes, total.bytes) },
+    { name: 'injected phase skill module', bytes: injectedModule.bytes, tokensEst: injectedModule.tokensEst, pct: pct(injectedModule.bytes, total.bytes) },
+    { name: 'config module fragments', bytes: moduleFragments.bytes, tokensEst: moduleFragments.tokensEst, pct: pct(moduleFragments.bytes, total.bytes) },
   ].sort((a, b) => b.bytes - a.bytes);
 
   return {
@@ -80,11 +85,18 @@ export function computeLaunchPromptMetrics(task: MetricsTask): LaunchPromptMetri
     totalBytes: total.bytes,
     totalTokensEst: total.tokensEst,
     sections,
-    note: 'Core EH launch prompt. The ticket body is NOT echoed here (FLUX-498) — agents read it via get_ticket. A persona overlay (appendPrompt) is appended at spawn and varies.',
+    note: 'Core EH launch prompt — FLUX-1377: includes the injected phase skill module (grooming/implementation/review) since buildInitialPrompt now appends it for Claude spawns. The ticket body is NOT echoed here (FLUX-498) — agents read it via get_ticket. A persona overlay (appendPrompt) is appended at spawn and varies.',
   };
 }
 
 export interface SkillModuleMetrics {
+  /** Bytes/tokens of JUST the installed core (.claude/rules/event-horizon.md for Claude) —
+   * the static, always-loaded portion. Separate from totalBytes/totalTokensEst so callers that
+   * already counted an injected module elsewhere (computeLaunchPromptMetrics) can add this
+   * without double-counting. */
+  coreBytes: number;
+  coreTokensEst: number;
+  /** core + injected phase module (informational — the full "skill" cost this session pays). */
   totalBytes: number;
   totalTokensEst: number;
   modules: Array<{ name: string; bytes: number; tokensEst: number; missing?: boolean }>;
@@ -92,31 +104,39 @@ export interface SkillModuleMetrics {
 }
 
 /**
- * Measures the EH skill modules that load into every agent session (as
- * .claude/rules content, or concatenated into the prompt for non-modular
- * frameworks). This is fixed per-session overhead — all five load regardless of
- * the ticket's phase today (see FLUX-261/4c for phase-scoped loading).
+ * FLUX-1377: measures the REAL skill-module prelude — the trimmed always-on core
+ * (`.claude/rules/event-horizon.md` for Claude, see skill-core.ts) plus, when `phase` is
+ * grooming/implementation/review, the ONE module `buildInitialPrompt` injects for agent
+ * spawns. Replaces the old assertion that all six modules load every session (never actually
+ * measured per session kind, and stale — it claimed "all five" when there were six).
+ *
+ * Both agent main-checkout AND agent worktree spawns get the same injected module (worktrees
+ * never had the rules file installed at all — task-worktree.ts — so this is a net improvement
+ * there). Human sessions get the core only and Read the phase module on demand.
  */
-export async function computeSkillModuleMetrics(): Promise<SkillModuleMetrics> {
-  const root = resolveSkillSourceRoot();
-  const modules = await Promise.all(
-    SKILL_MODULES.map(async (name) => {
-      const file = path.join(root, '.docs', 'skills', `event-horizon-${name}.md`);
-      try {
-        const content = await fs.readFile(file, 'utf-8');
-        return { name, ...measure(content) };
-      } catch {
-        return { name, bytes: 0, tokensEst: 0, missing: true };
-      }
-    }),
+export async function computeSkillModuleMetrics(phase?: string): Promise<SkillModuleMetrics> {
+  const core = measure(buildCoreSkillDocument());
+  const modulePhase = isInjectablePhaseModule(phase) ? phase : undefined;
+  const moduleMeasured = measure(
+    modulePhase ? (loadSkillModuleBodySync(modulePhase) ?? skillModuleFallback(modulePhase)) : undefined,
   );
-  const totalBytes = modules.reduce((s, m) => s + m.bytes, 0);
-  const totalTokensEst = modules.reduce((s, m) => s + m.tokensEst, 0);
+
+  const modules: SkillModuleMetrics['modules'] = [
+    { name: 'core (installed .claude/rules, every Claude session)', bytes: core.bytes, tokensEst: core.tokensEst },
+  ];
+  if (modulePhase) {
+    modules.push({ name: `${modulePhase} module (injected, agent spawns only)`, bytes: moduleMeasured.bytes, tokensEst: moduleMeasured.tokensEst });
+  }
+
   return {
-    totalBytes,
-    totalTokensEst,
-    modules: modules.sort((a, b) => b.bytes - a.bytes),
-    note: 'All modules load every session today; only the phase-relevant one is needed (FLUX-261/4c, FLUX-481).',
+    coreBytes: core.bytes,
+    coreTokensEst: core.tokensEst,
+    totalBytes: core.bytes + moduleMeasured.bytes,
+    totalTokensEst: core.tokensEst + moduleMeasured.tokensEst,
+    modules,
+    note: modulePhase
+      ? `FLUX-1377: Claude installs get the ~${core.tokensEst}-tok core always; only the ${modulePhase} module is injected for agent spawns (main-checkout or worktree) — the other modules never load this session.`
+      : 'FLUX-1377: Claude installs get the core always; no phase module applies to this ticket status (release/mapping are Read-on-demand, not phase-spawned).',
   };
 }
 
@@ -147,10 +167,14 @@ export interface ContextBudget {
 export async function computeContextBudget(task: MetricsTask): Promise<ContextBudget> {
   const payload = computeAgentPayloadMetrics(task);
   const launchPrompt = computeLaunchPromptMetrics(task);
-  const skillModules = await computeSkillModuleMetrics();
+  const skillModules = await computeSkillModuleMetrics(launchPrompt.phase ?? undefined);
 
+  // FLUX-1377: launchPrompt already includes the injected phase skill module (buildInitialPrompt
+  // appends it for Claude spawns) — add only skillModules.coreTokensEst (the static installed
+  // rules file) here, not skillModules.totalTokensEst (core + module), or the module would be
+  // double-counted.
   const ehMeasurableTotalTokensEst =
-    payload.totalTokensEst + launchPrompt.totalTokensEst + skillModules.totalTokensEst;
+    payload.totalTokensEst + launchPrompt.totalTokensEst + skillModules.coreTokensEst;
 
   const s = getCliSessionSummaryForTask(task.id);
   // Spread conditionally rather than assigning `undefined` fields directly —

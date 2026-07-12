@@ -3,6 +3,7 @@
 // GET added on top: a version-keyed ETag that answers an unchanged poll with a bodyless 304, and
 // bumps (invalidating cached ETags) the instant any task mutation broadcasts.
 
+import { getWorkspace } from '../workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -12,8 +13,8 @@ import type { AddressInfo } from 'net';
 import express from 'express';
 import { setWorkspaceRoot } from '../workspace.js';
 import { requireWorkspace } from '../middleware.js';
-import { tasksCache } from '../task-store.js';
-import { broadcastEvent } from '../events.js';
+
+import { broadcastEvent, bumpTasksVersion } from '../events.js';
 import { cliSessionsById, cliSessionsByTaskId, registerSession } from '../session-store.js';
 import type { CliSessionRecord } from '../agents/types.js';
 import type { ChildProcessWithoutNullStreams } from 'child_process';
@@ -28,8 +29,8 @@ describe('GET /api/tasks — conditional GET / ETag (FLUX-1144)', () => {
     await fs.mkdir(path.join(root, '.flux'), { recursive: true });
     setWorkspaceRoot(root);
 
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
-    tasksCache['FLUX-1'] = {
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
+    getWorkspace().tasks['FLUX-1'] = {
       id: 'FLUX-1',
       title: 'Test ticket',
       status: 'Todo',
@@ -129,5 +130,54 @@ describe('GET /api/tasks — conditional GET / ETag (FLUX-1144)', () => {
     const secondBody = await second.json();
     expect(secondBody[0].cliSession?.status).toBe('completed');
     expect(session.status).toBe('completed');
+  });
+
+  // FLUX-1338: a workspace switch replaces the whole task set but fires no per-task mutation event,
+  // so the version counter would stay put and the client's cached ETag would still match — the
+  // engine answered the first post-switch poll with a 304 and the board kept showing the OLD
+  // workspace's tickets. doActivateWorkspace now calls bumpTasksVersion() to invalidate that cache.
+  it('invalidates a cached ETag when the tasks version is bumped (workspace switch)', async () => {
+    const first = await fetch(`${baseUrl}/api/tasks`);
+    const etag = first.headers.get('etag')!;
+    await first.text();
+
+    bumpTasksVersion(); // what a workspace switch now does
+
+    const second = await fetch(`${baseUrl}/api/tasks`, { headers: { 'If-None-Match': etag } });
+    expect(second.status).toBe(200);
+    expect(second.headers.get('etag')).not.toBe(etag);
+  });
+
+  // FLUX-1338 (bump placement): activation clears the task set seconds before initDir() repopulates
+  // it, and the engine keeps serving GET /api/tasks in between — so the portal's 3s poll can land
+  // inside that window and cache an ETag over the EMPTY set. doActivateWorkspace therefore bumps in
+  // its `finally`, AFTER the reload: any ETag handed out mid-activation must mismatch once
+  // activation completes, or the board would stick on an empty board behind a 304 (nothing in the
+  // bulk reload broadcasts a per-task event that would bump the version).
+  it('does not let an ETag captured mid-activation 304 after activation completes', async () => {
+    bumpTasksVersion(); // stand-in for a hypothetical early bump / any version state mid-window
+    const midActivation = await fetch(`${baseUrl}/api/tasks`); // poll lands in the cleared window
+    const midEtag = midActivation.headers.get('etag')!;
+    await midActivation.text();
+
+    bumpTasksVersion(); // the real bump — end of doActivateWorkspace's finally, after initDir()
+
+    const after = await fetch(`${baseUrl}/api/tasks`, { headers: { 'If-None-Match': midEtag } });
+    expect(after.status).toBe(200);
+    expect(after.headers.get('etag')).not.toBe(midEtag);
+  });
+
+  // FLUX-1338 (defense-in-depth): the ETag is also keyed by the active workspace root, so two
+  // workspaces can never collide on the shared module-global version counter even at the same value.
+  it('keys the ETag by workspace root — a cached ETag from another workspace never 304s', async () => {
+    const first = await fetch(`${baseUrl}/api/tasks`);
+    const etag = first.headers.get('etag')!;
+    await first.text();
+
+    setWorkspaceRoot('/tmp/some-other-workspace'); // simulate the engine now bound elsewhere
+
+    const second = await fetch(`${baseUrl}/api/tasks`, { headers: { 'If-None-Match': etag } });
+    expect(second.status).toBe(200);
+    expect(second.headers.get('etag')).not.toBe(etag);
   });
 });

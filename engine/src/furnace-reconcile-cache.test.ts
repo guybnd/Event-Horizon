@@ -7,6 +7,7 @@
 // observable count of how many real reconcile passes ran — this proves the TTL/single-flight gate without
 // needing to spy on `reconcileBatch` itself (a same-module internal call `vi.mock` can't intercept).
 
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -21,7 +22,7 @@ vi.mock('./session-store.js', async (importOriginal) => {
 
 import { createFurnaceBatch, mutateFurnaceBatch, __resetFurnaceStoreForTests } from './furnace-store.js';
 import { newBatchTicket } from './models/furnace.js';
-import { tasksCache } from './task-store.js';
+
 import { reconcileBatch, reconcileBatchCached, reconcileAllBatchesCached, evictReconcileReadCache } from './furnace-stoker.js';
 
 describe('Furnace reconcile-on-read TTL + single-flight (FLUX-1145)', () => {
@@ -34,7 +35,7 @@ describe('Furnace reconcile-on-read TTL + single-flight (FLUX-1145)', () => {
     const batch = await createFurnaceBatch({ title: 'test', tickets: [newBatchTicket(ticketId, 0, ticketId)] });
     // reconcileBatch no-ops on a draft batch — park it so the reconcile loop actually visits its tickets.
     await mutateFurnaceBatch(batch.id, (b) => { b.status = 'parked'; });
-    tasksCache[ticketId] = { status: 'In Progress', title: ticketId };
+    getWorkspace().tasks[ticketId] = { status: 'In Progress', title: ticketId };
     return batch.id;
   }
 
@@ -43,7 +44,7 @@ describe('Furnace reconcile-on-read TTL + single-flight (FLUX-1145)', () => {
     await fs.mkdir(path.join(root, '.flux'), { recursive: true });
     setWorkspaceRoot(root);
     __resetFurnaceStoreForTests();
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     getActiveSessionsForTask.mockClear();
     vi.useFakeTimers();
     epoch += 10_000_000;

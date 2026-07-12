@@ -30,15 +30,43 @@ describe('buildInitialPrompt — parity by default (FLUX-960)', () => {
     }
   });
 
-  it('gives every framework the same phase-based mission text (grooming/implementation/review/finalize)', () => {
-    const phases = ['grooming', 'implementation', 'review', 'finalize'] as const;
-    for (const phase of phases) {
+  it('gives every framework the same phase-based mission text (finalize/fast-path — no phase module applies)', () => {
+    // finalize and fast-path (FLUX-1380) have no phase skill module — grooming/implementation/review
+    // do (see the FLUX-1377 test below) — so their mission text stays byte-identical across frameworks.
+    for (const phase of ['finalize', 'fast-path'] as const) {
       const prompts = FRAMEWORKS.map((framework) => buildInitialPrompt(mockTask, '', { phase, framework }));
       // Strip the requireInputStopInstruction (the one line that's allowed to differ per
       // selfPause) before comparing — everything else must be byte-identical across frameworks.
       const normalized = prompts.map((p) => p.split('\n').slice(0, -1).join('\n'));
       expect(new Set(normalized).size).toBe(1);
     }
+  });
+
+  it('FLUX-1377: injects the phase skill module for Claude only (grooming/implementation/review) — copilot/gemini stay in parity with each other', () => {
+    const phases = ['grooming', 'implementation', 'review'] as const;
+    for (const phase of phases) {
+      const claudePrompt = buildInitialPrompt(mockTask, '', { phase, framework: 'claude' });
+      const copilotPrompt = buildInitialPrompt(mockTask, '', { phase, framework: 'copilot' });
+      const geminiPrompt = buildInitialPrompt(mockTask, '', { phase, framework: 'gemini' });
+
+      expect(claudePrompt).toContain(`## Phase Skill: ${phase}`);
+      expect(copilotPrompt).not.toContain('## Phase Skill:');
+      expect(geminiPrompt).not.toContain('## Phase Skill:');
+
+      // Non-Claude frameworks still stay byte-identical to each other (minus the
+      // selfPause-gated closing line) — the FLUX-960 parity guarantee still holds for them.
+      const normalized = [copilotPrompt, geminiPrompt].map((p) => p.split('\n').slice(0, -1).join('\n'));
+      expect(new Set(normalized).size).toBe(1);
+    }
+  });
+
+  it('FLUX-1377: excludes delegate/relay spawns from phase module injection even on Claude', () => {
+    const dispatched = buildInitialPrompt(mockTask, '', { phase: 'implementation', framework: 'claude' });
+    const delegateSpawn = buildInitialPrompt(mockTask, '', { phase: 'implementation', framework: 'claude', patternPosition: 'assistant' });
+    const relaySpawn = buildInitialPrompt(mockTask, '', { phase: 'implementation', framework: 'claude', patternPosition: 'step' });
+    expect(dispatched).toContain('## Phase Skill:');
+    expect(delegateSpawn).not.toContain('## Phase Skill:');
+    expect(relaySpawn).not.toContain('## Phase Skill:');
   });
 
   it('restricts the ORCHESTRATION PROPOSALS paragraph (chat phase) to frameworks with the supervisor capability', () => {
@@ -103,6 +131,20 @@ describe('buildInitialPrompt — parity by default (FLUX-960)', () => {
     const withDefault = buildInitialPrompt(mockTask, '', { phase: 'implementation' });
     const explicitClaude = buildInitialPrompt(mockTask, '', { phase: 'implementation', framework: DEFAULT_FRAMEWORK });
     expect(withDefault).toBe(explicitClaude);
+  });
+
+  it('FLUX-1380: fast-path mission includes inline grooming, the bail-out contract, and commit-before-Ready, for every framework', () => {
+    for (const framework of FRAMEWORKS) {
+      const prompt = buildInitialPrompt(mockTask, '', { phase: 'fast-path', framework });
+      expect(prompt).toContain('FAST-PATH');
+      expect(prompt).toContain('GROOM IT INLINE');
+      // Bail-out contract: too-big work escapes to the normal plan-gated Todo path instead of implementing.
+      expect(prompt).toContain('ELIGIBILITY CHECK');
+      expect(prompt).toContain('move to "Todo"');
+      // FLUX-730: commit-before-Ready applies here exactly as it does for plain implementation.
+      expect(prompt).toContain('FLUX-730');
+      expect(prompt).toContain('completion summary');
+    }
   });
 
   it('falls back to status-based instructions identically across frameworks when no phase is given', () => {

@@ -1,8 +1,8 @@
 import { randomUUID } from 'crypto';
 import { getWorkflowInstallStatus, checkSkillVersionStaleness, detectWorkspaceFrameworks, type Framework, type ResolvedFramework } from './workflow-installer.js';
-import { workspaceRoot, resolveSkillSourceRoot } from './workspace.js';
+import { resolveSkillSourceRoot, getWorkspaceRoot } from './workspace.js';
 import { broadcastEvent } from './events.js';
-import { configCache } from './config.js';
+import { getConfig } from './config.js';
 import { BOARD_CONVERSATION_ID } from './agents/board.js';
 
 export type NotificationType = 'error' | 'prompt' | 'completion' | 'review' | 'info';
@@ -102,7 +102,7 @@ export function generatePromptNotification(ticketId: string, ticketTitle: string
   // ('prompt'). "Ready" is a review hand-off, not a blocking question → lower-priority Update
   // ('info'), so it doesn't nag the bell the way a real "needs your input" does. (A real escaped
   // agent question is surfaced separately by the FLUX-570 safety-net in task-store, also as Action.)
-  const readyStatus = configCache.readyForMergeStatus || 'Ready';
+  const readyStatus = getConfig().readyForMergeStatus || 'Ready';
   const isReady = status.trim() === readyStatus;
   const type: NotificationType = isReady ? 'info' : 'prompt';
   const message = isReady ? 'Ready for your review.' : 'The agent needs your input to continue.';
@@ -331,6 +331,7 @@ export function clearSyncConflictNotification(): void {
 }
 
 export async function checkFrameworkHealth(framework: Framework): Promise<void> {
+  const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return;
 
   try {
@@ -369,6 +370,7 @@ export async function checkFrameworkHealth(framework: Framework): Promise<void> 
 }
 
 export async function checkSkillStaleness(framework: Framework): Promise<void> {
+  const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return;
 
   try {

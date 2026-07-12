@@ -96,6 +96,19 @@ describe('isParked', () => {
     expect(isParked({ ...base, isDelegated: true })).toBe(false);
   });
 
+  // FLUX-1320: a needsAction flag standing at turn end was raised THIS turn by a more specific path
+  // (the plan gate's eager verdict stop, an ask_user_question timeout) — the flag is cleared at every
+  // turn start, so the generic backstop must defer to it rather than refresh the deduped notification
+  // with its generic message.
+  it('does NOT flag when a needsAction flag is already standing at turn end (working status)', () => {
+    expect(isParked({ ...base, needsActionSet: true })).toBe(false);
+    expect(isParked({ ...base, status: 'Grooming', statusAtTurnStart: 'Grooming', needsActionSet: true })).toBe(false);
+  });
+
+  it('does NOT soft-flag a resting status with a fresh comment when needsAction already stands', () => {
+    expect(isParked({ ...base, status: 'Done', statusAtTurnStart: 'Done', commentCount: 1, commentCountAtTurnStart: 0, needsActionSet: true })).toBe(false);
+  });
+
   it('flags regardless of branchless vs branched (the decision does not look at the branch)', () => {
     // Same inputs reach isParked the same way whether or not the ticket has a branch.
     expect(isParked(base)).toBe(true);

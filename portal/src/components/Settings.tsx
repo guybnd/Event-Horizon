@@ -12,14 +12,18 @@ import { AppearanceSection } from './settings/AppearanceSection';
 import { WorkspaceSection } from './settings/WorkspaceSection';
 import { WorktreeSection } from './settings/WorktreeSection';
 import { ReleaseNotesSection } from './settings/ReleaseNotesSection';
-import { AgentSection } from './settings/AgentSection';
+import { AgentDefaultsSection } from './settings/AgentDefaultsSection';
+import { AgentModelPolicySection } from './settings/AgentModelPolicySection';
+import { AgentWorkflowSection } from './settings/AgentWorkflowSection';
+import { useSkillStatus } from './settings/useSkillStatus';
 import { AgentProgressSection } from './settings/AgentProgressSection';
 import { FurnaceSection } from './settings/FurnaceSection';
 import { CostTokensSection } from './settings/CostTokensSection';
 import { ModulesSection } from './settings/ModulesSection';
 import { McpPhasesSection } from './settings/McpPhasesSection';
 import { GeneralSection } from './settings/GeneralSection';
-import type { Config, ModuleDeclaration } from '../types';
+import type { Config, ModuleDeclaration, TaskKey, Tier } from '../types';
+import { EMPTY_TIER_MODELS, PRESET_ASSIGNMENTS, derivePreset, type TierModels } from '../modelPolicy';
 
 /** Runtime config carries a per-phase MCP server map that isn't yet on the `Config` type. */
 type ConfigWithMcpPhases = Config & { mcpServerPhases?: Record<string, string[]> };
@@ -88,10 +92,12 @@ export function Settings() {
   const [defaultAgent, setDefaultAgent] = useState<string>('auto');
   const [boardPermissionDefault, setBoardPermissionDefault] = useState<'gated' | 'skip'>('gated');
   const [ticketPermissionDefault, setTicketPermissionDefault] = useState<'gated' | 'skip'>('skip');
-  const [groomingModel, setGroomingModel] = useState<string>('');
-  const [implementationModel, setImplementationModel] = useState<string>('');
-  const [geminiGroomingModel, setGeminiGroomingModel] = useState<string>('');
-  const [geminiImplementationModel, setGeminiImplementationModel] = useState<string>('');
+  // FLUX-1373: per-CLI tier definitions + task->tier policy — supersedes the retired
+  // groomingModel/implementationModel per-CLI fields.
+  const [claudeTiers, setClaudeTiers] = useState<TierModels>(EMPTY_TIER_MODELS);
+  const [geminiTiers, setGeminiTiers] = useState<TierModels>(EMPTY_TIER_MODELS);
+  const [copilotTiers, setCopilotTiers] = useState<TierModels>(EMPTY_TIER_MODELS);
+  const [modelPolicyAssignments, setModelPolicyAssignments] = useState<Record<TaskKey, Tier>>(PRESET_ASSIGNMENTS.balanced);
   const [generateDistinctFiles, setGenerateDistinctFiles] = useState(true);
   const [releaseNotesPath, setReleaseNotesPath] = useState('release-notes');
   const [syncDebounceMs, setSyncDebounceMs] = useState(30000);
@@ -164,10 +170,10 @@ export function Settings() {
       setDefaultAgent(config.defaultAgent || 'auto');
       setBoardPermissionDefault(config.permissions?.boardDefault === 'skip' ? 'skip' : 'gated');
       setTicketPermissionDefault(config.permissions?.ticketDefault === 'gated' ? 'gated' : 'skip');
-      setGroomingModel(config.integrations?.claudeCode?.groomingModel || '');
-      setImplementationModel(config.integrations?.claudeCode?.implementationModel || '');
-      setGeminiGroomingModel(config.integrations?.geminiCli?.groomingModel || '');
-      setGeminiImplementationModel(config.integrations?.geminiCli?.implementationModel || '');
+      setClaudeTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.claudeCode?.tiers ?? {}) });
+      setGeminiTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.geminiCli?.tiers ?? {}) });
+      setCopilotTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.copilotCli?.tiers ?? {}) });
+      setModelPolicyAssignments(config.modelPolicy?.assignments ?? PRESET_ASSIGNMENTS.balanced);
       if (config.releaseSettings) {
         setGenerateDistinctFiles(config.releaseSettings.generateDistinctFiles);
         setReleaseNotesPath(config.releaseSettings.releaseNotesPath || 'release-notes');
@@ -290,13 +296,18 @@ export function Settings() {
         },
         integrations: {
           claudeCode: {
-            groomingModel: groomingModel.trim(),
-            implementationModel: implementationModel.trim(),
+            tiers: { smart: claudeTiers.smart.trim(), efficient: claudeTiers.efficient.trim(), cheap: claudeTiers.cheap.trim() },
           },
           geminiCli: {
-            groomingModel: geminiGroomingModel.trim(),
-            implementationModel: geminiImplementationModel.trim(),
-          }
+            tiers: { smart: geminiTiers.smart.trim(), efficient: geminiTiers.efficient.trim(), cheap: geminiTiers.cheap.trim() },
+          },
+          copilotCli: {
+            tiers: { smart: copilotTiers.smart.trim(), efficient: copilotTiers.efficient.trim(), cheap: copilotTiers.cheap.trim() },
+          },
+        },
+        modelPolicy: {
+          preset: derivePreset(modelPolicyAssignments),
+          assignments: modelPolicyAssignments,
         },
         defaultAgent: defaultAgent as CliFramework | 'auto',
         permissions: {
@@ -378,10 +389,10 @@ export function Settings() {
     setDefaultAgent(config.defaultAgent || 'auto');
     setBoardPermissionDefault(config.permissions?.boardDefault === 'skip' ? 'skip' : 'gated');
     setTicketPermissionDefault(config.permissions?.ticketDefault === 'gated' ? 'gated' : 'skip');
-    setGroomingModel(config.integrations?.claudeCode?.groomingModel || '');
-    setImplementationModel(config.integrations?.claudeCode?.implementationModel || '');
-    setGeminiGroomingModel(config.integrations?.geminiCli?.groomingModel || '');
-    setGeminiImplementationModel(config.integrations?.geminiCli?.implementationModel || '');
+    setClaudeTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.claudeCode?.tiers ?? {}) });
+    setGeminiTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.geminiCli?.tiers ?? {}) });
+    setCopilotTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.copilotCli?.tiers ?? {}) });
+    setModelPolicyAssignments(config.modelPolicy?.assignments ?? PRESET_ASSIGNMENTS.balanced);
     setGenerateDistinctFiles(config.releaseSettings?.generateDistinctFiles ?? true);
     setReleaseNotesPath(config.releaseSettings?.releaseNotesPath || 'release-notes');
     setSyncDebounceMs(config.syncSettings?.debounceMs ?? 30000);
@@ -398,6 +409,10 @@ export function Settings() {
     setGlobalPreferredFramework(loadedGlobal.preferredFramework);
     setGlobalPort(loadedGlobal.port);
   };
+
+  // FLUX-1373: fetched once here and shared by AgentDefaultsSection + AgentWorkflowSection so the
+  // Agents tab doesn't fetch skill status twice.
+  const agentsTabSkillStatus = useSkillStatus(defaultAgent);
 
   if (!config) return null;
 
@@ -447,10 +462,10 @@ export function Settings() {
       defaultAgent,
       boardPermissionDefault,
       ticketPermissionDefault,
-      groomingModel,
-      implementationModel,
-      geminiGroomingModel,
-      geminiImplementationModel,
+      claudeTiers,
+      geminiTiers,
+      copilotTiers,
+      modelPolicyAssignments,
       agentProgressEnabled,
       agentProgressDelay,
       furnaceRetryIntervalMs,
@@ -507,10 +522,10 @@ export function Settings() {
       defaultAgent: config.defaultAgent || 'auto',
       boardPermissionDefault: config.permissions?.boardDefault === 'skip' ? 'skip' : 'gated',
       ticketPermissionDefault: config.permissions?.ticketDefault === 'gated' ? 'gated' : 'skip',
-      groomingModel: config.integrations?.claudeCode?.groomingModel || '',
-      implementationModel: config.integrations?.claudeCode?.implementationModel || '',
-      geminiGroomingModel: config.integrations?.geminiCli?.groomingModel || '',
-      geminiImplementationModel: config.integrations?.geminiCli?.implementationModel || '',
+      claudeTiers: { ...EMPTY_TIER_MODELS, ...(config.integrations?.claudeCode?.tiers ?? {}) },
+      geminiTiers: { ...EMPTY_TIER_MODELS, ...(config.integrations?.geminiCli?.tiers ?? {}) },
+      copilotTiers: { ...EMPTY_TIER_MODELS, ...(config.integrations?.copilotCli?.tiers ?? {}) },
+      modelPolicyAssignments: config.modelPolicy?.assignments ?? PRESET_ASSIGNMENTS.balanced,
       agentProgressEnabled: config.agentProgress?.enabled ?? true,
       agentProgressDelay: config.agentProgress?.inlineDelay ?? 2,
       furnaceRetryIntervalMs: config.furnaceSettings?.rateLimitRetryIntervalMs ?? 20 * 60 * 1000,
@@ -654,7 +669,7 @@ export function Settings() {
 
               {activeTab === 'agents' && (
                 <div className="space-y-6">
-                  <AgentSection
+                  <AgentDefaultsSection
                     effortLevel={effortLevel}
                     setEffortLevel={setEffortLevel}
                     targetFramework={defaultAgent}
@@ -663,16 +678,17 @@ export function Settings() {
                     setBoardPermissionDefault={setBoardPermissionDefault}
                     ticketPermissionDefault={ticketPermissionDefault}
                     setTicketPermissionDefault={setTicketPermissionDefault}
-                    groomingModel={groomingModel}
-                    setGroomingModel={setGroomingModel}
-                    implementationModel={implementationModel}
-                    setImplementationModel={setImplementationModel}
-                    geminiGroomingModel={geminiGroomingModel}
-                    setGeminiGroomingModel={setGeminiGroomingModel}
-                    geminiImplementationModel={geminiImplementationModel}
-                    setGeminiImplementationModel={setGeminiImplementationModel}
-                    workspacePath={workspacePath}
-                    setView={setView}
+                    skillStatus={agentsTabSkillStatus}
+                  />
+                  <AgentModelPolicySection
+                    claudeTiers={claudeTiers}
+                    setClaudeTiers={setClaudeTiers}
+                    geminiTiers={geminiTiers}
+                    setGeminiTiers={setGeminiTiers}
+                    copilotTiers={copilotTiers}
+                    setCopilotTiers={setCopilotTiers}
+                    assignments={modelPolicyAssignments}
+                    setAssignments={setModelPolicyAssignments}
                   />
                   <AgentProgressSection
                     agentProgressEnabled={agentProgressEnabled}
@@ -680,17 +696,24 @@ export function Settings() {
                     agentProgressDelay={agentProgressDelay}
                     setAgentProgressDelay={setAgentProgressDelay}
                   />
-                  <FurnaceSection
-                    rateLimitRetryIntervalMs={furnaceRetryIntervalMs}
-                    setRateLimitRetryIntervalMs={setFurnaceRetryIntervalMs}
-                    rateLimitMaxWaitMs={furnaceMaxWaitMs}
-                    setRateLimitMaxWaitMs={setFurnaceMaxWaitMs}
-                  />
                   <CostTokensSection
                     tokenDisplayMode={tokenDisplayMode}
                     setTokenDisplayMode={setTokenDisplayMode}
                     tokenCostThresholds={tokenCostThresholds}
                     setTokenCostThresholds={setTokenCostThresholds}
+                  />
+                  <FurnaceSection
+                    rateLimitRetryIntervalMs={furnaceRetryIntervalMs}
+                    setRateLimitRetryIntervalMs={setFurnaceRetryIntervalMs}
+                    rateLimitMaxWaitMs={furnaceMaxWaitMs}
+                    setRateLimitMaxWaitMs={setFurnaceMaxWaitMs}
+                    defaultAgent={defaultAgent}
+                  />
+                  <AgentWorkflowSection
+                    targetFramework={defaultAgent}
+                    workspacePath={workspacePath}
+                    setView={setView}
+                    skillStatus={agentsTabSkillStatus}
                   />
                 </div>
               )}

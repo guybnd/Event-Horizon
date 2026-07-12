@@ -3,7 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { setWorkspaceRoot } from '../workspace.js';
-import { configCache } from '../config.js';
+import { getConfig } from '../config.js';
 import { signConversation } from '../session-binding.js';
 import { buildSpawnMcpConfigArgs } from './claude-code.js';
 
@@ -23,7 +23,7 @@ describe('buildSpawnMcpConfigArgs event-horizon header injection (FLUX-1213)', (
   });
 
   afterEach(async () => {
-    delete configCache.mcpServerPhases;
+    delete getConfig().mcpServerPhases;
     await fs.rm(root, { recursive: true, force: true }).catch(() => {});
   });
 
@@ -67,7 +67,7 @@ describe('buildSpawnMcpConfigArgs event-horizon header injection (FLUX-1213)', (
     await fs.writeFile(path.join(root, '.mcp.json'), JSON.stringify({
       mcpServers: { 'event-horizon': { type: 'http', url: 'http://127.0.0.1:3067/mcp' } },
     }));
-    configCache.mcpServerPhases = { 'event-horizon': ['implementation'] };
+    getConfig().mcpServerPhases = { 'event-horizon': ['implementation'] };
 
     const args = buildSpawnMcpConfigArgs('implementation', undefined, root, 'FLUX-888');
     expect(args[0]).toBe('--strict-mcp-config');

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Code2, ExternalLink, FileDiff, GitBranch, GitCommitHorizontal, Loader2 } from 'lucide-react';
-import { useAppActions } from '../store/useAppSelector';
-import { fetchUncommittedStatus, openWorkspaceEditor, fetchDiffOverview, fetchDiffFile, commitFiles, type DiffGroup } from '../api';
+import { ChevronDown, ChevronRight, Code2, ExternalLink, FileDiff, GitBranch, GitCommitHorizontal, Loader2, Undo2 } from 'lucide-react';
+import { useAppActions, useAppSelector } from '../store/useAppSelector';
+import { fetchUncommittedStatus, openWorkspaceEditor, fetchDiffOverview, fetchDiffFile, commitFiles, discardFiles, type DiffGroup } from '../api';
+import { ConfirmDiscardDialog } from './ConfirmDiscardDialog';
 import { DiffLines } from './DiffLines';
 
 const POLL_MS = 30000;
@@ -33,6 +34,7 @@ function groupRef(g: DiffGroup): string {
  */
 export function UncommittedChangesStoplight() {
   const { setView, setChangesFocus } = useAppActions();
+  const tasks = useAppSelector((s) => s.tasks);
   const [count, setCount] = useState<number | null>(null);
   const [diverged, setDiverged] = useState<number>(0); // secondary "vs master" divergence count (FLUX-582)
   const [branch, setBranch] = useState<string | null>(null); // main-tree branch (for the badge + main group)
@@ -48,6 +50,10 @@ export function UncommittedChangesStoplight() {
   const [committing, setCommitting] = useState<string | null>(null); // ref currently committing
   const [commitErr, setCommitErr] = useState<Record<string, string>>({});
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set()); // refs of collapsed sections
+  // Discard flow (FLUX-1333): pending confirm target + in-flight flag; failures land in discardErr per ref.
+  const [confirmDiscard, setConfirmDiscard] = useState<{ ref: string; file: string } | null>(null);
+  const [discarding, setDiscarding] = useState(false);
+  const [discardErr, setDiscardErr] = useState<Record<string, string>>({});
   const [alignRight, setAlignRight] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<number | null>(null);
@@ -78,6 +84,8 @@ export function UncommittedChangesStoplight() {
     setCommitMsgs({});
     setCommitErr({});
     setCollapsed(new Set());
+    setConfirmDiscard(null);
+    setDiscardErr({});
     fetchDiffOverview(true)
       .then((ov) => { if (!cancelled) setGroups(ov.groups); })
       .catch(() => { if (!cancelled) setLoadError(true); })
@@ -85,20 +93,22 @@ export function UncommittedChangesStoplight() {
     return () => { cancelled = true; };
   }, [open]);
 
-  // Outside-click + Escape close the panel.
+  // Outside-click + Escape close the panel — unless the discard confirm dialog is up
+  // (it owns the screen; its own Escape handling closes just the dialog, FLUX-1333).
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
+      if (confirmDiscard) return;
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !confirmDiscard) setOpen(false); };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [open]);
+  }, [open, confirmDiscard]);
 
   // Keep the panel inside the viewport: right-anchor when a left-anchored panel
   // would spill off the right edge.
@@ -156,6 +166,30 @@ export function UncommittedChangesStoplight() {
       return next;
     });
   }, []);
+
+  // FLUX-1333: an actively-executing agent session in a group's checkout disables its Discard
+  // controls (the endpoint also refuses 409 server-side). A worktree group maps to its owning
+  // ticket via the branch; the main tree is used by branchless tickets' sessions.
+  const sessionActiveForRef = useCallback((ref: string) => {
+    const active = (s?: string | null) => s === 'running' || s === 'pending';
+    if (ref === 'main') return tasks.some((t) => !t.branch && active(t.cliSession?.status));
+    return tasks.some((t) => t.branch === ref && active(t.cliSession?.status));
+  }, [tasks]);
+
+  // Execute a confirmed single-file discard (FLUX-1333), then refetch the overview (this panel
+  // is fetch-on-open/poll-based — never rely on push after a mutation).
+  const doDiscard = useCallback(async () => {
+    if (!confirmDiscard) return;
+    const { ref, file } = confirmDiscard;
+    setDiscarding(true);
+    setDiscardErr((e) => ({ ...e, [ref]: '' }));
+    const res = await discardFiles(ref, [file]);
+    setDiscarding(false);
+    setConfirmDiscard(null);
+    const failure = res.error ?? (res.results ?? []).find((r) => !r.ok)?.error;
+    if (failure) { setDiscardErr((e) => ({ ...e, [ref]: failure })); return; }
+    fetchDiffOverview(true).then((ov) => setGroups(ov.groups)).catch(() => {});
+  }, [confirmDiscard]);
 
   const doCommit = useCallback(async (ref: string, groupFiles: string[]) => {
     const files = groupFiles.filter((f) => selected.has(`${ref}::${f}`));
@@ -335,6 +369,18 @@ export function UncommittedChangesStoplight() {
                           >
                             <ExternalLink className="h-3 w-3" />
                           </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setConfirmDiscard({ ref, file: f.file }); }}
+                            disabled={sessionActiveForRef(ref)}
+                            title={sessionActiveForRef(ref)
+                              ? 'An agent session is active in this checkout — wait for it to finish before discarding'
+                              : 'Discard this file’s uncommitted changes (restore to last commit)'}
+                            className={`shrink-0 rounded p-1 transition-opacity ${sessionActiveForRef(ref)
+                              ? 'cursor-not-allowed text-gray-300 opacity-0 group-hover/row:opacity-60 dark:text-gray-600'
+                              : 'text-gray-400 opacity-0 hover:bg-red-50 hover:text-red-500 group-hover/row:opacity-100 dark:hover:bg-red-500/10'}`}
+                          >
+                            <Undo2 className="h-3 w-3" />
+                          </button>
                         </div>
                         {isOpen && (
                           <div className="max-h-72 overflow-auto border-t border-gray-100 bg-gray-50/60 dark:border-white/10 dark:bg-black/20">
@@ -375,11 +421,24 @@ export function UncommittedChangesStoplight() {
                   {!isCollapsed && commitErr[ref] && (
                     <div className="border-t border-gray-100 px-2 py-1 text-[11px] text-red-500 dark:border-white/10">{commitErr[ref]}</div>
                   )}
+                  {!isCollapsed && discardErr[ref] && (
+                    <div className="border-t border-gray-100 px-2 py-1 text-[11px] text-red-500 dark:border-white/10">Discard failed — {discardErr[ref]}</div>
+                  )}
                 </div>
               );
             })}
           </div>
         </div>
+      )}
+
+      {confirmDiscard && (
+        <ConfirmDiscardDialog
+          files={[confirmDiscard.file]}
+          scopeLabel={confirmDiscard.ref === 'main' ? 'Main tree' : confirmDiscard.ref}
+          busy={discarding}
+          onCancel={() => setConfirmDiscard(null)}
+          onConfirm={() => void doDiscard()}
+        />
       )}
     </div>
   );

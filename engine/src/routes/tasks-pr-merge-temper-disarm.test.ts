@@ -8,6 +8,7 @@
 // runs BEFORE the route's `checkGhAuth` call, so the request still exercises it even though the
 // merge itself never proceeds.
 
+import { getWorkspace } from '../workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -17,7 +18,7 @@ import type { AddressInfo } from 'net';
 import express from 'express';
 import { setWorkspaceRoot } from '../workspace.js';
 import { requireWorkspace } from '../middleware.js';
-import { tasksCache } from '../task-store.js';
+
 import { cliSessionsById, cliSessionsByTaskId, registerSession, __resetSessionStubStateForTests } from '../session-store.js';
 import { rehydrateTemper, isTempering, __resetTemperForTests } from '../temper.js';
 import type { CliSessionRecord } from '../agents/types.js';
@@ -59,7 +60,7 @@ describe('POST /api/tasks/:id/pr/merge disarms Temper before stopping parked ses
     await fs.mkdir(path.join(root, '.flux'), { recursive: true });
     setWorkspaceRoot(root);
 
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     cliSessionsById.clear();
     cliSessionsByTaskId.clear();
     __resetSessionStubStateForTests();
@@ -80,7 +81,7 @@ describe('POST /api/tasks/:id/pr/merge disarms Temper before stopping parked ses
   afterEach(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await fs.rm(root, { recursive: true, force: true }).catch(() => {});
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     cliSessionsById.clear();
     cliSessionsByTaskId.clear();
     __resetSessionStubStateForTests();
@@ -88,7 +89,7 @@ describe('POST /api/tasks/:id/pr/merge disarms Temper before stopping parked ses
   });
 
   it('disarms an in-flight Temper loop before stopping the parked review session', async () => {
-    tasksCache['FLUX-1'] = {
+    getWorkspace().tasks['FLUX-1'] = {
       id: 'FLUX-1',
       title: 'Test ticket',
       status: 'Ready',
@@ -120,7 +121,7 @@ describe('POST /api/tasks/:id/pr/merge disarms Temper before stopping parked ses
   });
 
   it('is a no-op when Temper is not driving the ticket', async () => {
-    tasksCache['FLUX-2'] = {
+    getWorkspace().tasks['FLUX-2'] = {
       id: 'FLUX-2',
       title: 'Test ticket',
       status: 'Ready',

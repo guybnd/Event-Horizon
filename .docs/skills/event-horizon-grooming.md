@@ -11,7 +11,7 @@ Scope: Interpret requirements, update frontmatter, and handle `.flux` metadata d
 
 # Event Horizon Agent — Grooming Skill
 
-Version: 2.14.0
+Version: 2.15.0
 
 ## When This Skill Applies
 
@@ -34,6 +34,7 @@ Full contract lives in the orchestrator skill's "End-of-Turn Action Contract" se
    - **Problem / Motivation** (1–3 sentences): what problem, who benefits, why prioritised.
    - **Implementation plan**: concrete steps so another agent could pick up without re-discovery. Apply the Plan Discipline items below, scaled to the ticket's size and risk.
 7. Use `change_status` with `newStatus: 'Todo'`. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.** If the board's `plan` gate policy is `Auto` or `Auto→You` (FLUX-1263), this call may not move the ticket immediately — it instead kicks off an automated plan-review pass and the tool's response explains what happened. That's expected: stop the same way regardless of whether the move applied directly or the gate took over.
+   - **Exception — fast-path sessions (FLUX-1380).** This "stop at Todo" instruction is the default grooming contract, not an absolute rule. When the launch mission text explicitly identifies this session as `fast-path` (a combined groom-and-implement session dispatched via `phase:'fast-path'`), that mission overrides this step for this launch only: continue straight into implementation per the fast-path mission's own instructions instead of stopping at Todo. This is a launch-time override, not a change to what a normally-dispatched grooming session does — absent an explicit fast-path mission, stop at Todo as written above.
 
 All persistence uses MCP tools — see the orchestrator skill's "Persisting Changes" section.
 
@@ -74,14 +75,18 @@ See epic **FLUX-1043** and its subtasks **FLUX-1044/1045/1046** for the referenc
 
 - *Skip for:* tickets being implemented immediately after grooming, and tickets whose plan cites no point-in-time evidence (pure feature requests, UI tweaks, bug reports with a live repro).
 
-## Rich Artifacts (`publish_artifact`) — the exception, not the norm
+## Rich Artifacts (`publish_artifact`) — default ON for plan proposals
 
 Shared mechanics — lifecycle framing, sandbox rules, CDN policy, revisions, the annotation round-trip, the layout-audit gate, and richer artifact kinds (Mermaid/SVG/charts/prototypes, plus live React/TSX component previews) — live in the orchestrator skill's "Rich Artifacts" section; read it there before your first emit. This section covers only grooming's emit/skip judgment.
 
-For grooming: on tickets where the user has to *imagine* the result, publish a **self-contained HTML artifact** the user reasons *against* — a rendered mockup, an architecture/flow diagram, an interactive prototype, or acceptance criteria laid out visually. The user reacts to a concrete artifact and catches misunderstanding *before* code is written. Use the `publish_artifact` MCP tool; the artifact renders in the ticket's artifact panel.
+For grooming: a plan proposal is far cleaner for the user to work with — and to **annotate their change requirements onto** (the annotation round-trip) — as a rendered artifact than as prose. So **default to publishing a self-contained HTML artifact** the user reasons *against* — a rendered mockup, an architecture/flow diagram, an interactive prototype, or acceptance criteria laid out visually — catching misunderstanding *before* code is written. Use the `publish_artifact` MCP tool; the artifact renders in the ticket's artifact panel.
 
-- **Emit when** the ticket is about UI/UX, visual layout, an architecture/data-flow you can diagram, or a "shape of the thing" decision where a rendering surfaces misunderstanding cheaply.
-- **Skip when** it's a bug fix, an XS/S ticket, backend plumbing, or any change with no visual/structural "shape" to react to. A markdown plan is the right output for these.
+This is a **default-ON** rule, not the old "exception, not the norm" — **almost always emit for a plan proposal:**
+
+- **Emit** when the ticket is **UI/UX (any effort)**, or **M+ effort** (M / L / XL) otherwise — a mockup/prototype for UI, an architecture/data-flow diagram for non-UI structural work.
+- **Skip** only for **XS/S non-UI** tickets with no visual or structural "shape" to react to (a one-line fix, pure backend plumbing). A markdown plan is the right output for these.
+
+When in doubt on a plan proposal, emit one.
 
 This judgment call is workflow step 5, not just a section to remember on your own (FLUX-1313) — see the ownership note there for Dynamic Delegation. The plan-review gate also checks for this: a UI/UX-shaped plan with no artifact gets flagged in the review comment as a gap rather than silently approved, so a missed decision here surfaces there too — but that's a backstop, not a substitute for making the call at grooming time.
 

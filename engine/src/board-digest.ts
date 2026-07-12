@@ -1,5 +1,6 @@
-import { tasksCache } from './task-store.js';
-import { configCache } from './config.js';
+
+import { getWorkspace } from './workspace-context.js';
+import { getConfig } from './config.js';
 import { getAllActiveSessions } from './session-store.js';
 
 /**
@@ -44,13 +45,13 @@ function ageLabel(startedAt: string | undefined): string {
 }
 
 export function buildBoardDigest(): string {
-  const requireInputStatus = configCache.requireInputStatus || 'Require Input';
+  const requireInputStatus = getConfig().requireInputStatus || 'Require Input';
 
   // Status counts (skip the hidden/terminal Archived bucket — it's noise for triage).
-  const archiveStatus = configCache.archiveStatus || 'Archived';
+  const archiveStatus = getConfig().archiveStatus || 'Archived';
   const statusCounts: Record<string, number> = {};
   const needsAttention: string[] = [];
-  for (const t of Object.values(tasksCache) as DigestTask[]) {
+  for (const t of Object.values(getWorkspace().tasks) as DigestTask[]) {
     const st = t.status || 'Unknown';
     if (st === archiveStatus) continue;
     statusCounts[st] = (statusCounts[st] || 0) + 1;

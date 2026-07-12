@@ -10,14 +10,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 import type { ChildProcessWithoutNullStreams } from 'child_process';
 
-vi.mock('../config.js', () => ({ configCache: { projects: ['FLUX'] } }));
+vi.mock('../config.js', () => ({ getConfig: () => ({ projects: ['FLUX'] }) }));
 vi.mock('../events.js', () => ({ broadcastEvent: vi.fn() }));
 vi.mock('../transcript.js', () => ({ appendTranscriptEvent: vi.fn() }));
 vi.mock('../notifications.js', () => ({ generateOrchestratorReplyNotification: vi.fn() }));
 vi.mock('../board-digest.js', () => ({ buildBoardDigest: vi.fn(() => '') }));
 vi.mock('../resume-preamble.js', () => ({ buildResumePreamble: vi.fn(async () => null) }));
 vi.mock('../board-reprime.js', () => ({ buildBoardReprime: vi.fn(async () => null) }));
-vi.mock('../workspace.js', () => ({ workspaceRoot: '/tmp/test-repo' }));
+vi.mock('../workspace.js', () => ({ getWorkspaceRoot: () => '/tmp/test-repo' }));
 vi.mock('./shared.js', () => ({
   checkBinaryInstalled: vi.fn(async () => {}),
   appendSessionOutput: vi.fn(),

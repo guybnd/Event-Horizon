@@ -1,3 +1,4 @@
+import { getWorkspace } from '../workspace-context.js';
 import express from 'express';
 import {
   getNotifications,
@@ -11,9 +12,9 @@ import {
   checkSkillStaleness,
 } from '../notifications.js';
 import { installWorkspaceWorkflow, checkSkillVersionStaleness, type Framework } from '../workflow-installer.js';
-import { workspaceRoot, resolveSkillSourceRoot } from '../workspace.js';
+import { resolveSkillSourceRoot, getWorkspaceRoot } from '../workspace.js';
 import { broadcastEvent } from '../events.js';
-import { tasksCache } from '../task-store.js';
+
 import { findWorktreeForBranch } from '../task-worktree.js';
 import { isEditorAvailable, openEditorWindow } from '../editor-launcher.js';
 import { cleanupMergedBranch } from '../pr-cleanup.js';
@@ -71,6 +72,7 @@ router.post('/:id/action', async (req, res) => {
     return res.json({ ok: true, action: 'dismissed' });
   }
 
+  const workspaceRoot = getWorkspaceRoot();
   if (actionId === 'reinstall' && notification.framework && workspaceRoot) {
     try {
       const sourceRoot = resolveSkillSourceRoot();
@@ -107,7 +109,7 @@ router.post('/:id/action', async (req, res) => {
   // Post-merge worktree cleanup notifications (FLUX-557). Both resolve the branch via the
   // notification's ticket, since the cleanup is branch-scoped.
   if ((actionId === 'cleanup-worktree' || actionId === 'open-worktree') && notification.ticketId && workspaceRoot) {
-    const task = tasksCache[notification.ticketId] as { branch?: string } | undefined;
+    const task = getWorkspace().tasks[notification.ticketId] as { branch?: string } | undefined;
     const branch: string | undefined = task?.branch;
     if (!branch) return res.status(409).json({ error: 'Ticket no longer has a branch to clean up.' });
 

@@ -152,6 +152,10 @@ Each framework needs workflow skills installed so the agent understands Event Ho
 
 The installer patches only Event Horizon blocks — your other custom instructions remain untouched.
 
+### Server-provided slash commands (MCP prompts, FLUX-951)
+
+Independent of the file install above, the EH MCP server itself ships four **MCP prompts** that prompts-capable clients surface as slash commands — in Claude Code: `/mcp__event-horizon__groom FLUX-42`, `/mcp__event-horizon__implement FLUX-42`, `/mcp__event-horizon__release v1.2.0`, and `/mcp__event-horizon__rebase-board`. Each drops the matching phase workflow into the conversation (sourced live from the `.docs/skills/event-horizon-*.md` modules, so it can't drift) plus a directive to read the named ticket first. This gives any MCP client the phase entry points even when it never loads an installed rules file. `ticketId` autocompletes from active tickets. See the [MCP tools reference](reference/mcp-tools.md#prompts--slash-commands-flux-951).
+
 ---
 
 ## Multi-Agent Sessions

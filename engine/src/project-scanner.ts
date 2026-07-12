@@ -1,7 +1,8 @@
+import { getWorkspace } from './workspace-context.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { copyDir } from './docs-seeder.js';
-import { tasksCache, createTask } from './task-store.js';
+import { createTask } from './task-store.js';
 import { getDocsDir } from './file-utils.js';
 
 export interface DocItem {
@@ -278,7 +279,7 @@ export async function importBootstrapSelections(
 
   // Import tasks sequentially to avoid ID races
   for (const taskItem of selections.selectedTasks) {
-    const duplicate = Object.values(tasksCache).find(
+    const duplicate = Object.values(getWorkspace().tasks).find(
       (t: { title?: string }) => t.title && t.title.toLowerCase() === taskItem.title.toLowerCase(),
     );
     if (duplicate) {

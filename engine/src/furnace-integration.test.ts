@@ -7,6 +7,7 @@
 // two external edges: the agent-session spawn (`fetch` to `/cli-session/start`) and the `gh` CLI
 // (`./git-exec.js`).
 
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -29,7 +30,7 @@ import {
 import { igniteBatch, stokerTick, checkTriggers, reconcileBatch, handBackTicket, retryTicket, resumeBatch, stopBatch, dismissTicketFlag, takeoverTicket, SOLE_REVIEWER_FOCUS, furnaceFollowupFocus } from './furnace-stoker.js';
 import { newBatchTicket, type BatchTicket } from './models/furnace.js';
 import { cliSessionsById, cliSessionsByTaskId, registerSession } from './session-store.js';
-import { tasksCache, createTask } from './task-store.js';
+import { createTask } from './task-store.js';
 import * as taskStoreModule from './task-store.js';
 import type { CliSessionRecord } from './agents/types.js';
 
@@ -72,7 +73,7 @@ describe('Furnace integration (FLUX-1057)', () => {
     await ensureFurnaceLoaded();
     cliSessionsById.clear();
     cliSessionsByTaskId.clear();
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     sessCounter = 0;
     runGh.mockReset();
 
@@ -139,7 +140,7 @@ describe('Furnace integration (FLUX-1057)', () => {
       await mutateFurnaceBatch(batch.id, (d) => { d.status = 'burning'; });
 
       const blk = () => getFurnaceBatch(batch.id)!.tickets.find((t) => t.ticketId === blkId);
-      const slotWaitNotes = () => (tasksCache[blkId]?.history || [])
+      const slotWaitNotes = () => (getWorkspace().tasks[blkId]?.history || [])
         .filter((e: { type: string; comment?: string }) => e.type === 'activity' && /waiting for a free worktree slot/i.test(e.comment || ''));
 
       // Full pool → exactly one chat-visible activity + the dedup flag set, and the ticket is NOT started.
@@ -172,7 +173,7 @@ describe('Furnace integration (FLUX-1057)', () => {
       await mutateFurnaceBatch(batch.id, (d) => { d.status = 'burning'; });
 
       const blk = () => getFurnaceBatch(batch.id)!.tickets.find((t) => t.ticketId === blkId);
-      const slotWaitNotes = () => (tasksCache[blkId]?.history || [])
+      const slotWaitNotes = () => (getWorkspace().tasks[blkId]?.history || [])
         .filter((e: { type: string; comment?: string }) => e.type === 'activity' && /waiting for a free worktree slot/i.test(e.comment || ''));
 
       // Simulate a transient failure writing the activity note (addTicketActivity swallows it by design).
@@ -202,7 +203,7 @@ describe('Furnace integration (FLUX-1057)', () => {
       await mutateFurnaceBatch(batch.id, (d) => { d.status = 'burning'; });
 
       const blk = () => getFurnaceBatch(batch.id)!.tickets.find((t) => t.ticketId === blkId);
-      const slotWaitNotes = () => (tasksCache[blkId]?.history || [])
+      const slotWaitNotes = () => (getWorkspace().tasks[blkId]?.history || [])
         .filter((e: { type: string; comment?: string }) => e.type === 'activity' && /waiting for a free worktree slot/i.test(e.comment || ''));
 
       // Blocked once — flag set, note posted.
@@ -250,7 +251,7 @@ describe('Furnace integration (FLUX-1057)', () => {
 
   describe('POST /:id/ticket — one-active-batch invariant (FLUX-1051)', () => {
     it('rejects appending a ticket already queued in another non-terminal batch, naming the owner', async () => {
-      tasksCache['FLUX-1'] = { status: 'Todo', title: 'One' };
+      getWorkspace().tasks['FLUX-1'] = { status: 'Todo', title: 'One' };
       const owner = await createFurnaceBatch({ title: 'Owner', tickets: [newBatchTicket('FLUX-1', 0, 'One')] });
       const other = await createFurnaceBatch({ title: 'Other' });
 
@@ -266,7 +267,7 @@ describe('Furnace integration (FLUX-1057)', () => {
     });
 
     it('allows appending once the owning batch reaches a terminal state (done)', async () => {
-      tasksCache['FLUX-1'] = { status: 'Todo', title: 'One' };
+      getWorkspace().tasks['FLUX-1'] = { status: 'Todo', title: 'One' };
       const owner = await createFurnaceBatch({ title: 'Owner', tickets: [newBatchTicket('FLUX-1', 0, 'One')] });
       await mutateFurnaceBatch(owner.id, (draft) => { draft.status = 'done'; });
       const other = await createFurnaceBatch({ title: 'Other' });
@@ -465,7 +466,7 @@ describe('Furnace integration (FLUX-1057)', () => {
     it('holds the ticket queued (owner untouched) while the spawn is in flight, then completes normally', async () => {
       const batch = await createFurnaceBatch({ title: 'race', kind: 'parallel', tickets: [newBatchTicket('RACE-1', 0)] });
       await mutateFurnaceBatch(batch.id, (b) => { b.status = 'burning'; });
-      tasksCache['RACE-1'] = { id: 'RACE-1', status: 'In Progress' };
+      getWorkspace().tasks['RACE-1'] = { id: 'RACE-1', status: 'In Progress' };
 
       // The session goes live in the store the moment it's dispatched (mirrors the real spawn path,
       // where the CLI session registers well before the multi-second worktree creation finishes) — the
@@ -509,7 +510,7 @@ describe('Furnace integration (FLUX-1057)', () => {
     it('rejects the removal (409) during the dispatch window; the session lands normally once it resolves', async () => {
       const batch = await createFurnaceBatch({ title: 'remove-race', kind: 'parallel', tickets: [newBatchTicket('RM-1', 0)] });
       await mutateFurnaceBatch(batch.id, (b) => { b.status = 'burning'; });
-      tasksCache['RM-1'] = { id: 'RM-1', status: 'In Progress' };
+      getWorkspace().tasks['RM-1'] = { id: 'RM-1', status: 'In Progress' };
 
       let releaseSpawn: () => void = () => {};
       const spawnGate = new Promise<void>((resolve) => { releaseSpawn = resolve; });
@@ -547,7 +548,7 @@ describe('Furnace integration (FLUX-1057)', () => {
     it('stops the freshly-spawned session if the ticket is no longer in the batch by the time setInFlight runs', async () => {
       const batch = await createFurnaceBatch({ title: 'orphan', kind: 'parallel', tickets: [newBatchTicket('OR-1', 0)] });
       await mutateFurnaceBatch(batch.id, (b) => { b.status = 'burning'; });
-      tasksCache['OR-1'] = { id: 'OR-1', status: 'In Progress' };
+      getWorkspace().tasks['OR-1'] = { id: 'OR-1', status: 'In Progress' };
 
       let capturedSessionId = '';
       let releaseSpawn: () => void = () => {};
@@ -593,7 +594,7 @@ describe('Furnace integration (FLUX-1057)', () => {
       });
       cliSessionsById.set('human-sess', { id: 'human-sess', taskId: 'DB-1', status: 'running', phase: 'implementation' } as CliSessionRecord);
       registerSession('DB-1', 'human-sess');
-      tasksCache['DB-1'] = { id: 'DB-1', status: 'In Progress' };
+      getWorkspace().tasks['DB-1'] = { id: 'DB-1', status: 'In Progress' };
 
       await reconcileBatch(batch.id);
       const mid = getFurnaceBatch(batch.id)!;
@@ -615,7 +616,7 @@ describe('Furnace integration (FLUX-1057)', () => {
       await mutateFurnaceBatch(batch.id, (b) => { b.status = 'burning'; });
       cliSessionsById.set('human-sess', { id: 'human-sess', taskId: 'TT-1', status: 'running', phase: 'implementation' } as CliSessionRecord);
       registerSession('TT-1', 'human-sess');
-      tasksCache['TT-1'] = { id: 'TT-1', status: 'In Progress' };
+      getWorkspace().tasks['TT-1'] = { id: 'TT-1', status: 'In Progress' };
 
       // Pass 1 seeds the debounce — ticket stays `queued`, not yet confirmed (mirrors the FLUX-1090 debounce
       // test above, but with the ticket left `queued` instead of `cooling-down`, since that's the untested
@@ -902,7 +903,7 @@ describe('Furnace integration (FLUX-1057)', () => {
         t.sessionIds = ['sess-fr1-impl'];
       });
       cliSessionsById.set('sess-fr1-impl', { id: 'sess-fr1-impl', taskId: 'FR-1', status: 'completed', phase: 'implementation' } as CliSessionRecord);
-      tasksCache['FR-1'] = { id: 'FR-1', status: 'In Progress' };
+      getWorkspace().tasks['FR-1'] = { id: 'FR-1', status: 'In Progress' };
 
       await stokerTick(batch.id);
 
@@ -914,7 +915,7 @@ describe('Furnace integration (FLUX-1057)', () => {
     it('redrive — dispatched when a reviewing ticket has no observable session (e.g. after an engine restart)', async () => {
       const batch = await createFurnaceBatch({ title: 'redrive dispatch', kind: 'parallel', tickets: [newBatchTicket('FR-2', 0)] });
       await mutateFurnaceBatch(batch.id, (b) => { b.status = 'burning'; b.tickets[0]!.state = 'reviewing'; });
-      tasksCache['FR-2'] = { id: 'FR-2', status: 'In Progress' };
+      getWorkspace().tasks['FR-2'] = { id: 'FR-2', status: 'In Progress' };
 
       await stokerTick(batch.id);
 
@@ -933,7 +934,7 @@ describe('Furnace integration (FLUX-1057)', () => {
         t.sessionIds = ['sess-fr3-rev'];
       });
       cliSessionsById.set('sess-fr3-rev', { id: 'sess-fr3-rev', taskId: 'FR-3', status: 'failed', phase: 'review', terminalReason: 'context-exhausted' } as CliSessionRecord);
-      tasksCache['FR-3'] = { id: 'FR-3', status: 'In Progress' };
+      getWorkspace().tasks['FR-3'] = { id: 'FR-3', status: 'In Progress' };
 
       await stokerTick(batch.id);
 
@@ -952,7 +953,7 @@ describe('Furnace integration (FLUX-1057)', () => {
         t.rateLimitFirstSeenAt = new Date(Date.now() - 60_000).toISOString();
         t.nextRetryAt = new Date(Date.now() - 1_000).toISOString();
       });
-      tasksCache['FR-4'] = { id: 'FR-4', status: 'In Progress' };
+      getWorkspace().tasks['FR-4'] = { id: 'FR-4', status: 'In Progress' };
 
       await stokerTick(batch.id);
 
@@ -971,7 +972,7 @@ describe('Furnace integration (FLUX-1057)', () => {
         t.state = 'pr-open';
         t.prUrl = 'http://pr/mrg-1';
       });
-      tasksCache['MRG-1'] = { id: 'MRG-1', status: 'Done' };
+      getWorkspace().tasks['MRG-1'] = { id: 'MRG-1', status: 'Done' };
 
       await reconcileBatch(batch.id);
 
@@ -983,7 +984,7 @@ describe('Furnace integration (FLUX-1057)', () => {
     it('does not stamp mergedAt while the board status is still Ready (still open, not merged)', async () => {
       const batch = await createFurnaceBatch({ title: 'still-open', kind: 'parallel', tickets: [newBatchTicket('MRG-2', 0)] });
       await mutateFurnaceBatch(batch.id, (b) => { b.status = 'burning'; b.tickets[0]!.state = 'pr-open'; });
-      tasksCache['MRG-2'] = { id: 'MRG-2', status: 'Ready' };
+      getWorkspace().tasks['MRG-2'] = { id: 'MRG-2', status: 'Ready' };
 
       await reconcileBatch(batch.id);
 
@@ -1002,8 +1003,8 @@ describe('Furnace integration (FLUX-1057)', () => {
         b.tickets[1]!.state = 'pr-open';
         b.tickets[1]!.prUrl = 'http://pr/mrg-4';
       });
-      tasksCache['MRG-3'] = { id: 'MRG-3', status: 'Done' }; // merged
-      tasksCache['MRG-4'] = { id: 'MRG-4', status: 'Ready' }; // still open
+      getWorkspace().tasks['MRG-3'] = { id: 'MRG-3', status: 'Done' }; // merged
+      getWorkspace().tasks['MRG-4'] = { id: 'MRG-4', status: 'Ready' }; // still open
 
       await reconcileBatch(batch.id);
 

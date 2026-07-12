@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X, RefreshCw, Play, CheckCircle2, XCircle, Ban, PauseCircle, Search, Code2, Eye, Flag, HelpCircle } from 'lucide-react';
+import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X, RefreshCw, Play, CheckCircle2, XCircle, Ban, PauseCircle, HelpCircle, LayoutTemplate, ExternalLink } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useReducedMotion } from 'framer-motion';
 import { fetchDiffFile, openWorkspaceEditor, type TranscriptMessage, type ChatAttachment } from '../../api';
@@ -16,7 +16,7 @@ import type { Task } from '../../types';
 import { useDockActions } from '../DockProvider';
 import type { ComposerSelections } from '../DockProvider';
 import { formatRelative } from '../../lib/relativeTime';
-import { DISPATCH_STAGE_LABEL, DISPATCH_PHASE_LABEL } from '../../lib/dispatch';
+import { DISPATCH_STAGE_LABEL, DISPATCH_PHASE_LABEL, DISPATCH_PHASE_ICON } from '../../lib/dispatch';
 import { useEscapeKey } from '../../hooks/useEscapeKey';
 
 /** FLUX-643: a one-tap reply chip rendered above the composer. Selecting it sends
@@ -72,6 +72,14 @@ const LOAD_MORE_MESSAGES = 200;
  *  3–4s. The find recompute is debounced past the last chunk (see useTranscriptFind), so it walks
  *  the DOM once, fully populated. */
 const FIND_EXPAND_CHUNK = 120;
+
+/** FLUX-1362: the metadata a "new revision published" in-stream marker needs. */
+export interface ArtifactMarker {
+  rev: number;
+  title?: string;
+  /** ISO publish timestamp — used to weave the marker into the transcript at its point in time. */
+  createdAt: string;
+}
 
 export interface ChatViewProps {
   messages: TranscriptMessage[];
@@ -191,12 +199,22 @@ export interface ChatViewProps {
    *  Caller builds it (`ChatWindow` computes the cold state and wires Resume/Start-fresh) so ChatView
    *  stays transport-free; omit it (the normal case) and only the composer's Send shows. */
   coldResumeChoice?: ReactNode;
-  /** FLUX-887: an inline grooming-artifact card rendered at the tail of the transcript (just below the
-   *  stream) when the ticket has a published artifact, so the agent's "here's the rendered thing"
-   *  surfaces in the chat the user reasons against — not only the sideview. Caller builds it
-   *  (`<ChatArtifactCard task onOpen=… />`) so ChatView stays transport-free; omit it (no artifact) and
+  /** FLUX-1362 (ex-FLUX-887): grooming-artifact revisions surfaced as in-stream "new revision"
+   *  markers — woven into the transcript at each publish moment (by `createdAt` vs message `ts`) so
+   *  they live in their place in time and scroll away, instead of a card glued to the tail forever.
+   *  Caller passes the revision metadata + an open handler so ChatView stays transport-free. */
+  artifactMarkers?: ArtifactMarker[];
+  /** FLUX-1362: open the artifact in the sideview/plan panel (from a revision marker). */
+  onOpenArtifact?: () => void;
+  /** FLUX-1362: whether a plan-ready affordance (pending plan-approval card) is currently showing —
+   *  used to dedupe: a "new revision" marker that would be the LAST stream item is suppressed when a
+   *  plan-ready card is also present (we don't need both). */
+  planReadyPresent?: boolean;
+  /** FLUX-1339: the minimized plan-review strip — a pinned status bar shown just above the composer
+   *  when the chat's plan-review floating panel is minimized (unsent-note count + live agent status).
+   *  Caller builds it (`ChatWindow`) so ChatView stays transport-free; omit it (the normal case) and
    *  nothing renders. */
-  artifactCard?: ReactNode;
+  planReviewStrip?: ReactNode;
 }
 
 /**
@@ -247,8 +265,15 @@ export function ChatView({
   presenceRail,
   orchestrationBlock,
   coldResumeChoice,
-  artifactCard,
+  artifactMarkers,
+  onOpenArtifact,
+  planReadyPresent = false,
+  planReviewStrip,
 }: ChatViewProps) {
+  // FLUX-1362: keep the open handler in a ref so the (markdown-heavy) rows memo doesn't need it as a
+  // dep — a marker's click always performs the same "open the artifact" action regardless of identity.
+  const onOpenArtifactRef = useRef(onOpenArtifact);
+  onOpenArtifactRef.current = onOpenArtifact;
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   // FLUX-727: one-shot guard so the "open at the top of the final message" scroll runs only on the
@@ -672,9 +697,23 @@ export function ChatView({
     // row yet (the consumer then renders the block just below the stream).
     let spawnInsertAt: number | null = null;
     let dividerDone = false;
+    // FLUX-1362: weave "new revision" markers into the stream at their publish moment. Sorted
+    // ascending; `flushMarkers(ts)` emits every not-yet-emitted marker published strictly before the
+    // next message's timestamp, so each marker sits after the messages that preceded it in time.
+    const markers = (artifactMarkers ?? []).slice().sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+    let mIdx = 0;
+    const flushMarkers = (tsBound: string | null) => {
+      while (mIdx < markers.length && (tsBound === null || markers[mIdx]!.createdAt < tsBound)) {
+        const m = markers[mIdx]!;
+        out.push(<ChatRevisionMarker key={`art-rev-${m.rev}`} marker={m} onOpen={() => onOpenArtifactRef.current?.()} />);
+        mIdx++;
+      }
+    };
     // FLUX-814: start at the window head (the tail of the transcript) — absolute indices `i` are
     // kept for keys, the unread-divider boundary, and `lastAssistantIdx`, so all anchors stay correct.
     for (let i = startIndex; i < messages.length; i++) {
+      // FLUX-1362: emit any revision markers published before this message, so they land in time order.
+      flushMarkers(messages[i]!.ts);
       // FLUX-695: drop the "new messages" rule before the first unseen segment. We push it at the
       // first segment whose start index reaches the boundary (a tool run straddling the boundary
       // renders the rule just before the run — close enough, and never mid-fold).
@@ -706,8 +745,11 @@ export function ChatView({
       // unclamped so streaming output stays fully visible.
       out.push(renderMessage(messages[i], i, i === messages.length - 1 && !!working));
     }
+    // FLUX-1362: markers newer than the last message would append at the tail. Dedupe — when a
+    // plan-ready card is also showing we don't need both, so drop the trailing marker(s) then.
+    if (!planReadyPresent) flushMarkers(null);
     return { rows: out, spawnInsertAt };
-  }, [messages, linkifyTickets, diffBranch, working, dividerIndex, openToLastMessage, hasBlock, startIndex]);
+  }, [messages, linkifyTickets, diffBranch, working, dividerIndex, openToLastMessage, hasBlock, startIndex, artifactMarkers, planReadyPresent]);
 
   // The floating window owns its own title bar, so suppress the in-surface title there. The
   // "working" signal now lives in the WorkingStrip above the composer (FLUX-639), so the
@@ -808,10 +850,6 @@ export function ChatView({
               {orchestrationBlock}
             </>
           )}
-          {/* FLUX-887: inline grooming-artifact card — pinned at the tail of the stream so a freshly
-              published artifact reads as "the latest thing the agent produced", in the chat the user
-              reasons against. Caller-built (`<ChatArtifactCard>`); absent when no artifact exists. */}
-          {artifactCard}
           {/* FLUX-691: the live streaming node — the current turn's assistant text rendered
               token-by-token. It sits OUTSIDE the memoized `rows` (so each delta only re-renders
               this node, never the markdown-heavy transcript) and is plain text, not markdown (no
@@ -926,6 +964,11 @@ export function ChatView({
           board orchestrator has a prior transcript but no live session. Caller-built so ChatView stays
           transport-free; absent in the normal warm flow. */}
       {coldResumeChoice && <div className="px-0.5">{coldResumeChoice}</div>}
+
+      {/* FLUX-1339: the minimized plan-review strip — pinned just above the composer (next to the
+          working strip) so the collapsed panel's unsent-note count + live agent status stay in view
+          while the chat itself is unobstructed. */}
+      {planReviewStrip && <div className="px-0.5">{planReviewStrip}</div>}
 
       {/* Composer lives in its own component so its per-keystroke input state never
           re-renders the transcript above it. */}
@@ -1098,6 +1141,32 @@ function ToolRow({ text, openRef }: { text: string; openRef?: string | null }) {
  * reads as a system/automated note. Default-collapsed so the (often multi-paragraph) situational
  * update never buries the actual conversation; expanding renders the text as markdown.
  */
+/**
+ * FLUX-1362: an in-stream "new revision published" marker — a quiet one-line chip woven into the
+ * transcript at the revision's publish moment (so it scrolls away like any other event), replacing
+ * the tail-pinned inline artifact card (retired in FLUX-1362). Clicking opens the artifact panel.
+ */
+function ChatRevisionMarker({ marker, onOpen }: { marker: ArtifactMarker; onOpen?: () => void }) {
+  const interactive = !!onOpen;
+  const Tag = interactive ? 'button' : 'div';
+  return (
+    <Tag
+      {...(interactive ? { type: 'button' as const, onClick: onOpen } : {})}
+      title={interactive ? 'Open this artifact in the panel' : undefined}
+      className={`group/rev flex w-full min-w-0 items-center gap-1.5 rounded-lg border border-primary/20 bg-primary/[0.03] px-2.5 py-1 text-left text-[11px] text-[var(--eh-text-secondary)] transition-colors ${interactive ? 'hover:border-primary/40 hover:bg-primary/[0.07]' : ''}`}
+    >
+      <LayoutTemplate className="h-3.5 w-3.5 flex-shrink-0 text-primary/80" aria-hidden="true" />
+      <span className="font-semibold text-[var(--eh-text-primary)]">New revision {marker.rev} published</span>
+      {marker.title && <span className="min-w-0 truncate text-[var(--eh-text-muted)]">· {marker.title}</span>}
+      {interactive && (
+        <span className="ml-auto flex flex-shrink-0 items-center gap-1 text-[10px] font-semibold text-primary/70 transition-colors group-hover/rev:text-primary">
+          <ExternalLink className="h-3 w-3" aria-hidden="true" /> Open in panel
+        </span>
+      )}
+    </Tag>
+  );
+}
+
 function ContextUpdateChip({ text, ts }: { text: string; ts?: string }) {
   const [open, setOpen] = useState(false);
   return (
@@ -1208,15 +1277,8 @@ const LIFECYCLE_STYLE_DEFAULT: { rail: string; dot: string; text: string; bg?: s
   text: 'text-[var(--eh-text-muted)]',
 };
 
-/** FLUX-869: phase → lucide glyph for the dispatched-session chip. Replaces the uppercase phase pill
- *  with a single tooltip'd icon (killing the "double-eyebrow"); tooltip text reuses
- *  DISPATCH_PHASE_LABEL. */
-const DISPATCH_PHASE_ICON: Record<NonNullable<TranscriptMessage['phase']>, LucideIcon> = {
-  grooming: Search,
-  implementation: Code2,
-  review: Eye,
-  finalize: Flag,
-};
+// FLUX-869: DISPATCH_PHASE_ICON (phase → lucide glyph for the dispatched-session chip) moved to
+// ../../lib/dispatch (FLUX-1281) so the ChatDock's ticket-tab phase iconography shares the shapes.
 
 /** FLUX-869: compact run-duration label, e.g. `45s`, `4m`, `6m12s`, `1h3m`. Coarsens above an hour
  *  (drops seconds) so a long-running row stays short. */
@@ -1279,7 +1341,7 @@ function DispatchChip({
   /** FLUX-865: source ticket title, resolved from the `tickets` prop at the call site. Omitted when
    *  the ticket isn't loaded — the chip falls back to the bare id. */
   title?: string;
-  phase?: 'grooming' | 'implementation' | 'review' | 'finalize';
+  phase?: 'grooming' | 'implementation' | 'review' | 'finalize' | 'fast-path';
   lifecycle?: 'started' | 'working' | 'completed' | 'failed' | 'cancelled' | 'waiting-input';
   /** FLUX-869: dispatched session start (ISO) — powers the run-duration token. Absent on older rows. */
   startedAt?: string;

@@ -1052,6 +1052,19 @@ button:not(:disabled):active {
   animation: eh-attention-dot 1.6s ease-in-out infinite;
 }
 
+/* FLUX-1281: the review Eye glyph "reads" instead of spinning while a review session is live —
+   a spinning eye looks broken, so the pupil (the icon's <circle>) scans side-to-side like a gaze
+   moving across a diff. Applied to the svg root; scoped to the pupil circle only. */
+@keyframes eh-eye-scan {
+  0%, 100% { transform: translateX(-1.6px); }
+  50% { transform: translateX(1.6px); }
+}
+.eh-eye-scan circle {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: eh-eye-scan 1.3s ease-in-out infinite;
+}
+
 /* Tiny "thinking" dots on a working tab — an unobtrusive sign progress is ticking, shown in
    place of the old activity text that buried the tab's real label. */
 @keyframes eh-thinking-dot {
@@ -1089,6 +1102,7 @@ button:not(:disabled):active {
   .eh-taskcard-error,
   .eh-attention-glow,
   .eh-attention-dot,
+  .eh-eye-scan circle,
   .eh-thinking-dot,
   .eh-notif-indeterminate,
   .eh-notif-orb,

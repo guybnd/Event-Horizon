@@ -12,13 +12,51 @@ export interface SendInputOptions {
    * per-ticket chat launch; later turns in the same conversation are plain user input.
    */
   personaPrompt?: string;
+  /**
+   * FLUX-1390: this `sendInput` call is the engine's own wake ticker resuming a `scheduled` session
+   * (not a human chat reply) — the exit handler finalizes a clean, no-further-sleep turn as
+   * `completed`/`failed` (mirroring a fresh dispatch) instead of the interactive
+   * `terminalizeResumedExit` fallback (always `waiting-input`), which would otherwise misreport an
+   * unattended phase session as needing a human and get it parked by `decideTicketAction`.
+   */
+  wakeResume?: boolean;
 }
 
-export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'completed' | 'failed' | 'cancelled';
+export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'scheduled' | 'completed' | 'failed' | 'cancelled';
 export type CliFramework = 'claude' | 'copilot' | 'gemini';
 export type ExecutionPattern = 'relay' | 'scatter-gather' | 'supervisor';
 export type PatternPosition = 'lead' | 'assistant' | 'combiner' | 'step' | 'standalone';
-export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize' | 'chat';
+export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize' | 'chat' | 'fast-path';
+
+// FLUX-1373: the three model tiers a board's per-CLI `integrations.<cli>.tiers` config resolves —
+// replaces the old binary ModelTier ('cheap'|'strong'). A CLI-agnostic "how much do I want to spend
+// on this task" dial; each CLI maps it to a concrete model id (config.ts's tiers defaults).
+export type Tier = 'smart' | 'efficient' | 'cheap';
+
+// FLUX-1373: the stable, persisted task taxonomy every dispatched session is stamped with
+// (`session.taskKey`) — the key `modelPolicy.assignments` maps to a Tier. Exactly 9 keys, pinned
+// by the ticket plan: per-dimension review keys (correctness/style/security) collapse into ONE
+// `review.workers`; the old `review.synthesizer` concept is `review.lead`. A key must be
+// mechanically derivable at every dispatch site from what the session record carries (phase ×
+// position) — see deriveTaskKey in routes/cli-session.ts.
+export type TaskKey =
+  | 'grooming.lead' | 'grooming.workers'
+  | 'planReview'
+  | 'implementation.lead' | 'implementation.workers'
+  | 'review.lead' | 'review.workers'
+  | 'finalize'
+  | 'chat';
+
+// FLUX-1373: the full 9-key set, for route-body validation (an explicit `taskKey` override must be
+// one of these) and for iterating every key (e.g. building the default `modelPolicy.assignments`).
+export const TASK_KEYS: readonly TaskKey[] = [
+  'grooming.lead', 'grooming.workers',
+  'planReview',
+  'implementation.lead', 'implementation.workers',
+  'review.lead', 'review.workers',
+  'finalize',
+  'chat',
+];
 // Run-group classification: every session launched in one orchestration run shares
 // these so any surface can render the topology without inspecting sibling sessions.
 export type GroupVariant = 'combiner' | 'headless';
@@ -76,23 +114,6 @@ export const MODEL_FAMILIES: Record<CliFramework, string[]> = {
   claude: ['claude', 'opus', 'sonnet', 'haiku'],
   copilot: ['copilot', 'gpt', 'codex'],
   gemini: ['gemini'],
-};
-
-// FLUX-931: generic cheap/strong tier for delegated subagents, replacing the Claude-only
-// literal `persona.model = 'sonnet'` (FLUX-482). 'strong' is the floor — no override, the
-// adapter falls back to its own status-derived grooming/implementation model. 'cheap' resolves
-// to the concrete per-framework model below.
-export type ModelTier = 'cheap' | 'strong';
-
-// FLUX-931: the concrete model each framework's CLI understands for the 'cheap' tier — the
-// per-adapter analogue of the old Claude-only persona.model='sonnet'. No 'copilot' entry: no
-// cheap-tier alias is confirmed for the Copilot CLI (unlike gemini's 'flash', already validated
-// against KNOWN_GEMINI_MODELS in gemini.ts), so a cheap-tier persona on a Copilot board falls
-// through to `integrations.copilotCli.delegateModel` / the status-derived model instead —
-// same as leaving the tier unmapped, never a guessed model string that could 404.
-export const TIER_MODELS: Partial<Record<CliFramework, string>> = {
-  claude: 'sonnet',
-  gemini: 'flash',
 };
 
 // FLUX-931: framework -> its config key under `integrations.*` (config.ts: claudeCode/geminiCli/
@@ -155,6 +176,9 @@ export interface CliSessionSummary {
   cacheCreationTokens?: number;
   role?: string;
   phase?: LaunchPhase;
+  /** FLUX-1373: the task-tier policy key this session resolves its model through — stamped once at
+   *  creation (see deriveTaskKey, routes/cli-session.ts). */
+  taskKey?: TaskKey;
   pattern?: ExecutionPattern;
   patternPosition?: PatternPosition;
   /** Shared by all sessions launched in one orchestration run. */
@@ -175,6 +199,10 @@ export interface CliSessionSummary {
    *  phase session's thread instead of spawning a fresh, amnesiac chat (FLUX-606). The raw
    *  `resumeSessionId` is intentionally not exposed to the client; a boolean is enough. */
   resumable?: boolean;
+  /** FLUX-1390: ISO time this `scheduled` (sleeping) session will be auto-resumed via `--resume`. */
+  wakeAt?: string;
+  /** FLUX-1390: the agent's own `reason` for the pending wakeup, if it gave one — surfaced next to `wakeAt`. */
+  wakeReason?: string;
 }
 
 export interface CliSessionRecord extends CliSessionSummary {
@@ -236,6 +264,46 @@ export interface CliSessionRecord extends CliSessionSummary {
    *  "GitHub Copilot extension is not installed" that arrive on stderr rather than stdout
    *  are surfaced in the chat log instead of silently dropped. */
   stderrCapture?: string;
+  /** FLUX-1378: the session's live context size as of the LAST `result` event (non-cumulative —
+   *  overwritten every turn, unlike inputTokens/etc. which accumulate). Used by
+   *  `resumeOrDispatchSession`'s viability check: a session sitting near its context window is
+   *  worse to resume (large cache-read bill, close to auto-compaction) than to cold-spawn fresh. */
+  lastTurnContextTokens?: number;
+  /** FLUX-1378: the resolved model's context window (from the CLI result event's `modelUsage`),
+   *  captured alongside `lastTurnContextTokens`. Undefined when the adapter/CLI doesn't report it —
+   *  callers fall back to a conservative default rather than treating undefined as "unlimited". */
+  contextWindow?: number;
+  /** FLUX-1378 (absorbing FLUX-1375 step 6): running total of inputTokens/etc. already flushed into
+   *  the ticket's `tokenMetadata`, since `session.inputTokens` etc. accumulate for the WHOLE session
+   *  (never reset — they also drive the live per-session cost badge) across every resumed turn. Each
+   *  flush point computes the delta against these baselines — not the raw cumulative counters — so a
+   *  second (resume-turn) flush doesn't double-count tokens the first (initial-spawn) flush already
+   *  persisted. Internal bookkeeping only; never exposed on CliSessionSummary. */
+  flushedInputTokens?: number;
+  flushedOutputTokens?: number;
+  flushedCostUSD?: number;
+  flushedCacheReadTokens?: number;
+  flushedCacheCreationTokens?: number;
+  /** FLUX-1378: count of successful `resumeOrDispatchSession` resumes since this session was COLD
+   *  spawned (a fresh spawn always starts a new session object, so this is inherently scoped to "since
+   *  last cold spawn" with no explicit reset needed). Fallback viability signal for a session with no
+   *  recorded `lastTurnContextTokens` (pre-upgrade stub / a non-reporting adapter) — capped at 8. */
+  resumeTurnCount?: number;
+  /**
+   * FLUX-1390: honored-ScheduleWakeup bookkeeping (agents.honorScheduledWakeups, claude-only — the
+   * tool is a Claude Code native, not something gemini/copilot expose).
+   *   - `pendingWakeAt`/`pendingWakeReason` — staged mid-turn when the assistant calls ScheduleWakeup;
+   *     consumed at turn-end by `tryEnterScheduledWake`, which commits them to `wakeAt`/`wakeReason`
+   *     (and clears the pending pair) if the turn is honoring a sleep, or drops them otherwise.
+   *   - `wakeAt`/`wakeReason` — the ACTIVE sleep: when a `status: 'scheduled'` session should next be
+   *     resumed via `--resume`, and why (inherited from `CliSessionSummary` above). Cleared once the
+   *     wake ticker (scheduled-wake.ts) picks it up.
+   *   - `scheduledResumeCount` — how many times this session has already self-scheduled a resume;
+   *     `tryEnterScheduledWake` fails closed once it reaches MAX_SCHEDULED_WAKE_RESUMES.
+   */
+  pendingWakeAt?: string;
+  pendingWakeReason?: string;
+  scheduledResumeCount?: number;
 }
 
 export interface AgentEvent {

@@ -202,13 +202,16 @@ export async function readArtifactRevision(
  *      (FLUX-892) does the same for non-text controls — toggles, SVG bars, buttons — anchoring to the
  *      element's CSS path with no text selection; the native context menu is suppressed and a brief
  *      `[data-eh-ui]` highlight (zero layout impact) shows which element was captured.
- *   2. "Add note" drops a numbered **pin** anchored to the content (scrolls with the document) and
- *      adds the annotation to a **scroll-following tray** (`position:fixed`) — so the user can
- *      annotate several regions before committing. Nothing is sent yet.
- *   3. "Send to agent" posts the whole **batch** up to the host once
- *      (`{ns:'eh-artifact', type:'annotations', items:[…]}`); the host composes a single chat message.
+ *   2. "Add note" drops a numbered **pin** anchored to the content (scrolls with the document).
+ *      Clicking a pin re-opens the composer to view/edit that note (Remove is explicit) — never a
+ *      bare delete.
+ *   3. FLUX-1362: the annotation set is mirrored to the host **LIVE on every add/edit/remove** (not
+ *      only on a Send) as `{ns:'eh-artifact', type:'annotations', items:[…]}`, each item carrying its
+ *      stable pin `id`. The host owns the unified, editable list (the floating "N changes" pill) and
+ *      composes the chat message; the iframe no longer renders its own tray/Send. Host→iframe
+ *      `remove-pin`/`update-pin` messages round-trip a host-side edit/removal back to the pin.
  *
- * Living in-iframe is what makes the tray/pins follow the iframe's internal scroll for free — a host
+ * Living in-iframe is what makes the pins follow the iframe's internal scroll for free — a host
  * overlay can't, short of streaming scroll offsets every frame. Each annotation still carries a
  * **stable anchor** (CSS path + selected text) so the agent knows which region the note is about.
  *
@@ -262,7 +265,7 @@ export const ARTIFACT_ANNOTATOR_SCRIPT = String.raw`
 
   var annotations = [];   // { id, kind, selector, text, containerText, label, note, docX, docY }
   var seq = 0;
-  var composer = null, tray = null, highlight = null;
+  var composer = null, highlight = null;
 
   function ensureStyle() {
     if (document.getElementById('eh-anno-style')) return;
@@ -279,16 +282,7 @@ export const ARTIFACT_ANNOTATOR_SCRIPT = String.raw`
       '.eh-anno-btn-primary{background:#6366f1;color:#fff;}',
       '.eh-anno-btn-ghost{background:transparent;color:#94a3b8;}',
       '.eh-anno-pin{position:absolute;z-index:2147483500;transform:translate(-50%,-50%);width:20px;height:20px;border-radius:50%;background:#f59e0b;color:#1f2937;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.4);cursor:pointer;border:2px solid #fff;}',
-      '.eh-anno-highlight{position:fixed;z-index:2147483500;pointer-events:none;border:2px solid #6366f1;border-radius:4px;background:rgba(99,102,241,.12);box-shadow:0 0 0 1px rgba(255,255,255,.45);}',
-      '.eh-anno-tray{position:fixed;right:14px;bottom:14px;z-index:2147483600;width:264px;max-width:94vw;background:#0b1220;color:#e5e7eb;border:1px solid #334155;border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.5);padding:10px;font-size:12px;}',
-      '.eh-anno-tray-head{display:flex;align-items:center;justify-content:space-between;font-weight:700;margin-bottom:8px;}',
-      '.eh-anno-list{list-style:none;margin:0;padding:0;max-height:180px;overflow:auto;display:flex;flex-direction:column;gap:6px;}',
-      '.eh-anno-item{display:flex;gap:6px;align-items:flex-start;background:#111827;border:1px solid #1f2937;border-radius:8px;padding:6px;}',
-      '.eh-anno-num{flex:0 0 auto;width:18px;height:18px;border-radius:50%;background:#f59e0b;color:#1f2937;font-weight:700;font-size:10px;display:flex;align-items:center;justify-content:center;}',
-      '.eh-anno-body{flex:1 1 auto;min-width:0;}',
-      '.eh-anno-q{color:#cbd5e1;font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.eh-anno-n{color:#e5e7eb;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-      '.eh-anno-x{flex:0 0 auto;cursor:pointer;color:#94a3b8;background:transparent;border:none;font-size:14px;line-height:1;padding:0 2px;}'
+      '.eh-anno-highlight{position:fixed;z-index:2147483500;pointer-events:none;border:2px solid #6366f1;border-radius:4px;background:rgba(99,102,241,.12);box-shadow:0 0 0 1px rgba(255,255,255,.45);}'
     ].join('');
     (document.head || document.documentElement).appendChild(s);
   }
@@ -378,26 +372,54 @@ export const ARTIFACT_ANNOTATOR_SCRIPT = String.raw`
     };
   }
 
+  // FLUX-1362: the host owns the unified, editable annotation list (the floating "N changes" pill),
+  // so the iframe no longer renders a tray. It mirrors the current annotation set to the host LIVE on
+  // every add / edit / remove (not just on a Send), and accepts host→iframe pin edits/removals. Each
+  // item carries its stable pin id so a host-side edit/remove round-trips back to the right pin.
+  function postLive() {
+    post({ ns: NS, type: 'annotations', items: annotations.map(function (a) {
+      return { id: a.id, kind: a.kind || 'text', selector: a.selector, text: a.text, containerText: a.containerText, label: a.label || '', note: a.note };
+    }) });
+  }
+  function findAnn(id) {
+    for (var i = 0; i < annotations.length; i++) { if (annotations[i].id === id) return annotations[i]; }
+    return null;
+  }
+
+  // The composer captures a NEW annotation (info has no existingId) or edits an EXISTING one (pin
+  // click, info.existingId set) — an edit surfaces Remove + Save, a capture surfaces Add note.
   function openComposer(info) {
     ensureStyle();
     clearComposer();
+    var editing = info.existingId != null;
     composer = el('div', 'eh-anno-composer');
     var q = el('div', 'eh-anno-quote');
     if (info.kind === 'element') {
       q.textContent = '⊙ ' + (info.label || 'element');
     } else {
-      q.textContent = '"' + info.text.slice(0, 200) + (info.text.length > 200 ? '…' : '') + '"';
+      q.textContent = '"' + (info.text || '').slice(0, 200) + ((info.text || '').length > 200 ? '…' : '') + '"';
     }
     composer.appendChild(q);
     var ta = el('textarea');
     ta.placeholder = 'What should change about this region? (optional)';
+    if (editing) ta.value = info.note || '';
     composer.appendChild(ta);
     var row = el('div', 'eh-anno-row');
     var cancel = el('button', 'eh-anno-btn eh-anno-btn-ghost'); cancel.textContent = 'Cancel';
-    var add = el('button', 'eh-anno-btn eh-anno-btn-primary'); add.textContent = 'Add note';
     cancel.addEventListener('click', clearComposer);
-    add.addEventListener('click', function () { addAnnotation(info, ta.value); clearComposer(); });
-    row.appendChild(cancel); row.appendChild(add);
+    row.appendChild(cancel);
+    if (editing) {
+      var remove = el('button', 'eh-anno-btn eh-anno-btn-ghost'); remove.textContent = 'Remove';
+      remove.addEventListener('click', function () { removeAnnotation(info.existingId); clearComposer(); });
+      row.appendChild(remove);
+      var save = el('button', 'eh-anno-btn eh-anno-btn-primary'); save.textContent = 'Save';
+      save.addEventListener('click', function () { updateAnnotation(info.existingId, ta.value); clearComposer(); });
+      row.appendChild(save);
+    } else {
+      var add = el('button', 'eh-anno-btn eh-anno-btn-primary'); add.textContent = 'Add note';
+      add.addEventListener('click', function () { addAnnotation(info, ta.value); clearComposer(); });
+      row.appendChild(add);
+    }
     composer.appendChild(row);
     document.body.appendChild(composer);
     placeFixed(composer, info.rect.left, info.rect.bottom + 8, info.rect.top - 8);
@@ -408,9 +430,19 @@ export const ARTIFACT_ANNOTATOR_SCRIPT = String.raw`
     seq++;
     annotations.push({ id: seq, kind: info.kind || 'text', selector: info.selector, text: info.text, containerText: info.containerText, label: info.label || '', note: norm(note), docX: info.docX, docY: info.docY });
     dropPin(seq, info.docX, info.docY, note);
-    renderTray();
+    postLive();
   }
 
+  function updateAnnotation(id, note) {
+    var a = findAnn(id);
+    if (a) a.note = norm(note);
+    var p = document.querySelector('[data-eh-pin="' + id + '"]');
+    if (p) p.title = 'Annotation ' + id + (norm(note) ? ': ' + norm(note) : '') + ' (click to edit)';
+    postLive();
+  }
+
+  // Clicking a numbered pin re-opens the composer to VIEW/EDIT its note (never a bare delete) —
+  // removal is explicit, via the composer's Remove button (or the host-side pill).
   function dropPin(id, docX, docY, note) {
     ensureStyle();
     var pin = el('div', 'eh-anno-pin');
@@ -418,8 +450,13 @@ export const ARTIFACT_ANNOTATOR_SCRIPT = String.raw`
     pin.setAttribute('data-eh-pin', String(id));
     pin.style.left = docX + 'px';
     pin.style.top = docY + 'px';
-    pin.title = 'Annotation ' + id + (norm(note) ? ': ' + norm(note) : '') + ' (click to remove)';
-    pin.addEventListener('click', function () { removeAnnotation(id); });
+    pin.title = 'Annotation ' + id + (norm(note) ? ': ' + norm(note) : '') + ' (click to edit)';
+    pin.addEventListener('click', function () {
+      var a = findAnn(id);
+      if (!a) return;
+      var r = pin.getBoundingClientRect();
+      openComposer({ existingId: id, kind: a.kind, text: a.text, label: a.label, note: a.note, rect: { left: r.left, top: r.top, bottom: r.bottom } });
+    });
     document.body.appendChild(pin);
   }
 
@@ -427,60 +464,7 @@ export const ARTIFACT_ANNOTATOR_SCRIPT = String.raw`
     annotations = annotations.filter(function (a) { return a.id !== id; });
     var p = document.querySelector('[data-eh-pin="' + id + '"]');
     if (p && p.parentNode) p.parentNode.removeChild(p);
-    renderTray();
-  }
-
-  function clearAll() {
-    annotations = [];
-    var pins = document.querySelectorAll('[data-eh-pin]');
-    for (var i = 0; i < pins.length; i++) { if (pins[i].parentNode) pins[i].parentNode.removeChild(pins[i]); }
-    renderTray();
-  }
-
-  function renderTray() {
-    ensureStyle();
-    if (annotations.length === 0) {
-      if (tray && tray.parentNode) tray.parentNode.removeChild(tray);
-      tray = null;
-      return;
-    }
-    if (!tray) { tray = el('div', 'eh-anno-tray'); document.body.appendChild(tray); }
-    while (tray.firstChild) tray.removeChild(tray.firstChild);
-    var head = el('div', 'eh-anno-tray-head');
-    var title = el('span');
-    title.textContent = annotations.length + ' annotation' + (annotations.length === 1 ? '' : 's');
-    head.appendChild(title);
-    tray.appendChild(head);
-    var list = el('ul', 'eh-anno-list');
-    annotations.forEach(function (a) {
-      var li = el('li', 'eh-anno-item');
-      var num = el('span', 'eh-anno-num'); num.textContent = String(a.id); li.appendChild(num);
-      var body = el('div', 'eh-anno-body');
-      var q = el('div', 'eh-anno-q'); q.textContent = a.text ? a.text.slice(0, 80) : ('⊙ ' + (a.label || 'element')); body.appendChild(q);
-      if (a.note) { var nn = el('div', 'eh-anno-n'); nn.textContent = a.note; body.appendChild(nn); }
-      li.appendChild(body);
-      var x = el('button', 'eh-anno-x'); x.textContent = '×'; x.title = 'Remove';
-      x.addEventListener('click', function () { removeAnnotation(a.id); });
-      li.appendChild(x);
-      list.appendChild(li);
-    });
-    tray.appendChild(list);
-    var row = el('div', 'eh-anno-row');
-    var clear = el('button', 'eh-anno-btn eh-anno-btn-ghost'); clear.textContent = 'Clear';
-    clear.addEventListener('click', clearAll);
-    var send = el('button', 'eh-anno-btn eh-anno-btn-primary');
-    send.textContent = 'Send ' + annotations.length + ' to agent';
-    send.addEventListener('click', sendBatch);
-    row.appendChild(clear); row.appendChild(send);
-    tray.appendChild(row);
-  }
-
-  function sendBatch() {
-    if (annotations.length === 0) return;
-    post({ ns: NS, type: 'annotations', items: annotations.map(function (a) {
-      return { kind: a.kind || 'text', selector: a.selector, text: a.text, containerText: a.containerText, label: a.label || '', note: a.note };
-    }) });
-    clearAll();
+    postLive();
   }
 
   document.addEventListener('mouseup', function (e) {
@@ -499,6 +483,26 @@ export const ARTIFACT_ANNOTATOR_SCRIPT = String.raw`
     e.preventDefault();
     drawHighlight(target);
     openComposer(info);
+  });
+  // FLUX-1314: once the user clicks into this sandboxed iframe, keydown dispatches here — a
+  // separate browsing context — and never reaches the host window's Escape listener, so Esc
+  // silently stopped exiting full-screen. Close our own composer first (nearest overlay wins,
+  // mirroring the host's LIFO Escape stack); otherwise forward the press up so the host pops
+  // its own stack (e.g. exit full-screen).
+  document.addEventListener('keydown', function (e) {
+    if (!e || e.key !== 'Escape') return;
+    if (composer) { clearComposer(); return; }
+    post({ ns: NS, type: 'escape' });
+  });
+  // FLUX-1362: host->iframe reverse-sync. When the user edits/removes an annotation from the host's
+  // unified list (the "N changes" pill), the host posts the intent down so the matching pin's note
+  // (tooltip) updates or the pin is removed. Both re-post the live set, which the host ingests
+  // idempotently (the sets already match), so there is no feedback loop.
+  window.addEventListener('message', function (e) {
+    var d = e && e.data;
+    if (!d || typeof d !== 'object' || d.ns !== NS) return;
+    if (d.type === 'remove-pin') removeAnnotation(d.id);
+    else if (d.type === 'update-pin') updateAnnotation(d.id, d.note);
   });
   post({ ns: NS, type: 'ready' });
 })();

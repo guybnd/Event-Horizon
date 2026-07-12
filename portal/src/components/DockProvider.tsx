@@ -272,6 +272,12 @@ export interface DockState {
   /** FLUX-1273: the ticket id whose full-screen plan-approval panel is open, or null. In-memory only
    *  (like `anchors`) — an open panel doesn't need to survive a reload. */
   planApprovalOpen: string | null;
+  /** FLUX-1381: bumped on EVERY `openPlanApproval` call, including a repeat open of the id already
+   *  held. `planApprovalOpen` alone can't distinguish "already open" from "re-requested while
+   *  minimized" — the same-id `setPlanApprovalOpen` bails out (no re-render), so ChatDock's
+   *  minimize-reset effect never re-fired and every "open plan" entry point went dead on a minimized
+   *  panel. Pairing the id with this counter makes repeat opens observable. */
+  planApprovalNonce: number;
 }
 
 const DockActionsContext = createContext<DockActions | null>(null);
@@ -319,6 +325,8 @@ export function DockProvider({ children }: { children: ReactNode }) {
   );
   // FLUX-1273: the ticket id whose full-screen plan-approval panel is open (null = none).
   const [planApprovalOpen, setPlanApprovalOpen] = useState<string | null>(null);
+  // FLUX-1381: repeat-open counter paired with the id (see the DockState field doc).
+  const [planApprovalNonce, setPlanApprovalNonce] = useState(0);
 
   // FLUX-635: persist dismissals on change. Cap to bound growth (History only shows HISTORY_CAP).
   useEffect(() => {
@@ -568,15 +576,17 @@ export function DockProvider({ children }: { children: ReactNode }) {
           }
           return { ...prev, [id]: next };
         }),
-      // FLUX-1273: open the plan-approval panel for a ticket (idempotent — just (re)sets the id).
-      openPlanApproval: (id) => setPlanApprovalOpen(id),
+      // FLUX-1273: open the plan-approval panel for a ticket. FLUX-1381: the nonce bump makes a
+      // same-id repeat open observable (the id set alone bails out in React), so a minimized panel
+      // reliably restores from every "open plan" entry point.
+      openPlanApproval: (id) => { setPlanApprovalOpen(id); setPlanApprovalNonce((n) => n + 1); },
       closePlanApproval: () => setPlanApprovalOpen(null),
     };
   }, []);
 
   const state = useMemo<DockState>(
-    () => ({ open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen, windowGeometry, planApprovalOpen }),
-    [open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen, windowGeometry, planApprovalOpen],
+    () => ({ open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen, windowGeometry, planApprovalOpen, planApprovalNonce }),
+    [open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen, windowGeometry, planApprovalOpen, planApprovalNonce],
   );
 
   return (

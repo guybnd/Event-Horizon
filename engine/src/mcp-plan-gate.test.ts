@@ -62,6 +62,51 @@ describe('evaluatePlanGateTrigger (FLUX-1263)', () => {
     expect(evaluatePlanGateTrigger({ ...base, todoStatus: 'Backlog', newStatus: 'Backlog', gateValue: 'auto', planReviewState: null })).toBe(true);
     expect(evaluatePlanGateTrigger({ ...base, todoStatus: 'Backlog', newStatus: 'Todo', gateValue: 'auto', planReviewState: null })).toBe(false);
   });
+
+  it('FLUX-1380: never intercepts Grooming -> In Progress — fast-path structurally bypasses the plan gate, which only fires on Grooming -> Todo', () => {
+    expect(evaluatePlanGateTrigger({ ...base, newStatus: 'In Progress', gateValue: 'auto', planReviewState: null })).toBe(false);
+    expect(evaluatePlanGateTrigger({ ...base, newStatus: 'Todo', gateValue: 'auto', planReviewState: null })).toBe(true);
+  });
+});
+
+/**
+ * FLUX-1379: `effort`/`skipSmall` add one more suppression on top of the base guard above — an XS/S
+ * ticket never triggers the auto gate when `planGateSkipSmall` is on. Both params are optional so a
+ * caller that omits them (pre-FLUX-1379 call shape) keeps triggering exactly as before.
+ */
+describe('evaluatePlanGateTrigger — XS/S auto-skip (FLUX-1379)', () => {
+  const base = { priorStatus: 'Grooming', newStatus: 'Todo', groomingStatus: 'Grooming', todoStatus: 'Todo', planReviewState: null } as const;
+
+  it('suppresses the trigger for XS/S when skipSmall is on', () => {
+    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto', effort: 'XS', skipSmall: true })).toBe(false);
+    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto', effort: 'S', skipSmall: true })).toBe(false);
+    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto-then-you', effort: 'XS', skipSmall: true })).toBe(false);
+  });
+
+  it('does not suppress M/L/XL/None/unset effort regardless of skipSmall', () => {
+    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto', effort: 'M', skipSmall: true })).toBe(true);
+    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto', effort: 'L', skipSmall: true })).toBe(true);
+    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto', effort: 'None', skipSmall: true })).toBe(true);
+    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto', effort: null, skipSmall: true })).toBe(true);
+    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto', effort: undefined, skipSmall: true })).toBe(true);
+  });
+
+  it('does not suppress XS/S when skipSmall is off', () => {
+    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto', effort: 'XS', skipSmall: false })).toBe(true);
+  });
+
+  it('omitting skipSmall/effort entirely behaves exactly like the pre-FLUX-1379 signature', () => {
+    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto' })).toBe(true);
+  });
+
+  it('`you` still never intercepts regardless of the skip inputs', () => {
+    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'you', effort: 'XS', skipSmall: true })).toBe(false);
+    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'you', effort: 'M', skipSmall: false })).toBe(false);
+  });
+
+  it('a verdict already recorded still wins over the skip suppression', () => {
+    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto', planReviewState: 'approved', effort: 'M', skipSmall: true })).toBe(false);
+  });
 });
 
 /**

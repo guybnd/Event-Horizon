@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { getConfig } from '../config.js';
 import { disallowedToolsArgs, isChatEditGated, FILE_MUTATION_TOOLS } from './claude-code.js';
 
 // FLUX-926: ticket chat may edit files only while the ticket is In Progress. Enforcement is via
@@ -34,7 +35,7 @@ describe('isChatEditGated / disallowedToolsArgs (FLUX-926)', () => {
         const session = { phase };
         const task = { status };
         expect(isChatEditGated(session, task), `phase=${phase} status=${status}`).toBe(false);
-        expect(disallowedToolsArgs(session, task)).toEqual(['--disallowed-tools', 'AskUserQuestion']);
+        expect(disallowedToolsArgs(session, task)).toEqual(['--disallowed-tools', 'AskUserQuestion', 'ScheduleWakeup']);
       }
     }
   });
@@ -43,5 +44,55 @@ describe('isChatEditGated / disallowedToolsArgs (FLUX-926)', () => {
     const session = { phase: 'chat' as const };
     expect(isChatEditGated(session, undefined)).toBe(true);
     expect(isChatEditGated(session, {})).toBe(true);
+  });
+});
+
+// FLUX-1389: dispatched (non-chat) phase sessions are one-shot `claude -p` processes that exit at
+// turn end — ScheduleWakeup's wakeup can never be honored there, so it must be blocked; a `chat`
+// session is genuinely interactive/resumable and must be unaffected.
+describe('disallowedToolsArgs blocks ScheduleWakeup for dispatched phases only (FLUX-1389)', () => {
+  it('blocks ScheduleWakeup for every dispatched phase (and no explicit phase)', () => {
+    for (const phase of ['grooming', 'implementation', 'review', 'finalize', undefined] as const) {
+      const args = disallowedToolsArgs({ phase }, { status: 'In Progress' });
+      expect(args, `phase=${phase}`).toEqual(expect.arrayContaining(['ScheduleWakeup']));
+    }
+  });
+
+  it('does not block ScheduleWakeup for a chat session', () => {
+    const args = disallowedToolsArgs({ phase: 'chat' }, { status: 'In Progress' });
+    expect(args).not.toEqual(expect.arrayContaining(['ScheduleWakeup']));
+  });
+});
+
+// FLUX-1390: `agents.honorScheduledWakeups` makes the FLUX-1389 block conditional — off (the
+// default) is byte-identical to FLUX-1389; on, ScheduleWakeup is no longer disallowed for a
+// dispatched phase, since the exit handler now honors it (tryEnterScheduledWake) instead of it
+// silently no-oping.
+describe('disallowedToolsArgs honors agents.honorScheduledWakeups (FLUX-1390)', () => {
+  afterEach(() => {
+    delete getConfig().agents;
+  });
+
+  it('still blocks ScheduleWakeup for dispatched phases when the flag is off (default)', () => {
+    for (const phase of ['grooming', 'implementation', 'review', 'finalize', undefined] as const) {
+      const args = disallowedToolsArgs({ phase }, { status: 'In Progress' });
+      expect(args, `phase=${phase}`).toEqual(expect.arrayContaining(['ScheduleWakeup']));
+    }
+  });
+
+  it('does not block ScheduleWakeup for dispatched phases when the flag is on', () => {
+    getConfig().agents = { honorScheduledWakeups: true };
+    for (const phase of ['grooming', 'implementation', 'review', 'finalize', undefined] as const) {
+      const args = disallowedToolsArgs({ phase }, { status: 'In Progress' });
+      expect(args, `phase=${phase}`).not.toEqual(expect.arrayContaining(['ScheduleWakeup']));
+      expect(args).toEqual(expect.arrayContaining(['AskUserQuestion']));
+    }
+  });
+
+  it('never blocks ScheduleWakeup for a chat session either way', () => {
+    getConfig().agents = { honorScheduledWakeups: false };
+    expect(disallowedToolsArgs({ phase: 'chat' }, { status: 'In Progress' })).not.toEqual(expect.arrayContaining(['ScheduleWakeup']));
+    getConfig().agents = { honorScheduledWakeups: true };
+    expect(disallowedToolsArgs({ phase: 'chat' }, { status: 'In Progress' })).not.toEqual(expect.arrayContaining(['ScheduleWakeup']));
   });
 });

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { getModuleMcpServers } from './modules.js';
 import { getEnginePort } from './packaged-mode.js';
 import { signConversation } from './session-binding.js';
+import { buildCoreSkillDocument } from './skill-core.js';
 
 export type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
 export type ResolvedFramework = Exclude<Framework, 'auto'>;
@@ -393,8 +394,20 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
       await fs.mkdir(path.dirname(dest), { recursive: true });
       await fs.copyFile(src, dest);
     }
+  } else if (resolvedFramework === 'claude') {
+    // FLUX-1377: Claude gets the trimmed always-on core (invariants + phase routing table),
+    // not the full 6-module concatenation — phase guidance is engine-injected at spawn for
+    // agent sessions instead (buildInitialPrompt, agents/shared.ts) or Read on demand by
+    // humans. Only Claude gets this: buildInitialPrompt's injection is gated to the claude
+    // framework (copilot/gemini share the same call but don't receive the injection), so
+    // trimming their static install here would lose phase guidance with nothing to replace it.
+    log.info(`[installer] Installing core skill (FLUX-1377)...`);
+    await fs.mkdir(path.dirname(skillInstalledPath), { recursive: true });
+    await fs.writeFile(skillInstalledPath, buildCoreSkillDocument(), 'utf-8');
   } else {
-    // Option A: concatenate all modules wrapped in XML tags
+    // Option A: concatenate all modules wrapped in XML tags (gemini, cursor, windsurf,
+    // generic — no engine-driven agent-spawn injection path for these, so they still need
+    // everything statically installed).
     log.info(`[installer] Installing concatenated skill...`);
     await fs.mkdir(path.dirname(skillInstalledPath), { recursive: true });
     const concatenated = await buildConcatenatedSkill(skillSourcePaths);
@@ -486,15 +499,46 @@ export function buildMcpServerEntry(conversationId?: string) {
   };
 }
 
+/**
+ * FLUX-1222: the Gemini-CLI-schema variant of buildMcpServerEntry, for the `.gemini/settings.json`
+ * targets (gemini + antigravity). Two deliberate differences from the Claude shape:
+ *
+ * - `httpUrl` (not `type:'http', url:`): Gemini CLI's documented key for the streamable-HTTP
+ *   transport, which is what the engine's `/mcp` mount speaks. A bare `url` means SSE to Gemini.
+ * - `headers` carry `${EH_CONVERSATION_ID}`/`${EH_CONVERSATION_TOKEN}` PLACEHOLDERS, not values.
+ *   Gemini has no `--mcp-config`-style per-spawn injection flag (see CLI_CAPABILITIES.gemini
+ *   .spawnTimeMcpConfig), so FLUX-1213's spawn-time header override can't be ported directly.
+ *   Instead we lean on Gemini CLI's env-var resolution in settings.json strings: every spawnGemini
+ *   call already sets EH_CONVERSATION_ID/EH_CONVERSATION_TOKEN on the child env (cleanChildEnv),
+ *   so each session's OWN process resolves these placeholders to its own binding — per-session
+ *   headers from a static shared file. A gemini run outside the engine (vars unset) degrades
+ *   gracefully: the placeholder resolves to ''/stays literal, the HMAC check fails, and the route
+ *   drops the call to the same unrouted `__board__` handling as before.
+ */
+export function buildGeminiMcpServerEntry() {
+  return {
+    httpUrl: `http://127.0.0.1:${getEnginePort()}/mcp`,
+    headers: {
+      'x-eh-conversation-id': '${EH_CONVERSATION_ID}',
+      'x-eh-conversation-token': '${EH_CONVERSATION_TOKEN}',
+    },
+  };
+}
+
 /** Shape of a `.mcp.json`-style config file — only the fields this installer reads/writes. */
 interface McpConfigFile {
   mcpServers?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
-async function installMcpConfig(targetDir: string, sourceRoot: string, framework: ResolvedFramework): Promise<void> {
+// Exported for gemini-conversation-headers.test.ts (FLUX-1222) — not part of the public API.
+export async function installMcpConfig(targetDir: string, sourceRoot: string, framework: ResolvedFramework): Promise<void> {
   const configPath = mcpConfigPathFor(targetDir, framework);
-  const serverEntry = buildMcpServerEntry();
+  // Gemini/antigravity read `.gemini/settings.json` with Gemini CLI's own MCP schema — every other
+  // framework gets the `.mcp.json`-style Claude shape (FLUX-1222).
+  const serverEntry = framework === 'gemini' || framework === 'antigravity'
+    ? buildGeminiMcpServerEntry()
+    : buildMcpServerEntry();
 
   // Read and parse SEPARATELY. A single empty catch here used to swallow a
   // JSON.parse failure too, leaving existing={} so the unconditional write below

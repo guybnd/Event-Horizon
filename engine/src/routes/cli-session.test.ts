@@ -4,6 +4,7 @@
 // resolves, and that the session converges (running, or failed with the error surfaced) once
 // the backgrounded work settles — never a hung request.
 
+import { getWorkspace } from '../workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -13,7 +14,7 @@ import type { AddressInfo } from 'net';
 import express from 'express';
 import { setWorkspaceRoot } from '../workspace.js';
 import { requireWorkspace } from '../middleware.js';
-import { tasksCache } from '../task-store.js';
+
 import { cliSessionsById, cliSessionsByTaskId } from '../session-store.js';
 import { ensureTicketIsolation } from '../ticket-isolation.js';
 import { getAdapter } from '../agents/index.js';
@@ -66,14 +67,14 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
     await fs.mkdir(path.join(root, '.flux'), { recursive: true });
     setWorkspaceRoot(root);
 
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     cliSessionsById.clear();
     cliSessionsByTaskId.clear();
 
     // A real _path (inside the temp workspace) so updateTaskWithHistory's best-effort history
     // writes (e.g. the isolation-failure test below) land in the temp dir instead of falling back
     // to a stray `undefined.tmp` in the process cwd.
-    tasksCache['FLUX-1'] = {
+    getWorkspace().tasks['FLUX-1'] = {
       id: 'FLUX-1',
       title: 'Test ticket',
       status: 'Todo',
@@ -166,10 +167,10 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
     // this is what the chat timeline renders and what get_session_log resolves against, not just
     // the in-memory live buffer asserted above (which is lost once the session record is evicted).
     await waitFor(() => {
-      const history = tasksCache['FLUX-1']?.history;
+      const history = getWorkspace().tasks['FLUX-1']?.history;
       return Array.isArray(history) && history.some((e) => e?.type === 'agent_session' && e?.sessionId === session.id);
     });
-    const persisted = tasksCache['FLUX-1'].history.find((e: { sessionId?: string }) => e.sessionId === session.id);
+    const persisted = getWorkspace().tasks['FLUX-1'].history.find((e: { sessionId?: string }) => e.sessionId === session.id);
     expect(persisted.status).toBe('failed');
     expect(persisted.outcome).toContain('git push timed out');
     expect(persisted.startedAt).toBeTruthy();
@@ -318,6 +319,24 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
       expect(cliSessionsById.get('pre')?.status).toBe('pending'); // untouched
     });
 
+    // FLUX-1396 group F test 17: distinct from the resumable-parked-session tests above — this is a
+    // genuinely LIVE (running) session with no supersedeParked flag at all, hitting the baseline
+    // duplicate-session guard rather than the resume/supersede branch. The no-duplicate-review
+    // guarantee rests on this: a second roleless start must never register a sibling session.
+    it('a second standalone start on a ticket with a live session 409s and registers no second session', async () => {
+      seedBlockingSession({ status: 'running' });
+      const res = await startRoleless({});
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/already has a live CLI session/);
+      expect(cliSessionsById.get('pre')?.status).toBe('running'); // untouched
+      expect(startMock).not.toHaveBeenCalled();
+      // Only the pre-seeded session is registered for the ticket — the blocked start did not
+      // sneak a second session into either store.
+      expect(cliSessionsByTaskId.get('FLUX-1')).toEqual(['pre']);
+      expect([...cliSessionsById.values()].filter((s) => s.taskId === 'FLUX-1')).toHaveLength(1);
+    });
+
     it('the pre-existing FLUX-915 self-heal still supersedes a NON-resumable parked session without the flag', async () => {
       seedBlockingSession({ status: 'waiting-input' }); // no resumeSessionId
       const res = await startRoleless({});
@@ -341,6 +360,128 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
 
     await waitFor(() => cliSessionsById.get(session.id)?.status === 'running');
     expect(ensureTicketIsolation).not.toHaveBeenCalled();
-    expect(tasksCache['FLUX-1'].branch).toBeUndefined();
+    expect(getWorkspace().tasks['FLUX-1'].branch).toBeUndefined();
+  });
+
+  // FLUX-1380: fast-path grooms AND implements an XS/S ticket in one session — unlike grooming
+  // it writes code, so (unlike the FLUX-1214 grooming carve-out above) it keeps isolation. The
+  // route also refuses it deterministically for work too big for one unattended pass.
+  describe('phase:"fast-path" (FLUX-1380)', () => {
+    it('is accepted and keeps isolation (unlike grooming)', async () => {
+      vi.mocked(ensureTicketIsolation).mockResolvedValue({ branch: 'flux/FLUX-1-test' });
+      const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ framework: TEST_FRAMEWORK, appendPrompt: 'hello', isolation: 'worktree', phase: 'fast-path' }),
+      });
+
+      expect(res.status).toBe(201);
+      const { session } = await res.json();
+      await waitFor(() => cliSessionsById.get(session.id)?.status === 'running');
+      expect(ensureTicketIsolation).toHaveBeenCalled();
+    });
+
+    it('refuses an L-effort ticket', async () => {
+      getWorkspace().tasks['FLUX-1'].effort = 'L';
+      const res = await startRoleless({ phase: 'fast-path' });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/L-effort/);
+      expect(startMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses an XL-effort ticket', async () => {
+      getWorkspace().tasks['FLUX-1'].effort = 'XL';
+      const res = await startRoleless({ phase: 'fast-path' });
+      expect(res.status).toBe(400);
+      expect(startMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a ticket that has its own subtasks (an epic parent)', async () => {
+      getWorkspace().tasks['FLUX-1'].subtasks = ['FLUX-2'];
+      const res = await startRoleless({ phase: 'fast-path' });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/subtasks/);
+      expect(startMock).not.toHaveBeenCalled();
+    });
+
+    it('allows a ticket that merely has a parentId (an epic MEMBER with no subtasks of its own)', async () => {
+      getWorkspace().tasks['FLUX-1'].parentId = 'FLUX-0';
+      vi.mocked(ensureTicketIsolation).mockResolvedValue({ branch: 'flux/FLUX-1-test' });
+      const res = await startRoleless({ phase: 'fast-path', isolation: 'worktree' });
+      expect(res.status).toBe(201);
+    });
+
+    it('allows a ticket with unset/None effort (grooming happens inline)', async () => {
+      vi.mocked(ensureTicketIsolation).mockResolvedValue({ branch: 'flux/FLUX-1-test' });
+      const res = await startRoleless({ phase: 'fast-path', isolation: 'worktree' });
+      expect(res.status).toBe(201);
+    });
+
+    // Fast-path writes code, so isolation must not depend on the caller remembering to request
+    // it: the MCP dispatcher always sends `isolation`, but the portal's fast-path launch sends
+    // none — and, launching from Grooming, it never routes through the Todo Start-Task prompt
+    // that pre-creates a branch for normal implementation launches. Without this server-side
+    // default the session spawned branchless in the shared checkout, committing to master.
+    it('defaults to worktree isolation when the caller omits it (the portal launch path)', async () => {
+      vi.mocked(ensureTicketIsolation).mockResolvedValue({ branch: 'flux/FLUX-1-test' });
+      const res = await startRoleless({ phase: 'fast-path' });
+      expect(res.status).toBe(201);
+      const { session } = await res.json();
+      await waitFor(() => cliSessionsById.get(session.id)?.status === 'running');
+      expect(ensureTicketIsolation).toHaveBeenCalledWith('FLUX-1', { worktree: true });
+    });
+
+    it('still honors an explicit branch-only isolation request (MCP worktree:false)', async () => {
+      vi.mocked(ensureTicketIsolation).mockResolvedValue({ branch: 'flux/FLUX-1-test' });
+      const res = await startRoleless({ phase: 'fast-path', isolation: 'branch' });
+      expect(res.status).toBe(201);
+      const { session } = await res.json();
+      await waitFor(() => cliSessionsById.get(session.id)?.status === 'running');
+      expect(ensureTicketIsolation).toHaveBeenCalledWith('FLUX-1', { worktree: false });
+    });
+
+    it('does not force isolation for non-fast-path phases (caller-driven, unchanged)', async () => {
+      const res = await startRoleless({ phase: 'implementation' });
+      expect(res.status).toBe(201);
+      const { session } = await res.json();
+      await waitFor(() => cliSessionsById.get(session.id)?.status === 'running');
+      expect(ensureTicketIsolation).not.toHaveBeenCalled();
+    });
+  });
+
+  // A fresh-spawn pre-spawn failure (worktree pool full, git push failure, …) previously surfaced
+  // only inside the ticket chat + history — no board flag, unlike a resume-time failure
+  // (surfaceResumeFailure raises needsAction). Dispatched launches are fire-and-forget, so the
+  // failure must land the ticket in the board's "Needs Action" group.
+  it('raises the persistent needsAction flag when the backgrounded launch fails', async () => {
+    vi.mocked(ensureTicketIsolation).mockRejectedValue(new Error('Task worktree limit reached (4/4).'));
+
+    const res = await startRoleless({ isolation: 'worktree' });
+    expect(res.status).toBe(201);
+    const { session } = await res.json();
+
+    await waitFor(() => cliSessionsById.get(session.id)?.status === 'failed');
+    await waitFor(() => typeof getWorkspace().tasks['FLUX-1']?.needsAction === 'string');
+    expect(getWorkspace().tasks['FLUX-1'].needsAction).toContain('failed to start');
+    expect(getWorkspace().tasks['FLUX-1'].needsAction).toContain('Task worktree limit reached');
+  });
+
+  // A delegated group member (scatter-gather worker, supervisor delegate) shares the ticket with
+  // an actively-running orchestrator that owns the status transition — mirrors flagIfParked's
+  // isDelegatedMember guard (parked-ticket.ts). Flagging the ticket on a delegate's pre-spawn
+  // failure would be a false positive: the orchestrator is still working and may resolve it.
+  it('does NOT raise needsAction when a delegated group member (groupId set) fails to spawn', async () => {
+    vi.mocked(ensureTicketIsolation).mockRejectedValue(new Error('Task worktree limit reached (4/4).'));
+
+    const res = await startRoleless({ isolation: 'worktree', groupId: 'group-1', patternPosition: 'step' });
+    expect(res.status).toBe(201);
+    const { session } = await res.json();
+
+    await waitFor(() => cliSessionsById.get(session.id)?.status === 'failed');
+    // Give the (best-effort, non-awaited) needsAction path a tick to have fired if it were going to.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(getWorkspace().tasks['FLUX-1']?.needsAction).toBeFalsy();
   });
 });

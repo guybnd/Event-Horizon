@@ -1,10 +1,11 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { buildMcpServer } from './mcp-server.js';
-import { tasksCache } from './task-store.js';
-import { configCache } from './config.js';
+
+import { getConfig } from './config.js';
 
 /**
  * FLUX-950: MCP structured output (outputSchema + structuredContent).
@@ -57,7 +58,7 @@ describe('FLUX-950 structured output (outputSchema + structuredContent)', () => 
   beforeAll(async () => {
     // Seed a representative ticket with some history so the payload is non-trivial
     // (the token-delta assertion is only meaningful on a real-sized payload).
-    tasksCache[TICKET] = {
+    getWorkspace().tasks[TICKET] = {
       id: TICKET,
       title: 'Structured output round-trip',
       status: 'In Progress',
@@ -76,16 +77,16 @@ describe('FLUX-950 structured output (outputSchema + structuredContent)', () => 
 
     // Seed the board config fields get_board_config projects.
     for (const k of ['columns', 'hiddenStatuses', 'tags', 'priorities', 'projects', 'users', 'requireInputStatus', 'readyForMergeStatus']) {
-      savedConfig[k] = configCache[k];
+      savedConfig[k] = getConfig()[k];
     }
-    configCache.columns = [{ name: 'Todo' }, { name: 'In Progress' }, { name: 'Done' }];
-    configCache.hiddenStatuses = [{ name: 'Archived' }];
-    configCache.tags = [{ name: 'mcp' }, { name: 'engine' }];
-    configCache.priorities = [{ name: 'Low', icon: 'arrow-down' }, { name: 'High', icon: 'arrow-up' }];
-    configCache.projects = ['FLUX'];
-    configCache.users = ['guy'];
-    configCache.requireInputStatus = 'Require Input';
-    configCache.readyForMergeStatus = 'Ready';
+    getConfig().columns = [{ name: 'Todo' }, { name: 'In Progress' }, { name: 'Done' }];
+    getConfig().hiddenStatuses = [{ name: 'Archived' }];
+    getConfig().tags = [{ name: 'mcp' }, { name: 'engine' }];
+    getConfig().priorities = [{ name: 'Low', icon: 'arrow-down' }, { name: 'High', icon: 'arrow-up' }];
+    getConfig().projects = ['FLUX'];
+    getConfig().users = ['guy'];
+    getConfig().requireInputStatus = 'Require Input';
+    getConfig().readyForMergeStatus = 'Ready';
 
     server = buildMcpServer();
     client = new Client({ name: 'eh-structured-output-test', version: '1.0.0' }, { capabilities: {} });
@@ -94,8 +95,8 @@ describe('FLUX-950 structured output (outputSchema + structuredContent)', () => 
   });
 
   afterAll(async () => {
-    delete tasksCache[TICKET];
-    for (const [k, v] of Object.entries(savedConfig)) configCache[k] = v;
+    delete getWorkspace().tasks[TICKET];
+    for (const [k, v] of Object.entries(savedConfig)) getConfig()[k] = v;
     await client.close().catch(() => {});
     await server.close().catch(() => {});
   });

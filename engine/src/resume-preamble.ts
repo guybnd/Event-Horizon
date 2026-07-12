@@ -1,6 +1,7 @@
+import { getWorkspace } from './workspace-context.js';
 import { getTicketBranchStatus, getDefaultBranch } from './branch-manager.js';
 import { changedFilesMasterSideOfBranch } from './diff-aggregator.js';
-import { tasksCache } from './task-store.js';
+
 
 /**
  * FLUX-655: the resume preamble — a compact, synthetic *situational update* prepended to a
@@ -134,7 +135,7 @@ export async function buildResumePreamble(opts: ResumePreambleOptions): Promise<
       const since = new Date(opts.sinceIso).getTime();
       if (Number.isFinite(since)) {
         const moved: string[] = [];
-        for (const task of Object.values(tasksCache) as CachedTask[]) {
+        for (const task of Object.values(getWorkspace().tasks) as CachedTask[]) {
           if (!task || task.id === opts.taskId) continue;
           const reached = terminalMoveSince(task, since);
           if (reached) moved.push(`${task.id} (${reached})`);

@@ -1,17 +1,18 @@
 import { existsSync } from 'fs';
 import path from 'path';
-import { getFluxDir, getFluxStoreDir, workspaceRoot, resolveSkillSourceRoot } from './workspace.js';
-import { configCache } from './config.js';
+import { getFluxDir, getFluxStoreDir, resolveSkillSourceRoot, getWorkspaceRoot } from './workspace.js';
+import { getConfig } from './config.js';
 import { loadGlobalSettings } from './global-settings.js';
 import { installWorkspaceWorkflow, detectWorkspaceFrameworks, type Framework } from './workflow-installer.js';
 
-// Minimal shape of a config.json user entry — config.ts's configCache is untyped `any`,
+// Minimal shape of a config.json user entry — config.ts's getConfig() is untyped `any`,
 // so this captures only the field this module actually reads/writes.
 interface ConfigUserEntry {
   name?: string;
 }
 
 export async function bootstrapNewWorkspace(): Promise<void> {
+  const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return;
 
   const fluxExists = existsSync(getFluxDir()) || existsSync(getFluxStoreDir());
@@ -23,27 +24,28 @@ export async function bootstrapNewWorkspace(): Promise<void> {
     .replace(/[^A-Z0-9]/g, '')
     .slice(0, 8) || 'PROJECT';
 
-  configCache.projects = [projectKey];
+  getConfig().projects = [projectKey];
 
   const global = await loadGlobalSettings();
   if (global.defaultUser) {
-    const hasUser = configCache.users.some((u: ConfigUserEntry) => u.name === global.defaultUser);
+    const hasUser = getConfig().users.some((u: ConfigUserEntry) => u.name === global.defaultUser);
     if (!hasUser) {
-      configCache.users = [{ name: global.defaultUser }, ...configCache.users];
+      getConfig().users = [{ name: global.defaultUser }, ...getConfig().users];
     }
   }
   // FLUX-785: guarantee a human entry even when no global defaultUser is set, so a skip-name /
   // WorkspaceSelector first run never leaves config.users as [Agent]-only ("No users configured").
   // 'You' is a filterable placeholder — OnboardingWizard replaces it when a real name is entered.
-  if (!configCache.users.some((u: ConfigUserEntry) => u.name && u.name !== 'Agent')) {
-    configCache.users = [{ name: 'You' }, ...configCache.users];
+  if (!getConfig().users.some((u: ConfigUserEntry) => u.name && u.name !== 'Agent')) {
+    getConfig().users = [{ name: 'You' }, ...getConfig().users];
   }
-  if (!configCache.users.some((u: ConfigUserEntry) => u.name === 'Agent')) {
-    configCache.users.push({ name: 'Agent' });
+  if (!getConfig().users.some((u: ConfigUserEntry) => u.name === 'Agent')) {
+    getConfig().users.push({ name: 'Agent' });
   }
 }
 
 export async function installSkillsForWorkspace(): Promise<void> {
+  const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return;
 
   const global = await loadGlobalSettings();

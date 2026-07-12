@@ -130,6 +130,9 @@ export async function launchPhaseDefault(opts: {
   focusComment?: string;
 }): Promise<CliSessionSummary | null> {
   const { taskId, framework, phase, currentUser, phaseDefaults, skipPermissions, supervisorCapable, focusComment } = opts;
+  // FLUX-1380: fast-path is solo-session only (design decision 7) — it never has a workflow
+  // template, so it always dispatches directly (see dispatchFastPath) rather than through here.
+  if (phase === 'fast-path') return null;
   const defaultId = resolvePhaseDefaultId(phaseDefaults, phase, 'single');
   const list = await fetchWorkflows();
   const wf = list.find((w) => w.id === defaultId);
@@ -179,8 +182,11 @@ export interface MultiReviewResult {
 
 export type OrchestrationMode = 'scatter-gather' | 'parallel' | 'serialized' | 'handoff';
 
-/** Ticket lifecycle phase a launch belongs to. Drives which personas are offered. */
-export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize';
+/** Ticket lifecycle phase a launch belongs to. Drives which personas are offered.
+ *  'fast-path' (FLUX-1380): a launch-time-only choice for Grooming-column tickets — one session
+ *  grooms inline and implements in the same sitting. Never returned by `statusToPhase` (it is
+ *  never inferred from board status, only chosen explicitly at launch). */
+export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize' | 'fast-path';
 
 /**
  * Map a board status to the launch phase whose personas apply. Uses the board's
@@ -211,6 +217,9 @@ export function phaseLaunchStatus(phase: LaunchPhase): string | undefined {
     case 'grooming': return 'Grooming';
     case 'implementation': return 'In Progress';
     case 'review': return 'In Progress';
+    // FLUX-1380 design decision 6: fast-path performs no pre-launch status move — the session
+    // itself advances Grooming → In Progress → Ready in one sitting.
+    case 'fast-path': return undefined;
     default: return undefined;
   }
 }

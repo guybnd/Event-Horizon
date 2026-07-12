@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { serializeTaskForList, type TaskRecord } from './task-store.js';
-import { configCache } from './config.js';
+import { getConfig } from './config.js';
 
 function comment(id: string, text: string, date: string) {
   return { type: 'comment', user: 'guybnd', comment: text, date, id };
@@ -60,26 +60,26 @@ describe('serializeTaskForList comment capping (FLUX-1144)', () => {
   });
 
   it('respects a configured commentDigest.keepRecent', () => {
-    const original = configCache.commentDigest;
-    configCache.commentDigest = { keepRecent: 1 };
+    const original = getConfig().commentDigest;
+    getConfig().commentDigest = { keepRecent: 1 };
     try {
       const comments = [comment('c0', 'a', '2026-06-01T00:00:00.000Z'), comment('c1', 'b', '2026-06-02T00:00:00.000Z')];
       const result = serializeTaskForList(baseTask({ history: comments })) as { history: Array<{ id?: string }> };
       expect(result.history.map((e) => e.id)).toEqual(['c1']);
     } finally {
-      configCache.commentDigest = original;
+      getConfig().commentDigest = original;
     }
   });
 
   it('drops comments entirely when keepRecent is configured to 0', () => {
-    const original = configCache.commentDigest;
-    configCache.commentDigest = { keepRecent: 0 };
+    const original = getConfig().commentDigest;
+    getConfig().commentDigest = { keepRecent: 0 };
     try {
       const comments = [comment('c0', 'a', '2026-06-01T00:00:00.000Z')];
       const result = serializeTaskForList(baseTask({ history: comments })) as { history: unknown[] };
       expect(result.history).toEqual([]);
     } finally {
-      configCache.commentDigest = original;
+      getConfig().commentDigest = original;
     }
   });
 

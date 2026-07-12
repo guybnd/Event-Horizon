@@ -1,9 +1,10 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import matter from 'gray-matter';
-import { loadTask, tasksCache } from './task-store.js';
+import { loadTask } from './task-store.js';
 import { setWorkspaceRoot } from './workspace.js';
 import type { HistoryEntryLike } from './history.js';
 
@@ -30,11 +31,11 @@ describe('loadTask() retroactively compacts already-bloated terminal sessions (F
     fluxDir = path.join(root, '.flux');
     await fs.mkdir(fluxDir, { recursive: true });
     setWorkspaceRoot(root);
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
   });
 
   afterEach(async () => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     await fs.rm(root, { recursive: true, force: true }).catch(() => {});
   });
 
@@ -64,7 +65,7 @@ describe('loadTask() retroactively compacts already-bloated terminal sessions (F
 
     await loadTask(filePath);
 
-    const cachedSession = findAgentSession(tasksCache['FLUX-1']?.history);
+    const cachedSession = findAgentSession(getWorkspace().tasks['FLUX-1']?.history);
     expect(cachedSession.progress).toHaveLength(2);
     expect(cachedSession.progress.map((p) => p.message)).toEqual(['chunk 7', 'chunk 8']);
     expect(cachedSession.finalMessage).toBe('chunk 8');
@@ -129,7 +130,7 @@ describe('loadTask() retroactively compacts already-bloated terminal sessions (F
 
     await loadTask(filePath);
 
-    const cachedSession = findAgentSession(tasksCache['FLUX-3']?.history);
+    const cachedSession = findAgentSession(getWorkspace().tasks['FLUX-3']?.history);
     expect(cachedSession.progress).toHaveLength(8);
   });
 });

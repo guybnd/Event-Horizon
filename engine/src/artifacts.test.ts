@@ -156,14 +156,33 @@ describe('grooming artifacts (FLUX-873)', () => {
       expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain("type: 'annotations'");
     });
 
-    it('tags its injected UI so the layout audit skips it, and collects a batch before sending', () => {
+    it('tags its injected UI so the layout audit skips it', () => {
       // All injected nodes carry data-eh-ui; the audit skips [data-eh-ui], the composer ignores
       // selections inside itself.
       expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('data-eh-ui');
       expect(ARTIFACT_LAYOUT_AUDIT_SCRIPT).toContain("closest('[data-eh-ui]')");
-      // The tray accumulates annotations and only posts on an explicit send (no per-selection send).
       expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('annotations.push');
-      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('function sendBatch');
+    });
+
+    // FLUX-1362: the host owns the unified list — the iframe mirrors the set LIVE (on every add/edit/
+    // remove, each item carrying its pin id) instead of a one-shot Send tray, and accepts host→iframe
+    // pin edits/removals for reverse-sync.
+    it('mirrors annotations live (with ids) and accepts host→iframe remove/update — no tray/Send', () => {
+      // Live mirror on every change via a single post helper; each item carries its stable pin id.
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('function postLive');
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('id: a.id');
+      // Add / edit / remove all re-post the current set.
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('function addAnnotation');
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('function updateAnnotation');
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('function removeAnnotation');
+      // Host→iframe reverse-sync handlers.
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain("d.type === 'remove-pin'");
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain("d.type === 'update-pin'");
+      // The in-iframe tray + Send button are gone (management moved host-side).
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).not.toContain('function sendBatch');
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).not.toContain('function renderTray');
+      // Clicking a pin re-opens the composer to edit (never a bare delete).
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('existingId');
     });
 
     // FLUX-892: right-click element picking for non-text controls (toggles, SVG bars, buttons).
@@ -183,6 +202,16 @@ describe('grooming artifacts (FLUX-873)', () => {
       // The original text-selection path is still present (byte-for-byte unchanged behavior).
       expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain("addEventListener('mouseup'");
       expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('function selectionInfo');
+    });
+
+    // FLUX-1314: focus lives in-iframe once the user clicks the artifact, so the host's window
+    // listener never sees the Escape keydown — the annotator must forward it up.
+    it('forwards Escape to the host, closing its own composer first (FLUX-1314)', () => {
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain("addEventListener('keydown'");
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain("type: 'escape'");
+      // Nearest overlay first: an open composer is closed locally and the press is NOT forwarded;
+      // only a composer-less Escape reaches the host (which then pops its own LIFO stack).
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('if (composer) { clearComposer(); return; }');
     });
   });
 

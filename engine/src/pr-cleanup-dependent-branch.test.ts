@@ -10,6 +10,7 @@
 // "Launch Rebase Session" CTA a real git conflict gets — generalized off PrDeckCard.tsx-only scoping,
 // see MergeConflictBanner.tsx).
 
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -18,7 +19,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { setWorkspaceRoot } from './workspace.js';
 import { cleanupMergedBranch, recheckDependentBranches, pruneMergedBranches } from './pr-cleanup.js';
-import { tasksCache, createTask, updateTaskWithHistory } from './task-store.js';
+import { createTask, updateTaskWithHistory } from './task-store.js';
 import { clearNotifications } from './notifications.js';
 import type { OpenPrOnBase } from './branch-manager.js';
 
@@ -64,7 +65,7 @@ beforeEach(async () => {
   getOpenPullRequestsWithBase.mockReset();
   getOpenPullRequestsWithBase.mockResolvedValue([]);
   mergedPrHeadRefs.refs = [];
-  for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+  for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
 
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-pr-cleanup-dep-'));
   origin = path.join(tmp, 'origin.git');
@@ -87,7 +88,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+  for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
   await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
 });
 
@@ -95,7 +96,7 @@ describe('cleanupMergedBranch — dependent-branch safety net (FLUX-1270)', () =
   it('skips the branch delete and flags the dependent ticket merge-conflict when an open PR still bases off it', async () => {
     const followUp = await createTask({ title: 'Follow-up', status: 'In Progress' });
     // A real on-disk `branch` field — cleanupMergedBranch's dependent-ticket lookup reads the live
-    // tasksCache, but the flagging write re-reads fresh frontmatter from disk, so `branch` must
+    // getWorkspace().tasks, but the flagging write re-reads fresh frontmatter from disk, so `branch` must
     // actually be persisted (not just in-memory) to survive that round-trip.
     await updateTaskWithHistory(followUp.id, { updatedBy: 'Agent', extraFields: { branch: 'flux/followup' } });
     // Ticket markdown is normally tracked in git (the board IS the git history) — commit it so the
@@ -113,7 +114,7 @@ describe('cleanupMergedBranch — dependent-branch safety net (FLUX-1270)', () =
     expect(result.branchDeleted).toBe(false);
     expect(result.reason).toBe('branch-depended-on');
     expect(result.dependentTicketIds).toEqual([followUp.id]);
-    expect(tasksCache[followUp.id]?.swimlane).toBe('merge-conflict');
+    expect(getWorkspace().tasks[followUp.id]?.swimlane).toBe('merge-conflict');
   });
 
   it('does not re-flag (or re-comment) a ticket already flagged merge-conflict', async () => {
@@ -121,7 +122,7 @@ describe('cleanupMergedBranch — dependent-branch safety net (FLUX-1270)', () =
     await updateTaskWithHistory(followUp.id, { updatedBy: 'Agent', extraFields: { branch: 'flux/followup', swimlane: 'merge-conflict' } });
     await gitC(repo, ['add', '-A']);
     await gitC(repo, ['commit', '-m', 'seed follow-up ticket']);
-    const historyBefore = tasksCache[followUp.id]?.history?.length ?? 0;
+    const historyBefore = getWorkspace().tasks[followUp.id]?.history?.length ?? 0;
 
     getOpenPullRequestsWithBase.mockResolvedValue([
       { number: 434, url: 'https://github.com/acme/repo/pull/434', title: 'Follow-up PR', headRefName: 'flux/followup' },
@@ -129,7 +130,7 @@ describe('cleanupMergedBranch — dependent-branch safety net (FLUX-1270)', () =
 
     await cleanupMergedBranch(repo, 'flux/FLUX-861-parent', { auto: true });
 
-    expect(tasksCache[followUp.id]?.history?.length ?? 0).toBe(historyBefore); // no duplicate comment
+    expect(getWorkspace().tasks[followUp.id]?.history?.length ?? 0).toBe(historyBefore); // no duplicate comment
   });
 
   it('proceeds with the normal delete path when no dependent PR is found (unaffected default)', async () => {
@@ -163,7 +164,7 @@ describe('branchDeletePending marker + recheckDependentBranches close the loop (
     const result = await cleanupMergedBranch(repo, 'flux/FLUX-861-parent', { auto: true });
 
     expect(result.reason).toBe('branch-depended-on');
-    expect(tasksCache[parent.id]?.branchDeletePending).toBe(true);
+    expect(getWorkspace().tasks[parent.id]?.branchDeletePending).toBe(true);
   });
 
   it('recheckDependentBranches retries a pending branch and clears the marker once the dependency clears', async () => {
@@ -172,14 +173,14 @@ describe('branchDeletePending marker + recheckDependentBranches close the loop (
       { number: 434, url: 'https://github.com/acme/repo/pull/434', title: 'Follow-up PR', headRefName: 'flux/followup' },
     ]);
     await cleanupMergedBranch(repo, 'flux/FLUX-861-parent', { auto: true });
-    expect(tasksCache[parent.id]?.branchDeletePending).toBe(true);
+    expect(getWorkspace().tasks[parent.id]?.branchDeletePending).toBe(true);
 
     // The dependent PR has since merged/closed/or was rebased off `branch` — nothing depends on it
     // any more.
     getOpenPullRequestsWithBase.mockResolvedValue([]);
     await recheckDependentBranches(repo);
 
-    expect(tasksCache[parent.id]?.branchDeletePending).toBeFalsy();
+    expect(getWorkspace().tasks[parent.id]?.branchDeletePending).toBeFalsy();
   });
 
   it('recheckDependentBranches is a no-op when no ticket carries the marker', async () => {

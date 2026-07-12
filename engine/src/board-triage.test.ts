@@ -1,3 +1,4 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // FLUX-966: mock the real `gh` call so the dead-PR signal tests never shell out.
@@ -7,7 +8,7 @@ vi.mock('./branch-manager.js', () => ({
 }));
 
 import { buildTriageFragment, STALE_GROOMING_MS, STALE_REQUIRE_INPUT_MS, MAX_PR_CHECKS } from './board-triage.js';
-import { tasksCache } from './task-store.js';
+
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // board-triage.ts's own display cap (MAX_LIST) — kept module-private; mirrored here so the
@@ -31,18 +32,18 @@ function created(daysAgo: number) {
 }
 
 function seed(id: string, over: Record<string, unknown>) {
-  tasksCache[id] = { id, title: id, status: 'Todo', ...over };
+  getWorkspace().tasks[id] = { id, title: id, status: 'Todo', ...over };
 }
 
 describe('buildTriageFragment', () => {
   beforeEach(() => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     getPullRequestStatus.mockReset();
     getPullRequestStatus.mockResolvedValue(null);
   });
 
   afterEach(() => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
   });
 
   it('reports a healthy board when nothing qualifies', async () => {

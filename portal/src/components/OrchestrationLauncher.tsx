@@ -62,6 +62,9 @@ const PHASE_HEADINGS: Record<LaunchPhase, string> = {
   implementation: 'Implement with agents',
   review: 'Orchestrate agents',
   finalize: 'Finalize with agents',
+  // FLUX-1380: fast-path launches directly (no template picker) — this heading is unused in v1
+  // but kept for PHASE_HEADINGS' exhaustiveness over LaunchPhase.
+  'fast-path': 'Fast-path (groom + implement)',
 };
 
 /** Map a stored workflow execution pattern onto a launcher orchestration mode. */
@@ -150,6 +153,11 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
 
   const showBranchSection = ticket?.status === 'Todo' && !ticket?.branch;
 
+  // FLUX-1380: 'fast-path' is solo-session only (design decision 7) and never opens this
+  // multi-persona launcher — it dispatches directly (see dispatchFastPath). Narrow to the
+  // workflow-template phase set for the two template lookups below.
+  const workflowPhase = phase !== 'fast-path' ? phase : undefined;
+
   // The interactive template/mode/persona controls are only revealed once personas + templates
   // have loaded and the default template has been resolved/applied — otherwise the form would
   // flash a blank `Custom` state before snapping to the real default. See FLUX-830.
@@ -220,7 +228,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   // Apply a template's config for the current phase onto mode + selected personas.
   const applyTemplate = useCallback((wf: WorkflowTemplate | undefined) => {
     if (!wf) return;
-    const cfg = wf.phases?.[phase];
+    const cfg = workflowPhase ? wf.phases?.[workflowPhase] : undefined;
     if (!cfg) return;
     const memberIds = phaseConfigMembers(cfg).filter((id) => personas.some((p) => p.id === id));
     const resolvedMode = PATTERN_TO_MODE[cfg.pattern];
@@ -232,7 +240,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
     } else {
       setSelectedIds(memberIds);
     }
-  }, [phase, personas]);
+  }, [workflowPhase, personas]);
 
   // Load templates relevant to this phase when the launcher opens.
   useEffect(() => {
@@ -247,8 +255,8 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
 
   // Templates that define a config for the current phase (the only ones worth offering).
   const templatesForPhase = useMemo(
-    () => templates.filter((w) => w.phases?.[phase]),
-    [templates, phase],
+    () => (workflowPhase ? templates.filter((w) => w.phases?.[workflowPhase]) : []),
+    [templates, workflowPhase],
   );
 
   // Pre-populate from the card's chosen template, else the board default, once personas + templates load.

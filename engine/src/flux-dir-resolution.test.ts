@@ -7,6 +7,7 @@ import {
   getFluxDir,
   getFluxStoreDir,
   getActiveFluxDir,
+  getConfigFile,
   isOrphanMode,
   requireWorkspaceRoot,
 } from './workspace.js';
@@ -70,6 +71,60 @@ describe('flux dir resolution is pinned to the engine workspace root (FLUX-520)'
     const execRoot = await resolveTaskExecutionRoot({ id: 'FLUX-1' }, engineRoot);
     expect(execRoot).toBe(engineRoot);
     expect(getActiveFluxDir().startsWith(engineRoot)).toBe(true);
+  });
+});
+
+/**
+ * FLUX-1340 regression guard: config path resolution on a freshly-cloned orphan store.
+ *
+ * config.json is gitignored on flux-data (FLUX-532), so a workspace attached by cloning an
+ * existing flux-data branch has a .flux-store/ full of tickets but no .flux-store/config.json,
+ * and no .flux/ directory at all. getConfigFile() must resolve to the STORE path in that state,
+ * not the in-repo .flux/config.json — otherwise loadConfig()'s first-run default write throws
+ * ENOENT writing .flux/config.json.tmp (the dir doesn't exist), which unwinds out of initDir()
+ * before any ticket is scanned and leaves the board empty.
+ */
+describe('getConfigFile resolution in orphan mode (FLUX-1340)', () => {
+  let root: string;
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-cfgpath-'));
+  });
+  afterEach(async () => {
+    setWorkspaceRoot(process.cwd()); // don't leak the binding to later tests
+    await fs.rm(root, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('resolves to .flux-store/config.json when orphan store exists but no config file does yet', async () => {
+    await fs.mkdir(path.join(root, '.flux-store'), { recursive: true });
+    setWorkspaceRoot(root);
+    expect(isOrphanMode()).toBe(true);
+    // The bug returned path.join(root, '.flux', 'config.json') here — a dir that doesn't exist on
+    // a clone, so the default-config write later ENOENT'd and aborted activation.
+    expect(getConfigFile()).toBe(path.join(root, '.flux-store', 'config.json'));
+  });
+
+  it('prefers an existing .flux-store/config.json over the in-repo path', async () => {
+    await fs.mkdir(path.join(root, '.flux-store'), { recursive: true });
+    await fs.writeFile(path.join(root, '.flux-store', 'config.json'), '{}', 'utf-8');
+    setWorkspaceRoot(root);
+    expect(getConfigFile()).toBe(path.join(root, '.flux-store', 'config.json'));
+  });
+
+  it('still reads a legacy un-migrated .flux/config.json in orphan mode', async () => {
+    await fs.mkdir(path.join(root, '.flux-store'), { recursive: true });
+    await fs.mkdir(path.join(root, '.flux'), { recursive: true });
+    await fs.writeFile(path.join(root, '.flux', 'config.json'), '{}', 'utf-8');
+    setWorkspaceRoot(root);
+    // No store config yet, but a legacy in-repo copy exists → read it in place (it gets migrated
+    // into the store by migrateStrandedFluxTickets before initDir runs).
+    expect(getConfigFile()).toBe(path.join(root, '.flux', 'config.json'));
+  });
+
+  it('resolves to .flux/config.json in non-orphan (in-repo) mode', async () => {
+    await fs.mkdir(path.join(root, '.flux'), { recursive: true });
+    setWorkspaceRoot(root);
+    expect(isOrphanMode()).toBe(false);
+    expect(getConfigFile()).toBe(path.join(root, '.flux', 'config.json'));
   });
 });
 

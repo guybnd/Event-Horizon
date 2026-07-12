@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Tag, Link2, Gauge, Save, ChevronDown, Check, CircleHelp, TriangleAlert, Circle, Play, Flame, Activity, Bot } from 'lucide-react';
+import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Save, ChevronDown, Check, CircleHelp, TriangleAlert, Circle, CircleDashed, Archive, Eye, Ellipsis, NotebookPen, Play, Flame, Activity, Bot } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
@@ -15,7 +15,7 @@ import { selectChatRunGroup, isActiveSession } from '../orchestration';
 import { ChatDiffPanel } from './task-modal/ChatDiffPanel';
 import { TicketSideView } from './task-modal/TicketSideView';
 import { PlanApprovalPanel } from './task-modal/PlanApprovalPanel';
-import { ChatArtifactCard } from './task-modal/ChatArtifactCard';
+import { FloatingPanel } from './FloatingPanel';
 import { getPriorityIcon } from './task-modal/taskModalHelpers';
 import { TicketContextCard, BoardSnapshotCard, SessionMeter } from './task-modal/chatContext';
 import { parseQuickReplies } from './task-modal/chatQuickReplies';
@@ -23,13 +23,16 @@ import { parseRunProposal } from './task-modal/chatRunProposal';
 import { ChatRequireInputBanner } from './task-modal/ChatRequireInputBanner';
 import { TagSelector } from './TagSelector';
 import { TicketActions } from './ticket-actions/TicketActions';
-import { ChatPendingInteractions, usePendingInteractions, useComposerAnswer } from './pendingInteractions';
+import { ChatPendingInteractions, usePendingInteractions, useComposerAnswer, isPlanApprovalPending } from './pendingInteractions';
+import { planReviewDraftCount, formatRegroomNotes, loadPlanReviewDraft, clearPlanReviewDraft } from '../lib/planAnnotations';
 import { AttentionDock } from './attention/AttentionDock';
 import { useDock, MIN_SIDEVIEW_WIDTH, MAX_SIDEVIEW_WIDTH, DEFAULT_SIDEVIEW_WIDTH, type ComposerSelections, type AnchorRect, type WindowGeometry } from './DockProvider';
 import { useTicketSideView } from '../hooks/useTicketSideView';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { fireDesktopNotification } from '../hooks/useDesktopNotifications';
 import { getStatusTint, getStatusColorClass } from '../statusStyles';
+import { DISPATCH_PHASE_ICON } from '../lib/dispatch';
+import { DOCK_REVEAL_LABEL, DOCK_ICON_SLOT } from './dockReveal';
 import { getRequireInputStatus } from '../workflow';
 import { BOARD_CONVERSATION_ID, FURNACE_CONVERSATION_ID, createTask, updateTask, fetchTaskCliSession, fetchTaskTranscript, stopTaskCliSession, clearTaskTranscript, fetchBranchStatus, fetchTriageSignals, type BranchStatus } from '../api';
 import { setTranscript } from '../transcriptCache';
@@ -109,19 +112,37 @@ const STATE_DOT: Record<CardState, string> = {
   idle: 'bg-gray-300 dark:bg-gray-600',
 };
 
-/** FLUX-819: colorblind-safe leading glyph per state. Shape carries the meaning so the
- *  state is legible without relying on color (WCAG 1.4.1); the per-state `STATE_DOT` tint
- *  and the `STATE_ANIM` glow stay as reinforcing — not sole — channels. The critical split
- *  is `Check` (finished) vs `TriangleAlert` (error): circle-vs-triangle is the standard
- *  accessible substitute for the green/red collision. */
-const STATE_GLYPH: Record<CardState, LucideIcon> = {
-  working: Loader2,
-  'needs-input': CircleHelp,
-  finished: Check,
-  error: TriangleAlert,
-  available: Circle,
-  idle: Circle,
+/** FLUX-1281: a ticket tab's leading glyph now encodes the LIFECYCLE PHASE (shape sourced from the
+ *  board status, sharing `DISPATCH_PHASE_ICON` with the dispatch chips) while the run-state keeps
+ *  the tint (`STATE_DOT`) + motion (spin / eye-scan while working) + glow (`STATE_ANIM`) channels.
+ *  Todo deliberately reuses the implementation Code2 — Todo IS the implementation phase before any
+ *  session starts; the run-state axis already tells "queued" and "being coded" apart (rev-5 table).
+ *  FLUX-819's colorblind guarantee is preserved on different limbs: finished/error moved to
+ *  shape-distinct corner badges (Check circle vs TriangleAlert), needs-input keeps the
+ *  MessageCircleQuestion badge + its CircleHelp glyph via the Require Input status below. */
+const STATUS_PHASE_ICON: Record<string, LucideIcon> = {
+  Backlog: CircleDashed, // not yet groomed — no phase to show
+  Grooming: DISPATCH_PHASE_ICON.grooming,
+  Todo: DISPATCH_PHASE_ICON.implementation,
+  'In Progress': DISPATCH_PHASE_ICON.implementation,
+  'Require Input': CircleHelp,
+  Ready: DISPATCH_PHASE_ICON.review,
+  Done: DISPATCH_PHASE_ICON.finalize,
+  Released: DISPATCH_PHASE_ICON.finalize,
+  Archived: Archive,
 };
+
+/** Resolve a tab's leading glyph: prefer the ACTIVE session's own identity (`activePhase`, only
+ *  passed while it runs — e.g. a plan-review-gate pass on a Grooming ticket transiently reads as
+ *  the review Eye, reverting when the gate finishes), then the board status, then a plain circle
+ *  for unknown/custom statuses. 'chat' sessions carry no phase identity. */
+function phaseIconFor(status: string | undefined, activePhase?: string): LucideIcon {
+  if (activePhase && activePhase !== 'chat') {
+    const icon = DISPATCH_PHASE_ICON[activePhase as keyof typeof DISPATCH_PHASE_ICON];
+    if (icon) return icon;
+  }
+  return (status && STATUS_PHASE_ICON[status]) || Circle;
+}
 
 function dedupe(ids: string[]): string[] {
   return Array.from(new Set(ids));
@@ -204,7 +225,7 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
   const { pendingPromptConversationIds, requireInputConversationIds } = usePendingInteractions();
   // Window/open state lives in the app-root DockProvider (FLUX-603) so a card can drive it
   // and it survives view switches. `anchors` records where each window should spawn from.
-  const { open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, windowGeometry, toggle, closeCard, reopenFromHistory, setDraft, setSelections, reorder, promoteToFront, toggleSideView, openSideView, setSideviewWidth, seedSideviewWidth, setSectionOpen, setWindowGeometry, openTicket, openChat, raise, planApprovalOpen, closePlanApproval } = useDock();
+  const { open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, windowGeometry, toggle, closeCard, reopenFromHistory, setDraft, setSelections, reorder, promoteToFront, toggleSideView, openSideView, setSideviewWidth, seedSideviewWidth, setSectionOpen, setWindowGeometry, openTicket, openChat, raise, planApprovalOpen, planApprovalNonce, closePlanApproval } = useDock();
 
   // FLUX-744: open-ticket bridge. `openTask` (AppContext, which lives ABOVE the DockProvider) can't
   // call dock actions directly, so for the default 'chat' open mode it dispatches a `flux:open-ticket`
@@ -647,6 +668,10 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
           // FLUX-1273: the full-screen plan-approval panel — a per-id boolean (not the raw shared
           // id) so ChatWindow's memo bails for every OTHER open window when one ticket's panel toggles.
           planApprovalPanelOpen={planApprovalOpen === id}
+          // FLUX-1381: repeat-open signal — pinned to 0 unless THIS window's panel is the open one
+          // (same memo-bail reasoning as the boolean above), and bumped by DockProvider on every
+          // openPlanApproval call so a same-id reopen still un-minimizes the panel.
+          planApprovalPanelNonce={planApprovalOpen === id ? planApprovalNonce : 0}
           onClosePlanApproval={closePlanApproval}
           onMinimize={toggle}
           // FLUX-720: the window's close (X) is hidden while a prompt is pending, mirroring the
@@ -662,12 +687,17 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
           (titleWidth / compactId). The inner row uses py/-my so the absolute `!`/`x` aren't
           clipped under overflow-x-auto. */}
       <div className="eh-border eh-surface-overlay fixed bottom-3 left-1/2 z-40 flex max-w-[94vw] -translate-x-1/2 items-center gap-1.5 rounded-xl border px-2.5 py-1.5 shadow-xl">
+        {/* FLUX-1281: the global-actions cluster — Board / New Scratch / Furnace / Attention Dock
+            grouped on one quiet shared wash so the four ambient controls read as one unit, distinct
+            from the per-chat tabs strip. All four share the icon-first, hover/focus-reveal-label
+            pattern (dockReveal.ts). The tabs' SortableContext stays outside, untouched. */}
+        <div className="flex flex-shrink-0 items-center gap-1 rounded-xl bg-black/[0.03] p-1 dark:bg-white/[0.03]">
         {/* Orchestrator — pinned "home". Not retirable. FLUX-1209: Smelter now launches on its own
             FURNACE_CONVERSATION_ID, so this tab's label/identity is always the plain 'Orchestrator'
             (no more in-persona relabel — that was the override bug this ticket fixes). */}
         <ChatTab
           id={BOARD_CONVERSATION_ID}
-          label="Board"
+          label="Orchestrator"
           orchestrator
           open={open.includes(BOARD_CONVERSATION_ID)}
           state={cardState(boardSession?.status, acked.includes(BOARD_CONVERSATION_ID))}
@@ -679,19 +709,22 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
           onContextMenu={(e) => setMenu({ id: BOARD_CONVERSATION_ID, x: e.clientX, y: e.clientY })}
         />
 
-        {/* FLUX-1225: "+ New Scratch" — spawn a freeform Scratch Chat straight from the dock, no
+        {/* FLUX-1225: "New Scratch" — spawn a freeform Scratch Chat straight from the dock, no
             ticket picker. Pinned right of the Orchestrator; mints a kind:'scratch' entity and opens
-            its tab. */}
+            its tab. FLUX-1281: icon-first (NotebookPen — its own identity, no longer borrowing the
+            Board's spark), label reveals on hover/focus. */}
         <button
           type="button"
           onClick={() => void handleNewScratch()}
           disabled={creatingScratch}
           aria-label="New scratch chat"
           title="New scratch chat"
-          className="eh-border flex h-9 flex-shrink-0 items-center gap-1 rounded-lg border bg-[var(--eh-input-bg)] px-2 text-xs font-medium text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] disabled:cursor-not-allowed disabled:opacity-60 dark:hover:bg-white/5"
+          className="eh-border group flex h-9 flex-shrink-0 items-center rounded-lg border bg-[var(--eh-input-bg)] text-xs font-medium text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] disabled:cursor-not-allowed disabled:opacity-60 dark:hover:bg-white/5"
         >
-          {creatingScratch ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-          <span className="whitespace-nowrap">New Scratch</span>
+          <span className={DOCK_ICON_SLOT}>
+            {creatingScratch ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <NotebookPen className="h-3.5 w-3.5" />}
+          </span>
+          <span className={DOCK_REVEAL_LABEL}>New Scratch</span>
         </button>
 
         {/* FLUX-1035 / FLUX-1209 / FLUX-1212: the Furnace icon — a small square button pinned right of
@@ -711,52 +744,57 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
             onMouseEnter={() => setFurnaceFlyoutOpen(true)}
             onMouseLeave={() => setFurnaceFlyoutOpen(false)}
           >
-            <div className="flex items-center gap-0.5">
-              <button
-                type="button"
-                onClick={onToggleFurnace}
-                aria-label={furnaceBurning ? 'The Furnace — batches burning' : 'The Furnace'}
-                aria-pressed={!!furnaceOpen}
-                title={furnaceBurning ? 'The Furnace — batches burning' : 'The Furnace'}
-                className={`relative flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border transition-colors ${
-                  furnaceOpen
-                    ? 'border-transparent text-white'
-                    : furnaceChatOpen
-                      ? 'border-[var(--eh-furnace-accent)]/60 bg-[var(--eh-furnace-accent)]/10 text-[var(--eh-furnace-accent)]'
-                      : furnaceBurning
-                        ? 'border-[var(--eh-furnace-orange)]/60 bg-[var(--eh-furnace-orange)]/10 text-[var(--eh-furnace-orange)]'
-                        : 'eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-muted)] hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5'
-                }`}
-                style={furnaceOpen ? { background: 'var(--eh-furnace-orange)' } : undefined}
-              >
+            <button
+              type="button"
+              onClick={onToggleFurnace}
+              aria-label={furnaceBurning ? 'The Furnace — batches burning' : 'The Furnace'}
+              aria-pressed={!!furnaceOpen}
+              title={furnaceBurning ? 'The Furnace — batches burning' : 'The Furnace'}
+              className={`group relative flex h-9 flex-shrink-0 items-center rounded-lg border text-xs font-medium transition-colors ${
+                furnaceOpen
+                  ? 'border-transparent text-white'
+                  : furnaceChatOpen
+                    ? 'border-[var(--eh-furnace-accent)]/60 bg-[var(--eh-furnace-accent)]/10 text-[var(--eh-furnace-accent)]'
+                    : furnaceBurning
+                      ? 'border-[var(--eh-furnace-orange)]/60 bg-[var(--eh-furnace-orange)]/10 text-[var(--eh-furnace-orange)]'
+                      : 'eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-muted)] hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5'
+              }`}
+              style={furnaceOpen ? { background: 'var(--eh-furnace-orange)' } : undefined}
+            >
+              <span className={DOCK_ICON_SLOT}>
                 <Flame className={`h-4 w-4 ${!furnaceOpen && furnaceBurning ? 'animate-pulse' : ''}`} />
-                {!furnaceOpen && furnaceBurning && (
-                  <span
-                    aria-hidden="true"
-                    className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-[var(--eh-furnace-orange)] ring-2 ring-[var(--eh-base)]"
-                  />
-                )}
-                {furnaceChatUnread && (
-                  <span
-                    aria-hidden="true"
-                    className="absolute -left-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-primary ring-2 ring-[var(--eh-base)]"
-                  />
-                )}
-              </button>
-              {/* Touch/no-hover fallback (FLUX-1212): a tiny kebab reaches "Furnace chat" without
-                  relying on hover — the primary icon's one-tap behavior (open the drawer) is unchanged. */}
-              <button
-                type="button"
-                onClick={() => setFurnaceFlyoutOpen((v) => !v)}
-                aria-label="Furnace options"
-                aria-expanded={furnaceFlyoutOpen}
-                aria-haspopup="menu"
-                title="Furnace options"
-                className="flex h-9 w-3.5 flex-shrink-0 items-center justify-center rounded-md text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
-              >
-                <ChevronDown className="h-3 w-3" />
-              </button>
-            </div>
+              </span>
+              <span className={DOCK_REVEAL_LABEL}>Furnace</span>
+              {/* Corner badges are direct children of the button (never an inner slot) so they
+                  anchor to its true box and track the edge as the label reveals — FLUX-1281 rev-5. */}
+              {!furnaceOpen && furnaceBurning && (
+                <span
+                  aria-hidden="true"
+                  className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-[var(--eh-furnace-orange)] ring-2 ring-[var(--eh-base)]"
+                />
+              )}
+              {furnaceChatUnread && (
+                <span
+                  aria-hidden="true"
+                  className="absolute -left-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-primary ring-2 ring-[var(--eh-base)]"
+                />
+              )}
+            </button>
+            {/* Touch/keyboard fallback (FLUX-1212) for the hover flyout, restyled (FLUX-1281) from a
+                separate kebab column into a corner-badge caret riding the button's bottom-right edge.
+                A sibling (not a child) of the button — nested buttons are invalid HTML — absolutely
+                positioned on the shared relative wrapper, which grows with the button on reveal. */}
+            <button
+              type="button"
+              onClick={() => setFurnaceFlyoutOpen((v) => !v)}
+              aria-label="Furnace options"
+              aria-expanded={furnaceFlyoutOpen}
+              aria-haspopup="menu"
+              title="Furnace options"
+              className="eh-border eh-surface absolute -bottom-1 -right-1 z-10 flex h-3.5 w-3.5 items-center justify-center rounded-full border text-[var(--eh-text-muted)] shadow-sm transition-colors hover:text-[var(--eh-text-primary)]"
+            >
+              <ChevronDown className="h-2.5 w-2.5" />
+            </button>
 
             {furnaceFlyoutOpen && (
               <>
@@ -807,6 +845,7 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
             Replaces the old Pending tab + floating fallback: a 3-tier dynamic-label button
             (Needs You ▸ Updates ▸ Activity) that peeks new prompts and raises a 3-tab inbox. */}
         <AttentionDock />
+        </div>
 
         {activeTickets.length > 0 && (
           <div className="h-7 w-px bg-[var(--eh-border)]" aria-hidden="true" />
@@ -839,6 +878,8 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
                     state={cardState(t.cliSession?.status, acked.includes(t.id), t.status === 'Require Input' || t.swimlane === 'require-input')}
                     pendingPrompt={pendingPrompt}
                     statusTint={getStatusTint(config, t.status)}
+                    status={t.status}
+                    sessionPhase={t.cliSession?.phase}
                     activity={t.cliSession?.currentActivity ?? null}
                     unread={unreadOf(t.id)}
                     titleWidth={titleWidth}
@@ -855,47 +896,86 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
           </DndContext>
         </div>
 
-        {/* History — always available (so it's discoverable even before anything is closed). */}
-        <div className="relative ml-1">
+        {/* History — always available (so it's discoverable even before anything is closed).
+            FLUX-1281: moved off the main row onto a small file-tab riding the dock bar's top-right
+            corner (absolute against the fixed bar container), freeing the row for actual chats.
+            Same `showHistory` wiring — only the anchor moved. */}
+        <div className="absolute -top-3.5 right-3">
           <button
             type="button"
             onClick={() => setShowHistory((v) => !v)}
             aria-label="Recent chats"
             aria-expanded={showHistory}
             title="Recent chats"
-            className="eh-border flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border bg-[var(--eh-input-bg)] text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
+            className="eh-border eh-surface-overlay flex h-5 w-8 items-center justify-center rounded-t-lg border border-b-0 pb-0.5 text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-primary)]"
           >
-            <History className="h-4 w-4" />
+            <History className="h-3 w-3" />
           </button>
+          {/* FLUX-1281: rows carry the full task's identity — a status dot + left accent from the
+              board palette (getStatusTint) for tickets, a violet NotebookPen treatment for
+              kind:'scratch' entries (which already reach here: `dismissed` records any closed tab
+              and `cancelledIds` has no kind filter — verified, no inclusion change needed). */}
           {showHistory && (
-            <div className="eh-border eh-surface absolute bottom-full right-0 mb-2 max-h-64 w-60 overflow-y-auto rounded-xl border p-1 shadow-2xl">
+            <div className="eh-border eh-surface absolute bottom-full right-0 mb-1 max-h-72 w-72 overflow-y-auto rounded-xl border p-1 shadow-2xl">
               <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">
                 Recent chats
               </div>
               {historyIds.length === 0 ? (
                 <div className="px-2 py-2 text-xs text-gray-400">No recent chats</div>
               ) : (
-                historyIds.map((id) => (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={(e) => handleReopen(id, e.currentTarget)}
-                    title={titleOf(id)}
-                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-gray-100 dark:hover:bg-white/10"
-                  >
-                    <History className="h-3.5 w-3.5 flex-shrink-0 text-gray-400" />
-                    <span className="flex min-w-0 flex-col">
-                      <span className="truncate text-xs font-medium text-gray-700 dark:text-gray-200">
-                        {titleOf(id)}
-                      </span>
-                      {id !== BOARD_CONVERSATION_ID && id !== FURNACE_CONVERSATION_ID && (
-                        <span className="text-[10px] font-medium uppercase tracking-wide text-gray-400">
-                          {id}
-                        </span>
+                historyIds.map((id) => {
+                  const task = allTasks.find((t) => t.id === id);
+                  const scratch = task?.kind === 'scratch';
+                  const tint = task && !scratch ? getStatusTint(config, task.status) : null;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={(e) => handleReopen(id, e.currentTarget)}
+                      title={titleOf(id)}
+                      className="flex w-full items-center gap-2 rounded-lg border-l-2 px-2 py-1.5 text-left hover:bg-gray-100 dark:hover:bg-white/10"
+                      style={{
+                        borderLeftColor: scratch
+                          ? 'rgb(139 92 246)'
+                          : tint
+                            ? `rgba(${tint.rgb}, 0.8)`
+                            : 'transparent',
+                      }}
+                    >
+                      {scratch ? (
+                        <NotebookPen className="h-3.5 w-3.5 flex-shrink-0 text-violet-500" />
+                      ) : (
+                        <History className="h-3.5 w-3.5 flex-shrink-0 text-gray-400" />
                       )}
-                    </span>
-                  </button>
-                ))
+                      <span className="flex min-w-0 flex-col">
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          {tint && (
+                            <span
+                              aria-hidden="true"
+                              className="h-1.5 w-1.5 flex-shrink-0 rounded-full"
+                              style={{ backgroundColor: `rgb(${tint.rgb})` }}
+                            />
+                          )}
+                          <span className="truncate text-xs font-medium text-gray-700 dark:text-gray-200">
+                            {titleOf(id)}
+                          </span>
+                        </span>
+                        {scratch ? (
+                          <span className="text-[10px] font-medium uppercase tracking-wide text-violet-500/80">
+                            Scratch
+                          </span>
+                        ) : (
+                          id !== BOARD_CONVERSATION_ID &&
+                          id !== FURNACE_CONVERSATION_ID && (
+                            <span className="text-[10px] font-medium uppercase tracking-wide text-gray-400">
+                              {task?.status ? `${id} · ${task.status}` : id}
+                            </span>
+                          )
+                        )}
+                      </span>
+                    </button>
+                  );
+                })
               )}
             </div>
           )}
@@ -982,6 +1062,8 @@ function ChatTab({
   state,
   pendingPrompt = false,
   statusTint,
+  status,
+  sessionPhase,
   activity,
   unread = false,
   titleWidth = 0,
@@ -994,13 +1076,17 @@ function ChatTab({
   dragHandleProps,
 }: {
   id: string;
-  /** Orchestrator label ("Board"). */
+  /** Orchestrator label ("Orchestrator") — icon-only at rest, revealed on hover/focus (FLUX-1281). */
   label?: string;
   /** Ticket title — shown after the id when there's room. */
   title?: string;
   orchestrator: boolean;
   open: boolean;
   state: CardState;
+  /** FLUX-1281: the ticket's board status — sources the leading PHASE glyph (ticket tabs only). */
+  status?: string;
+  /** FLUX-1281: the live session's launch phase — overrides `status` for the glyph while working. */
+  sessionPhase?: string;
   /** FLUX-720: this chat has an unresolved pending interaction (approval / question / rebase).
    *  Overlays a distinct prompt icon + pulse and outranks the live `state` for attention. */
   pendingPrompt?: boolean;
@@ -1028,13 +1114,17 @@ function ChatTab({
   const { short } = splitId(id);
   const copy = pendingPrompt ? 'needs your answer' : STATE_COPY[state];
   const working = state === 'working';
-  // FLUX-819: per-state glyph carries the state shape on the leading indicator (below).
-  const StateGlyph = STATE_GLYPH[state];
+  // FLUX-1281: the leading glyph is the lifecycle-phase icon (see STATUS_PHASE_ICON) — sourced
+  // from the active session's identity while one runs, else the board status. Tint stays the
+  // run-state channel (STATE_DOT); motion is gated to a live session only.
+  const PhaseIcon = phaseIconFor(status, working ? sessionPhase : undefined);
   const fullLabel = orchestrator ? 'Orchestrator' : title ? `${id} — ${title}` : id;
 
-  // Horizontal "chrome tab" — short, flat, label-bearing (vs the old square card).
+  // Horizontal "chrome tab" — short, flat, label-bearing (vs the old square card). FLUX-1281:
+  // the orchestrator drops the flex gap — its label collapses to zero width at rest (icon-first,
+  // hover/focus-reveal) and a gap beside a zero-width item would leave the spark off-center.
   const base =
-    'group relative flex h-9 flex-shrink-0 items-center gap-1.5 rounded-lg border pl-2 pr-2.5 text-left shadow-sm transition-all duration-150 ';
+    `group relative flex h-9 flex-shrink-0 items-center ${orchestrator ? '' : 'gap-1.5 '}rounded-lg border pl-2 pr-2.5 text-left shadow-sm transition-all duration-150 `;
   // FLUX-648: ticket tabs are tinted by their board status (the slow-changing axis) via an
   // inline rgba fill/border built from the same status palette the board uses. The live
   // session-state dot/glow/badge stay layered on top as the fast-changing overlay. Open tabs
@@ -1086,23 +1176,37 @@ function ChatTab({
       {...dragHandleProps}
     >
       {/* Leading: the orchestrator keeps its spark (warm-tinted with a soft glow so it pops on
-          the gradient); a ticket gets a per-state glyph (FLUX-819) whose silhouette is unique
-          so the state reads without color — tinted with the same per-state color as a
-          redundant cue. The label/title already carry the state for screen readers. */}
+          the gradient); a ticket gets its lifecycle-PHASE icon (FLUX-1281) — shape from the board
+          status / active session, tint from the run-state (STATE_DOT). While a session is live the
+          icon spins in place, except the review Eye whose pupil scans side-to-side instead (a
+          spinning eye reads as broken). The label/title already carry the state for screen readers. */}
       {orchestrator ? (
         <Sparkles className="h-4 w-4 flex-shrink-0 text-amber-200 drop-shadow-[0_0_4px_rgba(253,230,138,0.55)]" />
       ) : (
-        <StateGlyph className={`h-3 w-3 flex-shrink-0 ${STATE_DOT[state].replace(/bg-/g, 'text-')}${working ? ' animate-spin' : ''}`} aria-hidden="true" />
+        <PhaseIcon
+          className={`h-3 w-3 flex-shrink-0 ${STATE_DOT[state].replace(/bg-/g, 'text-')}${
+            working ? (PhaseIcon === Eye ? ' eh-eye-scan' : ' animate-spin') : ''
+          }`}
+          aria-hidden="true"
+        />
       )}
 
       {/* Label: id (full, or just the number when crowded) + the real title. We no longer
           swap the label out for the live activity text while working — that buried the useful
           info. Instead a tiny thinking bubble (below) shows progress is ticking, and the
-          current activity stays available on hover (tooltip). */}
+          current activity stays available on hover (tooltip). FLUX-1281: the orchestrator joins
+          the dock bar's icon-first pattern — its label collapses at rest and reveals on
+          hover/focus-visible (the aria-label/tooltip always carry 'Orchestrator'). */}
       <span className="flex min-w-0 items-baseline gap-1.5">
-        <span className="flex-shrink-0 text-xs font-semibold leading-none tracking-tight">
-          {orchestrator ? label : compactId ? short : id}
-        </span>
+        {orchestrator ? (
+          <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-semibold leading-none tracking-tight opacity-0 transition-all duration-200 group-hover:max-w-[130px] group-hover:pl-1.5 group-hover:opacity-100 group-focus-visible:max-w-[130px] group-focus-visible:pl-1.5 group-focus-visible:opacity-100">
+            {label}
+          </span>
+        ) : (
+          <span className="flex-shrink-0 text-xs font-semibold leading-none tracking-tight">
+            {compactId ? short : id}
+          </span>
+        )}
         {!orchestrator && titleWidth > 0 && title && (
           <span className="truncate text-[11px] leading-none opacity-70" style={{ maxWidth: titleWidth }}>
             {title}
@@ -1136,11 +1240,25 @@ function ChatTab({
         </span>
       )}
 
-      {/* Unread dot — agent said something you haven't opened since. FLUX-819: now the sole
-          corner marker (the per-state `!` badge was retired — the leading glyph carries state
-          shape, so the corner is free to mean purely "new since you last looked"). Suppressed
-          only when the pending-prompt badge already owns this corner. */}
-      {unread && !pendingPrompt && (
+      {/* FLUX-1281: outcome corner badge — the finished/error SHAPE moved here from the old
+          leading state glyph (that slot now carries the phase icon). Reuses the FLUX-720 corner +
+          precedence mechanism: the pending-prompt badge above outranks it, and it suppresses the
+          unread dot below — one badge owns the corner at a time. Check-in-circle vs triangle keeps
+          the FLUX-819 colorblind-safe green/red split; both clear on ack (opening the chat). */}
+      {!pendingPrompt && (state === 'finished' || state === 'error') && (
+        <span
+          aria-hidden="true"
+          className={`absolute -left-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full text-white shadow ring-2 ring-[var(--eh-surface)] ${
+            state === 'finished' ? 'bg-emerald-500' : 'bg-red-500'
+          }`}
+        >
+          {state === 'finished' ? <Check className="h-2.5 w-2.5" /> : <TriangleAlert className="h-2.5 w-2.5" />}
+        </span>
+      )}
+
+      {/* Unread dot — agent said something you haven't opened since; purely "new since you last
+          looked". Suppressed when the pending-prompt or outcome badge already owns this corner. */}
+      {unread && !pendingPrompt && state !== 'finished' && state !== 'error' && (
         <span
           aria-hidden="true"
           className="absolute -left-1 -top-1 h-2.5 w-2.5 rounded-full bg-primary ring-2 ring-[var(--eh-surface)]"
@@ -1266,31 +1384,8 @@ const EFFORT_LEVEL_OPTIONS: { value: string; label: string }[] = [
   { value: 'max', label: 'max' },
 ];
 
-/** FLUX-740: a compact inline `<select>` styled to sit in the metadata bar (no label chrome — the
- *  value reads as a pill). `onPointerDown` is stopped so opening it never starts a window drag. */
-function BarSelect({
-  value, onChange, options, title, className = '',
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-  title: string;
-  className?: string;
-}) {
-  return (
-    <select
-      title={title}
-      value={value}
-      onPointerDown={(e) => e.stopPropagation()}
-      onChange={(e) => onChange(e.target.value)}
-      className={`flex-shrink-0 cursor-pointer rounded-md border px-1.5 py-0.5 text-[11px] font-medium outline-none transition-colors focus:border-primary ${className}`}
-    >
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>{o.label}</option>
-      ))}
-    </select>
-  );
-}
+// FLUX-1281: BarSelect (the inline pill `<select>`) retired — its one consumer, the Assignee pill,
+// moved into the metadata bar's "More" disclosure as a plain labeled select.
 
 /** FLUX-744: a small colored dot for a status, using the board's per-status tint accent. Lets the
  *  status dropdown carry its board identity (native `<option>`s can't render color). */
@@ -1307,7 +1402,7 @@ interface BarDropdownOption {
 }
 
 /** FLUX-744: a compact custom dropdown for the metadata bar that CAN render a per-option icon/dot
- *  (unlike the native `<select>` of `BarSelect`, where `<option>`s are text-only). Reuses BarPopover's
+ *  (unlike a native `<select>`, where `<option>`s are text-only). Reuses BarPopover's
  *  open/close contract — outside-click + Escape close it, and `onPointerDown` is stopped so opening it
  *  never starts a window drag — and adds listbox keyboard nav (↑/↓/Home/End move, Enter/click select).
  *
@@ -1530,11 +1625,13 @@ function BarPopover({
 
 /**
  * FLUX-620 / FLUX-740: the editable ticket metadata bar under the chat window's title bar — the
- * "metadata cockpit". Holds ALL ticket fields: status / priority / assignee / effort as inline
- * pills, and tags / implementation link / effort level as popovers, plus the read-only branch /
- * worktree / PR display. Edits flow through the shared `useTicketSideView` controller (same
- * `updateTask` write path as the sideview), and the unified dirty/save affordance lives here so it
- * stays reachable even when the sideview panel is collapsed or closed. Ticket windows only.
+ * "metadata cockpit". Holds ALL ticket fields; FLUX-1281 splits them by scan frequency: status /
+ * priority stay inline pills next to the read-only branch badge (the at-a-glance trio), while
+ * assignee / effort / tags / implementation link / effort level (+ the worktree readout) fold into
+ * one "More" disclosure — same editable fields, one click away, nothing removed. Edits flow through
+ * the shared `useTicketSideView` controller (same `updateTask` write path as the sideview), and the
+ * unified dirty/save affordance lives here so it stays reachable even when the sideview panel is
+ * collapsed or closed. Ticket windows only.
  */
 function ChatMetadataBar({ c }: { c: ReturnType<typeof useTicketSideView> }) {
   const task = c.task;
@@ -1569,14 +1666,17 @@ function ChatMetadataBar({ c }: { c: ReturnType<typeof useTicketSideView> }) {
     <>
       {/* FLUX-742: only the metadata pills scroll horizontally (inner overflow-x-auto, flex-1). The
           Save/Discard (or PR) cluster is a sibling that does NOT scroll, so it stays pinned and
-          reachable at the right edge even when the chat column is narrow and the pills overflow. */}
-      <div className="eh-border-subtle flex items-center gap-1.5 border-b px-3 py-1.5 text-[11px]">
+          reachable at the right edge even when the chat column is narrow and the pills overflow.
+          FLUX-1281: when the ticket has a branch, ChatDiffPanel renders directly below — drop this
+          bar's own border-b so the two strips merge into one continuous "ticket info" band closed
+          by the diff panel's border; branchless windows keep the border as their own closer. */}
+      <div className={`eh-border-subtle flex items-center gap-1.5 ${task.branch ? '' : 'border-b '}px-3 py-1.5 text-[11px]`}>
         <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
         <span className="flex-shrink-0 font-mono text-[var(--eh-text-muted)]">{task.id}</span>
 
-        {/* Inline metadata pills. FLUX-744: status/priority/effort use BarDropdown so they keep their
-            board identity (priority icon, status color dot) — native <option>s can't render visuals.
-            Assignee stays a native select (variable-length user list, no per-option visual). */}
+        {/* Inline metadata pills — the at-a-glance pair. FLUX-744: status/priority use BarDropdown
+            so they keep their board identity (priority icon, status color dot) — native <option>s
+            can't render visuals. */}
         <BarDropdown
           title="Status"
           value={c.status}
@@ -1593,78 +1693,87 @@ function ChatMetadataBar({ c }: { c: ReturnType<typeof useTicketSideView> }) {
           triggerLeading={getPriorityIcon(c.priority, config, 'h-3 w-3')}
           className="eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-secondary)]"
         />
-        <BarSelect
-          title="Assignee"
-          value={c.assignee}
-          onChange={c.setAssignee}
-          options={[{ value: 'unassigned', label: 'Unassigned' }, ...c.allUsers.map((u) => ({ value: u, label: u }))]}
-          className="eh-border max-w-[120px] bg-[var(--eh-input-bg)] text-[var(--eh-text-secondary)]"
-        />
-        <BarDropdown
-          title="Effort"
-          value={c.effort}
-          onChange={c.setEffort}
-          options={EFFORT_OPTIONS.map((e) => ({ value: e, label: e }))}
-          className="eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-secondary)]"
-        />
 
-        {/* Popover fields — don't fit a one-line pill. */}
-        <BarPopover label={c.tags.length ? `Tags · ${c.tags.length}` : 'Tags'} icon={Tag} active={c.tags.length > 0} title="Edit tags">
-          {config && (
-            <TagSelector tags={c.tags} onChange={c.setTags} availableTags={c.allTags} configTags={config.tags} />
-          )}
-        </BarPopover>
-        <BarPopover label="Link" icon={Link2} active={!!c.implementationLink} title="Implementation link (PR / commit URL)">
-          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">Implementation Link</label>
-          <input
-            value={c.implementationLink}
-            onChange={(e) => c.setImplementationLink(e.target.value)}
-            placeholder="https://github.com/..."
-            className="eh-border w-full rounded-md border bg-[var(--eh-input-bg)] px-2 py-1 text-[12px] outline-none focus:border-primary"
-          />
-        </BarPopover>
-        <BarPopover
-          label={c.effortLevel ? `Effort · ${c.effortLevel}` : 'Effort lvl'}
-          icon={Gauge}
-          active={!!c.effortLevel}
-          title="Agent effort level (overrides the global default)"
-          align="right"
-        >
-          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">Effort Level</label>
-          <select
-            value={c.effortLevel}
-            onChange={(e) => c.setEffortLevel(e.target.value)}
-            className="eh-border w-full cursor-pointer rounded-md border bg-[var(--eh-input-bg)] px-2 py-1 text-[12px] outline-none focus:border-primary"
-          >
-            {EFFORT_LEVEL_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
-        </BarPopover>
-
-        {/* Read-only branch / worktree display (kept from the original strip). */}
+        {/* Read-only branch display. FLUX-1281: the inline ↑ahead/↓behind counters left the pill
+            face — the pill's own tooltip now carries them, so the info survives the cleanup. */}
         {branchName && (
           <span
             className="flex min-w-0 flex-shrink-0 items-center gap-1 text-[var(--eh-text-secondary)]"
-            title={branchName}
+            title={ahead > 0 || behind > 0 ? `${branchName} — ${ahead} ahead, ${behind} behind master` : branchName}
           >
             <GitBranch className="h-3 w-3 flex-shrink-0" />
             <span className="max-w-[120px] truncate font-mono">{branchName}</span>
-            {(ahead > 0 || behind > 0) && (
-              <span
-                className="flex-shrink-0 text-[var(--eh-text-muted)]"
-                title={`${ahead} ahead, ${behind} behind master`}
+          </span>
+        )}
+
+        {/* FLUX-1281: the rarely-scanned fields fold into one disclosure — same editable fields
+            (same `useTicketSideView` setters, so the pinned Save/Discard dirty flow is untouched),
+            one click away. Worktree (read-only) rides along from the old inline strip. */}
+        <BarPopover label="More" icon={Ellipsis} title="More fields — assignee, effort, tags, link, effort level" align="right">
+          <div className="flex flex-col gap-2.5">
+            <div>
+              <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">Assignee</label>
+              <select
+                value={c.assignee}
+                onChange={(e) => c.setAssignee(e.target.value)}
+                className="eh-border w-full cursor-pointer rounded-md border bg-[var(--eh-input-bg)] px-2 py-1 text-[12px] outline-none focus:border-primary"
               >
-                {[ahead > 0 ? `↑${ahead}` : null, behind > 0 ? `↓${behind}` : null].filter(Boolean).join(' ')}
-              </span>
+                <option value="unassigned">Unassigned</option>
+                {c.allUsers.map((u) => (
+                  <option key={u} value={u}>{u}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">Effort</label>
+              <select
+                value={c.effort}
+                onChange={(e) => c.setEffort(e.target.value)}
+                className="eh-border w-full cursor-pointer rounded-md border bg-[var(--eh-input-bg)] px-2 py-1 text-[12px] outline-none focus:border-primary"
+              >
+                {EFFORT_OPTIONS.map((e) => (
+                  <option key={e} value={e}>{e}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">Tags</label>
+              {config && (
+                <TagSelector tags={c.tags} onChange={c.setTags} availableTags={c.allTags} configTags={config.tags} />
+              )}
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">Implementation Link</label>
+              <input
+                value={c.implementationLink}
+                onChange={(e) => c.setImplementationLink(e.target.value)}
+                placeholder="https://github.com/..."
+                className="eh-border w-full rounded-md border bg-[var(--eh-input-bg)] px-2 py-1 text-[12px] outline-none focus:border-primary"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">Effort Level</label>
+              <select
+                value={c.effortLevel}
+                onChange={(e) => c.setEffortLevel(e.target.value)}
+                className="eh-border w-full cursor-pointer rounded-md border bg-[var(--eh-input-bg)] px-2 py-1 text-[12px] outline-none focus:border-primary"
+              >
+                {EFFORT_LEVEL_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            {worktree && (
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">Worktree</label>
+                <span className="flex items-center gap-1 text-[11px] text-[var(--eh-text-secondary)]" title={worktree}>
+                  <FolderGit2 className="h-3 w-3 flex-shrink-0" />
+                  <span className="truncate">{worktree}</span>
+                </span>
+              </div>
             )}
-          </span>
-        )}
-        {worktree && (
-          <span className="flex flex-shrink-0 items-center gap-1 text-[var(--eh-text-muted)]" title={worktree}>
-            <FolderGit2 className="h-3 w-3 flex-shrink-0" /> worktree
-          </span>
-        )}
+          </div>
+        </BarPopover>
         </div>
 
         {/* FLUX-740: the unified dirty/save affordance — pinned right, reachable even with the
@@ -1888,78 +1997,88 @@ function ChatWindowHeader({
         )}
         {titleSlot}
       </div>
+      {/* FLUX-1281: the button row reads as two clusters split by a hairline — a VIEW group (reset /
+          full-view / sideview: things about seeing the ticket) and a WINDOW group (minimize / close:
+          things about this floating window). Same buttons, same order, same click targets. */}
       <div className="flex flex-shrink-0 items-center gap-0.5">
         {/* FLUX-1234: the Smelter's drafting/operator authority toggle lives here — in the Smelter
             chat header, the surface where that authority is exercised — instead of the Furnace
-            drawer. Persists workspace-wide to config.furnaceSettings.smelterMode. Furnace chat only. */}
+            drawer. Persists workspace-wide to config.furnaceSettings.smelterMode. Furnace chat only.
+            Leading, outside both groups; its onPointerDown stopPropagation keeps the drag-to-move
+            header from swallowing its clicks. */}
         {isFurnaceChat && (
           <div className="mr-1.5" onPointerDown={(e) => e.stopPropagation()}>
             <SmelterModeToggle />
           </div>
         )}
-        {/* Orchestrator can't be closed (it's pinned) — instead it can be reset to a clean
-            slate: stop the live turn and wipe the transcript. FLUX-1221: the Furnace-chat gets the
-            same affordance here — it's the one reachable reset surface, since (by design, FLUX-1212)
-            it has no strip tab and therefore no tab context-menu to reset from. */}
-        {(orchestrator || isFurnaceChat) && (
+        <span className="flex items-center gap-0.5">
+          {/* Orchestrator can't be closed (it's pinned) — instead it can be reset to a clean
+              slate: stop the live turn and wipe the transcript. FLUX-1221: the Furnace-chat gets the
+              same affordance here — it's the one reachable reset surface, since (by design, FLUX-1212)
+              it has no strip tab and therefore no tab context-menu to reset from. */}
+          {(orchestrator || isFurnaceChat) && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={onResetConversation}
+              title="Reset conversation (clears history)"
+              className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {/* FLUX-744: open the ticket in the legacy full-screen modal (ticket windows only). Opening it
+              collapses (minimizes) this chat so the two surfaces don't draw over each other. */}
+          {task && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => { openTaskFullView(task); onMinimize(id); }}
+              title="Open in full view"
+              className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
+            >
+              <Maximize2 className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {/* FLUX-734: open/close the ticket sideview beside the chat (ticket windows only). */}
+          {task && onToggleSideView && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => onToggleSideView(id)}
+              title={sideViewOpen ? 'Hide ticket panel' : 'Show ticket panel'}
+              aria-pressed={sideViewOpen}
+              className={`rounded-md p-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${
+                sideViewOpen ? 'text-primary' : 'text-[var(--eh-text-muted)] hover:text-[var(--eh-text-primary)]'
+              }`}
+            >
+              {sideViewOpen ? <PanelRightClose className="h-3.5 w-3.5" /> : <PanelRight className="h-3.5 w-3.5" />}
+            </button>
+          )}
+        </span>
+        <span aria-hidden="true" className="mx-1 h-4 w-px flex-shrink-0 bg-[var(--eh-border)]" />
+        <span className="flex items-center gap-0.5">
           <button
             type="button"
             onPointerDown={(e) => e.stopPropagation()}
-            onClick={onResetConversation}
-            title="Reset conversation (clears history)"
+            onClick={() => onMinimize(id)}
+            title="Minimize"
             className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
           >
-            <RotateCcw className="h-3.5 w-3.5" />
+            <Minus className="h-3.5 w-3.5" />
           </button>
-        )}
-        {/* FLUX-744: open the ticket in the legacy full-screen modal (ticket windows only). Opening it
-            collapses (minimizes) this chat so the two surfaces don't draw over each other. */}
-        {task && (
-          <button
-            type="button"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => { openTaskFullView(task); onMinimize(id); }}
-            title="Open in full view"
-            className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
-          >
-            <Maximize2 className="h-3.5 w-3.5" />
-          </button>
-        )}
-        {/* FLUX-734: open/close the ticket sideview beside the chat (ticket windows only). */}
-        {task && onToggleSideView && (
-          <button
-            type="button"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => onToggleSideView(id)}
-            title={sideViewOpen ? 'Hide ticket panel' : 'Show ticket panel'}
-            aria-pressed={sideViewOpen}
-            className={`rounded-md p-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${
-              sideViewOpen ? 'text-primary' : 'text-[var(--eh-text-muted)] hover:text-[var(--eh-text-primary)]'
-            }`}
-          >
-            {sideViewOpen ? <PanelRightClose className="h-3.5 w-3.5" /> : <PanelRight className="h-3.5 w-3.5" />}
-          </button>
-        )}
-        <button
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => onMinimize(id)}
-          title="Minimize"
-          className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
-        >
-          <Minus className="h-3.5 w-3.5" />
-        </button>
-        {canClose && onClose && (
-          <button
-            type="button"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => onClose(id)}
-            title="Close (move to recent chats)"
-            className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-500 dark:hover:bg-red-500/15"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        )}
+          {canClose && onClose && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => onClose(id)}
+              title="Close (move to recent chats)"
+              className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-500 dark:hover:bg-red-500/15"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </span>
       </div>
     </div>
   );
@@ -1989,6 +2108,7 @@ const ChatWindow = memo(function ChatWindow({
   windowGeometry,
   onGeometryChange,
   planApprovalPanelOpen = false,
+  planApprovalPanelNonce = 0,
   onClosePlanApproval,
   onMinimize,
   canClose = true,
@@ -2040,6 +2160,10 @@ const ChatWindow = memo(function ChatWindow({
   onGeometryChange?: (id: string, geom: Partial<WindowGeometry>) => void;
   /** FLUX-1273: whether the full-screen plan-approval panel is open for THIS window's ticket. */
   planApprovalPanelOpen?: boolean;
+  /** FLUX-1381: bumps on every `openPlanApproval` call for THIS window's ticket (0 while it isn't
+   *  the open one). A repeat open of the already-open id leaves `planApprovalPanelOpen` unchanged,
+   *  so this is what re-fires the minimize-reset effect and restores a minimized panel. */
+  planApprovalPanelNonce?: number;
   /** FLUX-1273: close the plan-approval panel (stable DockActions reference — see the FLUX-1200 memo note above). */
   onClosePlanApproval?: () => void;
   onMinimize: (id: string) => void;
@@ -2063,6 +2187,20 @@ const ChatWindow = memo(function ChatWindow({
   const chat = useChatSession(id, true, working);
   const allTasks = useAppSelector((s) => s.tasks) as Task[];
   const config = useAppSelector((s) => s.config);
+
+  // FLUX-1339/1362: chat-scoped plan-review panel state. The panel opens as an own full-screen
+  // surface (a maximizable FloatingPanel, default-maximized — FLUX-1362 deliberately reversed the
+  // FLUX-1339 chat-body clamp because a small box is illegible for a plan), minimizes to a strip
+  // near the composer, and its unsent-note draft guards the window close. `planMinimized` is local
+  // (transient UI); the guard reads the module-level draft store so it works whether or not the
+  // panel is mounted. Re-expand whenever the panel is (re)opened/closed from the dock/sideview —
+  // FLUX-1381: also keyed on the nonce, which is what changes when "open plan" is clicked for a
+  // ticket whose panel is ALREADY open but minimized (the boolean stays true in that case, so it
+  // alone left the panel stuck hidden).
+  const [planMinimized, setPlanMinimized] = useState(false);
+  useEffect(() => { setPlanMinimized(false); }, [planApprovalPanelOpen, planApprovalPanelNonce]);
+  const [closeGuard, setCloseGuard] = useState(false);
+  const unsentPlanCount = planReviewDraftCount(id);
   // FLUX-923: composer-as-answer. A parked single-question ask_user_question for THIS chat (its own id,
   // or — via the resilience net — an unrouted prompt claimed by the single live chat) can be answered
   // straight from the composer in addition to the picker's chips. Shared hook (see useComposerAnswer).
@@ -2390,6 +2528,69 @@ const ChatWindow = memo(function ChatWindow({
   // The chat surface itself is identical for orchestrator + ticket windows; only the surrounding
   // chrome (metadata bar, diff panel, sideview) differs, so it's built once and reused in both
   // branches of the body below.
+  // FLUX-1339: route text into THIS chat — enqueue behind a live turn (FIFO), else send straight
+  // away. Shared by the sideview, the plan panel, and the close-guard's "Send now".
+  const routeToChat = (text: string) => {
+    if (working || chat.busy) chat.enqueue(text);
+    else void chat.send(text);
+  };
+
+  // FLUX-1339: flush the ticket's unsent plan-review draft into this chat (the guard's "Send now"),
+  // then clear it so it can't re-prompt.
+  const flushPlanNotesToChat = () => {
+    const { annotations, notes } = loadPlanReviewDraft(id);
+    const text = formatRegroomNotes(annotations, notes);
+    if (text) routeToChat(text);
+    clearPlanReviewDraft(id);
+  };
+
+  // FLUX-1339: guard the window close — closing a chat with unsent plan notes prompts (send now /
+  // keep for later / discard) instead of stranding the draft out of view. No draft → close directly.
+  const guardedClose = () => {
+    if (!onClose) return;
+    if (planReviewDraftCount(id) > 0) { setCloseGuard(true); return; }
+    onClose(id);
+  };
+
+  // FLUX-1339: the minimized plan-review strip — pinned above the composer while the floating panel
+  // is collapsed. Shows the unsent-note count + live agent status (revising / waiting / idle), all
+  // derived from state this window already holds. Clicking it restores the panel at its last size.
+  const planStripStatus: 'revising' | 'waiting' | 'idle' = working
+    ? 'revising'
+    : (isRequireInput || (task ? isPlanApprovalPending(task, config) : false))
+      ? 'waiting'
+      : 'idle';
+  // FLUX-1362: revision metadata for the in-stream "new revision" markers (woven into the transcript
+  // by publish time). Memoized so ChatView's markdown-heavy rows memo isn't busted every render.
+  const artifactMarkers = useMemo(
+    () => (task?.artifacts?.revisions ?? []).map((r) => ({ rev: r.rev, title: r.title, createdAt: r.createdAt })),
+    [task?.artifacts?.revisions],
+  );
+
+  const planReviewStripEl = planApprovalPanelOpen && planMinimized && task ? (
+    <button
+      type="button"
+      onClick={() => setPlanMinimized(false)}
+      title="Restore the plan-review panel"
+      className="flex w-full items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-[12px] text-[var(--eh-text-secondary)] transition-colors hover:bg-primary/10"
+    >
+      <ListChecks className="h-3.5 w-3.5 flex-shrink-0 text-primary" />
+      <span className="font-semibold text-[var(--eh-text-primary)]">Plan review</span>
+      <span className="flex items-center gap-1 text-[11px] text-[var(--eh-text-muted)]">
+        {planStripStatus === 'revising' && <><Loader2 className="h-3 w-3 animate-spin" /> revising…</>}
+        {planStripStatus === 'waiting' && <><CircleHelp className="h-3 w-3 text-amber-500" /> waiting for your input</>}
+        {planStripStatus === 'idle' && <>idle</>}
+      </span>
+      {unsentPlanCount > 0 && (
+        <span className="ml-auto flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500" />
+          {unsentPlanCount} unsent
+        </span>
+      )}
+      <Maximize2 className={`h-3.5 w-3.5 flex-shrink-0 text-[var(--eh-text-muted)] ${unsentPlanCount > 0 ? '' : 'ml-auto'}`} />
+    </button>
+  ) : undefined;
+
   const chatViewEl = (
     <ChatView
       title={orchestrator ? 'Board chat' : id}
@@ -2437,9 +2638,10 @@ const ChatWindow = memo(function ChatWindow({
       orchestrationBlock={runGroup ? (
         <ChatOrchestrationBlock group={runGroup} taskId={id} onOpenRun={openRun} onStopSession={stopOne} onStopAll={stopAll} />
       ) : undefined}
-      artifactCard={task && (task.artifacts?.revisions?.length ?? 0) > 0 ? (
-        <ChatArtifactCard task={task} onOpen={() => onOpenArtifact?.(id)} />
-      ) : undefined}
+      artifactMarkers={artifactMarkers}
+      onOpenArtifact={() => onOpenArtifact?.(id)}
+      planReadyPresent={task ? isPlanApprovalPending(task, config) : false}
+      planReviewStrip={planReviewStripEl}
       actions={
         orchestrator ? (
           <div className="flex flex-wrap items-center gap-1.5">
@@ -2497,7 +2699,8 @@ const ChatWindow = memo(function ChatWindow({
                 sideViewOpen={sideViewOpen}
                 onMinimize={onMinimize}
                 canClose={canClose}
-                onClose={onClose}
+                // FLUX-1339: guard the close when this ticket has unsent plan-review notes.
+                onClose={onClose ? () => guardedClose() : undefined}
                 openTaskFullView={openTaskFullView}
                 onResetConversation={handleResetConversation}
                 titleSlot={
@@ -2512,7 +2715,8 @@ const ChatWindow = memo(function ChatWindow({
                   />
                 }
               />
-              <div className="flex min-h-0 flex-1 overflow-hidden">
+              {/* `relative` positioning context for the sideview's `absolute inset-0` fill. */}
+              <div className="relative flex min-h-0 flex-1 overflow-hidden">
                 <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                   <ChatMetadataBar c={c} />
                   <ChatDiffPanel task={task} />
@@ -2545,20 +2749,71 @@ const ChatWindow = memo(function ChatWindow({
                     </div>
                   </>
                 )}
-                {/* FLUX-1273: full-screen plan-approval panel, mounted inside this SAME controller scope
-                    so its staged header edits share one form state with ChatMetadataBar/TicketSideView,
-                    and its "Ask in chat" / annotation posting reuses this exact live-send routing. */}
+                {/* FLUX-1362 (ex-FLUX-1273/1339): the plan-approval panel opens as its OWN full-screen
+                    surface — a maximizable FloatingPanel, default-maximized — with a restore control
+                    that drops to a smaller resizable floating form (choice persists per storageKey).
+                    Mounted inside this SAME controller scope so its staged header edits share one form
+                    state with ChatMetadataBar/TicketSideView, and its "Ask in chat" / annotation
+                    posting reuses the same live-send routing. Kept MOUNTED while minimized (`hidden`)
+                    so the artifact iframe + composed draft survive collapse; the minimized affordance
+                    is the strip above the composer (`planReviewStripEl`). */}
                 {planApprovalPanelOpen && (
-                  <PlanApprovalPanel
-                    c={c}
+                  <FloatingPanel
+                    storageKey={`eh-plan-panel-${id}`}
+                    title={`Plan review · ${id}`}
+                    hidden={planMinimized}
+                    bodyClassName="flex min-h-0 flex-1 overflow-hidden"
+                    defaultWidth={560}
+                    defaultHeight={480}
+                    maximizable
+                    defaultMaximized
+                    portal
+                    onMinimize={() => setPlanMinimized(true)}
                     onClose={() => onClosePlanApproval?.()}
-                    onSendToChat={(text) => {
-                      if (working || chat.busy) chat.enqueue(text);
-                      else void chat.send(text);
-                    }}
-                  />
+                  >
+                    <PlanApprovalPanel
+                      c={c}
+                      onClose={() => onClosePlanApproval?.()}
+                      onSendToChat={routeToChat}
+                    />
+                  </FloatingPanel>
                 )}
               </div>
+              {/* FLUX-1339: close-guard — closing this chat with unsent plan notes offers to send them
+                  now, keep them for later (draft survives), or discard, instead of stranding the draft. */}
+              {closeGuard && (
+                <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/30 p-4">
+                  <div className="eh-surface eh-border w-full max-w-sm rounded-xl border p-4 shadow-2xl">
+                    <div className="mb-1 text-[14px] font-semibold text-[var(--eh-text-primary)]">Unsent plan notes</div>
+                    <p className="mb-3 text-[12px] text-[var(--eh-text-secondary)]">
+                      You have {unsentPlanCount} unsent plan-review note{unsentPlanCount === 1 ? '' : 's'} for {id}. What would you like to do before closing?
+                    </p>
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { clearPlanReviewDraft(id); setCloseGuard(false); onClose?.(id); }}
+                        className="rounded-md px-3 py-1.5 text-[12px] font-semibold text-red-600 transition-colors hover:bg-red-500/10 dark:text-red-400"
+                      >
+                        Discard
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setCloseGuard(false); onClose?.(id); }}
+                        className="eh-border rounded-md border px-3 py-1.5 text-[12px] font-semibold text-[var(--eh-text-secondary)] transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+                      >
+                        Keep for later
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { flushPlanNotesToChat(); setCloseGuard(false); onClose?.(id); }}
+                        className="rounded-md bg-primary px-3 py-1.5 text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover"
+                      >
+                        Send now
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </>
           )}
         </TicketControllerScope>

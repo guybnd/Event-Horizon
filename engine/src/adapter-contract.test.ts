@@ -19,13 +19,17 @@ import { getBoardAdapter } from './agents/index.js';
 // (src/agents/*.ts) that actually import them — vi.mock resolves against the calling file, and
 // vitest matches mocks by final resolved path, so `./x.js` here == `../x.js` from src/agents/*.ts.
 vi.mock('./workspace.js', () => ({
-  workspaceRoot: '/tmp/test-repo',
+  getWorkspaceRoot: () => '/tmp/test-repo',
   getActiveFluxDir: () => '/tmp/test-repo/.flux',
   getTaskAssetsDir: () => '/tmp/test-repo/.flux/assets',
 }));
-vi.mock('./config.js', () => ({ configCache: {} }));
+// FLUX-1373: resolveModel (agents/shared.ts) reads INTEGRATION_TIER_DEFAULTS/MODEL_POLICY_PRESETS
+// from this module too — keep the real exports via importOriginal, only stub getConfig.
+vi.mock('./config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./config.js')>();
+  return { ...actual, getConfig: () => ({}) };
+});
 vi.mock('./task-store.js', () => ({
-  tasksCache: {},
   updateTaskWithHistory: vi.fn().mockResolvedValue(undefined),
   updateAgentSession: vi.fn(),
   estimateCostUSD: vi.fn(() => 0),
@@ -262,14 +266,17 @@ describe('CLI_CAPABILITIES contract (FLUX-901, audit B.1)', () => {
     expect(CLI_CAPABILITIES.gemini.selfPause).toBe(true);
   });
 
-  it('spawnTimeMcpConfig: Claude AND Copilot now inject MCP config explicitly (FLUX-984); Gemini unverified', () => {
+  it('spawnTimeMcpConfig: Claude AND Copilot inject MCP config explicitly (FLUX-984); Gemini cannot — it routes via env-resolved settings headers (FLUX-1222)', () => {
     // Copilot never auto-loads workspace .mcp.json in non-interactive mode (confirmed live,
     // no permission flag changes it) — copilot.ts injects it via --additional-mcp-config, a
     // different flag/JSON-shape than Claude's --mcp-config, same capability concept (B.6).
-    // Gemini's equivalent gap (if any) is unconfirmed — its CLI exposes a differently-shaped
-    // --allowed-mcp-server-names flag, not an inline-config-injection flag like Copilot's —
-    // and Gemini CLI access is broken in this environment, so it's deliberately left `false`
-    // rather than guessed. See FLUX-984.
+    // Gemini (verified on FLUX-1222) has NO inline-config-injection flag — only the
+    // differently-shaped --allowed-mcp-server-names — so the flag stays `false`. Its per-session
+    // HITL routing works WITHOUT spawn-time config instead: the installer bakes
+    // ${EH_CONVERSATION_ID}/${EH_CONVERSATION_TOKEN} header placeholders into the static
+    // .gemini/settings.json, and each Gemini process resolves them from its own spawn env
+    // (cleanChildEnv). See buildGeminiMcpServerEntry in workflow-installer.ts and
+    // gemini-conversation-headers.test.ts.
     expect(CLI_CAPABILITIES.claude.spawnTimeMcpConfig).toBe(true);
     expect(CLI_CAPABILITIES.copilot.spawnTimeMcpConfig).toBe(true);
     expect(CLI_CAPABILITIES.gemini.spawnTimeMcpConfig).toBe(false);
@@ -553,10 +560,10 @@ describe('FLUX-1193: chat edit-gate note reaches the real spawn -p arg', () => {
 
     it(`${framework}: a resumed turn's -p arg re-prepends the gate note (recomputed per turn, not just at spawn)`, async () => {
       const { startCliSession, sendCliSessionInput } = await loadAdapter(framework);
-      const { tasksCache } = await import('./task-store.js');
+      const { getWorkspace } = await import('./workspace-context.js');
       const taskId = `FLUX-TEST-${framework}-resume`;
       const task = { id: taskId, status: 'Todo' };
-      (tasksCache as Record<string, unknown>)[taskId] = task;
+      getWorkspace().tasks[taskId] = task;
       const session = fakeChatSession(taskId, framework);
 
       mockSpawn.mockClear();

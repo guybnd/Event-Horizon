@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { checkBinaryInstalled, resolveClaudeExePath, isDefinitiveNotInstalled, surfaceResumeFailure, isChatEditGated, chatEditGateNote, prependEditGateNote } from './shared.js';
+import { checkBinaryInstalled, resolveClaudeExePath, isDefinitiveNotInstalled, surfaceResumeFailure, isChatEditGated, chatEditGateNote, prependEditGateNote, resolveModel } from './shared.js';
 import type { CliSessionRecord } from './types.js';
+import { INTEGRATION_TIER_DEFAULTS, MODEL_POLICY_PRESETS } from '../config.js';
 
 // ─── Mocks for the surfaceResumeFailure tests below (FLUX-1120) ───────────────
 // surfaceResumeFailure persists through task-store/parked-ticket — mocked here so it
@@ -230,5 +231,51 @@ describe('chatEditGateNote / prependEditGateNote (FLUX-1123)', () => {
     const session = { phase: 'chat' as const };
     expect(isChatEditGated(session, { status: 'Todo' })).toBe(true);
     expect(isChatEditGated(session, { status: 'In Progress' })).toBe(false);
+  });
+});
+
+// FLUX-1373: resolveModel is the one shared task-tier -> concrete-model resolver every adapter's
+// `session.model || resolveModel(...)` fallback and the delegate route call.
+describe('resolveModel (FLUX-1373)', () => {
+  const fullConfig = {
+    integrations: {
+      claudeCode: { tiers: { smart: 'opus', efficient: 'sonnet', cheap: 'haiku' } },
+      geminiCli: { tiers: { smart: 'gemini-2.5-pro', efficient: 'gemini-2.5-flash', cheap: 'gemini-2.5-flash-lite' } },
+      copilotCli: { tiers: { smart: 'gpt-5', efficient: 'gpt-5-mini', cheap: 'gpt-4.1' } },
+    },
+    modelPolicy: { assignments: { ...MODEL_POLICY_PRESETS.balanced } },
+  };
+
+  it('resolves tiers[assignments[taskKey]] for each framework', () => {
+    expect(resolveModel('implementation.workers', 'claude', fullConfig)).toBe('sonnet');
+    expect(resolveModel('grooming.lead', 'gemini', fullConfig)).toBe('gemini-2.5-pro');
+    expect(resolveModel('finalize', 'copilot', fullConfig)).toBe('gpt-4.1');
+  });
+
+  it('every preset resolves end-to-end for every framework', () => {
+    for (const preset of ['splurge', 'balanced', 'frugal'] as const) {
+      const config = { ...fullConfig, modelPolicy: { assignments: { ...MODEL_POLICY_PRESETS[preset] } } };
+      for (const framework of ['claude', 'gemini', 'copilot'] as const) {
+        for (const taskKey of Object.keys(MODEL_POLICY_PRESETS[preset]) as Array<keyof typeof MODEL_POLICY_PRESETS['balanced']>) {
+          const model = resolveModel(taskKey, framework, config);
+          expect(typeof model).toBe('string');
+          expect(model.length).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+
+  it('falls back to the shipped Balanced tier when the assignment is missing/invalid', () => {
+    const config = { ...fullConfig, modelPolicy: { assignments: {} } };
+    expect(resolveModel('review.workers', 'claude', config)).toBe(fullConfig.integrations.claudeCode.tiers[MODEL_POLICY_PRESETS.balanced['review.workers']]);
+  });
+
+  it('falls back to the shipped per-CLI default when the tier model-id is blank/missing', () => {
+    const config = { integrations: { claudeCode: { tiers: { smart: '', cheap: 'haiku' } } }, modelPolicy: { assignments: { chat: 'efficient' as const } } };
+    expect(resolveModel('chat', 'claude', config)).toBe(INTEGRATION_TIER_DEFAULTS.claudeCode.efficient);
+  });
+
+  it('falls back sanely when config pieces are entirely missing (undefined config)', () => {
+    expect(resolveModel('finalize', 'claude', undefined)).toBe(INTEGRATION_TIER_DEFAULTS.claudeCode[MODEL_POLICY_PRESETS.balanced.finalize]);
   });
 });

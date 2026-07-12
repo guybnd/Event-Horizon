@@ -34,6 +34,7 @@ This is your primary workspace configuration file. It is tracked in your reposit
 | `readyForMergeStatus` | `string` | The status name indicating a ticket is awaiting user review before merging (default: `"Ready"`). |
 | `gatePolicy` | `object` | **FLUX-1261.** Per-gate autonomy policy — see below. Replaces the old `temperEnabled` boolean (migrated once via the `gatePolicyMigrated` marker). |
 | `blockAgentPrMerges` | `boolean` | **FLUX-1290.** Gates the `finish_ticket` merge-lock's runtime "a human touched this" check — see below (default `false`). |
+| `agents.honorScheduledWakeups` | `boolean` | **FLUX-1390.** Honor the `ScheduleWakeup` tool in dispatched (non-chat) phase sessions instead of blocking it — see below (default `false`). |
 | `boardCardOpenMode` | `"full" \| "preview"` | Controls whether clicking a board card opens the full modal or the side preview. |
 | `animationsEnabled` | `boolean` | Toggles micro-animations on the board interface. |
 | `docsRoot` | `string` | The directory relative to the workspace root where documentation is stored (default: `.docs`). |
@@ -85,6 +86,14 @@ Values: `auto` clears the gate silently and loops to completion (re-tried up to 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `blockAgentPrMerges` | `boolean` | `false` | Gates the `finish_ticket` merge-lock's `hasHumanGateTouch` runtime check. `false` skips it (agent-driven merges allowed); `true` restores the always-on refusal. |
+
+### Honor scheduled wakeups
+
+**FLUX-1390** (follow-up to **FLUX-1389**). Every dispatched phase session (grooming/implementation/review/finalize) is a one-shot `claude -p` process that exits at turn end — a `ScheduleWakeup` call there used to silently no-op (no runtime left to honor it) and get the ticket parked as a false "no verdict" review/implementation (FLUX-1378). FLUX-1389 fixed that by unconditionally blocking `ScheduleWakeup` for every non-chat phase via `--disallowed-tools`. `agents.honorScheduledWakeups` (default **`false`**) makes that block conditional: when `false`, behavior is byte-identical to FLUX-1389 (blocked; no session ever enters the `scheduled` state). When `true`, the block is lifted and the wakeup is actually **honored** — the session enters a new resumable `scheduled` session state (distinct from `waiting-input`) instead of finalizing, and the engine's own background wake ticker (`scheduled-wake.ts`, 5s cadence) resumes it via `--resume` once the requested delay elapses, so an unattended agent can self-pace across a long wait (CI, a slow test suite) instead of blocking the whole turn. Bounded: the requested delay is clamped to the tool's own `[60, 3600]`s range, and a session may self-schedule at most 5 times before it fails closed to a normal terminal end. `decideTicketAction` (Furnace/Temper) treats `scheduled` as `wait`, never a park. Claude-only (`ScheduleWakeup` is a Claude Code native tool with no gemini/copilot equivalent). Not yet surfaced in Settings; edit `.flux/config.json` directly.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `agents.honorScheduledWakeups` | `boolean` | `false` | Honor `ScheduleWakeup` in dispatched (non-chat) phase sessions via the `scheduled` session state + background wake ticker, instead of blocking it. |
 
 ### Integration Settings
 

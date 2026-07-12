@@ -1,12 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { configCache } from './config.js';
-import { getActiveFluxDir, workspaceRoot } from './workspace.js';
+import { getConfig } from './config.js';
+import { getActiveFluxDir, getWorkspaceRoot } from './workspace.js';
 
 /** Read the workspace `.mcp.json` server map (host-launched servers, incl. event-horizon). */
 export function getWorkspaceMcpServers(): Record<string, Record<string, unknown>> {
   try {
-    const file = path.join(workspaceRoot || process.cwd(), '.mcp.json');
+    const file = path.join(getWorkspaceRoot() || process.cwd(), '.mcp.json');
     const json = JSON.parse(fs.readFileSync(file, 'utf8'));
     return json?.mcpServers ?? {};
   } catch {
@@ -93,7 +93,7 @@ function isValidModule(m: unknown): m is ModuleDeclaration {
 }
 
 export function loadModules(): ModuleDeclaration[] {
-  const raw = configCache.modules;
+  const raw = getConfig().modules;
   if (!Array.isArray(raw)) return [];
   return raw.filter(isValidModule);
 }

@@ -1,8 +1,9 @@
+import { getWorkspace } from '../workspace-context.js';
 import express from 'express';
 import { randomUUID } from 'crypto';
-import { workspaceRoot } from '../workspace.js';
-import { configCache } from '../config.js';
-import { tasksCache } from '../task-store.js';
+import { getWorkspaceRoot } from '../workspace.js';
+import { getConfig } from '../config.js';
+
 import {
   cliSessionsById,
   cliSessionIdByTaskId,
@@ -31,9 +32,9 @@ import {
 } from '../session-store.js';
 import { getAdapter, getBoardAdapter, resolveDefaultFramework, isKnownFramework, getRuntimeFrameworks } from '../agents/index.js';
 import { BOARD_CONVERSATION_ID, FURNACE_CONVERSATION_ID, isVirtualConversationId } from '../agents/board.js';
-import { resolveAttachmentAbsPaths, attachmentReadInstruction, appendErrorToSession } from '../agents/shared.js';
+import { resolveAttachmentAbsPaths, attachmentReadInstruction, appendErrorToSession, resolveModel } from '../agents/shared.js';
 import type { ChatAttachment } from '../projection.js';
-import { updateTaskWithHistory } from '../task-store.js';
+import { updateTaskWithHistory, subtaskIds } from '../task-store.js';
 import { broadcastEvent } from '../events.js';
 import { killProcessTree } from '../kill-process-tree.js';
 import { appendTranscriptEvent, readTranscriptMessages, clearTranscript } from '../transcript.js';
@@ -41,6 +42,7 @@ import { resetBoardDigest } from '../board-digest.js';
 import { dismissNotificationsForTicket } from '../notifications.js';
 import { resolvePersonaPrompt, getPersonaById } from '../orchestration-personas.js';
 import { ensureTicketIsolation } from '../ticket-isolation.js';
+import { raiseNeedsAction, isDelegatedMember } from '../parked-ticket.js';
 import { buildActivityEntry, buildAgentSessionEntry } from '../history.js';
 import {
   captureDiffForPrompt,
@@ -49,7 +51,7 @@ import {
   resolveBaselineCommit,
   type PromptDiffCapture,
 } from '../branch-manager.js';
-import { TIER_MODELS, INTEGRATION_CONFIG_KEYS, type CliSessionRecord, type CliFramework, type ExecutionPattern, type PatternPosition, type GroupVariant, type LaunchPhase } from '../agents/types.js';
+import { TASK_KEYS, type CliSessionRecord, type CliFramework, type ExecutionPattern, type PatternPosition, type GroupVariant, type LaunchPhase, type TaskKey } from '../agents/types.js';
 
 // ─── Local types (lint burndown, FLUX-1073) ──────────────────────────────────
 // Ticket frontmatter has no canonical compile-time type in this codebase — it's validated at
@@ -73,7 +75,7 @@ const router = express.Router();
 // Launch phase / intent (portal tells engine why a session exists). Validated
 // against this set wherever a caller supplies a raw `phase` string so an
 // arbitrary value never lands on a session record or a persona-prompt lookup.
-const VALID_LAUNCH_PHASES: LaunchPhase[] = ['grooming', 'implementation', 'review', 'finalize', 'chat'];
+const VALID_LAUNCH_PHASES: LaunchPhase[] = ['grooming', 'implementation', 'review', 'finalize', 'chat', 'fast-path'];
 
 /**
  * Resolve the default permission mode for a session surface (FLUX-605). The per-chat
@@ -87,8 +89,8 @@ function resolvePermissionMode(
 ): 'gated' | 'skip' {
   if (requested === 'gated' || requested === 'skip') return requested;
   const configured = surface === 'board'
-    ? configCache?.permissions?.boardDefault
-    : configCache?.permissions?.ticketDefault;
+    ? getConfig()?.permissions?.boardDefault
+    : getConfig()?.permissions?.ticketDefault;
   if (configured === 'gated' || configured === 'skip') return configured;
   return surface === 'board' ? 'gated' : 'skip';
 }
@@ -173,6 +175,10 @@ interface SpawnOptions {
   skipPermissions: boolean;
   role?: string | undefined;
   phase?: LaunchPhase | undefined;
+  /** FLUX-1373: explicit task-tier policy key override — bypasses deriveTaskKey's phase+position
+   *  rule for dispatch sites where that generic derivation would guess wrong (the plan-gate review
+   *  pass, the scatter-gather combiner). Most callers omit this and let createPendingSession derive it. */
+  taskKey?: TaskKey | undefined;
   pattern?: ExecutionPattern | undefined;
   patternPosition?: PatternPosition | undefined;
   groupId?: string | undefined;
@@ -182,6 +188,24 @@ interface SpawnOptions {
   groupVariant?: GroupVariant | undefined;
   lockedPaths?: string[] | undefined;
   diffBlock?: string | undefined;
+}
+
+// FLUX-1373: derive session.taskKey from what a dispatch site knows at spawn time — phase +
+// pattern position (assistant/step -> workers, else lead); finalize/chat are single keys with no
+// position suffix. No phase (ad-hoc/legacy launch) falls back to the status-based rule that
+// predates taskKey (grooming statuses -> grooming.lead, else implementation.lead) so an unstamped
+// launch resolves the same model it always did. Callers that know better (the /start route's
+// explicit body param, the plan-gate review pass, the scatter-gather combiner) pass `opts.taskKey`
+// to createPendingSession instead, which short-circuits this.
+function deriveTaskKey(phase: LaunchPhase | undefined, patternPosition: PatternPosition | undefined, taskStatus: unknown): TaskKey {
+  if (phase === 'finalize') return 'finalize';
+  if (phase === 'chat') return 'chat';
+  if (phase) {
+    const position = patternPosition === 'assistant' || patternPosition === 'step' ? 'workers' : 'lead';
+    return `${phase}.${position}` as TaskKey;
+  }
+  const groomingStatuses = [getConfig().requireInputStatus || 'Require Input', 'Grooming'];
+  return groomingStatuses.includes(taskStatus) ? 'grooming.lead' : 'implementation.lead';
 }
 
 // Stamp baselineCommit at first session launch if missing. This is the review-diff anchor.
@@ -255,6 +279,7 @@ function createPendingSession(task: TaskRecord, opts: SpawnOptions): CliSessionR
   };
   if (opts.role) session.role = opts.role;
   if (opts.phase) session.phase = opts.phase;
+  session.taskKey = opts.taskKey ?? deriveTaskKey(opts.phase, opts.patternPosition, task.status);
   if (opts.pattern) session.pattern = opts.pattern;
   if (opts.patternPosition && opts.patternPosition !== 'standalone') session.patternPosition = opts.patternPosition;
   if (opts.groupId) session.groupId = opts.groupId;
@@ -303,7 +328,7 @@ async function spawnSession(task: TaskRecord, opts: SpawnOptions): Promise<CliSe
   await stampBaselineCommit(task);
 
   try {
-    await getAdapter(opts.framework).start(session, task, opts.appendPrompt, opts.effortOverride, workspaceRoot!);
+    await getAdapter(opts.framework).start(session, task, opts.appendPrompt, opts.effortOverride, getWorkspaceRoot()!);
   } catch (error) {
     // FLUX-981: a pre-spawn failure (binary missing, worktree/isolation resolution error, etc.) throws
     // BEFORE any child process spawns, so the adapter's own proc.on('error') handler never runs — the
@@ -372,7 +397,7 @@ async function prepareAndLaunchSession(
     if (session.requestedStop) return;
 
     session.currentActivity = undefined;
-    await getAdapter(opts.framework).start(session, task, opts.appendPrompt, opts.effortOverride, workspaceRoot!);
+    await getAdapter(opts.framework).start(session, task, opts.appendPrompt, opts.effortOverride, getWorkspaceRoot()!);
   } catch (error: unknown) {
     // FLUX-1002 review: a stop requested while isolation/spawn prep was in flight already set
     // status:'cancelled' (see the requestedStop checks above) — this backgrounded rejection lands
@@ -402,6 +427,19 @@ async function prepareAndLaunchSession(
     } catch {
       /* surfacing is best-effort */
     }
+    // A fresh-spawn pre-spawn failure previously surfaced only as the inline chat ⚠️ + history
+    // entry above — no board flag, unlike a RESUME-time pre-spawn failure (surfaceResumeFailure,
+    // FLUX-1120), which raises needsAction. Dispatched launches (start_session, board-rebase,
+    // fast-path) are fire-and-forget: nobody is watching the ticket chat, so e.g. a worktree-pool-
+    // full refusal (FLUX-1018 fail-closed) died quietly. Raise the persistent flag so the ticket
+    // lands in the board's "Needs Action" group; it self-clears when a fresh turn starts
+    // (clearNeedsActionIfSet). Best-effort by design (raiseNeedsAction catches internally).
+    // Mirrors flagIfParked's isDelegatedMember guard: a scatter-gather worker or supervisor
+    // delegate shares the ticket with an actively-running orchestrator that owns the transition,
+    // so flagging the ticket here on a delegate's failure would be a false positive.
+    if (!isDelegatedMember(session)) {
+      void raiseNeedsAction(id, `${session.label} session failed to start: ${message}`);
+    }
     broadcastEvent('taskUpdated', { id });
   }
 }
@@ -409,7 +447,7 @@ async function prepareAndLaunchSession(
 // Wire the deferred-combiner launcher: when a scatter-gather group's workers
 // all finish, session-store calls this to spawn the combiner.
 setCombinerLauncher(async (spec: PendingCombinerSpec, anyWorkerSucceeded: boolean) => {
-  const task = tasksCache[spec.taskId];
+  const task = getWorkspace().tasks[spec.taskId];
   if (!task) {
     console.warn(`Deferred combiner for ${spec.groupId}: task ${spec.taskId} not found.`);
     return;
@@ -429,13 +467,17 @@ setCombinerLauncher(async (spec: PendingCombinerSpec, anyWorkerSucceeded: boolea
     groupId: spec.groupId,
     groupType: spec.groupType,
     groupVariant: spec.groupVariant,
+    // FLUX-1373: PendingCombinerSpec carries no `phase`, so deriveTaskKey's generic rule would fall
+    // through to the status-based no-phase fallback and guess wrong. Every scatter-gather combiner
+    // today is a review synthesis step — pin it explicitly.
+    taskKey: 'review.lead',
   });
 });
 
 // Wire the relay step launcher: when a relay step finishes, session-store
 // calls this to spawn the next step in the pipeline with the previous output.
 setRelayStepLauncher(async (spec: PendingRelaySpec, previousOutput: string, previousSucceeded: boolean) => {
-  const task = tasksCache[spec.taskId];
+  const task = getWorkspace().tasks[spec.taskId];
   if (!task) {
     console.warn(`Relay step for ${spec.groupId}: task ${spec.taskId} not found.`);
     return;
@@ -473,14 +515,14 @@ setRelayStepLauncher(async (spec: PendingRelaySpec, previousOutput: string, prev
 // GET single session (backwards compat — returns most recent active)
 router.get('/:id/cli-session', (req, res) => {
   const { id } = req.params;
-  if (!isVirtualConversationId(id) && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
+  if (!isVirtualConversationId(id) && !getWorkspace().tasks[id]) return res.status(404).json({ error: 'Task not found' });
   res.json({ session: getCliSessionSummaryForTask(id) || null });
 });
 
 // GET all sessions for a task
 router.get('/:id/cli-sessions', (req, res) => {
   const { id } = req.params;
-  const task = tasksCache[id];
+  const task = getWorkspace().tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
   res.json({ sessions: getAllSessionSummariesForTask(id) });
 });
@@ -490,7 +532,7 @@ router.get('/:id/cli-sessions', (req, res) => {
 // in-memory live progress stream.
 router.get('/:id/transcript', async (req, res) => {
   const { id } = req.params;
-  if (!isVirtualConversationId(id) && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
+  if (!isVirtualConversationId(id) && !getWorkspace().tasks[id]) return res.status(404).json({ error: 'Task not found' });
   try {
     const messages = await readTranscriptMessages(id);
     res.json({ messages });
@@ -508,7 +550,7 @@ router.get('/:id/transcript', async (req, res) => {
 // portal Activity screen. (No new store — same source of truth as `/transcript`.)
 router.get('/:id/activity', async (req, res) => {
   const { id } = req.params;
-  if (!isVirtualConversationId(id) && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
+  if (!isVirtualConversationId(id) && !getWorkspace().tasks[id]) return res.status(404).json({ error: 'Task not found' });
   try {
     const ticket = typeof req.query.ticket === 'string' ? req.query.ticket : '';
     const phase = typeof req.query.phase === 'string' ? req.query.phase : '';
@@ -537,7 +579,7 @@ router.get('/:id/activity', async (req, res) => {
 // open chat window refetch (and come back empty) without a reload.
 router.delete('/:id/transcript', async (req, res) => {
   const { id } = req.params;
-  if (!isVirtualConversationId(id) && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
+  if (!isVirtualConversationId(id) && !getWorkspace().tasks[id]) return res.status(404).json({ error: 'Task not found' });
   try {
     await clearTranscript(id);
     // FLUX-659: resetting the orchestrator conversation drops the digest delta baseline too, so the
@@ -630,6 +672,9 @@ router.post('/:id/cli-session/start', async (req, res) => {
       inputTokens: 0,
       outputTokens: 0,
       costUSD: 0,
+      // FLUX-1373: virtual board/Smelter conversations are always the `chat` task key — they never
+      // flow through createPendingSession's deriveTaskKey (this session record is built by hand).
+      taskKey: 'chat',
     };
     cliSessionsById.set(boardSession.id, boardSession);
     registerSession(id, boardSession.id);
@@ -642,7 +687,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
       'board',
     );
     try {
-      await getBoardAdapter(fw).startBoardSession(boardSession, firstMessage, workspaceRoot!, {
+      await getBoardAdapter(fw).startBoardSession(boardSession, firstMessage, getWorkspaceRoot()!, {
         attachments: chatAttachments,
         ...(boardPersonaPrompt ? { personaPrompt: boardPersonaPrompt } : {}),
       });
@@ -654,7 +699,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
     }
   }
 
-  const task = tasksCache[id];
+  const task = getWorkspace().tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   const frameworkRaw = String(req.body?.framework || resolveDefaultFramework()).trim().toLowerCase();
@@ -675,6 +720,32 @@ router.post('/:id/cli-session/start', async (req, res) => {
   const phase: LaunchPhase | undefined = (VALID_LAUNCH_PHASES as string[]).includes(phaseRaw)
     ? (phaseRaw as LaunchPhase)
     : undefined;
+
+  // FLUX-1373: explicit task-tier policy key override (validated against the 9-key set) — needed
+  // because a caller like the plan gate dispatches phase 'review' but wants the distinct
+  // `planReview` tier, which deriveTaskKey's generic phase+position rule can't produce on its own.
+  // An unrecognized/absent value is ignored (createPendingSession derives it as normal).
+  const taskKeyRaw = typeof req.body?.taskKey === 'string' ? req.body.taskKey.trim() : '';
+  const taskKey: TaskKey | undefined = (TASK_KEYS as readonly string[]).includes(taskKeyRaw)
+    ? (taskKeyRaw as TaskKey)
+    : undefined;
+
+  // FLUX-1380: fast-path lets one session groom AND implement an XS/S ticket, structurally
+  // bypassing the plan gate (which only fires on Grooming→Todo). Refuse it deterministically
+  // for work that's too big for a single unattended pass: L/XL effort, or a ticket that is
+  // itself an epic (has its own subtasks). A ticket that merely HAS a parentId (is a subtask of
+  // some other epic) but carries no subtasks of its own remains eligible. Unset/None effort is
+  // allowed through — the session sets effort during its inline grooming step and is expected to
+  // bail via change_status→Todo (firing the plan gate normally) if it turns out to be M+.
+  if (phase === 'fast-path') {
+    const taskEffort = typeof task.effort === 'string' ? task.effort : undefined;
+    if (taskEffort === 'L' || taskEffort === 'XL') {
+      return res.status(400).json({ error: `fast-path is not available for ${taskEffort}-effort tickets — use implementation instead` });
+    }
+    if (subtaskIds(task.subtasks).length > 0) {
+      return res.status(400).json({ error: 'fast-path is not available for tickets with their own subtasks (epic parents) — use implementation instead' });
+    }
+  }
 
   // Persona resolution: when a personaId is supplied the engine owns the prompt
   // text (it never ships to the client). A raw appendPrompt is still accepted
@@ -707,11 +778,29 @@ router.post('/:id/cli-session/start', async (req, res) => {
   // so 'grooming' is genuinely the only phase that both lacks a branch and doesn't need one
   // today. If a future phase is added that, like grooming, can run branchless without ever
   // needing isolation, re-check this condition rather than assuming the deny-list still covers it.
+  // FLUX-1380 follow-up: 'fast-path' isolation is forced ON server-side (grooming's mirror
+  // image). Unlike grooming, fast-path writes code and commits (groom inline, then implement,
+  // then Ready) — it needs the same branch/worktree isolation as 'implementation'. The original
+  // FLUX-1380 wiring relied on the CALLER to request it: the MCP start_session dispatcher does
+  // (it always sends `isolation`), but the portal's fast-path launch (dispatchFastPath →
+  // runAgentAction) sends no isolation at all — and, launching from the Grooming column, it also
+  // never routes through the Todo Start-Task prompt that pre-creates a branch client-side for
+  // normal implementation launches. Net effect: a portal fast-path spawned BRANCHLESS in the
+  // shared main checkout, with its commits landing on master (the exact FLUX-972 mode the
+  // FLUX-1018 branch⇒worktree invariant exists to forbid — that invariant never engaged because
+  // the ticket had no branch). Defaulting here, in the route, closes the gap for every caller
+  // instead of trusting each one to know. An explicit 'branch' request (MCP worktree:false) is
+  // still honored — FLUX-1018 worktree-isolates that spawn anyway. Only 'grooming' ever runs
+  // branchless.
   const isolationRaw = typeof req.body?.isolation === 'string' ? req.body.isolation.trim() : '';
+  const requestedIsolation: 'worktree' | 'branch' | undefined =
+    isolationRaw === 'worktree' || isolationRaw === 'branch' ? isolationRaw : undefined;
   const isolation: 'worktree' | 'branch' | undefined =
     phase === 'grooming'
       ? undefined
-      : isolationRaw === 'worktree' || isolationRaw === 'branch' ? isolationRaw : undefined;
+      : phase === 'fast-path'
+        ? requestedIsolation ?? 'worktree'
+        : requestedIsolation;
 
   // Multi-session fields
   const role = typeof req.body?.role === 'string' ? req.body.role.trim() : undefined;
@@ -813,6 +902,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
       permissionMode: resolvePermissionMode(permissionModeRaw, 'ticket'),
       skipPermissions,
       phase,
+      taskKey,
       role,
       pattern,
       patternPosition,
@@ -869,7 +959,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
 // only once every worker ("step") session in that group reaches a terminal state.
 router.post('/:id/cli-session/register-combiner', (req, res) => {
   const { id } = req.params;
-  const task = tasksCache[id];
+  const task = getWorkspace().tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   const frameworkRaw = String(req.body?.framework || resolveDefaultFramework()).trim().toLowerCase();
@@ -924,7 +1014,7 @@ router.post('/:id/cli-session/register-combiner', (req, res) => {
 // Cancel a deferred combiner (e.g. when all workers failed to launch).
 router.post('/:id/cli-session/unregister-combiner', (req, res) => {
   const { id } = req.params;
-  const task = tasksCache[id];
+  const task = getWorkspace().tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
   const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : '';
   if (!groupId) return res.status(400).json({ error: 'groupId is required' });
@@ -936,7 +1026,7 @@ router.post('/:id/cli-session/unregister-combiner', (req, res) => {
 // Subsequent steps spawn automatically via the relay barrier as each finishes.
 router.post('/:id/cli-session/register-relay', (req, res) => {
   const { id } = req.params;
-  const task = tasksCache[id];
+  const task = getWorkspace().tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   const frameworkRaw = String(req.body?.framework || resolveDefaultFramework()).trim().toLowerCase();
@@ -980,7 +1070,7 @@ router.post('/:id/cli-session/register-relay', (req, res) => {
 // Cancel a pending relay pipeline (e.g. when step 0 fails to launch).
 router.post('/:id/cli-session/unregister-relay', (req, res) => {
   const { id } = req.params;
-  const task = tasksCache[id];
+  const task = getWorkspace().tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
   const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : '';
   if (!groupId) return res.status(400).json({ error: 'groupId is required' });
@@ -994,7 +1084,7 @@ router.post('/:id/cli-session/unregister-relay', (req, res) => {
 // and awaits the response — no polling needed.
 router.post('/:id/cli-session/delegate', async (req, res) => {
   const { id } = req.params;
-  const task = tasksCache[id];
+  const task = getWorkspace().tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   const frameworkRaw = String(req.body?.framework || resolveDefaultFramework()).trim().toLowerCase();
@@ -1078,24 +1168,16 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
   // the key) if spawn itself errors so a genuine later retry can start fresh.
   const reservation = reserveDispatch(idempotencyKey);
 
-  // FLUX-482/931: resolve the delegate's model with precedence:
-  //   per-call `model` param  >  persona.modelTier (tier-resolved)  >  config.delegateModel  >  undefined.
-  // Leaving it undefined makes the adapter fall back to its status-derived
-  // grooming/implementation model (unchanged default behavior). Cheap personas
-  // (search/grooming/doc/review-reading) carry persona.modelTier='cheap', resolved to a
-  // concrete model per-framework via TIER_MODELS (claude→sonnet, gemini→flash; copilot has
-  // no built-in cheap alias yet — see TIER_MODELS' comment); code-writing personas carry no
-  // tier, so they keep the strong implementation model.
-  //
-  // FLUX-931: generalized off the Claude-only gate — every adapter now honors session.model
-  // (claude-code.ts/gemini.ts/copilot.ts: `session.model || selectedModel`), so this resolves
-  // per-framework instead of only for framework === 'claude'.
-  const integrationConfig = configCache?.integrations?.[INTEGRATION_CONFIG_KEYS[framework]];
-  const configDelegateModel = typeof integrationConfig?.delegateModel === 'string'
-    ? integrationConfig.delegateModel.trim()
-    : '';
-  const tierModel = persona?.modelTier === 'cheap' ? TIER_MODELS[framework] : undefined;
-  const resolvedModel = modelOverride || tierModel || configDelegateModel || undefined;
+  // FLUX-1373: resolve the delegate's model with precedence:
+  //   per-call `model` param  >  resolveModel(taskKey, framework, config).
+  // A delegate dispatch is always `patternPosition: 'assistant'`, so its taskKey is
+  // `<delegatePhase>.workers` — or, when the persona declares no phase, the same no-phase
+  // status-based fallback every other dispatch site uses (deriveTaskKey). Computed explicitly here
+  // (rather than left to createPendingSession's own derivation) so `resolvedModel` below resolves
+  // against the exact key that gets stamped. Supersedes the old per-call model > persona.modelTier
+  // (TIER_MODELS) > config.delegateModel chain — modelTier/TIER_MODELS are retired (FLUX-1373).
+  const taskKey = deriveTaskKey(delegatePhase, 'assistant', task.status);
+  const resolvedModel = modelOverride || resolveModel(taskKey, framework, getConfig());
 
   let session: CliSessionRecord;
   try {
@@ -1105,6 +1187,7 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
       effortOverride,
       ...(resolvedModel ? { model: resolvedModel } : {}),
       ...(delegatePhase ? { phase: delegatePhase } : {}),
+      taskKey,
       skipPermissions,
       role: personaId ? `assistant:${personaId}` : 'assistant',
       pattern: 'supervisor',
@@ -1131,7 +1214,7 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
     cancelDelegation(session.id, `Delegation timed out after ${timeoutMs / 1000}s`);
     // Also kill the child process if still running.
     const childSession = cliSessionsById.get(session.id);
-    if (childSession && ['pending', 'running', 'waiting-input'].includes(childSession.status)) {
+    if (childSession && ['pending', 'running', 'waiting-input', 'scheduled'].includes(childSession.status)) {
       childSession.requestedStop = true;
       childSession.status = 'cancelled';
       childSession.endedAt = new Date().toISOString();
@@ -1183,14 +1266,14 @@ router.post('/:id/cli-session/input', async (req, res) => {
     try {
       // FLUX-959: framework is fixed for a board session's life — resolve via the session
       // record, not the request (resumeSessionId is CLI-specific; switching = a new session).
-      await getBoardAdapter(boardSession.framework).sendBoardInput(boardSession, boardMessage, workspaceRoot!, { attachments: boardAttachments });
+      await getBoardAdapter(boardSession.framework).sendBoardInput(boardSession, boardMessage, getWorkspaceRoot()!, { attachments: boardAttachments });
       return res.json({ session: getCliSessionSummaryForTask(id) });
     } catch (error: unknown) {
       return res.status(500).json({ error: errorMessage(error, `Failed to send message to ${conversationLabel.toLowerCase()}`) });
     }
   }
 
-  const task = tasksCache[id];
+  const task = getWorkspace().tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
@@ -1205,7 +1288,7 @@ router.post('/:id/cli-session/input', async (req, res) => {
   if (!sessionId) return res.status(409).json({ error: 'No active CLI session for this ticket' });
 
   const session = cliSessionsById.get(sessionId);
-  if (!session || !['running', 'waiting-input', 'completed'].includes(session.status)) {
+  if (!session || !['running', 'waiting-input', 'scheduled', 'completed'].includes(session.status)) {
     return res.status(409).json({ error: 'CLI session is not resumable', session: getCliSessionSummaryForTask(id) || null });
   }
 
@@ -1224,7 +1307,7 @@ router.post('/:id/cli-session/input', async (req, res) => {
   if (typeof req.body?.effortOverride === 'string') session.effortOverride = req.body.effortOverride.trim() || undefined;
   applyPermissionModeChange(session, req.body?.permissionMode, 'ticket');
   try {
-    await adapter.sendInput(session, message, user, workspaceRoot!, { attachments });
+    await adapter.sendInput(session, message, user, getWorkspaceRoot()!, { attachments });
 
     // Clear swimlane when user sends input (they answered the question)
     if (task.swimlane === 'require-input') {
@@ -1287,7 +1370,7 @@ router.post('/:id/cli-session/stop', async (req, res) => {
     return res.json({ session: getCliSessionSummaryForTask(id) || null });
   }
 
-  const task = tasksCache[id];
+  const task = getWorkspace().tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   const targetSessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : undefined;
@@ -1297,7 +1380,7 @@ router.post('/:id/cli-session/stop', async (req, res) => {
   // ── Group / all stop: cancel every active session in scope in one request ──
   if (groupId || stopAll) {
     const candidates = groupId ? getSessionGroup(id, groupId) : getActiveSessionsForTask(id);
-    const active = candidates.filter(s => ['pending', 'running', 'waiting-input'].includes(s.status));
+    const active = candidates.filter(s => ['pending', 'running', 'waiting-input', 'scheduled'].includes(s.status));
     if (active.length === 0) {
       return res.status(409).json({ error: 'No active sessions to stop', session: getCliSessionSummaryForTask(id) || null });
     }
@@ -1334,7 +1417,7 @@ router.post('/:id/cli-session/stop', async (req, res) => {
   const session = cliSessionsById.get(sessionId);
   if (!session) return res.status(404).json({ error: 'CLI session not available' });
 
-  if (!['pending', 'running', 'waiting-input'].includes(session.status)) {
+  if (!['pending', 'running', 'waiting-input', 'scheduled'].includes(session.status)) {
     return res.status(409).json({ error: 'CLI session is already finished', session: getCliSessionSummaryForTask(id) || null });
   }
 

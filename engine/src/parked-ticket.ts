@@ -14,8 +14,9 @@
  * persisted `needsAction` flag the board renders as a "Needs Action" group (decision: surface
  * to the user, do NOT auto-resume).
  */
-import { configCache } from './config.js';
-import { tasksCache, updateTaskWithHistory } from './task-store.js';
+import { getWorkspace } from './workspace-context.js';
+import { getConfig } from './config.js';
+import { updateTaskWithHistory } from './task-store.js';
 import { generateNeedsActionNotification } from './notifications.js';
 import { isAgentAuthor } from './history.js';
 import { broadcastEvent } from './events.js';
@@ -81,6 +82,12 @@ export interface ParkedSnapshot {
   requireInputStatus: string;
   /** Scatter-gather / delegated member — its orchestrator owns the transition, so never flag. */
   isDelegated: boolean;
+  /** FLUX-1320: a `needsAction` flag already standing at turn end. The flag is cleared at every turn
+   *  start ({@link clearNeedsActionIfSet}), so a standing one was raised DURING this turn by a more
+   *  specific path — the plan gate's eager verdict stop, an `ask_user_question` timeout. The generic
+   *  backstop must defer to it: re-raising would keep the flag (the write is idempotent) but refresh
+   *  the deduped notification with the generic message, degrading the specific one. */
+  needsActionSet?: boolean | undefined;
 }
 
 /**
@@ -97,6 +104,8 @@ export interface ParkedSnapshot {
  */
 export function isParked(s: ParkedSnapshot): boolean {
   if (s.isDelegated) return false;
+  if (s.needsActionSet) return false; // already surfaced this turn with a more specific message
+
   const statusChanged = s.statusAtTurnStart !== undefined && s.statusAtTurnStart !== s.status;
   const raisedRequireInput = s.swimlane === 'require-input' || s.status === s.requireInputStatus;
   const createdSubtask = s.subtaskCount > (s.subtaskCountAtTurnStart ?? s.subtaskCount);
@@ -113,7 +122,7 @@ export function isParked(s: ParkedSnapshot): boolean {
  *  turn-end backstop can tell whether the agent advanced the ticket or just parked. Also resets
  *  the per-turn `askedThisTurn` flag (set later if the agent calls `ask_user_question`). */
 export function captureTurnStartState(session: CliSessionRecord, taskId: string): void {
-  const task = tasksCache[taskId] as ParkableTask | undefined;
+  const task = getWorkspace().tasks[taskId] as ParkableTask | undefined;
   session.statusAtTurnStart = task?.status;
   session.subtaskCountAtTurnStart = Array.isArray(task?.subtasks) ? task.subtasks.length : 0;
   session.commentCountAtTurnStart = countAgentComments(task);
@@ -122,8 +131,9 @@ export function captureTurnStartState(session: CliSessionRecord, taskId: string)
 
 /** True for sessions that are NOT expected to drive the ticket's status themselves —
  *  scatter-gather / delegated members. Their orchestrator owns the transition, so flagging
- *  them would be a false positive. */
-function isDelegatedMember(session: CliSessionRecord): boolean {
+ *  them would be a false positive. Exported so other pre-spawn-failure call sites (e.g.
+ *  `prepareAndLaunchSession` in cli-session.ts) can apply the same guard as {@link flagIfParked}. */
+export function isDelegatedMember(session: CliSessionRecord): boolean {
   return !!session.groupId || session.patternPosition === 'step';
 }
 
@@ -131,7 +141,7 @@ function isDelegatedMember(session: CliSessionRecord): boolean {
  *  resumed/poked ticket stops showing as parked the moment work restarts. No-op (no write)
  *  when the flag isn't set, so it costs nothing on the common path. */
 export async function clearNeedsActionIfSet(taskId: string): Promise<void> {
-  const task = tasksCache[taskId] as ParkableTask | undefined;
+  const task = getWorkspace().tasks[taskId] as ParkableTask | undefined;
   if (!task?.needsAction) return;
   await updateTaskWithHistory(taskId, { updatedBy: 'Agent', entries: [], extraFields: { needsAction: null } });
   broadcastEvent('taskUpdated', { id: taskId });
@@ -149,7 +159,7 @@ export async function clearNeedsActionIfSet(taskId: string): Promise<void> {
  */
 export async function raiseNeedsAction(taskId: string, message: string): Promise<void> {
   try {
-    // FLUX-908: the board orchestrator (`__board__`) is not a ticket in tasksCache, so the
+    // FLUX-908: the board orchestrator (`__board__`) is not a ticket in getWorkspace().tasks, so the
     // needsAction FLAG can't be set on it — but a timed-out board prompt MUST still pull the user
     // back. Previously this no-op'd here (the id is truthy, so it passes settle()'s guard, then bails
     // on the missing task), so an orchestrator question the user never saw vanished on timeout. Emit
@@ -159,7 +169,7 @@ export async function raiseNeedsAction(taskId: string, message: string): Promise
       generateNeedsActionNotification(taskId, 'Orchestrator', '', message);
       return;
     }
-    const task = tasksCache[taskId] as ParkableTask | undefined;
+    const task = getWorkspace().tasks[taskId] as ParkableTask | undefined;
     if (!task) return;
     if (!task.needsAction) {
       await updateTaskWithHistory(taskId, {
@@ -184,7 +194,7 @@ export async function raiseNeedsAction(taskId: string, message: string): Promise
  */
 export async function flagIfParked(session: CliSessionRecord, taskId: string): Promise<void> {
   try {
-    const task = tasksCache[taskId] as ParkableTask | undefined;
+    const task = getWorkspace().tasks[taskId] as ParkableTask | undefined;
     if (!task) return;
 
     const status: string = task.status ?? '';
@@ -198,8 +208,9 @@ export async function flagIfParked(session: CliSessionRecord, taskId: string): P
       commentCount: countAgentComments(task),
       commentCountAtTurnStart: session.commentCountAtTurnStart,
       askedThisTurn: session.askedThisTurn,
-      requireInputStatus: configCache.requireInputStatus || 'Require Input',
+      requireInputStatus: getConfig().requireInputStatus || 'Require Input',
       isDelegated: isDelegatedMember(session),
+      needsActionSet: !!task.needsAction,
     });
     if (!parked) return;
 

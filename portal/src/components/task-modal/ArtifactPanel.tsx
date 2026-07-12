@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, ChevronLeft, ChevronRight, Eye, Loader2, Maximize2, Minimize2, Send } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, ChevronLeft, ChevronRight, Loader2, Maximize2, Minimize2, Send } from 'lucide-react';
 import { useAppActions, useAppSelector } from '../../store/useAppSelector';
 import { useDebouncedArtifactReload } from '../../hooks/useDebouncedArtifactReload';
-import { useEscapeKey } from '../../hooks/useEscapeKey';
+import { triggerEscape, useEscapeKey } from '../../hooks/useEscapeKey';
+import { AnnotationPill } from './AnnotationPill';
+import { formatArtifactAnnotations, type ArtifactAnnotation } from '../../lib/planAnnotations';
 import type { Task } from '../../types';
 
 /**
@@ -12,18 +14,20 @@ import type { Task } from '../../types';
  * strict CSP (see engine `ARTIFACT_CSP`) over a relative same-origin URL (embeddable under the route's
  * `frame-ancestors 'self'` in both the Vite dev proxy and the prod single-origin).
  *
- * FLUX-874 / FLUX-875 (Tier 2/3): the artifact becomes annotatable + auditable. The entire annotation
- * UI now lives **inside the iframe** (injected at serve time — see `ARTIFACT_ANNOTATOR_SCRIPT`): a
- * floating composer popover at the selection, numbered pins anchored to the content, and a
- * scroll-following tray that **collects multiple annotations** before sending. Keeping it in-iframe is
- * what makes the tray/pins follow scroll over an opaque-origin iframe (host overlays can't track the
- * iframe's internal scroll without constant message spam). The host's only annotation job is to
- * receive the final **batch** on "Send" and round-trip it into the ticket chat (`onSendToChat`) as a
- * single message — so the user can annotate several regions, then send once, instead of kicking off a
- * chat per selection.
+ * FLUX-874 / FLUX-875 (Tier 2/3): the artifact becomes annotatable + auditable. Pin-drop + note-capture
+ * live **inside the iframe** (injected at serve time — see `ARTIFACT_ANNOTATOR_SCRIPT`): a floating
+ * composer popover at the selection and numbered pins anchored to the content.
  *
- * The host owns: the **revision picker**, the **layout-audit gate** (mask until clean), and
- * **full-screen** mode.
+ * FLUX-1362: the accumulated annotations are mirrored **live** out of the iframe into ONE host-side,
+ * editable list — the floating "N changes" pill ({@link AnnotationPill}). The standalone artifact-only
+ * view owns its own list (and a Send action); the plan-review panel lifts the list up (controlled via
+ * `onArtifactAnnotationsChange`) and merges plan-text annotations into the same pill, so there's one
+ * place to manage everything. A host-side edit/remove reverse-syncs to the matching in-iframe pin. The
+ * host stays the trust boundary — it sanitizes on **every** ingest, not just on send.
+ *
+ * FLUX-1362: the open-time layout audit is now **non-blocking** — the artifact always renders; warnings
+ * surface as a small header warning icon (hover to describe, click to copy the fix prompt) instead of a
+ * full-cover mask the user must click past.
  *
  * Trust boundary: the iframe is opaque-origin, so its `postMessage` arrives with `event.origin ===
  * "null"`. We therefore do NOT trust the origin string — we validate `event.source` IS our iframe's
@@ -33,10 +37,10 @@ import type { Task } from '../../types';
 
 const NS = 'eh-artifact';
 
-/** One annotation captured inside the iframe (sent up only as part of a batch on "Send").
- * FLUX-892: `kind` discriminates a text-selection anchor (`'text'`, the default for back-compat) from
- * a right-click element pick (`'element'`); element picks carry a short `label` instead of an excerpt. */
+/** One annotation captured inside the iframe, mirrored live to the host. FLUX-1362: carries its
+ * stable pin `id` so a host-side edit/remove round-trips to the matching `data-eh-pin`. */
 interface AnnotationItem {
+  id?: number;
   kind?: 'text' | 'element';
   selector: string;
   text: string;
@@ -56,27 +60,31 @@ interface LayoutWarning {
 type InboundMessage =
   | { ns: typeof NS; type: 'ready' }
   | { ns: typeof NS; type: 'annotations'; items: AnnotationItem[] }
-  | { ns: typeof NS; type: 'layout-audit'; ok: boolean; warnings: LayoutWarning[] };
+  | { ns: typeof NS; type: 'layout-audit'; ok: boolean; warnings: LayoutWarning[] }
+  | { ns: typeof NS; type: 'escape' };
 
 /** Messages the host sends down to the iframe. */
-type OutboundMessage = { ns: typeof NS; type: 'request-audit' };
+type OutboundMessage =
+  | { ns: typeof NS; type: 'request-audit' }
+  | { ns: typeof NS; type: 'remove-pin'; id: number }
+  | { ns: typeof NS; type: 'update-pin'; id: number; note: string };
 
-/** State of the open-time layout-audit gate for the currently-shown revision. */
+/** State of the open-time layout-audit for the currently-shown revision (advisory, non-blocking). */
 type AuditState =
   | { status: 'pending' }
   | { status: 'clean' }
   | { status: 'warnings'; warnings: LayoutWarning[] }
-  | { status: 'skipped' }; // audit never reported (errored / timed out) — fail open, reveal.
+  | { status: 'skipped' }; // audit never reported (errored / timed out).
 
 // The iframe runs *agent-authored* JS in its opaque origin, so every `eh-artifact` message is HOSTILE
 // input, not a trusted user action: a compromised / prompt-injected artifact can `postMessage` an
 // arbitrary, unbounded `annotations` / `layout-audit` payload directly (the `e.source` check only
 // proves it came from *this* iframe, not that a human selected anything). Since the host composes
 // these into a chat message fed straight back to the grooming LLM, we clamp every string and array
-// length host-side before composing — otherwise an attacker artifact could (a) inject unbounded,
-// attacker-chosen instructions into the agent loop on open, or (b) blow up tokens/cost with a giant
-// batch. The in-iframe caps are advisory only (that script is replaceable by the agent's own JS), so
-// the bound MUST live here.
+// length host-side on EVERY ingest (FLUX-1362: now a live stream, not just a Send) — otherwise an
+// attacker artifact could (a) inject unbounded, attacker-chosen instructions into the agent loop, or
+// (b) blow up tokens/cost. The in-iframe caps are advisory only (that script is replaceable by the
+// agent's own JS), so the bound MUST live here.
 const MAX_ANNOTATIONS = 50;
 const MAX_AUDIT_WARNINGS = 12; // matches the in-iframe MAX_WARNINGS
 const MAX_NOTE = 600;
@@ -87,15 +95,22 @@ function clampLine(v: unknown, max: number): string {
   return String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
-function sanitizeAnnotations(items: AnnotationItem[]): AnnotationItem[] {
-  return items.slice(0, MAX_ANNOTATIONS).map((it) => ({
-    // Element items are equally untrusted: coerce kind to 'element' only on an exact match, else 'text'.
-    kind: it?.kind === 'element' ? 'element' : 'text',
-    selector: clampLine(it?.selector, 300),
-    text: clampLine(it?.text, 280),
-    label: clampLine(it?.label, 120),
-    note: clampLine(it?.note, MAX_NOTE),
-  }));
+/** Sanitize the untrusted iframe payload into the host-side {@link ArtifactAnnotation} shape. Items
+ * missing a numeric `id` are dropped — the id is what lets a host edit/remove reverse-sync to a pin. */
+function sanitizeAnnotations(items: AnnotationItem[], rev: number): ArtifactAnnotation[] {
+  return items
+    .slice(0, MAX_ANNOTATIONS)
+    .filter((it) => typeof it?.id === 'number' && Number.isFinite(it.id))
+    .map((it) => ({
+      id: it.id as number,
+      // Element items are equally untrusted: coerce kind to 'element' only on an exact match, else 'text'.
+      kind: it?.kind === 'element' ? ('element' as const) : ('text' as const),
+      selector: clampLine(it?.selector, 300),
+      text: clampLine(it?.text, 280),
+      label: clampLine(it?.label, 120),
+      note: clampLine(it?.note, MAX_NOTE),
+      rev,
+    }));
 }
 
 function sanitizeWarnings(warnings: LayoutWarning[]): LayoutWarning[] {
@@ -108,15 +123,17 @@ function sanitizeWarnings(warnings: LayoutWarning[]): LayoutWarning[] {
 
 /** FLUX-1136: how long a hidden panel keeps its iframe alive before it's actually torn down.
  *  Short hides (collapse-then-reopen, a quick alt-tab) are free — nothing reloads while hidden
- *  (see `useDebouncedArtifactReload`) and the DOM is left untouched, so the in-iframe annotation
- *  tray survives. Only a hide that outlasts this grace period drops the iframe to reclaim the
- *  compiled Tailwind/JS it's holding onto. */
+ *  (see `useDebouncedArtifactReload`) and the DOM is left untouched, so in-iframe pins survive.
+ *  Only a hide that outlasts this grace period drops the iframe to reclaim the compiled Tailwind/JS. */
 const HIDDEN_UNMOUNT_GRACE_MS = 60_000;
 
 export function ArtifactPanel({
   task,
   onSendToChat,
   visible,
+  fillHeight = false,
+  artifactAnnotations,
+  onArtifactAnnotationsChange,
 }: {
   task: Task;
   onSendToChat?: (text: string) => void;
@@ -124,68 +141,67 @@ export function ArtifactPanel({
    *  threaded down by the caller. Combined here with the app's own window-visibility signal, so
    *  an agent iterating while the browser tab is backgrounded doesn't pay the compile cost either. */
   visible: boolean;
+  /** FLUX-1362: in the full-screen plan surface the iframe fills the available height instead of the
+   *  fixed `h-[58vh]` the lean sideview keeps. */
+  fillHeight?: boolean;
+  /** FLUX-1362: CONTROLLED mode — the plan-review panel owns the unified annotation list and folds
+   *  the artifact items into its own floating pill. When provided, this panel does NOT render its own
+   *  pill; it only bridges the iframe (ingest + reverse-sync). Omit both for the standalone artifact-
+   *  only view, which owns its own list + Send. */
+  artifactAnnotations?: ArtifactAnnotation[];
+  onArtifactAnnotationsChange?: (items: ArtifactAnnotation[]) => void;
 }) {
   const { subscribeToEvent } = useAppActions();
   const isWindowVisible = useAppSelector((s) => s.isWindowVisible);
-  // The one true "can the user actually see this iframe right now" signal — gates both the
-  // debounced-reload deferral and the grace-period unmount below.
   const effectiveVisible = visible && isWindowVisible;
 
   const revisions = task.artifacts?.revisions ?? [];
   const latest = task.artifacts?.latest ?? (revisions.length > 0 ? revisions[revisions.length - 1]!.rev : 0);
 
-  // The revision currently shown. Tier 1 tracked `latest`; the picker (below) lets the user step back.
   const [rev, setRev] = useState<number>(latest);
-  // Cache-buster so a re-publish (or a forced reload) reliably reloads the iframe.
   const [reloadNonce, setReloadNonce] = useState(0);
-
-  // FLUX-1136: whether the iframe itself is currently in the DOM. Stays true across a short hide
-  // (display:none upstream is enough to stop paint) and only flips false after the grace period —
-  // see the effect below, next to the `artifactReady` subscription it works alongside.
   const [iframeMounted, setIframeMounted] = useState(true);
-
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
-  // FLUX-875 (Tier 3): open-time layout-audit gate. The artifact is masked until the audit reports
-  // clean (or the user reveals it anyway); warnings can be round-tripped to the agent for a fix.
+  // FLUX-875 → FLUX-1362: the audit is advisory + non-blocking. We keep its state only to drive the
+  // small header warning icon; the artifact always renders.
   const [audit, setAudit] = useState<AuditState>({ status: 'pending' });
-  const [revealed, setRevealed] = useState(false);
-  const [auditSent, setAuditSent] = useState(false);
 
-  // Full-screen mode (the annotation UI lives in the iframe, so it works unchanged at any size).
+  // Full-screen mode (the pin/composer UI lives in the iframe, so it works unchanged at any size).
   const [fullscreen, setFullscreen] = useState(false);
-  // Transient "sent N annotations" confirmation after a batch round-trips to chat.
+  // Transient "sent N annotations" confirmation after the standalone view's Send.
   const [sentCount, setSentCount] = useState(0);
 
-  // `rev`/`onSendToChat` change between renders; keep them in refs so the (stable) message listener
-  // composes the batch against the *current* values without re-subscribing on every revision step.
+  // FLUX-1362: the unified artifact-annotation list. CONTROLLED by the plan panel when
+  // `onArtifactAnnotationsChange` is given; otherwise owned here (standalone artifact-only view).
+  const controlled = !!onArtifactAnnotationsChange;
+  const [ownItems, setOwnItems] = useState<ArtifactAnnotation[]>([]);
+  // Stable identity so the reverse-sync effect doesn't refire every render (a `?? []` would be new
+  // each time). Controlled → the parent's array; standalone → our own state.
+  const items = useMemo(
+    () => (controlled ? artifactAnnotations ?? [] : ownItems),
+    [controlled, artifactAnnotations, ownItems],
+  );
+  const applyItems = useCallback(
+    (next: ArtifactAnnotation[]) => {
+      if (onArtifactAnnotationsChange) onArtifactAnnotationsChange(next);
+      else setOwnItems(next);
+    },
+    [onArtifactAnnotationsChange],
+  );
+  // What the iframe currently holds (id → note), set on ingest — the reverse-sync effect diffs the
+  // host-authoritative `items` against this to post exactly the remove/update the user made host-side.
+  const iframeLiveRef = useRef<Map<number, string>>(new Map());
+
   const revRef = useRef(rev);
-  const onSendRef = useRef(onSendToChat);
   useEffect(() => { revRef.current = rev; }, [rev]);
-  useEffect(() => { onSendRef.current = onSendToChat; }, [onSendToChat]);
 
-  // The stable message listener reads `revealed` to decide whether a late re-audit may re-impose the
-  // mask — keep it in a ref so the listener never re-subscribes (and never reads a stale value).
-  const revealedRef = useRef(revealed);
-  useEffect(() => { revealedRef.current = revealed; }, [revealed]);
-
-  // FLUX-1136: a fresh publish jumps the viewer to the new revision and reloads it — but debounced
-  // (a burst of publishes costs one reload of the final revision, not one Tailwind-CDN compile per
-  // publish) and deferred entirely while hidden (a publish that arrives invisibly just updates the
-  // pending target; it reloads once, the moment the panel is shown again).
   const applyReload = useCallback((pendingRev: number | undefined) => {
     if (typeof pendingRev === 'number') setRev(pendingRev);
     setReloadNonce((n) => n + 1);
   }, []);
   const notifyArtifactReady = useDebouncedArtifactReload(effectiveVisible, applyReload);
 
-  // FLUX-1136: `task.artifacts.latest` also updates via the engine's `taskUpdated` broadcast (a
-  // portal refetch fired alongside — but independent of — the `artifactReady` SSE event below on
-  // every `publish_artifact` call). Route that path through the same debounced/visibility-gated
-  // reload instead of `setRev` directly, or a publish while the panel is hidden (or a fast burst)
-  // bypasses the gating entirely via this second path. `prevLatestRef` starts equal to `latest` so
-  // the effect's mount-time run is a no-op — opening the panel shouldn't schedule a reload of the
-  // revision it already initialized to.
   const prevLatestRef = useRef(latest);
   useEffect(() => {
     if (prevLatestRef.current === latest) return;
@@ -202,10 +218,6 @@ export function ArtifactPanel({
     return off;
   }, [subscribeToEvent, task.id, notifyArtifactReady]);
 
-  // FLUX-1136: grace-period teardown. A short hide costs nothing (the reload above is simply
-  // deferred, and the DOM goes untouched) so the in-iframe annotation tray survives a quick
-  // collapse/reopen. Only once hidden outlasts the grace period do we actually drop the iframe —
-  // reclaiming the compiled Tailwind/JS a long-abandoned panel would otherwise hold onto forever.
   useEffect(() => {
     if (effectiveVisible) {
       setIframeMounted(true);
@@ -219,52 +231,27 @@ export function ArtifactPanel({
     iframeRef.current?.contentWindow?.postMessage(msg, '*');
   }, []);
 
-  const sendAnnotationBatch = useCallback((rawItems: AnnotationItem[]) => {
-    const send = onSendRef.current;
-    if (!send || !Array.isArray(rawItems) || rawItems.length === 0) return;
-    const items = sanitizeAnnotations(rawItems); // bound the untrusted iframe payload (see helpers)
-    if (items.length === 0) return;
-    const blocks = items
-      .map((it, i) => {
-        const note = it.note || '';
-        const noteLine = note ? `   ${note}\n` : '';
-        const anchorLine = `   _anchor:_ \`${it.selector || '(document)'}\``;
-        // Element picks (right-click, no selected text) have no excerpt — show the element label with a
-        // ⊙ marker instead of an empty `> quote` line. Text selections render exactly as before.
-        if (it.kind === 'element') {
-          return `${i + 1}. ⊙ \`${it.label || 'element'}\`\n` + noteLine + anchorLine;
-        }
-        const excerpt = it.text || '(no excerpt)';
-        return `${i + 1}. > ${excerpt}\n` + noteLine + anchorLine;
-      })
-      .join('\n\n');
-    const message =
-      `🎯 **Artifact annotations** · rev ${revRef.current} · ${items.length} region${items.length === 1 ? '' : 's'}\n\n` +
-      `${blocks}\n\n` +
-      `Please revise the artifact to address ${items.length === 1 ? 'this' : 'these'} and call ` +
-      `\`publish_artifact\` to publish the updated revision.`;
-    send(message);
-    setSentCount(items.length);
+  // FLUX-1362: ingest the iframe's LIVE annotation mirror. Sanitize (trust boundary), stamp the
+  // current rev, record what the iframe now holds, and push into the (own or lifted) list.
+  const applyItemsRef = useRef(applyItems);
+  useEffect(() => { applyItemsRef.current = applyItems; }, [applyItems]);
+  const ingestAnnotations = useCallback((rawItems: AnnotationItem[]) => {
+    const next = sanitizeAnnotations(Array.isArray(rawItems) ? rawItems : [], revRef.current);
+    iframeLiveRef.current = new Map(next.map((a) => [a.id, a.note]));
+    applyItemsRef.current(next);
   }, []);
 
   // Host-side message listener — the trust boundary. Validate `source` (our iframe) over the opaque
   // origin string, then the `ns`/`type` allowlist. Stable (no deps) — reads live values via refs.
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
-      // Trust boundary: require the message to come from *our* iframe's contentWindow. Inverted from
-      // the prior `iframeRef.current && …` form, which short-circuited (accepting ANY window's
-      // `eh-artifact` message) during the tiny window before the ref was set.
       if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return;
       const d = e.data as InboundMessage | null;
       if (!d || typeof d !== 'object' || d.ns !== NS) return;
       if (d.type === 'annotations') {
-        if (Array.isArray(d.items)) sendAnnotationBatch(d.items);
+        if (Array.isArray(d.items)) ingestAnnotations(d.items);
       } else if (d.type === 'layout-audit') {
-        // The audit re-fires as late async content (Mermaid SVG, Tailwind CDN, images, fonts) settles,
-        // so a 'warnings' state can legitimately upgrade to 'clean'. But once the user has revealed the
-        // artifact — or we already failed open to 'skipped' — a late audit must NEVER snap the mask
-        // back: the gate is non-trapping by contract, so we drop those late re-mask attempts.
-        if (revealedRef.current) return;
+        // Advisory only now — never masks. A late clean re-audit still upgrades the icon away.
         const warnings = sanitizeWarnings(Array.isArray(d.warnings) ? d.warnings : []);
         setAudit((prev) =>
           prev.status === 'skipped'
@@ -273,32 +260,50 @@ export function ArtifactPanel({
               ? { status: 'clean' }
               : { status: 'warnings', warnings },
         );
+      } else if (d.type === 'escape') {
+        triggerEscape();
       }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [sendAnnotationBatch]);
+  }, [ingestAnnotations]);
 
-  // The displayed src. Changing it remounts the iframe (key={src}); re-arm the layout-audit gate
-  // (each revision is audited fresh) and clear any stale "sent" confirmation. FLUX-1136: also re-arm
-  // on `iframeMounted` flipping back true — a grace-period teardown recreates the iframe from
-  // scratch even when `src` itself didn't change while hidden.
+  // FLUX-1362: reverse-sync host-side edits/removals to the in-iframe pins. Diff what the iframe holds
+  // (`iframeLiveRef`) against the host-authoritative `items`: an id the iframe still has but the host
+  // dropped → `remove-pin`; a note the host changed → `update-pin`. Ingest sets `iframeLiveRef` to
+  // match `items` first, so an iframe-originated change never re-posts (no feedback loop).
+  useEffect(() => {
+    const live = iframeLiveRef.current;
+    const cur = new Map(items.map((a) => [a.id, a.note]));
+    for (const [id, note] of Array.from(live.entries())) {
+      if (!cur.has(id)) {
+        postToIframe({ ns: NS, type: 'remove-pin', id });
+        live.delete(id);
+      } else if (cur.get(id) !== note) {
+        const newNote = cur.get(id)!;
+        postToIframe({ ns: NS, type: 'update-pin', id, note: newNote });
+        live.set(id, newNote);
+      }
+    }
+  }, [items, postToIframe]);
+
+  // The displayed src. Changing it remounts the iframe (key={src}); re-arm the audit + clear stale
+  // annotation state (the fresh iframe starts with no pins). FLUX-1136: also re-arm on `iframeMounted`
+  // flipping back true — a grace-period teardown recreates the iframe from scratch.
   const src = `/api/tasks/${encodeURIComponent(task.id)}/artifact?rev=${rev}&_n=${reloadNonce}`;
   useEffect(() => {
     if (!iframeMounted) return;
     setAudit({ status: 'pending' });
-    setRevealed(false);
-    setAuditSent(false);
     setSentCount(0);
-    // Fail open: if the audit script never reports (artifact JS error, very heavy doc), don't trap
-    // the user behind the mask forever — reveal after a grace period.
+    // The fresh iframe holds no pins; drop any stale host list + live map so counts start clean.
+    iframeLiveRef.current = new Map();
+    applyItemsRef.current([]);
     const t = window.setTimeout(() => {
       setAudit((a) => (a.status === 'pending' ? { status: 'skipped' } : a));
     }, 4000);
     return () => window.clearTimeout(t);
   }, [src, iframeMounted]);
 
-  // Clear the "sent N annotations" confirmation after a few seconds.
   useEffect(() => {
     if (!sentCount) return;
     const t = window.setTimeout(() => setSentCount(0), 4000);
@@ -313,11 +318,14 @@ export function ArtifactPanel({
     return () => window.clearTimeout(t);
   }, [fullscreen, postToIframe]);
 
-  // FLUX-1022: Esc exits full screen — routed through the shared Escape stack (rather than this
-  // component's own listener) because this panel nests inside TaskModal and inside a dock
-  // ChatWindow's sideview, both of which now have their own Escape handling; sharing the stack
-  // keeps a single ESC press from exiting fullscreen AND closing/collapsing the host at once.
+  // FLUX-1022: Esc exits full screen — routed through the shared Escape stack.
   useEscapeKey(() => setFullscreen(false), { enabled: fullscreen });
+
+  // Warning-icon popover (hover to describe, click to copy the fix prompt). FLUX-1362.
+  const [warnOpen, setWarnOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [auditSent, setAuditSent] = useState(false);
+  useEffect(() => { setAuditSent(false); setCopied(false); }, [rev, src]);
 
   if (revisions.length === 0 || !latest) {
     return <p className="px-1 py-2 text-[12px] text-[var(--eh-text-muted)]">No artifact published yet.</p>;
@@ -332,31 +340,49 @@ export function ArtifactPanel({
     if (target) setRev(target.rev);
   };
 
-  const sendAuditWarnings = () => {
-    if (audit.status !== 'warnings' || !onSendToChat) return;
-    const lines = audit.warnings
-      .map((w) => `- **${w.kind}** \`${w.selector}\` — ${w.detail}`)
-      .join('\n');
-    const message =
-      `🧪 **Layout audit failed** · rev ${rev}\n\n` +
+  // The fix-instruction message for a failed layout audit (reused by copy-to-clipboard + send-to-agent).
+  const buildAuditMessage = (): string | null => {
+    if (audit.status !== 'warnings') return null;
+    const lines = audit.warnings.map((w) => `- **${w.kind}** \`${w.selector}\` — ${w.detail}`).join('\n');
+    return (
+      `🧪 **Layout audit** · rev ${rev}\n\n` +
       `The published artifact has ${audit.warnings.length} layout problem${audit.warnings.length === 1 ? '' : 's'} ` +
-      `(overflow / clipping / overlap) that mask it in the viewer:\n\n` +
+      `(overflow / clipping / overlap):\n\n` +
       `${lines}\n\n` +
-      `Please fix the layout and call \`publish_artifact\` to publish a corrected revision.`;
+      `Please fix the layout and call \`publish_artifact\` to publish a corrected revision.`
+    );
+  };
+
+  const copyAuditFix = () => {
+    const message = buildAuditMessage();
+    if (!message) return;
+    // Advisory action — degrade gracefully if the clipboard is unavailable (Send-to-agent still works).
+    navigator.clipboard?.writeText(message).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
+  };
+
+  const sendAuditWarnings = () => {
+    const message = buildAuditMessage();
+    if (!message || !onSendToChat) return;
     onSendToChat(message);
     setAuditSent(true);
   };
+
+  const iframeSizeClass = fillHeight || fullscreen ? 'h-full' : 'h-[58vh]';
 
   return (
     <div
       className={
         fullscreen
           ? 'fixed inset-0 z-[120] flex flex-col gap-2 bg-[var(--eh-surface)] p-4'
-          : 'flex flex-col gap-2'
+          : fillHeight
+            ? 'flex min-h-0 flex-1 flex-col gap-2'
+            : 'flex flex-col gap-2'
       }
     >
-      {/* Header: title + revision picker + full-screen toggle. We deliberately offer NO "open in new
-          tab" — a top-level navigation to the artifact route would un-sandbox the agent HTML. */}
+      {/* Header: title + (FLUX-1362) layout-warning icon + revision picker + full-screen toggle. */}
       <div className="flex items-center justify-between gap-2 text-[11px] text-[var(--eh-text-muted)]">
         <span className="min-w-0 truncate">
           {current?.title || 'Artifact'} · rev {rev}{rev === latest ? ' (latest)' : ''}
@@ -367,6 +393,61 @@ export function ArtifactPanel({
           )}
         </span>
         <div className="flex flex-shrink-0 items-center gap-1">
+          {/* FLUX-1362: non-blocking layout-audit indicator. Hover describes the warnings; click copies
+              the fix prompt to the clipboard. The artifact itself renders regardless. */}
+          {audit.status === 'warnings' && (
+            <div
+              className="relative"
+              onMouseEnter={() => setWarnOpen(true)}
+              onMouseLeave={() => setWarnOpen(false)}
+            >
+              <button
+                type="button"
+                onClick={copyAuditFix}
+                title="Layout warnings — click to copy the fix prompt"
+                className="flex items-center gap-0.5 rounded p-0.5 text-amber-500 hover:text-amber-600"
+              >
+                <AlertTriangle className="h-3.5 w-3.5" />
+                <span className="text-[10px] font-semibold">{audit.warnings.length}</span>
+              </button>
+              {warnOpen && (
+                <div className="eh-surface eh-border absolute right-0 top-full z-[130] mt-1 flex w-72 max-w-[calc(100vw-2rem)] flex-col gap-2 rounded-lg border p-2.5 text-left shadow-2xl">
+                  <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-500">
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    {audit.warnings.length} layout warning{audit.warnings.length === 1 ? '' : 's'}
+                  </div>
+                  <ul className="flex flex-col gap-1 text-[11px] text-[var(--eh-text-secondary)]">
+                    {audit.warnings.map((w, i) => (
+                      <li key={i} className="eh-border rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1">
+                        <span className="font-medium text-amber-600">{w.kind}</span>{' '}
+                        <code className="text-[10px] text-[var(--eh-text-muted)]">{w.selector}</code>
+                        <div className="text-[var(--eh-text-secondary)]">{w.detail}</div>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="flex items-center justify-end gap-2">
+                    <span className="mr-auto text-[10px] text-emerald-500">{copied ? '✓ Copied fix prompt' : ''}</span>
+                    <button
+                      type="button"
+                      onClick={copyAuditFix}
+                      className="rounded px-2 py-0.5 text-[11px] text-[var(--eh-text-muted)] hover:text-[var(--eh-text-secondary)]"
+                    >
+                      Copy fix
+                    </button>
+                    <button
+                      type="button"
+                      onClick={sendAuditWarnings}
+                      disabled={!onSendToChat || auditSent}
+                      title={onSendToChat ? 'Send the layout warnings to the grooming agent' : 'Chat unavailable'}
+                      className="inline-flex items-center gap-1 rounded bg-primary px-2 py-0.5 text-[11px] font-medium text-white enabled:hover:opacity-90 disabled:opacity-40"
+                    >
+                      <Send className="h-3 w-3" /> {auditSent ? 'Sent' : 'Send to agent'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           {revisions.length > 1 && (
             <>
               <button
@@ -414,11 +495,9 @@ export function ArtifactPanel({
         </div>
       </div>
 
-      {/* The iframe (with its in-document annotation UI) + the open-time layout-audit mask. The mask
-          covers the artifact while the audit is pending or has surfaced warnings, until reveal.
-          FLUX-1136: `iframeMounted` drops the iframe (and its compiled Tailwind/JS) once hidden has
-          outlasted the grace period — a short hide leaves it alone so annotations survive. */}
-      <div className={fullscreen ? 'relative min-h-0 flex-1' : 'relative'}>
+      {/* The iframe (with its in-document pin/composer UI). FLUX-1362: no mask — the artifact renders
+          immediately; a brief non-blocking spinner in the corner shows while the layout audit runs. */}
+      <div className={fullscreen || fillHeight ? 'relative min-h-0 flex-1' : 'relative'}>
         {iframeMounted ? (
           <iframe
             key={src}
@@ -427,66 +506,19 @@ export function ArtifactPanel({
             src={src}
             sandbox="allow-scripts"
             referrerPolicy="no-referrer"
-            className={`eh-border w-full rounded-lg border bg-white ${fullscreen ? 'h-full' : 'h-[58vh]'}`}
+            className={`eh-border w-full rounded-lg border bg-white ${iframeSizeClass}`}
           />
         ) : (
-          <div className={`eh-border w-full rounded-lg border bg-white ${fullscreen ? 'h-full' : 'h-[58vh]'}`} />
+          <div className={`eh-border w-full rounded-lg border bg-white ${iframeSizeClass}`} />
         )}
 
-        {iframeMounted && !revealed && audit.status === 'pending' && (
+        {iframeMounted && audit.status === 'pending' && (
           <div
             role="status"
             aria-live="polite"
-            className="absolute inset-0 flex items-center justify-center rounded-lg bg-white/70 backdrop-blur-[2px]"
+            className="pointer-events-none absolute right-2 top-2 flex items-center gap-1.5 rounded-full bg-black/60 px-2 py-1 text-[10px] font-medium text-white"
           >
-            <div className="flex items-center gap-2 text-[12px] text-[var(--eh-text-secondary)]">
-              <Loader2 className="h-4 w-4 animate-spin" /> Checking layout…
-            </div>
-          </div>
-        )}
-
-        {iframeMounted && !revealed && audit.status === 'warnings' && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="absolute inset-0 flex flex-col gap-2 overflow-y-auto rounded-lg bg-[var(--eh-surface)] p-3"
-          >
-            <div className="flex items-center gap-2 text-[12px] font-semibold text-amber-500">
-              <AlertTriangle className="h-4 w-4" />
-              Layout audit found {audit.warnings.length} issue{audit.warnings.length === 1 ? '' : 's'}
-            </div>
-            <p className="text-[11px] text-[var(--eh-text-muted)]">
-              The artifact is masked until the layout is clean. Send the warnings to the grooming agent for a
-              corrected revision, or reveal it anyway.
-            </p>
-            <ul className="flex flex-col gap-1 text-[11px] text-[var(--eh-text-secondary)]">
-              {audit.warnings.map((w, i) => (
-                <li key={i} className="eh-border rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1">
-                  <span className="font-medium text-amber-600">{w.kind}</span>{' '}
-                  <code className="text-[10px] text-[var(--eh-text-muted)]">{w.selector}</code>
-                  <div className="text-[var(--eh-text-secondary)]">{w.detail}</div>
-                </li>
-              ))}
-            </ul>
-            <div className="mt-auto flex items-center justify-end gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => setRevealed(true)}
-                title="Show the artifact despite the layout warnings"
-                className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] text-[var(--eh-text-muted)] hover:text-[var(--eh-text-secondary)]"
-              >
-                <Eye className="h-3 w-3" /> Show anyway
-              </button>
-              <button
-                type="button"
-                onClick={sendAuditWarnings}
-                disabled={!onSendToChat || auditSent}
-                title={onSendToChat ? 'Send the layout warnings to the grooming agent' : 'Chat unavailable'}
-                className="inline-flex items-center gap-1 rounded bg-primary px-2 py-1 text-[11px] font-medium text-white enabled:hover:opacity-90 disabled:opacity-40"
-              >
-                <Send className="h-3 w-3" /> {auditSent ? 'Sent to agent' : 'Send to agent'}
-              </button>
-            </div>
+            <Loader2 className="h-3 w-3 animate-spin" /> Checking layout…
           </div>
         )}
       </div>
@@ -498,9 +530,26 @@ export function ArtifactPanel({
       {!fullscreen && (
         <p className="px-1 text-[10px] text-[var(--eh-text-muted)]">
           Tip: select text — or right-click any element (toggle, button, chart bar) — in the artifact to
-          annotate it. Collect several notes, then “Send to agent” from the tray — or open full screen for
-          a larger canvas.
+          annotate it. Your changes collect in the “{items.length} change{items.length === 1 ? '' : 's'}”
+          pill; click a pin to edit its note.
         </p>
+      )}
+
+      {/* FLUX-1362: the floating unified list. Standalone (artifact-only) view owns + renders it with a
+          Send action; in controlled mode the plan-review panel renders the pill (with plan-text items
+          merged in), so this panel only bridges the iframe. */}
+      {!controlled && (
+        <AnnotationPill
+          artifactItems={items}
+          onEditArtifact={(id, note) => applyItems(items.map((a) => (a.id === id ? { ...a, note } : a)))}
+          onRemoveArtifact={(id) => applyItems(items.filter((a) => a.id !== id))}
+          onSend={onSendToChat ? () => {
+            const message = formatArtifactAnnotations(items);
+            if (message) { onSendToChat(message); setSentCount(items.length); applyItems([]); }
+          } : undefined}
+          sendDisabled={items.length === 0}
+          sentConfirm={sentCount > 0 ? `✓ Sent ${sentCount}` : undefined}
+        />
       )}
     </div>
   );

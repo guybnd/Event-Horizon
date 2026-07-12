@@ -4,7 +4,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { getModuleMcpServers, getWorkspaceMcpServers } from './modules.js';
-import { workspaceRoot } from './workspace.js';
+import { getWorkspaceRoot } from './workspace.js';
 
 // Server config as sourced from either the module system (`{command,args,env}`) or a workspace
 // `.mcp.json` entry (arbitrary JSON — may also carry `type`/`url` for http/sse transports). This
@@ -65,7 +65,7 @@ function makeTransport(config: McpServerConfig) {
     command: config.command!,
     args: config.args ?? [],
     env,
-    cwd: workspaceRoot || process.cwd(),
+    cwd: getWorkspaceRoot() || process.cwd(),
     stderr: 'ignore',
   });
 }

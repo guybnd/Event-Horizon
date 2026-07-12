@@ -85,6 +85,15 @@ export function getTasksVersion(): number {
   return tasksVersion;
 }
 
+// FLUX-1338: bump the version out-of-band from a task mutation. A workspace switch replaces the
+// whole task set in one shot (doActivateWorkspace) but broadcasts no per-task taskUpdated/Created/
+// Deleted event, so `tasksVersion` would otherwise stay put across the switch — leaving the portal's
+// cached `GET /api/tasks` ETag valid and the engine answering the first post-switch poll with a 304,
+// so the board kept rendering the PREVIOUS workspace's tickets. Bumping here invalidates that cache.
+export function bumpTasksVersion(): void {
+  tasksVersion++;
+}
+
 // FLUX-1132: bounds the `sse.broadcast.<event>` counter's cardinality. Every real call site passes
 // a literal (verified via grep — `taskUpdated`, `activity`, `notification`, ...); this only guards
 // against a future dynamic/user-influenced event name blowing up the registry's key count.

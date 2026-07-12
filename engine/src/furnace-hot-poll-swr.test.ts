@@ -8,6 +8,7 @@
 // regressed to awaiting them would leave `fetch` hanging until the test times out — proving the
 // response comes from the already-cached state instead.
 
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -48,7 +49,7 @@ vi.mock('./furnace-stoker.js', async (importOriginal) => {
 import furnaceRouter from './routes/furnace.js';
 import { createFurnaceBatch, __resetFurnaceStoreForTests } from './furnace-store.js';
 import { newBatchTicket } from './models/furnace.js';
-import { tasksCache } from './task-store.js';
+
 
 describe('Furnace GET routes serve stale-while-revalidate (FLUX-1185)', () => {
   let root: string;
@@ -60,7 +61,7 @@ describe('Furnace GET routes serve stale-while-revalidate (FLUX-1185)', () => {
     await fs.mkdir(path.join(root, '.flux'), { recursive: true });
     setWorkspaceRoot(root);
     __resetFurnaceStoreForTests();
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
 
     reconcileGate = deferred();
     poolGate = deferred();
@@ -140,7 +141,7 @@ describe('Furnace GET / and GET /slots block on the very first worktree-pool sca
     await fs.mkdir(path.join(root, '.flux'), { recursive: true });
     setWorkspaceRoot(root);
     __resetFurnaceStoreForTests();
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
 
     reconcileGate = deferred();
     poolGate = deferred();

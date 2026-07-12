@@ -18,6 +18,7 @@ if (process.argv.includes('--mcp')) {
   process.exit(1);
 }
 
+import { getWorkspace } from './workspace-context.js';
 import { log } from './log.js';
 import express from 'express';
 import cors from 'cors';
@@ -28,16 +29,16 @@ import path from 'path';
 import os from 'os';
 
 import { fileURLToPath } from 'url';
-import { requireWorkspace, loopbackOnly, originGuard, isLoopbackHostname } from './middleware.js';
+import { requireWorkspace, attachWorkspace, loopbackOnly, originGuard, isLoopbackHostname } from './middleware.js';
 import { requestTiming } from './perf/request-timing.js';
 import { startEventLoopMonitor, stopEventLoopMonitor } from './perf/event-loop-monitor.js';
 import { startGitTiming } from './perf/git-timing.js';
-import { workspaceRoot, loadAppSettings, getCliWorkspace, resolvePortalDist, autoRegisterWorkspace } from './workspace.js';
+import { loadAppSettings, getCliWorkspace, resolvePortalDist, autoRegisterWorkspace, getWorkspaceRoot } from './workspace.js';
 import { isPkg, isSea, isPackaged, ensureSeaAssetsExtracted, getSeaAsset, setEnginePort } from './packaged-mode.js';
 import { migrateFromLegacy } from './global-settings.js';
-import { activateWorkspace, tasksCache } from './task-store.js';
+import { activateWorkspace } from './task-store.js';
 // FLUX-705: statically imported so the in-process HTTP MCP mount runs on THIS engine's
-// task-store (shared workspaceRoot/tasksCache/watchers). Bundling them together is what
+// task-store (shared getWorkspaceRoot()/getWorkspace().tasks/watchers). Bundling them together is what
 // makes the MCP tools and the engine one instance — in the packaged SEA build the old
 // lazy `seaRequire('mcp-server.js')` loaded a SECOND, never-activated task-store, so MCP
 // writes threw "Received null" and MCP reads were blind to tickets REST had written.
@@ -77,6 +78,7 @@ import workflowsRouter from './routes/workflows.js';
 import furnaceRouter from './routes/furnace.js';
 import { startStoker } from './furnace-stoker.js';
 import { startTemper } from './temper.js';
+import { startScheduledWakeTicker } from './scheduled-wake.js';
 import { startGateRunnerLoop } from './gate-runner.js';
 import agentsRouter from './routes/agents.js';
 import bootstrapRouter from './routes/bootstrap.js';
@@ -150,6 +152,9 @@ if (ALLOW_REMOTE) {
 // FLUX-1129: times every request into the perf registry (GET /api/perf) — mounted early,
 // alongside the other cross-cutting guards above, so it wraps the whole API surface.
 app.use(requestTiming);
+// FLUX-343: expose the active workspace as req.workspace — the seam the parallel-workspaces
+// epic (FLUX-1230) later swaps for a per-request registry lookup.
+app.use(attachWorkspace);
 
 // FLUX-1130: samples event-loop delay in the background so a synchronous stall anywhere in
 // the process (blocking git spawn, giant JSON serialize, sync fs rescan, ...) surfaces in
@@ -262,7 +267,7 @@ app.get('/api/board/state', requireWorkspace, (_req, res) => {
     activity: s.currentActivity,
   }));
   const statusCounts: Record<string, number> = {};
-  for (const t of Object.values(tasksCache)) {
+  for (const t of Object.values(getWorkspace().tasks)) {
     const st = (t as { status?: string }).status || 'Unknown';
     statusCounts[st] = (statusCounts[st] || 0) + 1;
   }
@@ -426,7 +431,7 @@ let ghAuthAvailable: boolean | null = null;
 const PR_RECONCILE_INTERVAL_MS = 90_000;
 
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', workspace: workspaceRoot, ghAuthAvailable });
+  res.json({ status: 'ok', workspace: getWorkspaceRoot(), ghAuthAvailable });
 });
 
 app.post('/api/shutdown', (_req, res) => {
@@ -549,7 +554,8 @@ async function initTray(port: number): Promise<void> {
   // same 32x32 image bytes in an ICO container (FLUX-129).
   const TRAY_ICON_ICO = 'AAABAAEAICAAAAEAIAC+CAAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAAgAAAAIAgGAAAAc3p69AAAABl0RVh0U29mdHdhcmUAQWRvYmUgSW1hZ2VSZWFkeXHJZTwAAANmaVRYdFhNTDpjb20uYWRvYmUueG1wAAAAAAA8P3hwYWNrZXQgYmVnaW49Iu+7vyIgaWQ9Ilc1TTBNcENlaGlIenJlU3pOVGN6a2M5ZCI/PiA8eDp4bXBtZXRhIHhtbG5zOng9ImFkb2JlOm5zOm1ldGEvIiB4OnhtcHRrPSJBZG9iZSBYTVAgQ29yZSA1LjAtYzA2MCA2MS4xMzQ3NzcsIDIwMTAvMDIvMTItMTc6MzI6MDAgICAgICAgICI+IDxyZGY6UkRGIHhtbG5zOnJkZj0iaHR0cDovL3d3dy53My5vcmcvMTk5OS8wMi8yMi1yZGYtc3ludGF4LW5zIyI+IDxyZGY6RGVzY3JpcHRpb24gcmRmOmFib3V0PSIiIHhtbG5zOnhtcE1NPSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvbW0vIiB4bWxuczpzdFJlZj0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL3NUeXBlL1Jlc291cmNlUmVmIyIgeG1sbnM6eG1wPSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvIiB4bXBNTTpPcmlnaW5hbERvY3VtZW50SUQ9InhtcC5kaWQ6NjcyNEJFMTVFRDIwNjgxMTg4QzZGMjgxNURBM0M1NTUiIHhtcE1NOkRvY3VtZW50SUQ9InhtcC5kaWQ6QTNCNEZCNjYzQUE4MTFFMkIyQ0E5N0JEMzQ0MUVGMzIiIHhtcE1NOkluc3RhbmNlSUQ9InhtcC5paWQ6QTNCNEZCNjUzQUE4MTFFMkIyQ0E5N0JEMzQ0MUVGMzIiIHhtcDpDcmVhdG9yVG9vbD0iQWRvYmUgUGhvdG9zaG9wIENTNSBNYWNpbnRvc2giPiA8eG1wTU06RGVyaXZlZEZyb20gc3RSZWY6aW5zdGFuY2VJRD0ieG1wLmlpZDpFNjgxNEM2QUVFMjA2ODExODhDNkYyODE1REEzQzU1NSIgc3RSZWY6ZG9jdW1lbnRJRD0ieG1wLmRpZDo2NzI0QkUxNUVEMjA2ODExODhDNkYyODE1REEzQzU1NSIvPiA8L3JkZjpEZXNjcmlwdGlvbj4gPC9yZGY6UkRGPiA8L3g6eG1wbWV0YT4gPD94cGFja2V0IGVuZD0iciI/Pl3tNeIAAATuSURBVHjaxFfPb1VFGD3z4/7qe6+lbQrYNL4Wg2mMLgTihrhw4QY1GBNdYIzRaOLKuDMx8W9wZ1yxYuFGQowL40Y0JRFBFKQkpAhYCikUCm3p67vvzp3xzL2vpURjSe5LeMn37p07M3fOd77zfTNXOOfwOH96qwHi2Tf/67GifUbb64fQjtO++Ncoa+EufPO/75dbQjQG8CxtNuBD2oiQ8pDqb7wLIZ5n+42iz3bHcF7/QH91BsYnmrh2Y75wU/Av5wLW2nE2r9EOyzgWXPR6vrzSFHEEGWj4sEraLs6tDGD3U7uQhxF2j+5AqDX+mr81NnP56iTS9CBdLbwVSQwdht8JJX+AFNOOIJMwRKPR2BKA3DoCBqS6sFoSKy70NbQ+WITes5GmZIb3Sr5Kz4/kJg9CpfDM6BNQ/nllEfIdhmKamr6Ip3eOBJ00G0XagffeU513MgRJgogeZ7mpN+JEPDk8hKgbisoAur8oNebAnxcvfSCtbcLk2BBFECDQAfoJohaFE/UoOhoodZhLf8/eVuUQ8Pc2bUoKcRRKHbB+zjq1vCrqIlCSEZDQitwLvMIen3u/0D7qBYCPaft8doGOI3WldTFoD4BmrESaCThbvpLdz9HeqxyClVTfWFrjqzoO9chhckxTXA4nZ7JidihVUZf2jEv0RcCte+S9I7DaIVEQVyoDOLT375nghTU0hxUmdw6jOV5zx35axVufzwnUFRlQlITE+y8leG2fxO2FDHP3UswuOFxfdOcqA/jk5ZvnoLfRyUEKv48u9wmpOE3MFp77sAdaUIt1SB1hZLCN7UNt7Jmg/kxrujKA1Oy4LFydRb0hIWssRjWmnX2gAQowJAtRXGcjQSZCasWbNnDhtbByHQiGZqHiJeiBQaFqZKAfQdxZ76X6FUIPogDgWQjg+MwJcZsgZqvXAZncpOdXhG4M0pj3g/R2bSN/fAr6EMQx+xQ3H03xUROsQpedUIvVK2EwkEGGl+j9ngKA2kZvV4tS4DPT5z8LD6JkgI06hGaFLMKTzwgX2ep1QFF4MvqDYYDw91wkjAYgZTnV1/tSAwSn/diE4CLuHdEZf63OgPIvkWd54+nwYBCEDTZlsR9I0WUgaKAYIwN/ZUd4HsJV3w39gnzped4tlduvRRj49CuneiIitoOQC5P7MjnkAkGcL8D0oBR7T+fgsguwVH++RgDpAwA+BNz5IsXKyH7nfL3OCVgsbORqJQCOL3bGcuM/7fJVluRlxKrFuMuCEIEyCyLBzDA02yaI7NdiL3a2OgCXZ6WZ1pQzywRwF31ihSeeLoBChKwH7j4BrHBsyzNxghNQWOU6YFbXoZx2tnMfwtR9detbBwAPgNlgubg/wJq1O0RxpmfHcpevrN9eRe7OWrT3K6uRbOiLACh6kS93mUp/I7E3egYA2b2NU74/mDjb2q+ERqxdqXqGQEsCMEs8LbP8W3O8px8mlp5touNHYeWnQgU8A1qUJc8zwPucWZpTrM79/Cjqf/QQZPObm6e4ycyRgbF6aEoAwu+GBoqh4vqXqIbfe8qAyxY2NxdzZ07yFDRWj5LyfEBvfQ0Q+V2OdScYjFZvAZj5h9vOHIFpv1iLm9uBepHJoWxRA3fOuFx/5YrPxh4CeDie/t4cg104VQuHX2f7HT5oK2G+hGt/61Brl2Me/YtbPO7P838EGADgbt1jJFeAbwAAAABJRU5ErkJggg==';
 
-  const projectName = workspaceRoot ? path.basename(workspaceRoot) : 'No project open';
+  const trayRoot = getWorkspaceRoot();
+  const projectName = trayRoot ? path.basename(trayRoot) : 'No project open';
   const menu = {
     icon: process.platform === 'win32' ? TRAY_ICON_ICO : TRAY_ICON_PNG,
     title: 'Event Horizon',
@@ -697,6 +703,7 @@ async function startServer() {
     let prReconcileInFlight = false;
     const runPrReconcileTick = () => {
       if (prReconcileInFlight) return;
+      const workspaceRoot = getWorkspaceRoot();
       if (workspaceRoot) {
         prReconcileInFlight = true;
         Promise.all([
@@ -757,6 +764,11 @@ async function startServer() {
     // `auto-then-you` runs. A no-op until `change_status` redirects a Grooming -> Todo move into it;
     // rehydrates any in-flight runs from frontmatter so they survive an engine restart.
     startGateRunnerLoop();
+
+    // FLUX-1390: background wake ticker for honored `ScheduleWakeup` calls. A no-op until a session
+    // enters the `scheduled` state (itself opt-in via agents.honorScheduledWakeups, default off), so
+    // always safe to start unconditionally.
+    startScheduledWakeTicker();
   });
 
   // Terminal WebSocket upgrade handler — handles /api/terminal/ws/:sessionId.

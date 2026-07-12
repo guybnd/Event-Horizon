@@ -1,7 +1,8 @@
+import { getWorkspace } from './workspace-context.js';
 import { randomUUID } from 'crypto';
 import { broadcastEvent } from './events.js';
-import { tasksCache, updateTaskWithHistory } from './task-store.js';
-import { configCache } from './config.js';
+import { updateTaskWithHistory } from './task-store.js';
+import { getConfig } from './config.js';
 import { gatherTurnsForView } from './transcript.js';
 import { appendCurationOp, readCurationOps, reachableFoldSources, type MergeOp } from './curation-ops.js';
 
@@ -62,7 +63,7 @@ export async function mergeTickets(opts: MergeTicketsOptions): Promise<MergeTick
 
   // ── Guards (no partial state): validate everything before the op append / any mutation ──
   if (!into || !into.trim()) throw new Error('merge: a survivor `into` ticket id is required');
-  if (!tasksCache[into]) throw new Error(`merge: survivor ${into} not found`);
+  if (!getWorkspace().tasks[into]) throw new Error(`merge: survivor ${into} not found`);
   if (!Array.isArray(opts.from) || opts.from.length === 0) {
     throw new Error('merge: at least one `from` source is required');
   }
@@ -87,10 +88,10 @@ export async function mergeTickets(opts: MergeTicketsOptions): Promise<MergeTick
   // so new sources folded here would never surface in the effort the redirect points at — turns
   // silently orphaned. (A prior *survivor* as `into` is fine — that's how you add more sources to
   // an existing effort; each source is read from its own substrate.) — FLUX-657 chaining guard.
-  if (mergedAwaySources.has(into) || tasksCache[into].mergedInto) {
+  if (mergedAwaySources.has(into) || getWorkspace().tasks[into].mergedInto) {
     throw new Error(
       `merge: survivor ${into} is itself already merged away into ` +
-        `${tasksCache[into].mergedInto ?? 'another effort'}; fold into the live survivor instead`,
+        `${getWorkspace().tasks[into].mergedInto ?? 'another effort'}; fold into the live survivor instead`,
     );
   }
 
@@ -100,7 +101,7 @@ export async function mergeTickets(opts: MergeTicketsOptions): Promise<MergeTick
     if (!f || !f.trim()) throw new Error('merge: a `from` source id is empty');
     if (f === into) throw new Error(`merge: cannot merge ${into} into itself (into ∈ from)`);
     if (from.includes(f)) continue; // dedupe a repeated source — fold it once
-    if (!tasksCache[f]) throw new Error(`merge: source ${f} not found`);
+    if (!getWorkspace().tasks[f]) throw new Error(`merge: source ${f} not found`);
     from.push(f);
   }
 
@@ -119,8 +120,8 @@ export async function mergeTickets(opts: MergeTicketsOptions): Promise<MergeTick
           `would end up depending on itself and recurse forever`,
       );
     }
-    if (tasksCache[f].mergedInto) {
-      throw new Error(`merge: source ${f} is already merged into ${tasksCache[f].mergedInto}`);
+    if (getWorkspace().tasks[f].mergedInto) {
+      throw new Error(`merge: source ${f} is already merged into ${getWorkspace().tasks[f].mergedInto}`);
     }
   }
 
@@ -147,10 +148,10 @@ export async function mergeTickets(opts: MergeTicketsOptions): Promise<MergeTick
 
   // ── Tombstone + archive each source (best-effort: the merge op already stands, so a failure
   //    here leaves the view correctly folded; the source can be re-archived). ──
-  const archiveStatus = configCache.archiveStatus || 'Archived';
+  const archiveStatus = getConfig().archiveStatus || 'Archived';
   const archiveFailures: string[] = [];
   for (const f of from) {
-    const task = tasksCache[f];
+    const task = getWorkspace().tasks[f];
     const tombstone =
       `🔗 Merged into ${into}. This ticket's chat was folded into the survivor effort; its turns are ` +
       `preserved in the immutable substrate and now re-derive in ${into}'s view. Reversible — the merge ` +

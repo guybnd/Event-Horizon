@@ -22,7 +22,7 @@ import { randomUUID } from 'node:crypto';
 import { getActiveFluxDir } from './workspace.js';
 import { atomicWriteFile } from './task-store.js';
 import { broadcastEvent } from './events.js';
-import { configCache } from './config.js';
+import { getConfig } from './config.js';
 import {
   type FurnaceBatch,
   type BatchStatus,
@@ -247,7 +247,7 @@ export async function createFurnaceBatch(input: CreateBatchInput): Promise<Furna
   // FLUX-1063: new batches inherit the global rate-limit cooldown settings as their defaults; an
   // explicit per-batch value on the input still wins. `newFurnaceBatch` falls back to the DEFAULT_*
   // constants when neither is set (e.g. no config loaded).
-  const fs = configCache.furnaceSettings || {};
+  const fs = getConfig().furnaceSettings || {};
   const rateLimitRetryIntervalMs = input.rateLimitRetryIntervalMs ?? fs.rateLimitRetryIntervalMs;
   const rateLimitMaxWaitMs = input.rateLimitMaxWaitMs ?? fs.rateLimitMaxWaitMs;
   const batch = newFurnaceBatch({

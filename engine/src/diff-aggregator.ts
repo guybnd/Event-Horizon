@@ -40,6 +40,10 @@ export interface ChangedFile {
    *  (in `<mergeBase>..HEAD`), false/absent when it's purely loose/untracked (FLUX-582).
    *  A file both committed-ahead AND further modified loose is `true`. */
   committed?: boolean;
+  /** True when this file carries uncommitted (staged/unstaged/untracked) work in its checkout —
+   *  i.e. a working-tree discard would remove something. Absent/false for committed-only files.
+   *  Drives the portal's per-file Discard controls (FLUX-1333). */
+  uncommitted?: boolean;
 }
 
 export interface DiffGroup {
@@ -117,6 +121,84 @@ function parseNameStatus(stdout: string): Array<{ status: ChangeStatus; file: st
     out.push({ status, file });
   }
   return out;
+}
+
+// ─── Uncommitted-state probe (FLUX-1333) ────────────────────────────────────────
+
+/** One `git status --porcelain` (v1) entry. `path` is the CURRENT path (a rename's new side). */
+export interface PorcelainEntry {
+  /** Index (staged) status letter; ' ' when the index is clean, '?' when untracked. */
+  x: string;
+  /** Worktree (unstaged) status letter; ' ' when the worktree matches the index. */
+  y: string;
+  /** Current path, C-unquoted. */
+  path: string;
+  /** Raw path token exactly as git printed it (C-quoted for exotic names). */
+  rawPath: string;
+  /** Rename/copy source path (staged renames/copies only), C-unquoted. */
+  origPath?: string;
+}
+
+/** Undo git's C-style path quoting (`"caf\303\251.txt"` → `café.txt`). Unquoted input passes through. */
+function unquoteGitPath(raw: string): string {
+  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return raw;
+  const inner = raw.slice(1, -1);
+  const bytes: number[] = [];
+  const escapes: Record<string, string> = { n: '\n', t: '\t', r: '\r', '\\': '\\', '"': '"', a: '\x07', b: '\b', f: '\f', v: '\v' };
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i]!;
+    if (ch !== '\\') { bytes.push(...Buffer.from(ch, 'utf8')); continue; }
+    const next = inner[++i];
+    if (next === undefined) break;
+    if (next >= '0' && next <= '7') {
+      // Octal escape encodes ONE raw byte; consecutive escapes form a UTF-8 sequence.
+      let oct = next;
+      while (oct.length < 3 && inner[i + 1] !== undefined && inner[i + 1]! >= '0' && inner[i + 1]! <= '7') oct += inner[++i]!;
+      bytes.push(parseInt(oct, 8));
+    } else {
+      bytes.push(...Buffer.from(escapes[next] ?? next, 'utf8'));
+    }
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+/** Parse `git status --porcelain` (v1) output. Staged renames/copies carry both sides. */
+export function parseStatusPorcelain(stdout: string): PorcelainEntry[] {
+  const out: PorcelainEntry[] = [];
+  for (const raw of stdout.split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    if (line.length < 4) continue;
+    const x = line[0]!;
+    const y = line[1]!;
+    let rest = line.slice(3);
+    let orig: string | undefined;
+    if ((x === 'R' || x === 'C') && rest.includes(' -> ')) {
+      const idx = rest.indexOf(' -> ');
+      orig = rest.slice(0, idx);
+      rest = rest.slice(idx + 4);
+    }
+    out.push({ x, y, path: unquoteGitPath(rest), rawPath: rest, ...(orig !== undefined ? { origPath: unquoteGitPath(orig) } : {}) });
+  }
+  return out;
+}
+
+/**
+ * The set of paths carrying ANY uncommitted (staged, unstaged, or untracked) change in `cwd`,
+ * keyed to align with `changedFilesAgainst` output: both sides of a staged rename are included,
+ * and both the unquoted and raw C-quoted spellings are added so exotic paths match either form.
+ * `-uall` lists files inside untracked directories individually (matching `ls-files --others`).
+ * Best-effort: a failed git call yields an empty set — files then read as committed-only, which
+ * fails safe (the discard endpoint re-derives state itself before mutating anything).
+ */
+async function uncommittedPathSet(runner: GitRunner, cwd: string): Promise<Set<string>> {
+  const stdout = await runner(cwd, ['status', '--porcelain', '-uall']).then((r) => r.stdout).catch(() => '');
+  const set = new Set<string>();
+  for (const e of parseStatusPorcelain(stdout)) {
+    set.add(e.path);
+    set.add(e.rawPath);
+    if (e.origPath) set.add(e.origPath);
+  }
+  return set;
 }
 
 // ─── Git helpers ──────────────────────────────────────────────────────────────────
@@ -249,11 +331,21 @@ export async function buildDiffOverview(workspaceRoot: string, opts: DiffOvervie
       const committedSet = await committedAheadPaths(runner, wt.path, base);
       for (const f of files) if (committedSet.has(f.file)) f.committed = true;
     }
+    // FLUX-1333: per-file discardability. Default mode mixes committed-ahead + loose files, so
+    // probe the worktree's live status; in uncommittedOnly mode every file is loose by construction.
+    if (opts.uncommittedOnly) {
+      for (const f of files) f.uncommitted = true;
+    } else {
+      const uncommittedSet = await uncommittedPathSet(runner, wt.path);
+      for (const f of files) if (uncommittedSet.has(f.file)) f.uncommitted = true;
+    }
     groups.push({ kind: 'worktree', path: wt.path, files, ...(wt.branch ? { branch: wt.branch } : {}) });
   }
 
-  // Main tree: uncommitted (+ untracked) work on whatever HEAD points at.
+  // Main tree: uncommitted (+ untracked) work on whatever HEAD points at — every file is
+  // uncommitted by construction; flagged anyway so the client contract is uniform (FLUX-1333).
   const mainFiles = await changedFilesAgainst(runner, workspaceRoot, 'HEAD').catch(() => []);
+  for (const f of mainFiles) f.uncommitted = true;
   groups.push({ kind: 'main', path: workspaceRoot, files: mainFiles });
 
   const collisions = computeCollisions(groups);
@@ -347,6 +439,10 @@ export async function diffFilesForBranch(
   if (wt) {
     const base = await mergeBaseOrBranch(runner, wt, defaultBranch);
     const files = await changedFilesAgainst(runner, wt, base).catch(() => []);
+    // FLUX-1333: the merge-base diff mixes committed-ahead + loose files — flag the loose ones
+    // so the chat panel's Discard control only shows where a working-tree discard applies.
+    const uncommittedSet = await uncommittedPathSet(runner, wt);
+    for (const f of files) if (uncommittedSet.has(f.file)) f.uncommitted = true;
     return { branch, worktree: wt, base, files };
   }
 

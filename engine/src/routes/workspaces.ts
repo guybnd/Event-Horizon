@@ -1,18 +1,9 @@
 import express from 'express';
 import path from 'path';
 import { existsSync } from 'fs';
-import {
-  workspaceRoot,
-  getWorkspacesList,
-  addWorkspaceEntry,
-  removeWorkspaceEntry,
-  updateWorkspaceLabel,
-  saveAppSettings,
-  loadAppSettings,
-  autoRegisterWorkspace,
-} from '../workspace.js';
+import { getWorkspacesList, addWorkspaceEntry, removeWorkspaceEntry, updateWorkspaceLabel, saveAppSettings, loadAppSettings, autoRegisterWorkspace, getWorkspaceRoot } from '../workspace.js';
 import { activateWorkspace } from '../task-store.js';
-import { getActiveSessionCount, stopAllCliSessions } from '../session-store.js';
+import { getLiveProcessSessionCount, stopAllCliSessions } from '../session-store.js';
 import { resolveWorkspaceGroups, type WorkspaceGroupInfo } from '../group.js';
 
 const router = express.Router();
@@ -36,6 +27,7 @@ function pathsEqual(a: string, b: string): boolean {
 
 function enrichEntry(entry: { path: string; label?: string }, groups: Map<string, WorkspaceGroupInfo>): WorkspaceInfo {
   const normalized = path.resolve(entry.path);
+  const workspaceRoot = getWorkspaceRoot();
   const info: WorkspaceInfo = {
     path: normalized,
     displayName: entry.label || path.basename(normalized),
@@ -100,7 +92,11 @@ router.post('/switch', async (req, res) => {
     return res.status(400).json({ error: `Folder not found: ${resolved}` });
   }
 
-  const activeSessions = getActiveSessionCount();
+  // FLUX-1338: count only sessions with a live OS process — the ones a force-switch could actually
+  // stop. getActiveSessionCount() also counts `waiting-input` sessions, which include resumable
+  // resting sessions rehydrated from disk stubs (no proc) at boot, so it warned "N sessions running"
+  // when nothing was actually running.
+  const activeSessions = getLiveProcessSessionCount();
   if (activeSessions > 0 && !force) {
     return res.status(409).json({
       error: 'active_sessions',

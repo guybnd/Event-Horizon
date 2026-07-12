@@ -214,6 +214,8 @@ export interface TicketActionContext {
   finishViaEngine: () => void | Promise<void>;
   /** Agent `finish` — fallback when there's nothing to curate (clean tree / no open PR), tokenized. */
   dispatchFinish: () => void | Promise<void>;
+  /** Agent fast-path (FLUX-1380) — one session grooms + implements a Grooming-column XS/S ticket. */
+  dispatchFastPath: () => void | Promise<void>;
   /** One-click launch of the phase default (StartPrompt for Todo-no-branch; launcher fallback). */
   launchDefault: (phase: LaunchPhase) => void | Promise<void>;
   /** Open the orchestration launcher pinned to a phase + template. */
@@ -292,6 +294,18 @@ export function actionsForStatus(task: Task, ctx: TicketActionContext): TicketAc
   // Grooming / Require Input → plan it forward or hand to the grooming agent.
   if (/^groom/i.test(status) || status === requireInputStatus) {
     actions.push(launchAction('groom', 'Start grooming', 'grooming', tpl, ctx));
+    // FLUX-1380: fast-path is a Grooming-column-only opt-in (not offered from Require Input) —
+    // eligibility (effort L/XL, subtasks) is enforced server-side; the button just offers the choice.
+    if (/^groom/i.test(status)) {
+      actions.push({
+        key: 'fast-path',
+        label: 'Fast-path',
+        category: 'workflow',
+        kind: 'agent',
+        icon: 'sparkles',
+        run: ctx.dispatchFastPath,
+      });
+    }
     actions.push(transition('to-todo', 'Move to Todo', TODO_STATUS, ctx, { surfaces: ['compact'] }));
     return actions;
   }

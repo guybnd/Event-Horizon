@@ -105,6 +105,19 @@ export function GatePolicyModal({ gate, onClose }: GatePolicyModalProps) {
     void saveConfig({ ...config, planReviewDepth: value });
   }, [config, currentDepth, saveConfig]);
 
+  // FLUX-1379: deterministic pre-gate lint + XS/S auto-skip — both plain on/off, default true.
+  const planLint = config?.planLint ?? true;
+  const setPlanLint = useCallback((value: boolean) => {
+    if (!config || value === planLint) return;
+    void saveConfig({ ...config, planLint: value });
+  }, [config, planLint, saveConfig]);
+
+  const planGateSkipSmall = config?.planGateSkipSmall ?? true;
+  const setPlanGateSkipSmall = useCallback((value: boolean) => {
+    if (!config || value === planGateSkipSmall) return;
+    void saveConfig({ ...config, planGateSkipSmall: value });
+  }, [config, planGateSkipSmall, saveConfig]);
+
   // FLUX-1290: plain on/off, not a `gatePolicy` key — `merge` stays structurally unrepresentable
   // in `GateValue`. Dialed here (review gate) since it's the same "→ Ready merge" concern.
   const blockAgentPrMerges = config?.blockAgentPrMerges ?? false;
@@ -211,6 +224,20 @@ export function GatePolicyModal({ gate, onClose }: GatePolicyModalProps) {
               <p className="mt-2 text-sm text-gray-600 dark:text-gray-300 leading-relaxed min-h-[3.5rem]">
                 {DEPTH_DESCRIPTION[currentDepth]}
               </p>
+              <div className="mt-3 space-y-2">
+                <SettingToggleCard
+                  title="Deterministic pre-gate lint"
+                  description="On (default): bounce mechanical plan defects (missing TL;DR, no Acceptance criteria checklist, no Recommended Tests, unset effort) for free — no LLM session spawned — before a Grooming → Todo move. Off: skip straight to the review pass."
+                  checked={planLint}
+                  onChange={setPlanLint}
+                />
+                <SettingToggleCard
+                  title="Auto-skip for XS/S"
+                  description="On (default): XS/S tickets never trigger the automatic plan-review gate — a review can't pay for itself on a ticket that small. The lint above still runs. Off: XS/S tickets go through the gate like any other."
+                  checked={planGateSkipSmall}
+                  onChange={setPlanGateSkipSmall}
+                />
+              </div>
             </div>
           )}
 

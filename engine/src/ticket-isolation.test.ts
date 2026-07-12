@@ -1,3 +1,4 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // FLUX-852: unit-test the canonical ticket-isolation chokepoint (FLUX-845) in isolation — stub the
@@ -11,7 +12,7 @@ vi.mock('./task-worktree.js', () => ({ createTaskWorktree: vi.fn(), reclaimWorkt
 // this unit test doesn't pull in pr-cleanup's whole graph; the under-pressure test mocks
 // reclaimWorktrees anyway, so the predicate body is never exercised here.
 vi.mock('./pr-cleanup.js', () => ({ isWorktreeReclaimable: vi.fn(() => true) }));
-vi.mock('./task-store.js', () => ({ tasksCache: {}, updateTaskWithHistory: vi.fn(async () => {}) }));
+vi.mock('./task-store.js', () => ({ updateTaskWithHistory: vi.fn(async () => {}) }));
 vi.mock('./events.js', () => ({ broadcastEvent: vi.fn() }));
 vi.mock('./history.js', () => ({
   buildActivityEntry: vi.fn((message: string, user: string, date: string, extra: Record<string, unknown> = {}) => ({
@@ -22,14 +23,14 @@ vi.mock('./history.js', () => ({
     ...extra,
   })),
 }));
-vi.mock('./workspace.js', () => ({ workspaceRoot: '/fake/workspace' }));
+vi.mock('./workspace.js', () => ({ getWorkspaceRoot: () => '/fake/workspace' }));
 
 import { ensureTicketIsolation } from './ticket-isolation.js';
 import { createTicketBranch } from './branch-manager.js';
 import { createTaskWorktree } from './task-worktree.js';
 import { reclaimWorktrees } from './task-worktree.js';
 import { isWorktreeReclaimable } from './pr-cleanup.js';
-import { tasksCache, updateTaskWithHistory } from './task-store.js';
+import { updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { buildActivityEntry } from './history.js';
 
@@ -40,7 +41,7 @@ interface FakeTask {
   branch?: string;
 }
 
-const cache = tasksCache as Record<string, FakeTask>;
+const cache = getWorkspace().tasks as Record<string, FakeTask>;
 
 describe('ensureTicketIsolation (FLUX-845 chokepoint, FLUX-852 hardening)', () => {
   beforeEach(() => {

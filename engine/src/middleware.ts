@@ -1,8 +1,30 @@
 import express from 'express';
-import { workspaceRoot } from './workspace.js';
+import { getWorkspaceRoot } from './workspace.js';
+import { getWorkspace, type Workspace } from './workspace-context.js';
+
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace -- Express request augmentation requires the ambient namespace
+  namespace Express {
+    interface Request {
+      /** The active workspace, attached by {@link attachWorkspace} (FLUX-343). */
+      workspace?: Workspace;
+    }
+  }
+}
+
+/**
+ * Attach the active workspace to the request (FLUX-343). Today this is always the process's
+ * single active Workspace; it exists as the seam the parallel-workspaces epic (FLUX-1230)
+ * swaps for a per-request registry lookup — route handlers migrate from `getWorkspace()` to
+ * `req.workspace` incrementally, without another engine-wide rewrite.
+ */
+export function attachWorkspace(req: express.Request, _res: express.Response, next: express.NextFunction) {
+  req.workspace = getWorkspace();
+  next();
+}
 
 export function requireWorkspace(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (!workspaceRoot) {
+  if (!getWorkspaceRoot()) {
     res.status(503).json({ error: 'No workspace configured', code: 'NO_WORKSPACE' });
     return;
   }

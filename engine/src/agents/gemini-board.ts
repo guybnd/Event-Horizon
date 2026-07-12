@@ -1,8 +1,10 @@
 // FLUX-959: the Gemini `BoardSpec`. Degrades relative to Claude — no `--include-partial-messages`,
 // no `--effort` (Gemini's per-ticket adapter never sets it either), no `--disallowed-tools` /
 // permission flag (board always runs `--yolo --skip-trust`), no explicit MCP config (Gemini reads
-// the workspace `.mcp.json` in `-p` mode). See FLUX-959 risk notes: MCP-without-config and turn-1
-// `resumeSessionId` capture (from `evt.session_id`) need live verification.
+// the workspace `.gemini/settings.json` in `-p` mode; since FLUX-1222 its event-horizon entry
+// carries ${EH_CONVERSATION_ID}/${EH_CONVERSATION_TOKEN} header placeholders that this process
+// resolves from the spawn env below, so HITL prompts route per-conversation). See FLUX-959 risk
+// note: turn-1 `resumeSessionId` capture (from `evt.session_id`) needs live verification.
 import { attachStdoutProcessing, spawnGemini } from './gemini.js';
 import type { BoardSpec } from './board.js';
 import { makeBoardAdapter } from './board-core.js';

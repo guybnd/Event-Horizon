@@ -18,6 +18,8 @@ Version: 2.13.0
 Load this skill when a ticket's status is `Todo` or `In Progress`.
 Refer to the orchestrator skill for the ticket model, APIs, and end-to-end checklist.
 
+**Fast-path sessions (FLUX-1380).** A ticket can also reach implementation from `Grooming` in the same session, with no `Todo` handoff, when it was dispatched with `phase:'fast-path'` — one session grooms an XS/S ticket inline and then continues straight into this skill's workflow, per the grooming skill's matching "stop at Todo" exception. This combined groom-then-implement contract is sanctioned only when the launch mission says fast-path; a normally-dispatched implementation session still expects a ticket that already went through a separate grooming pass and reached `Todo`/`In Progress` on its own.
+
 ## Commit-Before-Ready — CRITICAL (FLUX-730)
 
 **If the ticket has a branch or worktree, you MUST `git commit` your work BEFORE moving it to `Ready`.** Moving to `Ready` is what opens the PR for review, and a branch with **no commits ahead of base cannot open a PR** — so reaching `Ready` uncommitted means the work sits silently in the worktree and no review ever happens (the FLUX-716/717/719 incident).

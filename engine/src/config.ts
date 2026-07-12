@@ -2,11 +2,13 @@ import { log } from './log.js';
 import fs from 'fs/promises';
 import { renameSync } from 'fs';
 import { getConfigFile } from './workspace.js';
+import { getWorkspace } from './workspace-context.js';
 import { DEFAULT_GATE_POLICY, UNMIGRATED_GATE_POLICY_DEFAULT } from './models/gate-policy.js';
+import type { Tier, TaskKey } from './agents/types.js';
 
 /**
  * Minimal shape of the raw config.json payload this loader touches directly before merging
- * it into `configCache` (which intentionally stays `any` — see the export below — out of
+ * it into the workspace config (which intentionally stays `any` — see getConfig below — out of
  * scope for this typing pass). Only the migrated array fields are narrowed; every other key
  * round-trips untyped through the index signature.
  */
@@ -34,8 +36,55 @@ interface ConfigTagEntry {
   name?: unknown;
 }
 
+// FLUX-1373: shipped per-CLI Tier -> model-id defaults, seeded into `integrations.<cli>.tiers`
+// below and reused by the migration (the "shipped defaults" a blank/legacy field falls back to).
+// Claude uses the CLI's short model aliases (matches the pre-1373 TIER_MODELS convention);
+// Gemini's ids are validated elsewhere against KNOWN_GEMINI_MODELS (agents/gemini.ts); Copilot has
+// no known-model validation list today, so its ids are the plain gpt-5 family.
+export const INTEGRATION_TIER_DEFAULTS: Record<'claudeCode' | 'geminiCli' | 'copilotCli', Record<Tier, string>> = {
+  claudeCode: { smart: 'opus', efficient: 'sonnet', cheap: 'haiku' },
+  geminiCli: { smart: 'gemini-2.5-pro', efficient: 'gemini-2.5-flash', cheap: 'gemini-2.5-flash-lite' },
+  copilotCli: { smart: 'gpt-5', efficient: 'gpt-5-mini', cheap: 'gpt-4.1' },
+};
+
+// FLUX-1373: the three pinned task->tier presets (ticket plan's Layer 3 table) — single source of
+// truth shared by the migration default below and any 'apply preset' logic (portal UI reads the
+// same table via /api/config). Splurge = judgment everywhere; Balanced = the leverage tree (smart
+// where judgment compounds, efficient where token volume lives, cheap for mechanics); Frugal =
+// cost floor. Exactly the 9 pinned TaskKeys.
+export const MODEL_POLICY_PRESETS: Record<'splurge' | 'balanced' | 'frugal', Record<TaskKey, Tier>> = {
+  splurge: {
+    'grooming.lead': 'smart', 'grooming.workers': 'smart',
+    planReview: 'smart',
+    'implementation.lead': 'smart', 'implementation.workers': 'smart',
+    'review.lead': 'smart', 'review.workers': 'smart',
+    finalize: 'smart',
+    chat: 'smart',
+  },
+  balanced: {
+    'grooming.lead': 'smart', 'grooming.workers': 'efficient',
+    planReview: 'smart',
+    'implementation.lead': 'efficient', 'implementation.workers': 'efficient',
+    'review.lead': 'smart', 'review.workers': 'efficient',
+    finalize: 'cheap',
+    chat: 'efficient',
+  },
+  frugal: {
+    'grooming.lead': 'efficient', 'grooming.workers': 'cheap',
+    planReview: 'efficient',
+    'implementation.lead': 'efficient', 'implementation.workers': 'cheap',
+    'review.lead': 'efficient', 'review.workers': 'cheap',
+    finalize: 'cheap',
+    chat: 'cheap',
+  },
+};
+
+// FLUX-343: no longer an exported mutable singleton — the live config lives on the Workspace
+// object (workspace-context.ts) and is read via getConfig(). This literal is only the defaults
+// seed; it keeps the pre-refactor semantics of "one defaults object per process, merged over by
+// loadConfig and mutated in place by the one-time migrations below".
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see doc comment above: narrowing cascades widely (FLUX-1073)
-export let configCache: any = {
+const CONFIG_DEFAULTS: any = {
   columns: [
     { name: 'Grooming', color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' },
     { name: 'Todo', color: 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300' },
@@ -101,30 +150,28 @@ export let configCache: any = {
     review: { single: 'builtin-review-single', multi: 'builtin-review-multi' },
     finalize: { single: 'builtin-finalize-single', multi: 'builtin-finalize-multi' },
   },
+  // FLUX-1373: per-CLI Tier -> model-id definitions, resolved at dispatch via resolveModel
+  // (agents/shared.ts) against the task's stamped taskKey + modelPolicy.assignments below.
+  // Replaces the old groomingModel/implementationModel/delegateModel fields (migrated once in
+  // loadConfig, see the modelPolicyMigrated block).
   integrations: {
     claudeCode: {
-      groomingModel: '',
-      implementationModel: '',
-      // FLUX-482/931: default model for DELEGATED subagents (the `delegate` MCP tool) when
-      // neither a per-call `model` param nor the persona's own `modelTier` is set. Empty/undefined
-      // = no override → fall back to the status-derived grooming/implementation model. Set a cheap
-      // model (e.g. 'sonnet') to make all un-overridden delegates cheap by default.
-      delegateModel: '',
+      tiers: { ...INTEGRATION_TIER_DEFAULTS.claudeCode },
     },
     geminiCli: {
-      groomingModel: '',
-      implementationModel: '',
-      // FLUX-931: same delegate-model default as claudeCode.delegateModel above, resolved when
-      // the board's framework is gemini.
-      delegateModel: '',
+      tiers: { ...INTEGRATION_TIER_DEFAULTS.geminiCli },
     },
     copilotCli: {
-      groomingModel: '',
-      implementationModel: '',
-      // FLUX-931: same delegate-model default as claudeCode.delegateModel above, resolved when
-      // the board's framework is copilot.
-      delegateModel: '',
+      tiers: { ...INTEGRATION_TIER_DEFAULTS.copilotCli },
     }
+  },
+  // FLUX-1373: task -> tier assignment policy. `preset` is 'splurge'|'balanced'|'frugal'|'custom'
+  // (portal flips to 'custom' the moment any assignment diverges from its preset — derived state,
+  // not stored separately). Seeded to Balanced so a fresh/unmigrated board no longer implicitly
+  // runs all-Opus (the prior empty-string default silently inherited each CLI's own default model).
+  modelPolicy: {
+    preset: 'balanced',
+    assignments: { ...MODEL_POLICY_PRESETS.balanced },
   },
   syncSettings: {
     debounceMs: 30000,
@@ -152,7 +199,7 @@ export let configCache: any = {
   // this literal is the ONE in-memory value a board whose gatePolicy has never been migrated ever
   // sees (a fresh install's ENOENT path, and an existing config.json that predates the `gatePolicy`
   // field, both leave this seed untouched all the way into the migration block below). A board with
-  // an explicit, already-migrated gatePolicy on disk overrides this via the `{...configCache, ...loaded}`
+  // an explicit, already-migrated gatePolicy on disk overrides this via the `{...getConfig(), ...loaded}`
   // spread in loadConfig() and never observes the seed at all.
   gatePolicy: { boardDefault: { ...UNMIGRATED_GATE_POLICY_DEFAULT.boardDefault } },
   // FLUX-1263: column-level fixed override for the `plan` gate's review depth/breadth ('auto' — the
@@ -160,6 +207,18 @@ export let configCache: any = {
   // for every plan review regardless of effort). Dialed in the same Grooming-column ⚙ modal as the
   // gate policy itself (FLUX-1261).
   planReviewDepth: 'auto',
+  // FLUX-1379: deterministic pre-gate plan lint (`models/plan-lint.ts`) — runs in the `change_status`
+  // guard on every agent Grooming -> Todo move, ahead of `evaluatePlanGateTrigger`, for ALL gate
+  // values including 'you'. Default on: bounces mechanical plan defects for free before any LLM
+  // session spawns. A plain boolean, not a `gatePolicy` key — same idiom as `blockAgentPrMerges`
+  // below. Dialed in the same Grooming-column ⚙ modal as `gatePolicy`/`planReviewDepth`.
+  planLint: true,
+  // FLUX-1379: XS/S tickets auto-skip the automatic plan gate (`evaluatePlanGateTrigger` in
+  // mcp-server.ts) by default — a plan review can't pay for itself on a ticket that small. Lint
+  // (above) still runs regardless. Orthogonal to `planReviewDepth`: this decides WHETHER an auto
+  // gate fires; depth decides how deep a run goes when it does. Independent of FLUX-1373's model-
+  // tier presets. Dialed in the same Grooming-column ⚙ modal.
+  planGateSkipSmall: true,
   // FLUX-1290: gates the `finish_ticket` merge-lock's `hasHumanGateTouch` runtime check
   // (mcp-server.ts, backed by models/gate-policy.ts). Default `false` — an agent session can merge
   // a branch/PR ticket with no prior human touch; a user who wants today's always-on lock back can
@@ -180,6 +239,13 @@ export let configCache: any = {
     boardDefault: 'gated',
     ticketDefault: 'skip',
   },
+  // FLUX-1390: opt-in honoring of the agent-native ScheduleWakeup tool for unattended dispatched
+  // (non-chat) phase sessions. Off by default — FLUX-1389's unconditional block stays byte-identical
+  // until a user flips this on. When on, a session that calls ScheduleWakeup enters the `scheduled`
+  // session state instead of going terminal, and the engine wakes it via `--resume` at wakeAt.
+  agents: {
+    honorScheduledWakeups: false,
+  },
   modules: [],
   terminalCommands: [
     { id: 'restart-dev', label: 'Restart dev server', command: 'npm run dev', runMode: 'current' },
@@ -189,13 +255,25 @@ export let configCache: any = {
 };
 
 /**
+ * FLUX-343: the active workspace's merged config (defaults + config.json + saved changes).
+ * Replaces the old `export let configCache` mutable singleton — state now lives on the
+ * Workspace object; this accessor lazily seeds the defaults on first read.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- same FLUX-1073 rationale as the defaults literal above
+export function getConfig(): any {
+  const ws = getWorkspace();
+  if (ws.config === null) ws.config = CONFIG_DEFAULTS;
+  return ws.config;
+}
+
+/**
  * FLUX-889/1263: the status immediately after `name` in the configured column order (case-insensitive
  * name match), or `undefined` if `name` isn't found / is the last column. Single source of truth for the
  * "what comes after Grooming/Todo" derivation duplicated ad hoc elsewhere (mcp-server's `change_status`,
  * furnace-stoker's `inProgressStatus`) — new callers should use this rather than re-deriving it locally.
  */
 export function nextColumnAfter(name: string): string | undefined {
-  const columnNames: string[] = (configCache.columns || [])
+  const columnNames: string[] = (getConfig().columns || [])
     .map((c: { name?: unknown }) => c?.name)
     .filter((n: unknown): n is string => typeof n === 'string');
   const i = columnNames.findIndex((c) => c.toLowerCase() === name.toLowerCase());
@@ -240,7 +318,7 @@ export async function loadConfig() {
       }));
     }
     if (!loaded.priorities || !Array.isArray(loaded.priorities) || loaded.priorities.length === 0) {
-      loaded.priorities = configCache.priorities;
+      loaded.priorities = getConfig().priorities;
     }
     if (loaded.priorities?.length && typeof loaded.priorities[0] === 'string') {
       loaded.priorities = loaded.priorities.map((name) => ({
@@ -250,13 +328,13 @@ export async function loadConfig() {
       }));
     }
 
-    configCache = { ...configCache, ...loaded };
+    getWorkspace().config = { ...getConfig(), ...loaded };
     log.info('Loaded config');
   } catch (error: unknown) {
     if (isErrnoException(error) && error.code === 'ENOENT') {
       // No file yet (fresh install) — write the defaults out. This is the ONLY
       // path that legitimately creates config.json from defaults.
-      await saveConfig(configCache);
+      await saveConfig(getConfig());
     } else {
       // Read failed for another reason (permissions, I/O). Preserve whatever is on
       // disk and run on defaults; do NOT save over a file we couldn't read (FLUX-781).
@@ -270,16 +348,17 @@ export async function loadConfig() {
   // so without this an updating user would keep opening cards in the modal. Flip a persisted 'full'
   // (or an absent value) to 'chat' exactly ONCE, recorded via `chatOpenDefaultMigrated` so a later
   // DELIBERATE 'full'/'popup' choice is preserved and never re-flipped. The PUT /api/config handler
-  // merges over configCache, so this marker survives portal Settings saves (which don't echo it back).
+  // merges over the live config, so this marker survives portal Settings saves (which don't echo it back).
   // FLUX-781: only reached after a successful load or a legitimate ENOENT create — every parse/read
   // failure above returns early, so this can never overwrite a corrupt-but-recoverable config.json.
-  if (!configCache.chatOpenDefaultMigrated) {
-    if (!configCache.boardCardOpenMode || configCache.boardCardOpenMode === 'full') {
-      configCache.boardCardOpenMode = 'chat';
+  const config = getConfig();
+  if (!config.chatOpenDefaultMigrated) {
+    if (!config.boardCardOpenMode || config.boardCardOpenMode === 'full') {
+      config.boardCardOpenMode = 'chat';
     }
-    configCache.chatOpenDefaultMigrated = true;
-    await saveConfig(configCache);
-    log.info('[config] applied chat-open-default migration (boardCardOpenMode →', configCache.boardCardOpenMode + ')');
+    config.chatOpenDefaultMigrated = true;
+    await saveConfig(config);
+    log.info('[config] applied chat-open-default migration (boardCardOpenMode →', config.boardCardOpenMode + ')');
   }
 
   // FLUX-1261: one-time migration of Temper's board-wide `temperEnabled` boolean into
@@ -289,19 +368,53 @@ export async function loadConfig() {
   // `gatePolicyMigrated` so a later deliberate dial change is never re-clobbered, mirroring the
   // `chatOpenDefaultMigrated` idiom above. Runs exactly once, and only past the corrupt/unreadable
   // config early-returns above, so it can never overwrite a recoverable file with a bad migration.
-  if (!configCache.gatePolicyMigrated) {
-    const legacyTemperOn = configCache.temperEnabled === true;
-    const priorBoardDefault = configCache.gatePolicy?.boardDefault as { plan?: unknown; review?: unknown } | undefined;
-    configCache.gatePolicy = {
+  if (!config.gatePolicyMigrated) {
+    const legacyTemperOn = config.temperEnabled === true;
+    const priorBoardDefault = config.gatePolicy?.boardDefault as { plan?: unknown; review?: unknown } | undefined;
+    config.gatePolicy = {
       boardDefault: {
         plan: priorBoardDefault?.plan ?? DEFAULT_GATE_POLICY.boardDefault.plan,
         review: legacyTemperOn ? 'auto' : (priorBoardDefault?.review ?? DEFAULT_GATE_POLICY.boardDefault.review),
       },
     };
-    delete configCache.temperEnabled;
-    configCache.gatePolicyMigrated = true;
-    await saveConfig(configCache);
-    log.info(`[config] migrated temperEnabled (${legacyTemperOn}) → gatePolicy.boardDefault.review='${configCache.gatePolicy.boardDefault.review}'`);
+    delete config.temperEnabled;
+    config.gatePolicyMigrated = true;
+    await saveConfig(config);
+    log.info(`[config] migrated temperEnabled (${legacyTemperOn}) → gatePolicy.boardDefault.review='${config.gatePolicy.boardDefault.review}'`);
+  }
+
+  // FLUX-1373: one-time migration seeding integrations.<cli>.tiers + top-level modelPolicy. Must
+  // run even for a board with NO legacy model fields set: `integrations` is an object value, and
+  // the `{...getConfig(), ...loaded}` merge above is SHALLOW — any existing config.json that has
+  // its own `integrations` key (every board does) REPLACES the whole object wholesale, dropping
+  // the shipped `tiers` defaults CONFIG_DEFAULTS just seeded. This migration restores them (and
+  // seeds modelPolicy) exactly once, guarded by `modelPolicyMigrated` so a later deliberate policy
+  // edit is never re-clobbered — same idiom as chatOpenDefaultMigrated/gatePolicyMigrated above.
+  // Legacy `groomingModel`/`implementationModel`/`delegateModel` are read tolerantly off the merged
+  // config (CONFIG_DEFAULTS no longer declares them, but an old config.json on disk still can) and
+  // dropped from the persisted shape going forward; a non-empty value seeds the matching tier,
+  // pinned per the ticket's mapping (grooming→smart, implementation→efficient, delegate→cheap).
+  if (!config.modelPolicyMigrated) {
+    const cliKeys = Object.keys(INTEGRATION_TIER_DEFAULTS) as Array<keyof typeof INTEGRATION_TIER_DEFAULTS>;
+    if (!config.integrations) config.integrations = {};
+    for (const cliKey of cliKeys) {
+      const shippedTiers = INTEGRATION_TIER_DEFAULTS[cliKey];
+      const legacy = (config.integrations[cliKey] || {}) as { groomingModel?: unknown; implementationModel?: unknown; delegateModel?: unknown; tiers?: unknown };
+      const legacyGrooming = typeof legacy.groomingModel === 'string' ? legacy.groomingModel.trim() : '';
+      const legacyImplementation = typeof legacy.implementationModel === 'string' ? legacy.implementationModel.trim() : '';
+      const legacyDelegate = typeof legacy.delegateModel === 'string' ? legacy.delegateModel.trim() : '';
+      config.integrations[cliKey] = {
+        tiers: {
+          smart: legacyGrooming || shippedTiers.smart,
+          efficient: legacyImplementation || shippedTiers.efficient,
+          cheap: legacyDelegate || shippedTiers.cheap,
+        },
+      };
+    }
+    config.modelPolicy = { preset: 'balanced', assignments: { ...MODEL_POLICY_PRESETS.balanced } };
+    config.modelPolicyMigrated = true;
+    await saveConfig(config);
+    log.info('[config] applied model-policy migration (integrations.*.tiers + modelPolicy seeded, legacy model fields dropped)');
   }
 }
 
@@ -313,9 +426,9 @@ export async function loadConfig() {
  * Inlined rather than importing atomicWriteFile to avoid a config<->task-store cycle.
  */
 export async function saveConfig(newConfig: Record<string, unknown>) {
-  configCache = newConfig;
+  getWorkspace().config = newConfig;
   const target = getConfigFile();
-  const content = JSON.stringify(configCache, null, 2);
+  const content = JSON.stringify(newConfig, null, 2);
   const tmpPath = target + '.tmp';
   await fs.writeFile(tmpPath, content, 'utf-8');
   try {
@@ -330,16 +443,17 @@ export async function saveConfig(newConfig: Record<string, unknown>) {
 export async function autoRegisterUnknownTags(tags: string[]) {
   if (!tags || !Array.isArray(tags) || tags.length === 0) return;
 
-  if (!configCache.tags) {
-    configCache.tags = [];
+  const config = getConfig();
+  if (!config.tags) {
+    config.tags = [];
   }
 
-  const existingTagsLower = new Set(configCache.tags.map((t: ConfigTagEntry) => (t.name as string | undefined)?.toLowerCase() || ''));
+  const existingTagsLower = new Set(config.tags.map((t: ConfigTagEntry) => (t.name as string | undefined)?.toLowerCase() || ''));
   let configChanged = false;
 
   for (const tag of tags) {
     if (tag && typeof tag === 'string' && !existingTagsLower.has(tag.toLowerCase())) {
-      configCache.tags.push({
+      config.tags.push({
         name: tag,
         color: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
       });
@@ -349,6 +463,6 @@ export async function autoRegisterUnknownTags(tags: string[]) {
   }
 
   if (configChanged) {
-    await saveConfig(configCache);
+    await saveConfig(config);
   }
 }

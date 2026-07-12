@@ -95,6 +95,30 @@ export async function commitFiles(ref: string, files: string[], message: string)
   return { hash: data?.hash };
 }
 
+export interface DiscardFileResult {
+  file: string;
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Discard selected (repo-relative) files' UNCOMMITTED changes — restore each to its checkout's
+ * HEAD state (FLUX-1333). Irreversible. `ref` matches `commitFiles` ('main' → workspace root; a
+ * branch → that worktree). Per-file `results` (one failure never aborts the rest); a
+ * request-level refusal (active agent session in the target tree, unresolvable worktree, …)
+ * comes back as `error`.
+ */
+export async function discardFiles(ref: string, files: string[]): Promise<{ results?: DiscardFileResult[]; error?: string }> {
+  const res = await fetch(`${API_URL}/tasks/discard`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ref, files }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { error: (data && data.error) || 'Discard failed' };
+  return { results: data?.results ?? [] };
+}
+
 /**
  * Engine-side finish for a BRANCHLESS ticket (FLUX-618), zero-token sibling of `mergePr`. Stages the
  * EXPLICIT `files` (no silent `git add -A`), commits them with `message`, then advances the ticket to
@@ -191,6 +215,10 @@ export interface ContextBudget {
     note: string;
   };
   skillModules: {
+    /** FLUX-1377: bytes/tokens of just the installed core (.claude/rules), excluding the
+     * injected phase module already counted in launchPrompt. */
+    coreBytes: number;
+    coreTokensEst: number;
     totalBytes: number;
     totalTokensEst: number;
     modules: Array<{ name: string; bytes: number; tokensEst: number; missing?: boolean }>;
@@ -1081,7 +1109,7 @@ export interface TranscriptMessage {
   /** FLUX-865: on a `dispatch` note, the work phase the dispatched session is running (groom /
    *  implement / review / finalize). Mirrors the engine's `AgentSession.phase` union so the board
    *  chip can say *what kind* of session a row narrates. Absent on older rows / non-phase sessions. */
-  phase?: 'grooming' | 'implementation' | 'review' | 'finalize';
+  phase?: 'grooming' | 'implementation' | 'review' | 'finalize' | 'fast-path';
   /** FLUX-869: on a `dispatch` note, the dispatched session's start time (ISO) — powers the board
    *  chip's run-duration token (live-ticking `running Xm` while working, final `ran Xm` on terminal
    *  rows). Absent on older rows; the chip omits the duration token when missing. */
@@ -1946,6 +1974,9 @@ export interface DiffChangedFile {
   collidesWith?: string[];
   /** Worktree files only: true when committed-ahead of master, false/absent when loose (FLUX-582). */
   committed?: boolean;
+  /** True when the file carries uncommitted (staged/unstaged/untracked) work in its checkout —
+   *  a working-tree discard applies. Absent/false for committed-only files (FLUX-1333). */
+  uncommitted?: boolean;
 }
 
 export interface DiffGroup {

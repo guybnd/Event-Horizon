@@ -3,7 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { execFile } from 'child_process';
-import { workspaceRoot, saveAppSettings, autoRegisterWorkspace } from '../workspace.js';
+import { saveAppSettings, autoRegisterWorkspace, getWorkspaceRoot } from '../workspace.js';
 import { activateWorkspace } from '../task-store.js';
 import { isPackaged } from '../packaged-mode.js';
 
@@ -160,7 +160,7 @@ router.get('/browse', async (req, res) => {
 });
 
 router.get('/', (_req, res) => {
-  res.json({ configured: workspaceRoot !== null, path: workspaceRoot });
+  res.json({ configured: getWorkspaceRoot() !== null, path: getWorkspaceRoot() });
 });
 
 router.post('/', async (req, res) => {
@@ -185,7 +185,7 @@ router.post('/', async (req, res) => {
 });
 
 router.get('/health', (_req, res) => {
-  res.json({ status: 'ok', workspace: workspaceRoot });
+  res.json({ status: 'ok', workspace: getWorkspaceRoot() });
 });
 
 export function handlePathInfo(_req: express.Request, res: express.Response) {

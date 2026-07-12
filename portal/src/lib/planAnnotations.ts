@@ -12,6 +12,51 @@ export interface PlanAnnotation {
   note: string;
 }
 
+/**
+ * FLUX-1362: an artifact-region annotation, mirrored LIVE out of the sandboxed iframe into the host
+ * so it can join the plan-text {@link PlanAnnotation}s in ONE unified, editable list (the floating
+ * "N changes" pill). `id` is the in-iframe pin id — stable within a viewer session — so a host-side
+ * edit/remove can reverse-sync to the matching `data-eh-pin`. `text` (a text selection) OR `label`
+ * (a right-clicked element) supplies the human anchor; `selector` is the CSS path the agent locates.
+ */
+export interface ArtifactAnnotation {
+  id: number;
+  kind: 'text' | 'element';
+  selector: string;
+  text: string;
+  label: string;
+  note: string;
+  /** The artifact revision the pin was placed on. */
+  rev: number;
+}
+
+/**
+ * FLUX-1362: compose the `🎯 Artifact annotations` chat/regroom block from the unified host-side
+ * list (formerly built inside `ArtifactPanel.sendAnnotationBatch` from the in-iframe Send batch).
+ * Mirrors that shape so agents (and history readers) recognize the region-anchored format.
+ */
+export function formatArtifactAnnotations(items: ArtifactAnnotation[]): string {
+  if (items.length === 0) return '';
+  const rev = items[items.length - 1]!.rev;
+  const blocks = items
+    .map((it, i) => {
+      const noteLine = it.note ? `   ${it.note}\n` : '';
+      const anchorLine = `   _anchor:_ \`${it.selector || '(document)'}\``;
+      if (it.kind === 'element') {
+        return `${i + 1}. ⊙ \`${it.label || 'element'}\`\n` + noteLine + anchorLine;
+      }
+      const excerpt = it.text || '(no excerpt)';
+      return `${i + 1}. > ${excerpt}\n` + noteLine + anchorLine;
+    })
+    .join('\n\n');
+  return (
+    `🎯 **Artifact annotations** · rev ${rev} · ${items.length} region${items.length === 1 ? '' : 's'}\n\n` +
+    `${blocks}\n\n` +
+    `Please revise the artifact to address ${items.length === 1 ? 'this' : 'these'} and call ` +
+    `\`publish_artifact\` to publish the updated revision.`
+  );
+}
+
 /** Cap stored excerpts so a select-all can't bloat the payload; the head is enough to locate it. */
 export const PLAN_ANNOTATION_EXCERPT_MAX = 300;
 
@@ -64,6 +109,18 @@ export function savePlanReviewDraft(ticketId: string, draft: PlanReviewDraft): v
 
 export function clearPlanReviewDraft(ticketId: string): void {
   drafts.delete(ticketId);
+}
+
+/**
+ * FLUX-1339: count of unsent feedback items in the ticket's draft — each accumulated inline
+ * annotation plus (if present) the freeform notes box, counted as one. Read directly from the
+ * module store so surfaces that don't own the panel's React state (the minimized strip, the
+ * chat-close guard) can still show/act on "N notes — not sent yet" without the panel mounted.
+ */
+export function planReviewDraftCount(ticketId: string): number {
+  const d = drafts.get(ticketId);
+  if (!d) return 0;
+  return d.annotations.length + (d.notes.trim() ? 1 : 0);
 }
 
 /**

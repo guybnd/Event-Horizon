@@ -1,7 +1,8 @@
+import { getWorkspace } from '../workspace-context.js';
 import express from 'express';
 import { scanWorkspaceForBootstrap, importBootstrapSelections } from '../project-scanner.js';
-import { workspaceRoot } from '../workspace.js';
-import { workspaceActivating } from '../task-store.js';
+import { getWorkspaceRoot } from '../workspace.js';
+
 
 const router = express.Router();
 
@@ -11,6 +12,7 @@ function errorMessage(err: unknown, fallback: string): string {
 
 router.get('/scan', async (_req, res) => {
   try {
+    const workspaceRoot = getWorkspaceRoot();
     if (!workspaceRoot) {
       return res.status(400).json({ error: 'No workspace active' });
     }
@@ -23,9 +25,10 @@ router.get('/scan', async (_req, res) => {
 });
 
 router.post('/import', async (req, res) => {
-  if (workspaceActivating) return res.status(503).json({ error: 'Workspace is activating, please retry' });
+  if (getWorkspace().isActivating) return res.status(503).json({ error: 'Workspace is activating, please retry' });
 
   try {
+    const workspaceRoot = getWorkspaceRoot();
     if (!workspaceRoot) {
       return res.status(400).json({ error: 'No workspace active' });
     }

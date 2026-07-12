@@ -1,9 +1,11 @@
 {
   "mcpServers": {
     "event-horizon": {
-      "type": "http",
-      "url": "http://127.0.0.1:3067/mcp",
-      "alwaysLoad": true
+      "httpUrl": "http://127.0.0.1:3067/mcp",
+      "headers": {
+        "x-eh-conversation-id": "${EH_CONVERSATION_ID}",
+        "x-eh-conversation-token": "${EH_CONVERSATION_TOKEN}"
+      }
     },
     "serena": {
       "command": "serena",

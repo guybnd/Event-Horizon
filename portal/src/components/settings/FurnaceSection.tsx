@@ -5,10 +5,21 @@ interface FurnaceSectionProps {
   /** Rate-limit cooldown ceiling, in milliseconds (FLUX-1063). */
   rateLimitMaxWaitMs: number;
   setRateLimitMaxWaitMs: (v: number) => void;
+  /** FLUX-1373: the board's global default agent — a burn always executes via this CLI, there is
+   *  no per-batch runner override anywhere in the codebase today. Read-only reflection; the picker
+   *  lives in Session Defaults. */
+  defaultAgent: string;
 }
 
 const MIN_MS = 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
+
+const RUNNER_LABELS: Record<string, string> = {
+  auto: 'Auto-detect',
+  claude: 'Claude Code',
+  gemini: 'Gemini CLI',
+  copilot: 'Copilot CLI',
+};
 
 /**
  * FLUX-1063: global defaults for the Furnace rate-limit cooldown. When a burn session dies from a
@@ -21,11 +32,24 @@ export function FurnaceSection({
   setRateLimitRetryIntervalMs,
   rateLimitMaxWaitMs,
   setRateLimitMaxWaitMs,
+  defaultAgent,
 }: FurnaceSectionProps) {
   const retryMinutes = Math.max(1, Math.round(rateLimitRetryIntervalMs / MIN_MS));
   const maxWaitHours = Math.max(1, Math.round((rateLimitMaxWaitMs / HOUR_MS) * 10) / 10);
   return (
     <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+      <div className="mb-4 flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs dark:border-white/10 dark:bg-black/20">
+        <span className="text-gray-600 dark:text-gray-400">
+          Runner: <span className="font-semibold text-gray-800 dark:text-gray-200">{RUNNER_LABELS[defaultAgent] ?? defaultAgent}</span>
+        </span>
+        <button
+          type="button"
+          onClick={() => document.getElementById('agent-session-defaults')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+          className="font-medium text-primary hover:underline"
+        >
+          Change in Session Defaults
+        </button>
+      </div>
       <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Furnace Rate-Limit Cooldown</h3>
       <p className="text-xs text-gray-500 mb-5">
         When a Furnace burn hits a usage/rate limit (e.g. the 5-hour session limit), the ticket cools down

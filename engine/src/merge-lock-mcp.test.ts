@@ -12,6 +12,7 @@
 // which is enough to prove the merge-lock itself did not block the call.
 vi.mock('./branch-manager.js', () => ({ checkGhAuth: vi.fn().mockResolvedValue(false) }));
 
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -21,9 +22,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { buildMcpServer } from './mcp-server.js';
-import { tasksCache } from './task-store.js';
+
 import { setWorkspaceRoot } from './workspace.js';
-import { configCache } from './config.js';
+import { getConfig } from './config.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -64,11 +65,11 @@ describe('finish_ticket merge-lock — MCP handler integration (FLUX-1271)', () 
   // fire at all — the flag itself defaults to `false`. See the sibling describe block below for
   // default-off coverage.
   beforeEach(() => {
-    configCache.blockAgentPrMerges = true;
+    getConfig().blockAgentPrMerges = true;
   });
 
   afterEach(() => {
-    delete configCache.blockAgentPrMerges;
+    delete getConfig().blockAgentPrMerges;
   });
 
   async function callTool(args: Parameters<Client['callTool']>[0]): Promise<CallToolResult> {
@@ -102,11 +103,11 @@ describe('finish_ticket merge-lock — MCP handler integration (FLUX-1271)', () 
     };
     const filePath = path.join(fluxDir, `${id}.md`);
     await fs.writeFile(filePath, matter.stringify('', frontmatter), 'utf-8');
-    tasksCache[id] = { ...frontmatter, body: '', id, _path: filePath };
+    getWorkspace().tasks[id] = { ...frontmatter, body: '', id, _path: filePath };
   }
 
   function dropTask(id: string) {
-    delete tasksCache[id];
+    delete getWorkspace().tasks[id];
   }
 
   it('refuses to finish a branch ticket with no human touch in its history', async () => {
@@ -119,7 +120,7 @@ describe('finish_ticket merge-lock — MCP handler integration (FLUX-1271)', () 
       });
       expect(res.isError).toBe(true);
       expect(textOf(res)).toContain('merge-lock');
-      expect(tasksCache[TICKET].status).toBe('Ready'); // refused before any transition happened
+      expect(getWorkspace().tasks[TICKET].status).toBe('Ready'); // refused before any transition happened
     } finally {
       dropTask(TICKET);
     }
@@ -164,7 +165,7 @@ describe('finish_ticket merge-lock — MCP handler integration (FLUX-1271)', () 
       expect(res.isError).toBe(true);
       expect(textOf(res)).not.toContain('merge-lock');
       expect(textOf(res)).toContain('gh not configured');
-      expect(tasksCache[TICKET].status).toBe('In Progress');
+      expect(getWorkspace().tasks[TICKET].status).toBe('In Progress');
     } finally {
       dropTask(TICKET);
     }
@@ -196,7 +197,7 @@ describe('finish_ticket merge-lock — blockAgentPrMerges gate (FLUX-1290)', () 
   });
 
   afterEach(() => {
-    delete configCache.blockAgentPrMerges;
+    delete getConfig().blockAgentPrMerges;
   });
 
   async function callTool(args: Parameters<Client['callTool']>[0]): Promise<CallToolResult> {
@@ -227,15 +228,15 @@ describe('finish_ticket merge-lock — blockAgentPrMerges gate (FLUX-1290)', () 
     };
     const filePath = path.join(fluxDir, `${id}.md`);
     await fs.writeFile(filePath, matter.stringify('', frontmatter), 'utf-8');
-    tasksCache[id] = { ...frontmatter, body: '', id, _path: filePath };
+    getWorkspace().tasks[id] = { ...frontmatter, body: '', id, _path: filePath };
   }
 
   function dropTask(id: string) {
-    delete tasksCache[id];
+    delete getWorkspace().tasks[id];
   }
 
   it('on a fresh/unmigrated config (flag unset), skips the merge-lock — no human touch required', async () => {
-    expect(configCache.blockAgentPrMerges).toBeUndefined(); // fresh default, never explicitly set
+    expect(getConfig().blockAgentPrMerges).toBeUndefined(); // fresh default, never explicitly set
     const TICKET = 'MERGEFLAG-1';
     await seedTask(TICKET);
     try {
@@ -253,7 +254,7 @@ describe('finish_ticket merge-lock — blockAgentPrMerges gate (FLUX-1290)', () 
   });
 
   it('with blockAgentPrMerges: false explicitly, skips the merge-lock the same way', async () => {
-    configCache.blockAgentPrMerges = false;
+    getConfig().blockAgentPrMerges = false;
     const TICKET = 'MERGEFLAG-2';
     await seedTask(TICKET);
     try {
@@ -269,7 +270,7 @@ describe('finish_ticket merge-lock — blockAgentPrMerges gate (FLUX-1290)', () 
   });
 
   it('with blockAgentPrMerges: true, byte-for-byte identical refusal to the default-on legacy behavior', async () => {
-    configCache.blockAgentPrMerges = true;
+    getConfig().blockAgentPrMerges = true;
     const TICKET = 'MERGEFLAG-3';
     await seedTask(TICKET);
     try {
@@ -283,7 +284,7 @@ describe('finish_ticket merge-lock — blockAgentPrMerges gate (FLUX-1290)', () 
         `A human must interact with this ticket (comment, review, or move its status) before its PR can be merged — this is a structural "merge is always human" guarantee, not a preference. ` +
         `Ask a human to review ${TICKET} (or leave a comment on it), then finish again.`
       );
-      expect(tasksCache[TICKET].status).toBe('Ready');
+      expect(getWorkspace().tasks[TICKET].status).toBe('Ready');
     } finally {
       dropTask(TICKET);
     }

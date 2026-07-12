@@ -1,7 +1,8 @@
+import { getWorkspace } from './workspace-context.js';
 import { randomUUID } from 'crypto';
 import { broadcastEvent } from './events.js';
-import { createTask, deleteTask, tasksCache, updateTaskWithHistory } from './task-store.js';
-import { configCache } from './config.js';
+import { createTask, deleteTask, updateTaskWithHistory } from './task-store.js';
+import { getConfig } from './config.js';
 import { sliceTurns } from './transcript.js';
 import { appendCurationOp, type ExtractOp } from './curation-ops.js';
 import { BOARD_CONVERSATION_ID } from './agents/board.js';
@@ -128,15 +129,15 @@ export async function extractTicket(opts: ExtractTicketOptions): Promise<Extract
   // a status change (do NOT switch to `deleteTask` — that fs.unlinks the card).
   let sourceConsumed = false;
   let consumeError: string | undefined;
-  if (tasksCache[from]?.kind === 'scratch') {
+  if (getWorkspace().tasks[from]?.kind === 'scratch') {
     try {
-      const archiveStatus = configCache.archiveStatus || 'Archived';
+      const archiveStatus = getConfig().archiveStatus || 'Archived';
       const tombstone =
         `🔗 Promoted into ${id}. This scratch chat was consumed by promotion; its turns are ` +
         `preserved in the immutable substrate and now re-derive in ${id}'s view. A scratch is ` +
         `disposable, so promotion takes the whole thing — exactly one live card remains.`;
       const extraFields: Record<string, unknown> = { mergedInto: id };
-      if (tasksCache[from]?.swimlane) extraFields.swimlane = null; // drop any stale blocked flag
+      if (getWorkspace().tasks[from]?.swimlane) extraFields.swimlane = null; // drop any stale blocked flag
       const result = await updateTaskWithHistory(from, {
         entries: [{ type: 'comment', user: by, comment: tombstone, pin: true, date: new Date().toISOString() }],
         updatedBy: by,

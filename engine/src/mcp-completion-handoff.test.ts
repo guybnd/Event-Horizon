@@ -1,3 +1,4 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -7,7 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { buildMcpServer } from './mcp-server.js';
-import { tasksCache } from './task-store.js';
+
 import { setWorkspaceRoot } from './workspace.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -78,11 +79,11 @@ describe('completion payload on change_status / finish_ticket (FLUX-1147)', () =
     };
     const filePath = path.join(fluxDir, `${id}.md`);
     await fs.writeFile(filePath, matter.stringify('', frontmatter), 'utf-8');
-    tasksCache[id] = { ...frontmatter, body: '', id, _path: filePath };
+    getWorkspace().tasks[id] = { ...frontmatter, body: '', id, _path: filePath };
   }
 
   function dropTask(id: string) {
-    delete tasksCache[id];
+    delete getWorkspace().tasks[id];
   }
 
   it('change_status: persists a valid completion payload on the comment entry, never on frontmatter', async () => {
@@ -105,7 +106,7 @@ describe('completion payload on change_status / finish_ticket (FLUX-1147)', () =
       });
       expect(res.isError).toBeFalsy();
 
-      const task = tasksCache[TICKET];
+      const task = getWorkspace().tasks[TICKET];
       expect(task.completion).toBeUndefined(); // not a frontmatter field
       const history = task.history as HistoryEntryLike[];
       const commentEntry = history.find((e) => e.type === 'comment');
@@ -129,7 +130,7 @@ describe('completion payload on change_status / finish_ticket (FLUX-1147)', () =
         arguments: { ticketId: TICKET, newStatus: 'In Progress' },
       });
       expect(res.isError).toBeFalsy();
-      const history = tasksCache[TICKET].history as HistoryEntryLike[];
+      const history = getWorkspace().tasks[TICKET].history as HistoryEntryLike[];
       expect(history.some((e) => 'completion' in e)).toBe(false);
     } finally {
       dropTask(TICKET);
@@ -150,7 +151,7 @@ describe('completion payload on change_status / finish_ticket (FLUX-1147)', () =
         },
       });
       expect(res.isError).toBeFalsy();
-      const task = tasksCache[TICKET];
+      const task = getWorkspace().tasks[TICKET];
       expect(task.status).toBe('Ready');
       const history = task.history as HistoryEntryLike[];
       const commentEntry = history.find((e) => e.type === 'comment');
@@ -169,7 +170,7 @@ describe('completion payload on change_status / finish_ticket (FLUX-1147)', () =
         arguments: { ticketId: TICKET, newStatus: 'Ready', comment: 'Done.', completion: {} },
       });
       expect(res.isError).toBeFalsy();
-      const history = tasksCache[TICKET].history as HistoryEntryLike[];
+      const history = getWorkspace().tasks[TICKET].history as HistoryEntryLike[];
       const commentEntry = history.find((e) => e.type === 'comment');
       expect(commentEntry?.completion).toEqual({});
     } finally {
@@ -193,7 +194,7 @@ describe('completion payload on change_status / finish_ticket (FLUX-1147)', () =
         },
       });
       expect(res.isError).toBeFalsy();
-      const task = tasksCache[TICKET];
+      const task = getWorkspace().tasks[TICKET];
       expect(task.status).toBe('Done');
       const history = task.history as HistoryEntryLike[];
       const commentEntry = history.find((e) => e.type === 'comment' && e.comment === 'Finished.');
@@ -212,7 +213,7 @@ describe('completion payload on change_status / finish_ticket (FLUX-1147)', () =
         arguments: { ticketId: TICKET, implementationLink: 'abc1234', completionComment: 'Finished.' },
       });
       expect(res.isError).toBeFalsy();
-      const history = tasksCache[TICKET].history as HistoryEntryLike[];
+      const history = getWorkspace().tasks[TICKET].history as HistoryEntryLike[];
       const commentEntry = history.find((e) => e.type === 'comment' && e.comment === 'Finished.');
       expect(commentEntry && 'completion' in commentEntry).toBe(false);
     } finally {

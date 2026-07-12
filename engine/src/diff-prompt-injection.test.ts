@@ -3,13 +3,12 @@ import { describe, it, expect, vi } from 'vitest';
 // ─── Top-level mocks (Vitest hoists these) ───────────────────────────────────
 
 vi.mock('./workspace.js', () => ({
-  workspaceRoot: '/tmp/test-repo',
+  getWorkspaceRoot: () => '/tmp/test-repo',
   getActiveFluxDir: () => '/tmp/test-repo/.flux',
 }));
 
-vi.mock('../config.js', () => ({ configCache: {} }));
+vi.mock('../config.js', () => ({ getConfig: () => ({}) }));
 vi.mock('../task-store.js', () => ({
-  tasksCache: {},
   updateTaskWithHistory: vi.fn().mockResolvedValue(undefined),
   estimateCostUSD: vi.fn(() => 0),
 }));

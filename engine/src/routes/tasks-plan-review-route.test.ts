@@ -10,6 +10,7 @@
 // real router with no furnace-stoker/dispatch mocking, exactly like
 // tasks-put-history-reconciliation.test.ts.
 
+import { getWorkspace } from '../workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -19,8 +20,8 @@ import type { AddressInfo } from 'net';
 import express from 'express';
 import { setWorkspaceRoot } from '../workspace.js';
 import { requireWorkspace } from '../middleware.js';
-import { tasksCache } from '../task-store.js';
-import { configCache } from '../config.js';
+
+import { getConfig } from '../config.js';
 import { __resetGateRunnerForTests } from '../gate-runner.js';
 import { __resetFurnaceStoreForTests } from '../furnace-store.js';
 
@@ -34,11 +35,11 @@ describe('POST /api/tasks/:id/plan-review/(start|revise) — status mapping (FLU
     await fs.mkdir(path.join(root, '.flux'), { recursive: true });
     setWorkspaceRoot(root);
 
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     __resetGateRunnerForTests();
     __resetFurnaceStoreForTests();
-    configCache.gatePolicy = { boardDefault: { plan: 'you', review: 'you' } };
-    configCache.columns = [
+    getConfig().gatePolicy = { boardDefault: { plan: 'you', review: 'you' } };
+    getConfig().columns = [
       { name: 'Grooming' }, { name: 'Todo' }, { name: 'In Progress' }, { name: 'Ready' }, { name: 'Done' },
     ];
 
@@ -58,7 +59,7 @@ describe('POST /api/tasks/:id/plan-review/(start|revise) — status mapping (FLU
   });
 
   it('revise: 400 (not a blanket 409) when overriding an approved verdict with no notes', async () => {
-    tasksCache['FLUX-1'] = { id: 'FLUX-1', title: 'T', status: 'Grooming', body: '', planReviewState: 'approved', history: [] };
+    getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', title: 'T', status: 'Grooming', body: '', planReviewState: 'approved', history: [] };
 
     const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/plan-review/revise`, {
       method: 'POST',
@@ -71,7 +72,7 @@ describe('POST /api/tasks/:id/plan-review/(start|revise) — status mapping (FLU
   });
 
   it('start: still 409 for a genuine ticket-state conflict (not in Grooming)', async () => {
-    tasksCache['FLUX-2'] = { id: 'FLUX-2', title: 'T', status: 'Todo', body: '', history: [] };
+    getWorkspace().tasks['FLUX-2'] = { id: 'FLUX-2', title: 'T', status: 'Todo', body: '', history: [] };
 
     const res = await fetch(`${baseUrl}/api/tasks/FLUX-2/plan-review/start`, { method: 'POST' });
     expect(res.status).toBe(409);
@@ -80,7 +81,7 @@ describe('POST /api/tasks/:id/plan-review/(start|revise) — status mapping (FLU
   });
 
   it('revise: still 409 for a genuine ticket-state conflict (not in Grooming)', async () => {
-    tasksCache['FLUX-3'] = { id: 'FLUX-3', title: 'T', status: 'Todo', body: '', history: [] };
+    getWorkspace().tasks['FLUX-3'] = { id: 'FLUX-3', title: 'T', status: 'Todo', body: '', history: [] };
 
     const res = await fetch(`${baseUrl}/api/tasks/FLUX-3/plan-review/revise`, {
       method: 'POST',

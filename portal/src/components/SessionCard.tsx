@@ -133,30 +133,41 @@ function ElapsedPill({
   now,
   waiting,
   waitingSince,
+  wakeAt,
 }: {
   startedAt?: string;
   endedAt?: string;
   now: number;
   waiting: boolean;
   waitingSince?: string;
+  /** FLUX-1390: set when the session is `scheduled` (honoring a ScheduleWakeup call) — overrides
+   *  the running/waiting label with a "resumes HH:MM" badge distinct from both. */
+  wakeAt?: string;
 }) {
   const elapsed = formatElapsed(startedAt, now, endedAt);
-  if (!elapsed) return null;
+  const scheduled = !!wakeAt;
+  // Reuse formatElapsed's duration formatting for a countdown: "time until wakeAt" is the same
+  // shape as "time since startedAt", just with the two endpoints swapped.
+  const untilWake = scheduled ? formatElapsed(new Date(now).toISOString(), new Date(wakeAt!).getTime()) : '';
+  if (!elapsed && !untilWake) return null;
   const label = (
     <span className="flex flex-col gap-0.5">
-      <span className="font-semibold">{waiting ? 'Waiting for input' : endedAt ? 'Ran for' : 'Running for'}</span>
+      <span className="font-semibold">
+        {scheduled ? 'Scheduled' : waiting ? 'Waiting for input' : endedAt ? 'Ran for' : 'Running for'}
+      </span>
       {startedAt && <span className="text-gray-300 dark:text-gray-400">Started {fmtTimestamp(startedAt)}</span>}
       {endedAt && <span className="text-gray-300 dark:text-gray-400">Finished {fmtTimestamp(endedAt)}</span>}
       {waiting && waitingSince && <span className="text-gray-300 dark:text-gray-400">Waiting since {fmtTimestamp(waitingSince)}</span>}
+      {scheduled && <span className="text-gray-300 dark:text-gray-400">Resumes {fmtTimestamp(wakeAt)}</span>}
     </span>
   );
   return (
     <InstantTooltip label={label}>
       <span
-        className={`flex items-center gap-0.5 text-[9px] font-semibold tabular-nums ${waiting ? 'text-amber-500 dark:text-amber-400' : 'text-gray-400 dark:text-gray-500'}`}
+        className={`flex items-center gap-0.5 text-[9px] font-semibold tabular-nums ${scheduled ? 'text-sky-500 dark:text-sky-400' : waiting ? 'text-amber-500 dark:text-amber-400' : 'text-gray-400 dark:text-gray-500'}`}
       >
         <Clock className="h-2.5 w-2.5" />
-        {elapsed}
+        {scheduled ? `resumes in ${untilWake || '0s'}` : elapsed}
       </span>
     </InstantTooltip>
   );
@@ -401,6 +412,7 @@ export const SessionCard = memo(function SessionCard({
                 now={now}
                 waiting={isWaiting}
                 waitingSince={session.lastOutputAt}
+                wakeAt={session.status === 'scheduled' ? session.wakeAt : undefined}
               />
             </div>
             <div className="truncate text-xs font-semibold text-gray-900 dark:text-gray-100">{task.title}</div>

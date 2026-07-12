@@ -1,10 +1,11 @@
+import { getWorkspace } from '../workspace-context.js';
 import { log } from '../log.js';
 import { spawn, execSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
-import { configCache } from '../config.js';
+import { getConfig } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentSessionEntry } from '../history.js';
-import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
+import { updateTaskWithHistory, updateAgentSession, estimateCostUSD } from '../task-store.js';
 import { resolveTaskExecutionRoot, resolveResumeExecutionRoot, assertIsolatedSpawnRoot } from '../task-worktree.js';
 import { notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
@@ -17,7 +18,7 @@ import { appendTranscriptLine } from '../transcript.js';
 import { buildMcpServerEntry } from '../workflow-installer.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote, type CliTask } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote, resolveModel, type CliTask } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   powershell: 'Running command',
@@ -420,14 +421,15 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
 
   log.info(`[${id}] Starting Copilot CLI session in ${workspaceRoot}`);
 
-  const copilotIntegration = configCache.integrations?.copilotCli;
-  const groomingStatuses = [configCache.requireInputStatus || 'Require Input', 'Grooming'];
+  const groomingStatuses = [getConfig().requireInputStatus || 'Require Input', 'Grooming'];
   // FLUX-931: session.model carries a delegate's resolved model (routes/cli-session.ts
-  // /delegate) — honor it over the status-derived grooming/implementation model, mirroring
+  // /delegate) — honor it over the task-tier-resolved model, mirroring
   // claude-code.ts's `session.model || selectedModel`.
-  const selectedModel = session.model || (copilotIntegration
-    ? (groomingStatuses.includes(task.status) ? copilotIntegration.groomingModel : copilotIntegration.implementationModel)
-    : null);
+  // FLUX-1373: resolve via the task-tier policy (session.taskKey -> modelPolicy.assignments ->
+  // integrations.copilotCli.tiers), superseding the old status-based groomingModel/implementationModel
+  // fields. session.taskKey is stamped by createPendingSession at spawn time; a missing value (a
+  // pre-migration in-flight session) falls back to implementation.lead.
+  const selectedModel = session.model || resolveModel(session.taskKey ?? 'implementation.lead', 'copilot', getConfig());
 
   // FLUX-1193: prefer the session's own launch phase — set by the caller (routes/cli-session.ts
   // passes 'chat' for ticket chat, per useChatSession.ts) — over a status-derived guess, mirroring
@@ -437,7 +439,7 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
   // free-form "Conversational session" instructions — was unreachable for Copilot/Gemini chat.
   const taskPhase = session.phase ?? (groomingStatuses.includes(task.status) ? 'grooming'
     : (task.status === 'In Progress' || task.status === 'Todo') ? 'implementation'
-    : task.status === (configCache?.readyForMergeStatus || 'Ready') ? 'review'
+    : task.status === (getConfig()?.readyForMergeStatus || 'Ready') ? 'review'
     : undefined);
 
   // FLUX-1123: Copilot has no --disallowed-tools equivalent (see FILE_MUTATION_TOOLS's comment in
@@ -458,7 +460,7 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
   ];
 
   const effortCap = CLI_CAPABILITIES.copilot.effort;
-  const globalEffort = configCache.effortLevel as string | undefined;
+  const globalEffort = getConfig().effortLevel as string | undefined;
   const taskEffort = task.effortLevel;
   const effectiveEffort = (effortOverrideRaw || taskEffort || globalEffort || '') as string;
   // FLUX-977: Copilot CLI rejects --effort outright when no explicit --model is set (its default
@@ -602,7 +604,7 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
 
     const tokenUpdate = (session.inputTokens ?? 0) > 0 || (session.outputTokens ?? 0) > 0
       ? (() => {
-          const prev = tasksCache[id]?.tokenMetadata || { inputTokens: 0, outputTokens: 0, costUSD: 0 };
+          const prev = getWorkspace().tasks[id]?.tokenMetadata || { inputTokens: 0, outputTokens: 0, costUSD: 0 };
           return {
             inputTokens: (prev.inputTokens ?? 0) + (session.inputTokens ?? 0),
             outputTokens: (prev.outputTokens ?? 0) + (session.outputTokens ?? 0),
@@ -747,7 +749,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   // into an HTTP-500-only response — see surfaceResumeFailure in shared.ts.
   let executionRoot: string;
   try {
-    executionRoot = await resolveResumeExecutionRoot(session, tasksCache[id], workspaceRoot);
+    executionRoot = await resolveResumeExecutionRoot(session, getWorkspace().tasks[id], workspaceRoot);
   } catch (error) {
     return surfaceResumeFailure(session, id, error);
   }
@@ -769,7 +771,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const safeMessage = message.replace(/\0/g, '');
   // FLUX-926 / FLUX-1123: same advisory "why is this blocked" note as the initial spawn,
   // recomputed per resumed turn (Copilot has no real block — see the editsGated comment above).
-  const promptForCli = prependEditGateNote(session, tasksCache[id] as CliTask, 'copilot', safeMessage);
+  const promptForCli = prependEditGateNote(session, getWorkspace().tasks[id] as CliTask, 'copilot', safeMessage);
   // FLUX-984: explicit MCP config injection on the resume path too — the gap applies to every spawn.
   const resumeArgs = session.resumeSessionId
     ? ['-p', promptForCli, '--resume', session.resumeSessionId, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id)]

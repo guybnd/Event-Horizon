@@ -132,7 +132,7 @@ export const OrchestrationTopology = memo(function OrchestrationTopology({ group
     <div className={`flex items-center gap-2 ${className}`}>
       <span className="text-gray-400"><TopologyGlyph shape={shape} className="h-4 w-4" /></span>
       {shape === 'fan' || shape === 'tree' ? (
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
           {agg.lead && renderNode(agg.lead, true)}
           {!agg.lead && hasPendingCombiner && renderPendingCombiner()}
           {(agg.lead || hasPendingCombiner) && <span className="text-gray-300 dark:text-gray-600">→</span>}

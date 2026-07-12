@@ -10,6 +10,7 @@
 // exercised POST /, PUT /:id, and POST /:id/ticket end-to-end to confirm the 400 `{ error, rejected }`
 // wiring (and the happy-path 201/200) actually reaches the wire.
 
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -20,7 +21,7 @@ import express from 'express';
 import { validateBatchTickets } from './furnace-builder.js';
 import furnaceRouter, { coerceKind, resolveTickets } from './routes/furnace.js';
 import { requireWorkspace } from './middleware.js';
-import { tasksCache } from './task-store.js';
+
 import { setWorkspaceRoot } from './workspace.js';
 import { createFurnaceBatch, getFurnaceBatch, ensureFurnaceLoaded, __resetFurnaceStoreForTests } from './furnace-store.js';
 import { newBatchTicket, type FurnaceBatch } from './models/furnace.js';
@@ -112,7 +113,7 @@ describe('validateBatchTickets — one-active-batch invariant (FLUX-1051)', () =
   });
 });
 
-describe('resolveTickets (route resolver over tasksCache)', () => {
+describe('resolveTickets (route resolver over getWorkspace().tasks)', () => {
   // resolveTickets now also reads the furnace-store batch cache (activeBatches, FLUX-1051) — reset it so
   // this block's assertions never depend on batch state leaked from another describe block/test order.
   beforeEach(() => {
@@ -120,7 +121,7 @@ describe('resolveTickets (route resolver over tasksCache)', () => {
   });
 
   afterEach(() => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
   });
 
   it('returns {} when the body carries no tickets', () => {
@@ -145,7 +146,7 @@ describe('resolveTickets (route resolver over tasksCache)', () => {
   });
 
   it('FLUX-1103: validates only the new id in a mixed full-object array, leaving existing ids alone', () => {
-    tasksCache['FLUX-1'] = { status: 'Todo', title: 'One' };
+    getWorkspace().tasks['FLUX-1'] = { status: 'Todo', title: 'One' };
     const entries = [
       { ticketId: 'GONE-1', order: 0, state: 'implementing', attempts: 0, sessionIds: [] },
       { ticketId: 'FLUX-1', order: 1, state: 'queued', attempts: 0, sessionIds: [] },
@@ -163,7 +164,7 @@ describe('resolveTickets (route resolver over tasksCache)', () => {
     // its entire client-supplied object trusted verbatim — including a forged `state`, inflated
     // `attempts`, fabricated `sessionIds`/`currentSessionId`/`prUrl`, or `owner: 'human'`. Only the
     // client-requested `order` and the real ticket title should survive.
-    tasksCache['FLUX-1'] = { status: 'Todo', title: 'One' };
+    getWorkspace().tasks['FLUX-1'] = { status: 'Todo', title: 'One' };
     const entries = [
       { ticketId: 'GONE-1', order: 0, state: 'implementing', attempts: 0, sessionIds: [] },
       {
@@ -185,22 +186,22 @@ describe('resolveTickets (route resolver over tasksCache)', () => {
   });
 
   it('validates a ticketIds list and rejects unknown ids with a 400-shaped result', () => {
-    tasksCache['FLUX-1'] = { status: 'Todo', title: 'One' };
+    getWorkspace().tasks['FLUX-1'] = { status: 'Todo', title: 'One' };
     const res = resolveTickets({ ticketIds: ['FLUX-1', 'NOPE-9'] });
     expect(res.tickets).toBeUndefined();
     expect(res.rejected).toEqual([{ ticketId: 'NOPE-9', reason: 'unknown' }]);
   });
 
   it('resolves a fully-groomed ticketIds list into queued tickets', () => {
-    tasksCache['FLUX-1'] = { status: 'Todo', title: 'One' };
-    tasksCache['FLUX-2'] = { status: 'Todo', title: 'Two' };
+    getWorkspace().tasks['FLUX-1'] = { status: 'Todo', title: 'One' };
+    getWorkspace().tasks['FLUX-2'] = { status: 'Todo', title: 'Two' };
     const res = resolveTickets({ ticketIds: ['FLUX-1', 'FLUX-2'] });
     expect(res.rejected).toBeUndefined();
     expect(res.tickets?.map((t) => t.ticketId)).toEqual(['FLUX-1', 'FLUX-2']);
   });
 
   it('rejects a bad-status id in a string `tickets` list', () => {
-    tasksCache['FLUX-3'] = { status: 'Done', title: 'Three' };
+    getWorkspace().tasks['FLUX-3'] = { status: 'Done', title: 'Three' };
     const res = resolveTickets({ tickets: ['FLUX-3'] });
     expect(res.rejected).toEqual([{ ticketId: 'FLUX-3', reason: 'bad-status' }]);
   });
@@ -214,7 +215,7 @@ describe('resolveTickets — one-active-batch invariant wiring against the real 
     await fs.mkdir(path.join(root, '.flux'), { recursive: true });
     setWorkspaceRoot(root);
     __resetFurnaceStoreForTests();
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
   });
 
   afterEach(async () => {
@@ -222,7 +223,7 @@ describe('resolveTickets — one-active-batch invariant wiring against the real 
   });
 
   it('rejects a ticketIds create/update payload naming an id already queued elsewhere', async () => {
-    tasksCache['FLUX-1'] = { status: 'Todo', title: 'One' };
+    getWorkspace().tasks['FLUX-1'] = { status: 'Todo', title: 'One' };
     const owner = await createFurnaceBatch({ title: 'Owner batch', tickets: [newBatchTicket('FLUX-1', 0, 'One')] });
 
     const res = resolveTickets({ ticketIds: ['FLUX-1'] });
@@ -231,7 +232,7 @@ describe('resolveTickets — one-active-batch invariant wiring against the real 
   });
 
   it('excludeBatchId lets a PUT re-save the batch\'s own tickets without self-conflicting', async () => {
-    tasksCache['FLUX-1'] = { status: 'Todo', title: 'One' };
+    getWorkspace().tasks['FLUX-1'] = { status: 'Todo', title: 'One' };
     const owner = await createFurnaceBatch({ title: 'Owner batch', tickets: [newBatchTicket('FLUX-1', 0, 'One')] });
 
     const res = resolveTickets({ ticketIds: ['FLUX-1'] }, { excludeBatchId: owner.id });
@@ -240,7 +241,7 @@ describe('resolveTickets — one-active-batch invariant wiring against the real 
   });
 
   it('FLUX-1103: rejects a full-object tickets payload introducing an id already queued elsewhere', async () => {
-    tasksCache['FLUX-1'] = { status: 'Todo', title: 'One' };
+    getWorkspace().tasks['FLUX-1'] = { status: 'Todo', title: 'One' };
     const owner = await createFurnaceBatch({ title: 'Owner batch', tickets: [newBatchTicket('FLUX-1', 0, 'One')] });
     const target = await createFurnaceBatch({ title: 'Target batch' });
 
@@ -284,7 +285,7 @@ describe('Furnace routes — raw-CRUD validation over HTTP (FLUX-1074)', () => {
     setWorkspaceRoot(root);
     __resetFurnaceStoreForTests();
     await ensureFurnaceLoaded();
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
 
     const app = express();
     app.use(express.json());
@@ -302,7 +303,7 @@ describe('Furnace routes — raw-CRUD validation over HTTP (FLUX-1074)', () => {
 
   describe('POST /api/furnace', () => {
     it('rejects an unknown / bad-status ticket id with 400 { error, rejected }', async () => {
-      tasksCache['FLUX-3'] = { status: 'Done', title: 'Three' };
+      getWorkspace().tasks['FLUX-3'] = { status: 'Done', title: 'Three' };
 
       const res = await fetch(`${baseUrl}/api/furnace`, {
         method: 'POST',
@@ -320,7 +321,7 @@ describe('Furnace routes — raw-CRUD validation over HTTP (FLUX-1074)', () => {
     });
 
     it('creates a batch (201) with a fully-groomed ticketIds list', async () => {
-      tasksCache['FLUX-1'] = { status: 'Todo', title: 'One' };
+      getWorkspace().tasks['FLUX-1'] = { status: 'Todo', title: 'One' };
 
       const res = await fetch(`${baseUrl}/api/furnace`, {
         method: 'POST',
@@ -338,7 +339,7 @@ describe('Furnace routes — raw-CRUD validation over HTTP (FLUX-1074)', () => {
   describe('PUT /api/furnace/:id', () => {
     it('rejects an unknown / bad-status ticket id with 400 { error, rejected }', async () => {
       const batch = await createFurnaceBatch({ title: 'Existing' });
-      tasksCache['FLUX-3'] = { status: 'Done', title: 'Three' };
+      getWorkspace().tasks['FLUX-3'] = { status: 'Done', title: 'Three' };
 
       const res = await fetch(`${baseUrl}/api/furnace/${batch.id}`, {
         method: 'PUT',
@@ -354,7 +355,7 @@ describe('Furnace routes — raw-CRUD validation over HTTP (FLUX-1074)', () => {
 
     it('updates a batch (200) with a fully-groomed ticketIds list', async () => {
       const batch = await createFurnaceBatch({ title: 'Existing' });
-      tasksCache['FLUX-1'] = { status: 'Todo', title: 'One' };
+      getWorkspace().tasks['FLUX-1'] = { status: 'Todo', title: 'One' };
 
       const res = await fetch(`${baseUrl}/api/furnace/${batch.id}`, {
         method: 'PUT',
@@ -369,8 +370,8 @@ describe('Furnace routes — raw-CRUD validation over HTTP (FLUX-1074)', () => {
     });
 
     it('FLUX-1103: reorders a full-object tickets payload of the batch\'s own tickets unvalidated', async () => {
-      tasksCache['FLUX-1'] = { status: 'Todo', title: 'One' };
-      tasksCache['FLUX-2'] = { status: 'Todo', title: 'Two' };
+      getWorkspace().tasks['FLUX-1'] = { status: 'Todo', title: 'One' };
+      getWorkspace().tasks['FLUX-2'] = { status: 'Todo', title: 'Two' };
       const batch = await createFurnaceBatch({
         title: 'Existing',
         tickets: [newBatchTicket('FLUX-1', 0, 'One'), newBatchTicket('FLUX-2', 1, 'Two')],
@@ -397,7 +398,7 @@ describe('Furnace routes — raw-CRUD validation over HTTP (FLUX-1074)', () => {
     });
 
     it('FLUX-1103: rejects a full-object tickets payload introducing a brand-new id already active elsewhere', async () => {
-      tasksCache['FLUX-1'] = { status: 'Todo', title: 'One' };
+      getWorkspace().tasks['FLUX-1'] = { status: 'Todo', title: 'One' };
       const owner = await createFurnaceBatch({ title: 'Owner batch', tickets: [newBatchTicket('FLUX-1', 0, 'One')] });
       const target = await createFurnaceBatch({ title: 'Target batch' });
 
@@ -448,7 +449,7 @@ describe('Furnace routes — raw-CRUD validation over HTTP (FLUX-1074)', () => {
 
     it('rejects appending a bad-status ticket id with 400 { error, rejected }', async () => {
       const batch = await createFurnaceBatch({ title: 'Append target' });
-      tasksCache['FLUX-3'] = { status: 'Done', title: 'Three' };
+      getWorkspace().tasks['FLUX-3'] = { status: 'Done', title: 'Three' };
 
       const res = await fetch(`${baseUrl}/api/furnace/${batch.id}/ticket`, {
         method: 'POST',
@@ -464,7 +465,7 @@ describe('Furnace routes — raw-CRUD validation over HTTP (FLUX-1074)', () => {
 
     it('appends a valid ticket id (200)', async () => {
       const batch = await createFurnaceBatch({ title: 'Append target' });
-      tasksCache['FLUX-1'] = { status: 'Todo', title: 'One' };
+      getWorkspace().tasks['FLUX-1'] = { status: 'Todo', title: 'One' };
 
       const res = await fetch(`${baseUrl}/api/furnace/${batch.id}/ticket`, {
         method: 'POST',

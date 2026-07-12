@@ -40,6 +40,7 @@ import { TicketRefChip } from '../TicketRefChip';
 import { ActivityPanel } from '../ActivityPanel';
 import { ParseErrorBanner } from '../ParseErrorBanner';
 import { useAttentionAck, usePlanReviewDockDismiss, deriveDockLabel, type AttentionTab } from './attentionAck';
+import { DOCK_REVEAL_LABEL, DOCK_ICON_SLOT } from '../dockReveal';
 
 /**
  * FLUX-898: the unified, dock-anchored attention surface.
@@ -592,14 +593,18 @@ export function AttentionDock() {
       {/* A11y (M3): assertive live region announcing a freshly-arrived needs-you item, so a blocking
           permission approval / question is signalled to screen readers even when the panel is closed. */}
       <div role="alert" aria-live="assertive" className="sr-only">{announce}</div>
-      {/* The dock button — dynamic 3-tier label. */}
+      {/* The dock button — dynamic 3-tier label. FLUX-1281: icon-first, joining the dock cluster's
+          shared hover/focus-reveal pattern; the count moved from an inline pill to a corner badge
+          (a DIRECT child of the button so it tracks the true top-right edge as the label reveals,
+          never clipped — there is deliberately no overflow-hidden on this button). The aria-label
+          keeps carrying label + count, so nothing is lost to screen readers at rest. */}
       <button
         ref={buttonRef}
         type="button"
         onClick={toggleOpen}
         aria-label={`${label.label}${label.count != null ? ` — ${label.count}` : ''}`}
         title={label.label}
-        className={`group relative flex h-9 flex-shrink-0 items-center gap-1.5 rounded-lg border pl-2 pr-2.5 text-left shadow-sm transition-all duration-150 ${
+        className={`group relative flex h-9 flex-shrink-0 items-center rounded-lg border text-left shadow-sm transition-all duration-150 ${
           tone
             ? 'eh-taskcard-needs-input border-amber-400/70 bg-amber-400/15 text-amber-700 dark:text-amber-300'
             : open
@@ -607,10 +612,14 @@ export function AttentionDock() {
               : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-400 dark:hover:bg-white/10'
         }`}
       >
-        <LabelIcon className={`h-4 w-4 flex-shrink-0 ${tone ? 'text-amber-500' : ''}`} />
-        <span className="text-xs font-semibold leading-none tracking-tight">{label.label}</span>
+        <span className={DOCK_ICON_SLOT}>
+          <LabelIcon className={`h-4 w-4 flex-shrink-0 ${tone ? 'text-amber-500' : ''}`} />
+        </span>
+        <span className={`${DOCK_REVEAL_LABEL} text-xs font-semibold leading-none tracking-tight`}>{label.label}</span>
         {label.count != null && (
-          <span className={`ml-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-bold leading-none text-white ${tone ? 'bg-amber-500' : 'bg-sky-500'}`}>
+          <span
+            className={`absolute -right-1.5 -top-1.5 flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-bold leading-none text-white shadow ring-2 ring-[var(--eh-base)] ${tone ? 'bg-amber-500' : 'bg-sky-500'}`}
+          >
             {label.count}
           </span>
         )}

@@ -6,7 +6,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { createScheduler, runSync, getSyncStatus, _resetSyncStateForTests, mergeAppendOnlyHistory, isSyncUnhealthy, maybeResurfaceConflictNotification, maybeResurfaceAuthNotification, _simulateAuthFailureForTests, resolveConflicts, revalidateConflictState } from './sync-watcher.js';
 import { getNotifications, dismissNotification, clearNotifications } from './notifications.js';
-import { setWorkspaceRoot, workspaceRoot } from './workspace.js';
+import { setWorkspaceRoot, getWorkspaceRoot } from './workspace.js';
 
 const execFileAsync = promisify(execFile);
 const git = (cwd: string, args: string[]) => execFileAsync('git', args, { cwd, windowsHide: true });
@@ -517,7 +517,7 @@ describe('resolveConflicts / revalidateConflictState — mutex + stale-conflict 
 
   beforeEach(async () => {
     _resetSyncStateForTests();
-    originalWorkspaceRoot = workspaceRoot;
+    originalWorkspaceRoot = getWorkspaceRoot();
 
     remote = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-remote-'));
     await git(remote, ['init', '--bare', '-b', 'flux-data']);

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, GitCompare, Loader2, RefreshCw } from 'lucide-react';
-import { fetchBranchDiff, fetchDiffFile, type BranchDiffSummary, type DiffChangedFile } from '../../api';
+import { ChevronDown, ChevronRight, GitCompare, Loader2, RefreshCw, Undo2 } from 'lucide-react';
+import { discardFiles, fetchBranchDiff, fetchDiffFile, type BranchDiffSummary, type DiffChangedFile } from '../../api';
 import { useAppActions } from '../../store/useAppSelector';
+import { ConfirmDiscardDialog } from '../ConfirmDiscardDialog';
 import { DiffLines } from '../DiffLines';
 import type { Task } from '../../types';
 
@@ -49,6 +50,11 @@ export function ChatDiffPanel({ task }: { task: Task }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const working = task.cliSession?.status === 'running';
+  // FLUX-1333: an actively-executing session gates the Discard controls (the endpoint also
+  // refuses 409 server-side) — a parked 'waiting-input' chat doesn't block a discard.
+  const sessionActive = task.cliSession?.status === 'running' || task.cliSession?.status === 'pending';
+  const [confirmDiscard, setConfirmDiscard] = useState<DiffChangedFile | null>(null);
+  const [discarding, setDiscarding] = useState(false);
 
   // Only the latest request may write state — guards both the initial load and the
   // overlapping live refetches (and replaces the buggy cancel-on-rerender cleanup).
@@ -70,8 +76,27 @@ export function ChatDiffPanel({ task }: { task: Task }) {
     setExpanded(new Set());
     setError(null);
     setLoading(false);
+    setConfirmDiscard(null);
     reqIdRef.current++;
   }, [task.id]);
+
+  // Execute a confirmed discard (FLUX-1333). The panel refreshes on SSE too, but never rely on
+  // push after a mutation — reload explicitly. Failures surface in the panel's error line and
+  // the file stays listed.
+  const doDiscard = useCallback(async () => {
+    if (!confirmDiscard || !task.branch) return;
+    setDiscarding(true);
+    const res = await discardFiles(task.branch, [confirmDiscard.file]);
+    setDiscarding(false);
+    setConfirmDiscard(null);
+    const failure = res.error ?? (res.results ?? []).find((r) => !r.ok)?.error;
+    if (failure) {
+      setError(failure);
+      return;
+    }
+    setError(null);
+    load();
+  }, [confirmDiscard, task.branch, load]);
 
   // Lazy-load on first open; a re-open keeps the cached summary (Refresh / live events re-pull).
   useEffect(() => {
@@ -171,25 +196,45 @@ export function ChatDiffPanel({ task }: { task: Task }) {
                   return next;
                 })
               }
+              discardable={f.uncommitted === true}
+              discardDisabled={sessionActive}
+              onDiscard={() => setConfirmDiscard(f)}
             />
           ))}
         </div>
+      )}
+
+      {confirmDiscard && (
+        <ConfirmDiscardDialog
+          files={[confirmDiscard.file]}
+          scopeLabel={task.branch ?? undefined}
+          busy={discarding}
+          onCancel={() => setConfirmDiscard(null)}
+          onConfirm={() => void doDiscard()}
+        />
       )}
     </div>
   );
 }
 
-/** One changed file: a toggle row + the lazily-fetched, syntax-highlighted hunk when open. */
+/** One changed file: a toggle row + the lazily-fetched, syntax-highlighted hunk when open.
+ *  Files flagged `uncommitted` get a hover-revealed Discard control (FLUX-1333). */
 function FileRow({
   branch,
   file,
   expanded,
   onToggle,
+  discardable,
+  discardDisabled,
+  onDiscard,
 }: {
   branch: string;
   file: DiffChangedFile;
   expanded: boolean;
   onToggle: () => void;
+  discardable: boolean;
+  discardDisabled: boolean;
+  onDiscard: () => void;
 }) {
   const [diff, setDiff] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -222,19 +267,36 @@ function FileRow({
 
   return (
     <div>
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left transition-colors hover:bg-black/5 dark:hover:bg-white/5"
-      >
-        {expanded ? <ChevronDown className="h-3 w-3 flex-shrink-0 text-[var(--eh-text-muted)]" /> : <ChevronRight className="h-3 w-3 flex-shrink-0 text-[var(--eh-text-muted)]" />}
-        <span className={`flex-shrink-0 font-mono font-semibold ${badge.cls}`} title={badge.title}>{badge.letter}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[var(--eh-text-secondary)]" title={file.file}>{file.file}</span>
-        <span className="flex-shrink-0 text-[10px]">
-          <span className="text-emerald-600 dark:text-emerald-400">+{file.additions}</span>{' '}
-          <span className="text-red-500 dark:text-red-400">−{file.deletions}</span>
-        </span>
-      </button>
+      <div className="group/filerow flex items-center">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-left transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+        >
+          {expanded ? <ChevronDown className="h-3 w-3 flex-shrink-0 text-[var(--eh-text-muted)]" /> : <ChevronRight className="h-3 w-3 flex-shrink-0 text-[var(--eh-text-muted)]" />}
+          <span className={`flex-shrink-0 font-mono font-semibold ${badge.cls}`} title={badge.title}>{badge.letter}</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-[var(--eh-text-secondary)]" title={file.file}>{file.file}</span>
+          <span className="flex-shrink-0 text-[10px]">
+            <span className="text-emerald-600 dark:text-emerald-400">+{file.additions}</span>{' '}
+            <span className="text-red-500 dark:text-red-400">−{file.deletions}</span>
+          </span>
+        </button>
+        {discardable && (
+          <button
+            type="button"
+            onClick={onDiscard}
+            disabled={discardDisabled}
+            title={discardDisabled
+              ? 'Agent session is active — wait for it to finish before discarding'
+              : 'Discard this file’s uncommitted changes (restore to last commit)'}
+            className={`flex-shrink-0 rounded p-1 transition-opacity ${discardDisabled
+              ? 'cursor-not-allowed text-[var(--eh-text-muted)] opacity-0 group-hover/filerow:opacity-50'
+              : 'text-[var(--eh-text-muted)] opacity-0 hover:bg-red-500/10 hover:text-red-500 group-hover/filerow:opacity-100'}`}
+          >
+            <Undo2 className="h-3 w-3" />
+          </button>
+        )}
+      </div>
       {expanded && (
         <div className="mb-1 ml-2 overflow-x-auto rounded border border-[var(--eh-border)] bg-black/[0.02] py-1 dark:bg-white/[0.02]">
           {loading && <p className="px-2 py-1 text-[var(--eh-text-muted)]">Loading…</p>}

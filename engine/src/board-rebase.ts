@@ -1,7 +1,8 @@
+import { getWorkspace } from './workspace-context.js';
 import { randomUUID } from 'crypto';
 import { broadcastEvent } from './events.js';
-import { tasksCache, updateTaskWithHistory } from './task-store.js';
-import { configCache } from './config.js';
+import { updateTaskWithHistory } from './task-store.js';
+import { getConfig } from './config.js';
 import { getEnginePort } from './packaged-mode.js';
 import { extractTicket } from './extract.js';
 import { mergeTickets } from './merge.js';
@@ -156,14 +157,14 @@ function registerDefaults(): void {
     const ticketId = item.targets[0];
     if (!ticketId) return { ok: false, message: 'status: no target ticket' };
     if (!item.newStatus) return { ok: false, message: `status: no newStatus for ${ticketId}` };
-    if (!tasksCache[ticketId]) return { ok: false, message: `status: ${ticketId} not found` };
+    if (!getWorkspace().tasks[ticketId]) return { ok: false, message: `status: ${ticketId} not found` };
     // FLUX-672: this executor writes through updateTaskWithHistory directly (the post-approval
     // path deliberately skips change_status's CONFIRM gate), but it must NOT skip the
     // comment-required rule. Mirror how change_status resolves the comment-required statuses
     // (Require Input + Ready/readyForMerge). If the target is one of them and the rationale is
     // blank, synthesize a minimal comment so the history entry the rule demands still exists.
-    const requireInputStatus = configCache.requireInputStatus || 'Require Input';
-    const readyStatus = configCache.readyForMergeStatus || 'Ready';
+    const requireInputStatus = getConfig().requireInputStatus || 'Require Input';
+    const readyStatus = getConfig().readyForMergeStatus || 'Ready';
     const commentRequired = item.newStatus === requireInputStatus || item.newStatus === readyStatus;
     let entries = commentEntry(item.rationale);
     if (commentRequired && entries.length === 0) {
@@ -181,7 +182,7 @@ function registerDefaults(): void {
 
   // `archive` — retire ticket(s) to the Archived status (FLUX-616's archive_ticket, which exists).
   registerVerb('archive', async (item) => {
-    const archiveStatus = configCache.archiveStatus || 'Archived';
+    const archiveStatus = getConfig().archiveStatus || 'Archived';
     // FLUX-672: a multi-target archive previously early-returned on the first failure, leaving
     // targets 1..N-1 already archived but reporting only the failure (silent partial state). Now
     // we run the whole loop, collect succeeded vs failed ids, and enumerate both in the message.
@@ -190,7 +191,7 @@ function registerDefaults(): void {
     const done: string[] = [];
     const failed: string[] = [];
     for (const ticketId of item.targets) {
-      const task = tasksCache[ticketId];
+      const task = getWorkspace().tasks[ticketId];
       if (!task) { failed.push(`${ticketId} (not found)`); continue; }
       if (task.status === archiveStatus) { done.push(`${ticketId} (already)`); continue; }
       const extraFields: Record<string, unknown> = {};

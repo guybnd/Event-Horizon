@@ -5,7 +5,7 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { createTaskWorktree, listTaskWorktrees } from './task-worktree.js';
-import { buildDiffOverview, diffFileContent, diffFilesForBranch, changedFilesMasterSideOfBranch, computeCollisions, type DiffGroup } from './diff-aggregator.js';
+import { buildDiffOverview, diffFileContent, diffFilesForBranch, changedFilesMasterSideOfBranch, computeCollisions, parseStatusPorcelain, type DiffGroup } from './diff-aggregator.js';
 
 // Real git worktree ops are slow on Windows under parallel suite load — the default 5000ms
 // testTimeout intermittently overruns when the full engine suite runs concurrently (FLUX-749).
@@ -82,6 +82,55 @@ describe('diff-aggregator', () => {
     const byFile = Object.fromEntries(g!.files.map((f) => [f.file, f]));
     expect(byFile['committed.txt']!.committed).toBe(true);
     expect(byFile['loose.txt']!.committed).toBeFalsy();
+  });
+
+  it('flags uncommitted files with uncommitted:true in worktree groups and the main group, leaving committed-only files falsy (FLUX-1333)', async () => {
+    const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1-u', { linkDependencies: false });
+    // committed-ahead only
+    await fs.writeFile(path.join(wt, 'committed.txt'), 'a\n', 'utf8');
+    await git(wt, ['add', 'committed.txt']);
+    await git(wt, ['commit', '-m', 'add committed']);
+    // committed-ahead + further loose edits (mixed)
+    await fs.writeFile(path.join(wt, 'mixed.txt'), 'v1\n', 'utf8');
+    await git(wt, ['add', 'mixed.txt']);
+    await git(wt, ['commit', '-m', 'add mixed']);
+    await fs.writeFile(path.join(wt, 'mixed.txt'), 'v2\n', 'utf8');
+    // purely loose
+    await fs.writeFile(path.join(wt, 'loose.txt'), 'u\n', 'utf8');
+    // main-tree loose edit
+    await fs.writeFile(path.join(repo, 'README.md'), '# main edit\n', 'utf8');
+
+    const { groups } = await buildDiffOverview(repo);
+    const g = groups.find((x) => x.kind === 'worktree' && x.branch === 'flux/FLUX-1-u');
+    expect(g).toBeTruthy();
+    const byFile = Object.fromEntries(g!.files.map((f) => [f.file, f]));
+    expect(byFile['committed.txt']!.uncommitted).toBeFalsy();
+    expect(byFile['mixed.txt']!.uncommitted).toBe(true);
+    expect(byFile['loose.txt']!.uncommitted).toBe(true);
+    // The main group is uncommitted-vs-HEAD by construction — flagged anyway for a uniform contract.
+    const main = groups.find((x) => x.kind === 'main')!;
+    expect(main.files.length).toBeGreaterThan(0);
+    for (const f of main.files) expect(f.uncommitted).toBe(true);
+  });
+
+  it('flags uncommitted files in diffFilesForBranch and leaves the no-worktree fallback unflagged (FLUX-1333)', async () => {
+    const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1-v', { linkDependencies: false });
+    await fs.writeFile(path.join(wt, 'committed.txt'), 'a\n', 'utf8');
+    await git(wt, ['add', 'committed.txt']);
+    await git(wt, ['commit', '-m', 'add committed']);
+    await fs.writeFile(path.join(wt, 'loose.txt'), 'u\n', 'utf8');
+
+    const summary = await diffFilesForBranch(repo, 'flux/FLUX-1-v');
+    const byFile = Object.fromEntries(summary.files.map((f) => [f.file, f]));
+    expect(byFile['committed.txt']!.uncommitted).toBeFalsy();
+    expect(byFile['loose.txt']!.uncommitted).toBe(true);
+
+    // Remove the worktree → the branch falls back to its committed range: nothing is discardable.
+    await git(repo, ['worktree', 'remove', '--force', wt]);
+    const fallback = await diffFilesForBranch(repo, 'flux/FLUX-1-v');
+    expect(fallback.worktree).toBeNull();
+    expect(fallback.files.length).toBeGreaterThan(0);
+    for (const f of fallback.files) expect(f.uncommitted).toBeFalsy();
   });
 
   it('reports the main tree’s uncommitted + untracked changes in a main group', async () => {
@@ -221,5 +270,24 @@ describe('diff-aggregator', () => {
     expect(collisions[0]!.refs).toEqual(['b1', 'main']);
     expect(groups[0]!.files.find((f) => f.file === 'x.ts')!.collidesWith).toEqual(['main']);
     expect(groups[0]!.files.find((f) => f.file === 'only-a.ts')!.collidesWith).toBeUndefined();
+  });
+});
+
+describe('parseStatusPorcelain (FLUX-1333)', () => {
+  it('parses plain, staged-rename, and untracked entries', () => {
+    const entries = parseStatusPorcelain('M  a.txt\n D b.txt\nR  old.txt -> new.txt\n?? dir/u.txt\n');
+    expect(entries).toEqual([
+      { x: 'M', y: ' ', path: 'a.txt', rawPath: 'a.txt' },
+      { x: ' ', y: 'D', path: 'b.txt', rawPath: 'b.txt' },
+      { x: 'R', y: ' ', path: 'new.txt', rawPath: 'new.txt', origPath: 'old.txt' },
+      { x: '?', y: '?', path: 'dir/u.txt', rawPath: 'dir/u.txt' },
+    ]);
+  });
+
+  it('unquotes C-quoted exotic paths while keeping the raw spelling', () => {
+    const entries = parseStatusPorcelain('?? "caf\\303\\251.txt"\n');
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.path).toBe('café.txt');
+    expect(entries[0]!.rawPath).toBe('"caf\\303\\251.txt"');
   });
 });

@@ -1,9 +1,10 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import matter from 'gray-matter';
-import { tasksCache, updateTaskWithHistory, updateAgentSession } from './task-store.js';
+import { updateTaskWithHistory, updateAgentSession } from './task-store.js';
 
 /**
  * FLUX-992 regression guard. updateAgentSession used to do its own unlocked
@@ -30,7 +31,7 @@ describe('updateAgentSession is serialized with updateTaskWithHistory (FLUX-992)
       matter.stringify('body', { id: taskId, title: 'Race me', status: 'In Progress', swimlane: null, history }),
     );
 
-    tasksCache[taskId] = {
+    getWorkspace().tasks[taskId] = {
       id: taskId,
       title: 'Race me',
       status: 'In Progress',
@@ -41,7 +42,7 @@ describe('updateAgentSession is serialized with updateTaskWithHistory (FLUX-992)
   });
 
   afterEach(async () => {
-    delete tasksCache[taskId];
+    delete getWorkspace().tasks[taskId];
     vi.restoreAllMocks();
     await fs.rm(fluxDir, { recursive: true, force: true }).catch(() => {});
   });

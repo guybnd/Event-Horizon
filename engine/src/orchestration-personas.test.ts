@@ -146,30 +146,32 @@ describe('resolvePersonaPrompt — Smelter mode-gated authority (FLUX-1175)', ()
 
   it('defaults to the drafting-mode contract when smelterMode is unset', async () => {
     const { resolvePersonaPrompt } = await import('./orchestration-personas.js');
-    const { configCache } = await import('./config.js');
-    const prior = configCache.furnaceSettings?.smelterMode;
-    delete configCache.furnaceSettings?.smelterMode;
+    const { getConfig } = await import('./config.js');
+    const config = getConfig();
+    const prior = config.furnaceSettings?.smelterMode;
+    delete config.furnaceSettings?.smelterMode;
     try {
       const prompt = resolvePersonaPrompt('smelter') ?? '';
       expect(prompt).toContain('Furnace Operator ("Smelter")');
       expect(prompt).toContain('Authority — Drafting mode');
       expect(prompt).not.toContain('Authority — Operator mode');
     } finally {
-      configCache.furnaceSettings.smelterMode = prior;
+      config.furnaceSettings.smelterMode = prior;
     }
   });
 
   it('composes the operator-mode contract when furnaceSettings.smelterMode is "operator"', async () => {
     const { resolvePersonaPrompt } = await import('./orchestration-personas.js');
-    const { configCache } = await import('./config.js');
-    const prior = configCache.furnaceSettings?.smelterMode;
-    configCache.furnaceSettings.smelterMode = 'operator';
+    const { getConfig } = await import('./config.js');
+    const config = getConfig();
+    const prior = config.furnaceSettings?.smelterMode;
+    config.furnaceSettings.smelterMode = 'operator';
     try {
       const prompt = resolvePersonaPrompt('smelter') ?? '';
       expect(prompt).toContain('Authority — Operator mode');
       expect(prompt).not.toContain('Authority — Drafting mode');
     } finally {
-      configCache.furnaceSettings.smelterMode = prior;
+      config.furnaceSettings.smelterMode = prior;
     }
   });
 

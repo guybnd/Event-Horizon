@@ -1,8 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
-import { getActiveFluxDir, getTaskAssetsDir, workspaceRoot } from './workspace.js';
-import { configCache } from './config.js';
+import { getActiveFluxDir, getTaskAssetsDir, getWorkspaceRoot } from './workspace.js';
+import { getConfig } from './config.js';
 
 export const SUPPORTED_IMAGE_TYPES = new Map<string, string>([
   ['image/png', '.png'],
@@ -84,7 +84,7 @@ export interface StoredDoc extends DocRecord {
 }
 
 export function getDocsDir() {
-  return path.join(workspaceRoot!, configCache.docsRoot || '.docs');
+  return path.join(getWorkspaceRoot()!, getConfig().docsRoot || '.docs');
 }
 
 // ─── Asset helpers ────────────────────────────────────────────────────────────

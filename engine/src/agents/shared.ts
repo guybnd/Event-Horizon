@@ -15,14 +15,40 @@ import { broadcastEvent } from '../events.js';
 import { getTaskAssetsDir, getActiveFluxDir } from '../workspace.js';
 import { isPathInsideRoot } from '../file-utils.js';
 import { signConversation } from '../session-binding.js';
-import { configCache } from '../config.js';
+import { getConfig } from '../config.js';
+import { INTEGRATION_TIER_DEFAULTS, MODEL_POLICY_PRESETS } from '../config.js';
 import { getModulePromptFragments } from '../modules.js';
 import { updateAgentSession, updateTaskWithHistory } from '../task-store.js';
 import { buildActivityEntry } from '../history.js';
 import { raiseNeedsAction } from '../parked-ticket.js';
-import type { CliSessionRecord, CliFramework } from './types.js';
-import { CLI_CAPABILITIES } from './types.js';
+import type { CliSessionRecord, CliFramework, TaskKey, Tier, PatternPosition } from './types.js';
+import { CLI_CAPABILITIES, INTEGRATION_CONFIG_KEYS } from './types.js';
 import type { ChatAttachment } from '../projection.js';
+import { isInjectablePhaseModule, loadSkillModuleBodySync, skillModuleFallback } from '../skill-modules.js';
+
+// ---- FLUX-1373: resolveModel — the one shared task-tier -> concrete-model resolver ----
+// Minimal structural shape of the pieces of `Config` (config.ts, kept `any` there) this needs —
+// mirrors the CliTask/CliTaskHistoryEntry pattern below (no canonical Config type in this codebase).
+export interface ResolveModelConfig {
+  integrations?: Record<string, { tiers?: Partial<Record<Tier, string>> } | undefined> | undefined;
+  modelPolicy?: { assignments?: Partial<Record<TaskKey, Tier>> } | undefined;
+}
+
+/**
+ * FLUX-1373: resolve a session's dispatch model from its stamped `taskKey` + the board's
+ * task->tier policy + that CLI's tier definitions — `tiers[assignments[taskKey]]`. Every adapter's
+ * fallback (`session.model || resolveModel(...)`) and the delegate route call this so there is one
+ * place the tier indirection is resolved. Falls back sanely at each level so a partially-migrated
+ * or hand-edited config.json never throws: missing/invalid assignment -> the shipped Balanced
+ * preset's tier for this key; missing/blank tier model-id -> the shipped per-CLI default for that tier.
+ */
+export function resolveModel(taskKey: TaskKey, framework: CliFramework, config: ResolveModelConfig | undefined): string {
+  const cliKey = INTEGRATION_CONFIG_KEYS[framework] as keyof typeof INTEGRATION_TIER_DEFAULTS;
+  const shippedTiers = INTEGRATION_TIER_DEFAULTS[cliKey];
+  const tier: Tier = config?.modelPolicy?.assignments?.[taskKey] ?? MODEL_POLICY_PRESETS.balanced[taskKey];
+  const configuredModel = config?.integrations?.[cliKey]?.tiers?.[tier];
+  return (typeof configuredModel === 'string' && configuredModel.trim()) || shippedTiers[tier];
+}
 
 // ---- A.4 Effort levels (accepted by the `--effort` CLI flag, ascending order) ----
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -365,6 +391,13 @@ export interface BuildInitialPromptOptions {
   framework?: CliFramework | undefined;
   /** FLUX-926: true when this is a chat session and file-mutation tools are disallowed for this turn (ticket not In Progress) — appends a note so the agent doesn't burn a turn discovering the block. */
   editsGated?: boolean | undefined;
+  /** FLUX-1377: the spawning session's pattern position, used ONLY to exclude delegate
+   * ('assistant') and relay-pipeline ('step') spawns from phase-skill-module injection below —
+   * their `phase` is derived from the persona/ticket status, not a genuine phase dispatch (see
+   * cli-session.ts's delegate route), so injecting a module there would be the role-vs-phase
+   * mismatch the ticket's plan flags as a risk. Omit for a true phase dispatch (Furnace,
+   * gate-runner, temper, portal "Start" button) — those want the injection. */
+  patternPosition?: PatternPosition | undefined;
 }
 
 // FLUX-1073: tickets are gray-matter-parsed YAML frontmatter validated at RUNTIME by schema.ts —
@@ -429,9 +462,18 @@ export function prependEditGateNote(
 export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: BuildInitialPromptOptions): string {
   const framework = opts?.framework ?? 'claude';
   const caps = CLI_CAPABILITIES[framework];
-  const readyStatus = configCache?.readyForMergeStatus || 'Ready';
+  const readyStatus = getConfig()?.readyForMergeStatus || 'Ready';
   const taskStatus = task.status || 'Unknown';
   const mcpNote = 'CRITICAL: Use the "event-horizon" MCP tools (change_status, update_ticket, add_note) for ALL ticket updates. Do NOT edit .flux/ files directly — direct edits corrupt session tracking.';
+
+  // FLUX-1389: every dispatched phase session is a one-shot process that exits at turn end — a
+  // scheduled wakeup (ScheduleWakeup / /loop dynamic mode) can never be honored, so deferring the
+  // turn on it silently drops the session and the ticket gets parked as if review/implementation
+  // never finished (real incident: FLUX-1378). Claude gets a real `--disallowed-tools` block
+  // (disallowedToolsArgs in claude-code.ts); Gemini/Copilot have no equivalent flag (FLUX-1123), so
+  // this text note is their only enforcement — hence it is added here, framework-agnostically, for
+  // every framework's review/implementation dispatch.
+  const noDeferNote = 'You are a one-shot unattended session — you will NOT be resumed by a scheduled wakeup. Run any verification (tests, background checks) to completion within this turn, then record your verdict/status before ending. Never defer via ScheduleWakeup.';
 
   const requireInputStopInstruction = caps.selfPause
     ? 'IMPORTANT: If you call change_status to "Require Input", STOP immediately after. Do not continue working — the user will reply and you will be resumed with their answer.'
@@ -472,10 +514,26 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
             `2. If questions are unresolved, use change_status to move to "Require Input" with a comment containing your question.\n` +
             `3. When grooming is complete, use change_status to move to "Todo".\n\n` +
             mcpNote;
+        case 'fast-path':
+          // FLUX-1380: one session grooms AND implements an XS/S ticket in one pass, skipping
+          // the separate Grooming -> Todo handoff (and the plan gate that only fires on it)
+          // entirely. The route layer has already refused this phase for L/XL-effort tickets
+          // and tickets with their own subtasks (epic parents) — see routes/cli-session.ts.
+          return `## Your Mission: FAST-PATH this ticket (groom + implement in one session)\n\n` +
+            `This ticket is small enough to skip the normal Grooming -> Todo handoff. Do the following, in order, in this one session:\n` +
+            `1. GROOM IT INLINE: use update_ticket to fill in effort/priority/tags and write a tight TL;DR + a short implementation plan into the body.\n` +
+            `2. ELIGIBILITY CHECK (bail-out contract): if it turns out this needs M+ effort, touches a UI artifact, or spans many unrelated surfaces, STOP here — finish writing the full plan, then use change_status to move to "Todo" (this fires the normal plan-review gate) and end your turn. Do not implement.\n` +
+            `3. Otherwise, use change_status to move to "In Progress".\n` +
+            `4. Implement the plan.\n` +
+            `5. Validate it (typecheck/tests).\n` +
+            `6. Commit your changes — a branch with 0 commits ahead of base cannot open a PR, and change_status to "${readyStatus}" is refused in that state (FLUX-730).\n` +
+            `7. Use change_status to move to "${readyStatus}" with a completion summary of what you implemented and validated.\n\n` +
+            mcpNote;
         case 'implementation':
           return `## Your Mission: IMPLEMENT this ticket\n\n` +
             `Write code to fulfill the ticket's plan. Move to "In Progress" if not already, complete the work, validate it, then use change_status to move to "${readyStatus}" with a completion summary.\n` +
             `Do not exit without updating the ticket status.\n\n` +
+            `${noDeferNote}\n\n` +
             mcpNote;
         case 'review':
           return `## Your Mission: REVIEW this ticket's implementation\n\n` +
@@ -485,6 +543,7 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
             `- Minor issues that don't block merging: create a follow-up ticket as a subtask using create_ticket with parentId set to this ticket (do NOT just suggest one — actually create it), then note the subtask ID in your review summary.\n` +
             `- Blocking issues: use change_status to move back to "In Progress" with a comment explaining what needs fixing.\n\n` +
             `If the implementation passes review, use change_status to move to "${readyStatus}" with a summary of what you reviewed and your findings.\n\n` +
+            `${noDeferNote}\n\n` +
             mcpNote;
         case 'finalize':
           return `## Your Mission: FINALIZE this ticket\n\n` +
@@ -515,6 +574,19 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
 
   const moduleFragments = getModulePromptFragments(opts?.phase, Array.isArray(task.tags) ? task.tags : undefined);
 
+  // FLUX-1377: Claude agent spawns get their phase's skill module appended here instead of
+  // relying on the (now-trimmed) installed .claude/rules/event-horizon.md core to carry every
+  // phase's guidance. Gated to: Claude only (copilot/gemini keep their full static install —
+  // injecting there would double-load, see workflow-installer.ts); a phase that actually has a
+  // module (grooming/implementation/review — release/mapping stay Read-on-demand, chat/finalize
+  // get core only); and NOT a delegate/relay spawn (patternPosition 'assistant'/'step' — see
+  // BuildInitialPromptOptions.patternPosition doc).
+  const isDelegateOrRelaySpawn = opts?.patternPosition === 'assistant' || opts?.patternPosition === 'step';
+  const injectablePhase = opts?.phase;
+  const phaseSkillModule = framework === 'claude' && !isDelegateOrRelaySpawn && isInjectablePhaseModule(injectablePhase)
+    ? (loadSkillModuleBodySync(injectablePhase) ?? skillModuleFallback(injectablePhase))
+    : null;
+
   const lines = [
     `You are working on ticket ${task.id}.`,
     `Title: ${task.title || 'Untitled ticket'}`,
@@ -537,6 +609,7 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
     ...(opts?.diffBlock ? [opts.diffBlock, ''] : []),
     ...(appendPrompt ? [appendPrompt, ''] : []),
     ...(moduleFragments ? [moduleFragments, ''] : []),
+    ...(phaseSkillModule ? [`## Phase Skill: ${injectablePhase}`, '', phaseSkillModule, ''] : []),
     actionInstruction,
     '',
     requireInputStopInstruction,

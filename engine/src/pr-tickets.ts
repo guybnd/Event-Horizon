@@ -1,4 +1,5 @@
-import { tasksCache, upsertManagedTicket, updateTaskWithHistory } from './task-store.js';
+import { getWorkspace } from './workspace-context.js';
+import { upsertManagedTicket, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { TERMINAL_TICKET_STATUSES } from './schema.js';
 import { runGh } from './git-exec.js';
@@ -23,7 +24,7 @@ interface TicketRecord {
   swimlane?: string | null;
 }
 
-// Callers pass raw `Object.values(tasksCache)` slices, which may carry sparse/null entries —
+// Callers pass raw `Object.values(getWorkspace().tasks)` slices, which may carry sparse/null entries —
 // the selectors below all defensively check truthiness before reading fields.
 type MaybeTicketRecord = TicketRecord | null | undefined;
 
@@ -127,7 +128,7 @@ export function prTicketsOnBranch(tickets: MaybeTicketRecord[], branch: string):
  */
 export async function resolveMergedPrTickets(branch: string): Promise<string[]> {
   const resolved: string[] = [];
-  for (const t of prTicketsOnBranch(Object.values(tasksCache) as TicketRecord[], branch)) {
+  for (const t of prTicketsOnBranch(Object.values(getWorkspace().tasks) as TicketRecord[], branch)) {
     await upsertManagedTicket(t.id, { status: 'Done', prState: 'MERGED', swimlane: null }).catch(() => {});
     broadcastEvent('taskUpdated', { id: t.id });
     resolved.push(t.id);
@@ -195,7 +196,7 @@ export function prTicketFields(pr: GhPr, members: string[], existing: ExistingPr
 }
 
 function membersForBranch(branch: string): string[] {
-  return selectMembers(Object.values(tasksCache) as TicketRecord[], branch);
+  return selectMembers(Object.values(getWorkspace().tasks) as TicketRecord[], branch);
 }
 
 /**
@@ -217,7 +218,7 @@ export function membersToBounce(tickets: MaybeTicketRecord[], memberIds: string[
  * re-comment / churn), and resolved members aren't members anymore (work-gated). Best-effort.
  */
 async function bounceMembersToInProgress(memberIds: string[], comment: string): Promise<void> {
-  for (const id of membersToBounce(Object.values(tasksCache) as TicketRecord[], memberIds)) {
+  for (const id of membersToBounce(Object.values(getWorkspace().tasks) as TicketRecord[], memberIds)) {
     try {
       await updateTaskWithHistory(id, {
         updatedBy: 'Agent',
@@ -267,7 +268,7 @@ export async function syncPrTickets(workspaceRoot: string): Promise<void> {
   const openPrs = await listOpenPrs(workspaceRoot);
   const openNumbers = new Set(openPrs.map((p) => p.number));
   // FLUX-1076: while flux-data sync is wedged (a conflict awaiting resolution, or a hard sync
-  // error), tasksCache can be stale/behind the remote — a PR whose full ticket already exists
+  // error), getWorkspace().tasks can be stale/behind the remote — a PR whose full ticket already exists
   // there just looks "missing" here. Materializing a fresh skeleton ticket (members: [], minimal
   // history) for it guarantees a fresh add/add conflict on the next successful pull, which is
   // exactly how the prior incident's wedge kept re-triggering itself. Existing PR tickets still
@@ -276,7 +277,7 @@ export async function syncPrTickets(workspaceRoot: string): Promise<void> {
 
   for (const pr of openPrs) {
     const id = prTicketId(pr.number);
-    const existing = tasksCache[id] as TicketRecord | undefined;
+    const existing = getWorkspace().tasks[id] as TicketRecord | undefined;
     if (!existing && deferCreation) continue;
     const members = membersForBranch(pr.headRefName);
     const fields = prTicketFields(pr, members, existing ?? null);
@@ -299,7 +300,7 @@ export async function syncPrTickets(workspaceRoot: string): Promise<void> {
   // advanced the PR ticket to Done without updating prState — FLUX-587). We query gh BY NUMBER
   // (reliable once the branch is deleted) rather than by branch. Idempotent: only non-terminal
   // prState gets reconciled, so settled (MERGED/CLOSED) tickets are skipped → no per-poll churn.
-  const stalePrTickets = (Object.values(tasksCache) as TicketRecord[]).filter(
+  const stalePrTickets = (Object.values(getWorkspace().tasks) as TicketRecord[]).filter(
     (t): t is TicketRecord & { prNumber: number } => t.kind === PR_KIND && typeof t.prNumber === 'number' && !openNumbers.has(t.prNumber)
       && t.prState !== 'MERGED' && t.prState !== 'CLOSED',
   );

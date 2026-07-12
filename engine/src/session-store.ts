@@ -74,6 +74,9 @@ function toSummary(session: CliSessionRecord): CliSessionSummary {
   if (session.cacheReadTokens) summary.cacheReadTokens = session.cacheReadTokens;
   if (session.cacheCreationTokens) summary.cacheCreationTokens = session.cacheCreationTokens;
   if (session.role) summary.role = session.role;
+  // FLUX-1281: expose the launch phase — the dock tab's phase glyph prefers the ACTIVE session's
+  // identity (e.g. a plan-review pass on a Grooming ticket) over the ticket's board status.
+  if (session.phase) summary.phase = session.phase;
   if (session.pattern) summary.pattern = session.pattern;
   if (session.patternPosition) summary.patternPosition = session.patternPosition;
   if (session.groupId) summary.groupId = session.groupId;
@@ -87,7 +90,9 @@ function toSummary(session: CliSessionRecord): CliSessionSummary {
   // that has a known resumeSessionId — including a dispatched grooming session that ended
   // `completed`. Expose a boolean (not the raw id) so the frontend resumes that thread
   // instead of starting a fresh, amnesiac chat.
-  summary.resumable = ['running', 'waiting-input', 'completed'].includes(session.status) && !!session.resumeSessionId;
+  summary.resumable = ['running', 'waiting-input', 'scheduled', 'completed'].includes(session.status) && !!session.resumeSessionId;
+  if (session.wakeAt) summary.wakeAt = session.wakeAt;
+  if (session.wakeReason) summary.wakeReason = session.wakeReason;
   return summary;
 }
 
@@ -98,7 +103,7 @@ export function getCliSessionSummaryForTask(taskId: string): CliSessionSummary |
   // Prefer the most recent active session; fall back to the last session
   for (let i = ids.length - 1; i >= 0; i--) {
     const session = cliSessionsById.get(ids[i]!);
-    if (session && ['pending', 'running', 'waiting-input'].includes(session.status)) {
+    if (session && ['pending', 'running', 'waiting-input', 'scheduled'].includes(session.status)) {
       return toSummary(session);
     }
   }
@@ -131,10 +136,24 @@ export function getAllSessionSummariesForTask(taskId: string): CliSessionSummary
   return summaries;
 }
 
+/**
+ * FLUX-1378: FULL records (not client-facing summaries) for every session ever registered against
+ * a task, oldest-first — engine-internal callers (`resumeOrDispatchSession`'s viability checks)
+ * need fields `toSummary` deliberately drops (raw `resumeSessionId`, `executionRoot`,
+ * `lastTurnContextTokens`, `contextWindow`, `sessionHistoryEntry`). Do not expose this over the API.
+ */
+export function getAllSessionsForTask(taskId: string): CliSessionRecord[] {
+  const ids = cliSessionsByTaskId.get(taskId);
+  if (!ids || ids.length === 0) return [];
+  return ids.map(id => cliSessionsById.get(id)).filter((s): s is CliSessionRecord => !!s);
+}
+
 // Max `liveOutput` length (chars) retained per session on the LIST endpoint.
 // Cards only need a short preview; the detail endpoint keeps the full buffer.
 const LIST_LIVE_OUTPUT_TAIL = 2048;
-const ACTIVE_STATUSES: ReadonlySet<string> = new Set(['pending', 'running', 'waiting-input']);
+// FLUX-1390: 'scheduled' (a sleeping, honored-ScheduleWakeup session) is active/alive — no live proc,
+// but not terminal either; it must survive list-scoping and eviction the same way 'waiting-input' does.
+const ACTIVE_STATUSES: ReadonlySet<string> = new Set(['pending', 'running', 'waiting-input', 'scheduled']);
 
 function truncateLiveOutput(summary: CliSessionSummary): CliSessionSummary {
   if (summary.liveOutput && summary.liveOutput.length > LIST_LIVE_OUTPUT_TAIL) {
@@ -205,7 +224,7 @@ export function getActiveSessionsForTask(taskId: string): CliSessionRecord[] {
   if (!ids) return [];
   return ids
     .map(id => cliSessionsById.get(id))
-    .filter((s): s is CliSessionRecord => !!s && ['pending', 'running', 'waiting-input'].includes(s.status));
+    .filter((s): s is CliSessionRecord => !!s && ['pending', 'running', 'waiting-input', 'scheduled'].includes(s.status));
 }
 
 // Narrow selector for the merge guard: only sessions that are actively executing work.
@@ -216,6 +235,43 @@ export function getBlockingSessionsForTask(taskId: string): CliSessionRecord[] {
   return ids
     .map(id => cliSessionsById.get(id))
     .filter((s): s is CliSessionRecord => !!s && ['pending', 'running'].includes(s.status));
+}
+
+/**
+ * FLUX-1333: sessions that must block a working-tree mutation (file discard) in the checkout
+ * `ref` resolves to. Blocking = actively executing ('pending'/'running', via
+ * {@link getBlockingSessionsForTask}) — a parked 'waiting-input' session isn't writing, and the
+ * persistent per-ticket chat rests there, so including it would permanently disable discard on
+ * any ticket that has ever chatted. Tree matching: the session's captured `executionRoot` is
+ * authoritative when present (it covers e.g. grooming sessions that run in the shared checkout
+ * regardless of the ticket's branch, FLUX-1214); otherwise fall back to the owning task's branch
+ * (`ref === 'main'` → branchless tasks run in the shared main tree).
+ */
+export function getBlockingSessionsForRef(
+  ref: string,
+  resolvedRoot: string,
+  tasks: Array<{ id: string; branch?: string | null }>,
+): CliSessionRecord[] {
+  const normalize = (p: string) => {
+    const abs = path.resolve(p);
+    return process.platform === 'win32' ? abs.toLowerCase() : abs;
+  };
+  const target = normalize(resolvedRoot);
+  const out: CliSessionRecord[] = [];
+  const seen = new Set<string>();
+  for (const t of tasks) {
+    for (const s of getBlockingSessionsForTask(t.id)) {
+      if (seen.has(s.id)) continue;
+      const matches = s.executionRoot
+        ? normalize(s.executionRoot) === target
+        : (ref === 'main' ? !t.branch : t.branch === ref);
+      if (matches) {
+        seen.add(s.id);
+        out.push(s);
+      }
+    }
+  }
+  return out;
 }
 
 // FLUX-1235: the roleless running/pending ("live") session on a task, if any. This is exactly the
@@ -656,6 +712,29 @@ export function getActiveSessionCount(): number {
   return count;
 }
 
+// FLUX-1338: sessions that are genuinely in flight — a live OS process, or a dispatch still in the
+// pre-spawn window (createPendingSession registers the record before worktree creation + spawn
+// attach a `proc`, a multi-second gap on cold Windows starts — see reconcileDeadSessions). Distinct
+// from getActiveSessionCount, which also counts proc-less `waiting-input` sessions: those are
+// resumable resting sessions rehydrated from on-disk stubs at boot (rehydratedRecord, no `proc`),
+// so the workspace-switch guard using the broader count warned "N agent sessions running" when
+// nothing was actually running. That guard must use THIS count; getActiveSessionCount stays as-is
+// for checkAutoRestart's "board is idle" test (where a resumable waiting-input session legitimately
+// means "not idle, don't auto-restart").
+export function getLiveProcessSessionCount(): number {
+  reconcileDeadSessions();
+  let count = 0;
+  for (const session of cliSessionsById.values()) {
+    if (session.status !== 'running' && session.status !== 'waiting-input' && session.status !== 'pending') continue;
+    const proc = session.proc;
+    // No `proc` on a running/pending session = pre-spawn window: a switch now would strand the
+    // spawn in a switched-out workspace, so it counts. No `proc` on waiting-input = rehydrated
+    // resumable stub (the phantom this function exists to exclude) — never counted.
+    if (proc ? proc.exitCode === null && proc.signalCode === null : session.status !== 'waiting-input') count++;
+  }
+  return count;
+}
+
 // ── Persistent active-session stubs — restart-safe worktree reclaim (FLUX-1060) ──
 //
 // `cliSessionsById` is in-memory only, so an engine restart (update / crash / dev reload) wipes
@@ -675,7 +754,9 @@ export function getActiveSessionCount(): number {
 /** Statuses worth persisting: a live turn (`running`) or the resumable resting state
  *  (`waiting-input`). `pending` (pre-spawn) is skipped — no resume id / committed work yet, and its
  *  ticket is In Progress, which is never reclaimable. Terminal states are never persisted. */
-const STUB_PERSIST_STATUSES: ReadonlySet<string> = new Set(['running', 'waiting-input']);
+// FLUX-1390: 'scheduled' persists too, so a sleeping session's wakeAt survives an engine restart
+// (rehydratedRecord below restores it verbatim instead of collapsing it to the generic resting state).
+const STUB_PERSIST_STATUSES: ReadonlySet<string> = new Set(['running', 'waiting-input', 'scheduled']);
 
 interface SessionStub {
   id: string;
@@ -683,11 +764,20 @@ interface SessionStub {
   framework: CliFramework;
   label: string;
   startedAt: string;
-  status: 'waiting-input'; // always rehydrated as the resumable resting state (the proc is dead)
+  // Always rehydrated as the resumable resting state (the proc is dead) — EXCEPT 'scheduled'
+  // (FLUX-1390), which carries a `wakeAt` the wake ticker still needs to honor post-restart.
+  status: 'waiting-input' | 'scheduled';
   resumeSessionId?: string;
   lastOutputAt?: string;
   phase?: LaunchPhase;
   role?: string;
+  /** FLUX-1378: the live-context gauge, persisted so `resumeOrDispatchSession`'s viability check
+   *  survives an engine restart (else a rehydrated stub always looks like "no usage recorded" and
+   *  falls back to the turn-count proxy instead of the real gauge). */
+  lastTurnContextTokens?: number;
+  contextWindow?: number;
+  /** FLUX-1390: only set when status === 'scheduled'. */
+  wakeAt?: string;
 }
 
 // Guard so a sync can't wipe the on-disk stubs before boot rehydration has read them back: an
@@ -711,18 +801,24 @@ function sessionStubPath(id: string): string {
 function stubFor(session: CliSessionRecord): SessionStub | null {
   if (!STUB_PERSIST_STATUSES.has(session.status)) return null;
   if (!session.taskId || isVirtualConversationId(session.taskId)) return null;
+  // FLUX-1390: preserve a genuine sleep across the stub round-trip; anything else (running, or a
+  // scheduled session that somehow lost its wakeAt) still collapses to the resumable resting state.
+  const isScheduled = session.status === 'scheduled' && !!session.wakeAt;
   const stub: SessionStub = {
     id: session.id,
     taskId: session.taskId,
     framework: session.framework,
     label: session.label,
     startedAt: session.startedAt,
-    status: 'waiting-input',
+    status: isScheduled ? 'scheduled' : 'waiting-input',
   };
+  if (isScheduled && session.wakeAt) stub.wakeAt = session.wakeAt;
   if (session.resumeSessionId) stub.resumeSessionId = session.resumeSessionId;
   if (session.lastOutputAt) stub.lastOutputAt = session.lastOutputAt;
   if (session.phase) stub.phase = session.phase;
   if (session.role) stub.role = session.role;
+  if (session.lastTurnContextTokens != null) stub.lastTurnContextTokens = session.lastTurnContextTokens;
+  if (session.contextWindow != null) stub.contextWindow = session.contextWindow;
   return stub;
 }
 
@@ -741,11 +837,15 @@ async function writeStub(stub: SessionStub): Promise<void> {
 }
 
 function rehydratedRecord(stub: SessionStub): CliSessionRecord {
+  // FLUX-1390: a rehydrated 'scheduled' stub stays asleep — the wake ticker resumes it once wakeAt
+  // passes, same as it would have pre-restart. Anything else (including a 'scheduled' stub that
+  // somehow lost its wakeAt) falls back to the original resumable resting state.
+  const scheduled = stub.status === 'scheduled' && !!stub.wakeAt;
   return {
     id: stub.id,
     taskId: stub.taskId,
     framework: stub.framework,
-    status: 'waiting-input',
+    status: scheduled ? 'scheduled' : 'waiting-input',
     command: stub.framework,
     args: [],
     startedAt: stub.startedAt,
@@ -761,6 +861,9 @@ function rehydratedRecord(stub: SessionStub): CliSessionRecord {
     ...(stub.lastOutputAt ? { lastOutputAt: stub.lastOutputAt } : {}),
     ...(stub.phase ? { phase: stub.phase } : {}),
     ...(stub.role ? { role: stub.role } : {}),
+    ...(stub.lastTurnContextTokens != null ? { lastTurnContextTokens: stub.lastTurnContextTokens } : {}),
+    ...(stub.contextWindow != null ? { contextWindow: stub.contextWindow } : {}),
+    ...(scheduled ? { wakeAt: stub.wakeAt } : {}),
   };
 }
 

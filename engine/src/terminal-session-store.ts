@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { workspaceRoot } from './workspace.js';
+import { getWorkspaceRoot } from './workspace.js';
 
 /**
  * FLUX-1030: on macOS/Linux, node-pty spawns via a bundled `spawn-helper` binary that it `exec`s.
@@ -81,7 +81,7 @@ export async function createTerminalSession(
   const nodePty = await getPty();
   const id = crypto.randomUUID();
   const shell = process.env.SHELL || os.userInfo().shell || '/bin/bash';
-  const cwd = workspaceRoot || process.cwd();
+  const cwd = getWorkspaceRoot() || process.cwd();
 
   const ptyProcess = nodePty.spawn(shell, [], {
     name: 'xterm-256color',

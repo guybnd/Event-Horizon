@@ -52,7 +52,8 @@ export interface TaskWorktreeOptions {
   gitRunner?: GitRunner;
   /** Max simultaneous task worktrees for this repo (default DEFAULT_MAX_TASK_WORKTREES). */
   maxWorktrees?: number;
-  /** Branch to create the task branch from when it doesn't exist yet (default 'master'). */
+  /** Branch to create the task branch from when it doesn't exist yet (default: the repo's
+   *  resolved default branch — local master → main → origin/HEAD → 'master'). */
   baseBranch?: string | undefined;
   /** Junction the main tree's node_modules into the new worktree (default true). FLUX-518. */
   linkDependencies?: boolean;
@@ -236,6 +237,51 @@ async function localBranchExists(runner: GitRunner, workspaceRoot: string, branc
   }
 }
 
+/**
+ * Actionable error for the case where `branch` is checked out in the MAIN checkout
+ * (the primary worktree). Git allows a branch in only one worktree, so EH can't
+ * `git worktree add` a dedicated tree for it, and running the agent in the main
+ * checkout is exactly the run-on-master case the spawn/resume guards refuse. Both
+ * the execution-root resolver and the worktree-creation primitive surface this so
+ * the user sees the real cause and remedy — not the misleading "worktree is
+ * missing" the downstream guards emit (they can't tell "never created" apart from
+ * "the branch is pinned in the main checkout").
+ */
+function branchPinnedToMainCheckoutError(branch: string, workspaceRoot: string, id?: string): Error {
+  return new Error(
+    `Branch '${branch}' is currently checked out in the main checkout (${workspaceRoot}), ` +
+      `so EH can't create an isolated worktree for ${id ?? 'this ticket'} — git allows a branch in ` +
+      `only one worktree at a time, and it won't run the agent in the main checkout. Switch the main ` +
+      `checkout to another branch (e.g. \`git checkout master\`) to free '${branch}', then retry.`,
+  );
+}
+
+/**
+ * Resolve the ref a new task branch should be created from when the caller didn't
+ * pass an explicit `baseBranch`. Hardcoding 'master' breaks any repo whose default
+ * branch is 'main': `git worktree add -b <branch> <path> master` fails with
+ * "fatal: invalid reference: master", which aborts the entire spawn-with-isolation
+ * path and leaves the agent session unable to start (FLUX-167). Probe the local
+ * branches that actually exist (master, then main — matching diff-aggregator's
+ * `resolveBaseBranch`), then fall back to origin's advertised default, then 'master'.
+ */
+async function resolveDefaultBaseBranch(runner: GitRunner, workspaceRoot: string): Promise<string> {
+  for (const candidate of ['master', 'main']) {
+    if (await localBranchExists(runner, workspaceRoot, candidate)) return candidate;
+  }
+  try {
+    // Keep the `origin/` prefix: this is only reached when neither local master nor
+    // main exists, so the bare branch name may have no local copy to resolve against.
+    // The remote-tracking ref always resolves as a commit-ish for `git worktree add -b`.
+    const { stdout } = await runner(workspaceRoot, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+    const ref = stdout.trim();
+    if (ref) return ref;
+  } catch {
+    /* no origin/HEAD configured — fall through to the last-resort default */
+  }
+  return 'master';
+}
+
 // ─── Lifecycle ──────────────────────────────────────────────────────────────────
 
 /**
@@ -259,7 +305,7 @@ export async function createTaskWorktree(
 ): Promise<string> {
   const runner = opts.gitRunner ?? defaultGitRunner;
   const maxWorktrees = opts.maxWorktrees ?? DEFAULT_MAX_TASK_WORKTREES;
-  const baseBranch = opts.baseBranch ?? 'master';
+  const baseBranch = opts.baseBranch ?? (await resolveDefaultBaseBranch(runner, workspaceRoot));
   const target = taskWorktreeDir(workspaceRoot, ticketId);
   const base = taskWorktreesBaseDir(workspaceRoot);
   // FLUX-1182: this may add/repair a registered worktree below — drop the cached
@@ -375,6 +421,14 @@ export async function createTaskWorktree(
   // above already dropped it, so `git worktree add` below can recreate cleanly.
   const holder = worktrees.find((w) => w.branch === branch && existsSync(w.path));
   if (holder) {
+    if (pathsEqual(holder.path, workspaceRoot)) {
+      // The one external tree we must NOT reuse in place: the main checkout
+      // itself. Reusing it would hand the agent the primary tree (run-on-master),
+      // which every spawn/resume guard refuses. Throw the actionable "free the
+      // branch" error instead of falling through to a cryptic `git worktree add`
+      // failure ("fatal: '<branch>' is already checked out at <main>").
+      throw branchPinnedToMainCheckoutError(branch, workspaceRoot, ticketId);
+    }
     if (!isUnder(holder.path, base)) {
       // Checked out OUTSIDE .eh-worktrees/ — a dev's manual checkout, or one the
       // agent created as a workaround after an earlier failure. Not ours to
@@ -856,7 +910,15 @@ export async function resolveTaskExecutionRoot(
   const branch = task?.branch;
   if (!branch) return workspaceRoot;
   const match = await findWorktreeForBranch(workspaceRoot, branch, opts);
-  if (match) return match;
+  // A dedicated tree elsewhere (an .eh-worktrees tree, or a dev's manual checkout
+  // in some other directory — FLUX-1059) is a valid isolated root. The MAIN
+  // checkout is not: the branch being pinned there is precisely why no isolated
+  // worktree exists, and running the agent in it is the run-on-master case the
+  // spawn/resume guards refuse. Surface the real cause + remedy here rather than
+  // returning workspaceRoot and letting the downstream guard emit a misleading
+  // "worktree is missing" (it can't tell that apart from a genuinely absent tree).
+  if (match && !pathsEqual(match, workspaceRoot)) return match;
+  if (match) throw branchPinnedToMainCheckoutError(branch, workspaceRoot, task?.id);
 
   // No live worktree holds this branch. Read-only callers (create:false) keep the
   // legacy behavior — resolve to the workspace root without side effects.

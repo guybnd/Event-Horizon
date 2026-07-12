@@ -3,6 +3,7 @@
 // Create/read/mutate/delete Furnace batches. Mounted at `/api/furnace` behind `requireWorkspace`
 // (see index.ts). Ignition / stop semantics (slot guard, Stoker kick) live in `furnace-stoker.ts`.
 
+import { getWorkspace } from '../workspace-context.js';
 import express from 'express';
 import { log } from '../log.js';
 import {
@@ -43,7 +44,7 @@ import {
   evictReconcileReadCache,
 } from '../furnace-stoker.js';
 import { validateBatchTickets, type RejectedBatchTicket } from '../furnace-builder.js';
-import { tasksCache } from '../task-store.js';
+
 import { mergePullRequest } from '../branch-manager.js';
 
 /** Map a BatchControlResult error to an HTTP status: not-found → 404, no_slots → 409, else 409. */
@@ -116,7 +117,7 @@ export function resolveTickets(
     const currentIds = new Set(opts.currentTicketIds ?? []);
     const newIds = fullTickets.filter((t) => !currentIds.has(t.ticketId)).map((t) => t.ticketId);
     if (!newIds.length) return { tickets: fullTickets };
-    const { rejected } = validateBatchTickets(newIds, tasksCache, {
+    const { rejected } = validateBatchTickets(newIds, getWorkspace().tasks, {
       activeBatches: getFurnaceBatchesCache(),
       ...(opts.excludeBatchId ? { excludeBatchId: opts.excludeBatchId } : {}),
     });
@@ -125,7 +126,7 @@ export function resolveTickets(
     // forged state/attempts/sessionIds/prUrl/owner on a brand-new id can never ride along (FLUX-1111).
     const newIdSet = new Set(newIds);
     const tickets = fullTickets.map((t) =>
-      newIdSet.has(t.ticketId) ? newBatchTicket(t.ticketId, t.order, tasksCache[t.ticketId]?.title) : t,
+      newIdSet.has(t.ticketId) ? newBatchTicket(t.ticketId, t.order, getWorkspace().tasks[t.ticketId]?.title) : t,
     );
     return { tickets };
   }
@@ -136,7 +137,7 @@ export function resolveTickets(
       : undefined;
   if (!rawIds) return {};
   const ids = rawIds.filter((t): t is string => typeof t === 'string');
-  const { ok, rejected } = validateBatchTickets(ids, tasksCache, {
+  const { ok, rejected } = validateBatchTickets(ids, getWorkspace().tasks, {
     activeBatches: getFurnaceBatchesCache(),
     ...(opts.excludeBatchId ? { excludeBatchId: opts.excludeBatchId } : {}),
   });
@@ -413,7 +414,7 @@ router.post('/:id/ticket', async (req, res) => {
     if (batch.tickets.some((t) => t.ticketId === ticketId)) {
       return res.status(409).json({ error: `${ticketId} is already in this batch.` });
     }
-    const { rejected } = validateBatchTickets([ticketId], tasksCache, {
+    const { rejected } = validateBatchTickets([ticketId], getWorkspace().tasks, {
       activeBatches: getFurnaceBatchesCache(),
       excludeBatchId: batch.id,
     });
@@ -425,7 +426,7 @@ router.post('/:id/ticket', async (req, res) => {
       return rejectTickets(res, rejected);
     }
     const maxOrder = batch.tickets.reduce((m, t) => Math.max(m, t.order), -1);
-    const entry = newBatchTicket(ticketId, maxOrder + 1, tasksCache[ticketId]?.title);
+    const entry = newBatchTicket(ticketId, maxOrder + 1, getWorkspace().tasks[ticketId]?.title);
 
     const updated = await mutateFurnaceBatch(req.params.id, (draft) => { draft.tickets.push(entry); });
     if (!updated) return res.status(404).json({ error: 'Furnace batch not found' });

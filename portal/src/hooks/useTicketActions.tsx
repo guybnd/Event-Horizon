@@ -300,6 +300,20 @@ export function useTicketActions(task: Task): UseTicketActions {
     triggerRefresh();
   };
 
+  // ── Agent: fast-path (FLUX-1380) — one session grooms AND implements an XS/S Grooming-column
+  // ticket. No pre-launch status move (design decision 6): the session itself advances
+  // Grooming → In Progress → Ready. Eligibility (effort L/XL, subtasks) is enforced server-side by
+  // the start route; on refusal its error surfaces here verbatim. ──
+  const dispatchFastPath = async () => {
+    try {
+      await runAgentAction({ taskId: task.id, framework, action: { kind: 'launch' }, currentUser, phase: 'fast-path' });
+    } catch (err) {
+      alert(`Failed to start fast-path on ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    triggerRefresh();
+  };
+
   // Launch the phase's single default; false ⇒ no persona resolved (caller opens the launcher UI).
   const launchPhaseSession = async (phase: LaunchPhase): Promise<boolean> => {
     const result = await launchPhaseDefault({ taskId: task.id, framework, phase, currentUser, phaseDefaults: config?.phaseDefaults, supervisorCapable: frameworkSupports(config, framework, 'supervisor') });
@@ -460,6 +474,7 @@ export function useTicketActions(task: Task): UseTicketActions {
     finishViaMerge,
     finishViaEngine,
     dispatchFinish,
+    dispatchFastPath,
     launchDefault,
     openLauncher,
     returnToDev,

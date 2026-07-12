@@ -3,8 +3,7 @@
   "allow": {
     "engine/src/board-rebase.ts :: framework-literal-assign :: framework: 'claude'": 1,
     "engine/src/mcp-phase-profiles.test.ts :: adapter-deep-import :: from './agents/claude-code.js'": 1,
-    "engine/src/routes/tasks.ts :: adapter-deep-import :: from '../agents/claude-code.js'": 1,
-    "portal/src/components/OnboardingWizard.tsx :: framework-literal-eq :: === 'claude'": 1,
-    "portal/src/components/settings/AgentSection.tsx :: framework-literal-eq :: === 'claude'": 1
+    "engine/src/routes/tasks/debug.ts :: adapter-deep-import :: from '../../agents/claude-code.js'": 1,
+    "portal/src/components/OnboardingWizard.tsx :: framework-literal-eq :: === 'claude'": 1
   }
 }

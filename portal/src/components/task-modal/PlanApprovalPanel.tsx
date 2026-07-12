@@ -1,24 +1,24 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   X, Check, Undo2, RefreshCw, MessageCircleQuestion, LayoutTemplate, AlignLeft, ListChecks, FlaskConical,
-  ClipboardCheck, ClipboardX, Loader2, Plus, Tag, Play,
+  ClipboardCheck, ClipboardX, Loader2, Plus, Tag, Play, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { startPlanReview, startPlanRevise, createBranch } from '../../api';
 import { launchPhaseDefault } from '../../agentActions';
 import { resolveEffectiveAgent, frameworkSupports } from '../../utils';
 import { isActiveSession } from '../../orchestration';
 import { ArtifactPanel } from './ArtifactPanel';
+import { AnnotationPill } from './AnnotationPill';
 import { TaskMarkdown } from '../TaskMarkdown';
 import { TagSelector } from '../TagSelector';
 import { getPriorityIcon } from './taskModalHelpers';
-import { dismissPlanReview, feedbackAuthorLabel, isPlanApprovalPending, isPlanGateRevising, planReviewFeedback, resolvePlanGateValue } from '../pendingInteractions';
+import { canApprovePlan, dismissPlanReview, feedbackAuthorLabel, isPlanApprovalPending, isPlanGateRevising, planReviewFeedback, resolvePlanGateValue } from '../pendingInteractions';
 import { buildStatusChangeHistory, statusAfterGrooming } from '../../lib/ticketActions';
 import { planBodyHash } from '../../lib/planBodyHash';
 import {
-  clipExcerpt, clearPlanReviewDraft, formatRegroomNotes, loadPlanReviewDraft, savePlanReviewDraft,
-  type PlanAnnotation,
+  clipExcerpt, clearPlanReviewDraft, formatArtifactAnnotations, formatRegroomNotes, loadPlanReviewDraft,
+  savePlanReviewDraft, type ArtifactAnnotation, type PlanAnnotation,
 } from '../../lib/planAnnotations';
-import { useEscapeKey } from '../../hooks/useEscapeKey';
 import type { HistoryEntry } from '../../types';
 import type { TicketSideViewController } from '../../hooks/useTicketSideView';
 
@@ -133,6 +133,12 @@ export function PlanApprovalPanel({
   // — without this, the panel kept showing "Start plan review" / "nothing reviews this on its own"
   // while a review was actively running (clicking just hit the engine's 409 `already-running`).
   const firstReviewRunning = noVerdictYouGate && !!task.planGateRunning;
+  // FLUX-1339: a STANDING Approve — available any time a Grooming ticket has a plan body, decoupled
+  // from `planReviewState` (a fresh verdict). Once a user iterates on the plan conversationally in
+  // chat (no formal re-review re-triggered) the verdict clears, and the old panel offered no way to
+  // approve short of the status dropdown. In `review` mode Approve is already present (see below), so
+  // this only adds it to `later` mode; either way the verdict is advisory, never a gate.
+  const canApproveNow = canApprovePlan(task);
   const hasArtifact = (task.artifacts?.revisions?.length ?? 0) > 0;
   // FLUX-1289/FLUX-1303: verdict-aware footer — one verb set (Send for re-grooming / Approve[-anyway])
   // with emphasis flipped by verdict; the notes composer exists in BOTH verdict states (notes are
@@ -154,6 +160,10 @@ export function PlanApprovalPanel({
   );
 
   const [activeTab, setActiveTab] = useState<TabId>(hasArtifact ? 'artifact' : 'plan');
+  // FLUX-1381: the reviewer-feedback box is height-capped (internal scroll) and collapsible — a long
+  // changes-requested comment must never starve the Artifact/Plan/AC/Tests tab body of space. The
+  // one-line verdict summary above it stays visible either way.
+  const [feedbackExpanded, setFeedbackExpanded] = useState(true);
   const [busy, setBusy] = useState(false);
   const [revising, setRevising] = useState(false);
   const [startingImpl, setStartingImpl] = useState(false);
@@ -174,16 +184,27 @@ export function PlanApprovalPanel({
   const [selNote, setSelNote] = useState('');
   useEffect(() => { savePlanReviewDraft(task.id, { annotations, notes, bodyHash: currentBodyHash }); }, [task.id, annotations, notes, currentBodyHash]);
 
+  // FLUX-1362: artifact-region annotations, mirrored live out of the iframe by `ArtifactPanel` (this
+  // panel is the CONTROLLED owner so both surfaces converge on ONE unified list — the floating pill).
+  // Deliberately NOT persisted into the plan-review draft (they live in the iframe/session, not the
+  // durable plan text), so the draft contract is unchanged.
+  const [artifactItems, setArtifactItems] = useState<ArtifactAnnotation[]>([]);
+
   // The ONE derivation of "is there anything to send" — the exact string every send handler uses,
   // so the buttons' enabled-state can never disagree with what the handler would actually send.
-  const combinedNotes = useMemo(() => formatRegroomNotes(annotations, notes), [annotations, notes]);
+  // FLUX-1362: plan-text annotations + freeform notes + the artifact-region block, in one payload.
+  const combinedNotes = useMemo(() => {
+    const planPart = formatRegroomNotes(annotations, notes);
+    const artifactPart = formatArtifactAnnotations(artifactItems);
+    return [planPart, artifactPart].filter(Boolean).join('\n\n');
+  }, [annotations, notes, artifactItems]);
+  // FLUX-1339/1362: how the "N notes — not sent yet" marker (and the pill) count the batch — each
+  // inline plan annotation, each artifact annotation, plus the freeform box (as one).
+  const unsentCount = annotations.length + artifactItems.length + (notes.trim() ? 1 : 0);
 
-  // ESC closes the selection composer first; only a second ESC closes the panel (useEscapeKey
-  // re-reads the latest closure each keypress, so pendingSel is never stale here).
-  useEscapeKey(() => {
-    if (pendingSel) setPendingSel(null);
-    else onClose();
-  });
+  // FLUX-1339: panel-level Esc (minimize) is owned by the hosting FloatingPanel; Esc inside the
+  // selection composer only cancels that composer (handled on its textarea's onKeyDown below), so
+  // the two never fight over one keypress.
 
   const handleTabBodyMouseUp = () => {
     if (activeTab === 'artifact') return; // the artifact viewer has its own in-iframe annotation flow
@@ -347,6 +368,7 @@ export function PlanApprovalPanel({
       onSendToChat(combinedNotes);
       setNotes('');
       setAnnotations([]);
+      setArtifactItems([]); // clears the pins in the iframe too (reverse-sync)
       clearPlanReviewDraft(task.id);
     } finally {
       setBusy(false);
@@ -422,7 +444,10 @@ export function PlanApprovalPanel({
   };
 
   return (
-    <div className="fixed inset-0 z-[130] flex flex-col bg-[var(--eh-surface)]">
+    // FLUX-1339: no longer a `fixed inset-0` full-screen overlay — the panel now FILLS its host
+    // (a chat-anchored FloatingPanel in ChatDock), so the chat's live Working/progress strip stays
+    // visible beside it. Close/minimize are owned by the FloatingPanel chrome above this content.
+    <div className="flex min-h-0 w-full flex-col">
       {/* Header — editable title/priority/effort/tags, all staged via `c` and committed only by
           Approve/Send-back/Ask-in-chat below (never saved independently). */}
       <div className="eh-border flex flex-col gap-2 border-b px-4 py-3">
@@ -433,14 +458,6 @@ export function PlanApprovalPanel({
             className="min-w-0 flex-1 bg-transparent text-lg font-bold text-[var(--eh-text-primary)] outline-none"
             placeholder="Ticket title"
           />
-          <button
-            type="button"
-            onClick={onClose}
-            title="Close"
-            className="flex-shrink-0 rounded-md p-1.5 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
-          >
-            <X className="h-4 w-4" />
-          </button>
         </div>
         <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
           <span className="font-mono text-[var(--eh-text-muted)]">{task.id}</span>
@@ -492,15 +509,28 @@ export function PlanApprovalPanel({
             {/* FLUX-1289: the reviewer's actual feedback, surfaced prominently instead of requiring a
                 dig into history/chat. FLUX-1303: attributed — never an anonymous blob (the FLUX-1298
                 incident rendered a stale reviewer APPROVED comment under this amber banner with
-                nothing saying who wrote it). */}
+                nothing saying who wrote it). FLUX-1381: capped with internal scroll + a chevron to
+                collapse the text entirely, so a long comment can't squeeze the tab body to a sliver. */}
             {changesRequested && (
               <div className="rounded-lg border border-amber-200 bg-white/60 px-3 py-2 dark:border-amber-500/20 dark:bg-black/20">
-                {feedback && (
-                  <div className="mb-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-600 dark:text-amber-400">{feedbackLabel}</div>
-                )}
-                <div className="whitespace-pre-wrap break-words text-[var(--eh-text-primary)]">
-                  {feedback?.text || 'Changes requested — no feedback comment found in history.'}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+                    {feedback ? feedbackLabel : 'Reviewer feedback'}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFeedbackExpanded((v) => !v)}
+                    title={feedbackExpanded ? 'Collapse reviewer feedback' : 'Expand reviewer feedback'}
+                    className="rounded p-0.5 text-amber-600 transition-colors hover:bg-black/5 dark:text-amber-400 dark:hover:bg-white/5"
+                  >
+                    {feedbackExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                  </button>
                 </div>
+                {feedbackExpanded && (
+                  <div className="mt-0.5 max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-[var(--eh-text-primary)]">
+                    {feedback?.text || 'Changes requested — no feedback comment found in history.'}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -556,8 +586,18 @@ export function PlanApprovalPanel({
             as TicketSideView's collapsed artifact section (FLUX-1136); ArtifactPanel stops paying any
             reload/compile cost while `visible` is false. */}
         {hasArtifact && (
-          <div style={activeTab === 'artifact' ? undefined : { display: 'none' }}>
-            <ArtifactPanel task={task} onSendToChat={mode === 'later' ? onSendToChat : (text) => setNotes((prev) => `${prev ? `${prev}\n\n` : ''}${text}`)} visible={activeTab === 'artifact'} />
+          <div className={activeTab === 'artifact' ? 'flex h-full min-h-0 flex-col' : ''} style={activeTab === 'artifact' ? undefined : { display: 'none' }}>
+            {/* FLUX-1362: this panel is the CONTROLLED owner of the artifact annotations — they mirror
+                live into `artifactItems` and merge with the plan-text annotations in ONE floating pill
+                (rendered below). `onSendToChat` here is only the audit "Send to agent" route. */}
+            <ArtifactPanel
+              task={task}
+              visible={activeTab === 'artifact'}
+              fillHeight
+              artifactAnnotations={artifactItems}
+              onArtifactAnnotationsChange={setArtifactItems}
+              onSendToChat={onSendToChat}
+            />
           </div>
         )}
         {activeTab === 'plan' && <TaskMarkdown body={task.body || ''} taskId={task.id} emptyMessage="No plan written yet." />}
@@ -617,25 +657,16 @@ export function PlanApprovalPanel({
           complaint of the FLUX-1298 incident). Notes are optional on changes-requested (the
           reviewer's feedback is included automatically) and required to override an approval. */}
       <div className="eh-border flex flex-col gap-2 border-t px-4 py-3">
-        {/* FLUX-1303: accumulated inline annotations — each rides along with the next send action. */}
-        {annotations.length > 0 && (
-          <div className="flex max-h-40 flex-col gap-1 overflow-y-auto">
-            {annotations.map((a, i) => (
-              <div key={i} className="flex items-start gap-2 rounded-lg border border-amber-400/30 bg-amber-500/5 px-2.5 py-1.5 text-[12px]">
-                <div className="min-w-0 flex-1">
-                  <div className="truncate italic text-[var(--eh-text-muted)]">&gt; {a.excerpt}</div>
-                  <div className="whitespace-pre-wrap break-words text-[var(--eh-text-primary)]">{a.note}</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setAnnotations((prev) => prev.filter((_, j) => j !== i))}
-                  title="Remove this note"
-                  className="mt-0.5 shrink-0 rounded p-0.5 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-            ))}
+        {/* FLUX-1362: the accumulated annotations (plan-text + artifact) no longer sit in a footer tray
+            eating working space — they live in the floating "N changes" pill (rendered below), which
+            follows the user and expands to edit. Only the compact "not sent yet" marker stays here so
+            the draft can never LOOK already-sent when it isn't. Cleared once an explicit send action
+            empties the batch (Ask in chat / Send for re-grooming clear the draft; Approve folds the
+            notes into the approval comment and clears it too). */}
+        {combinedNotes && (
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500" />
+            {unsentCount} note{unsentCount === 1 ? '' : 's'} — not sent yet
           </div>
         )}
         <textarea
@@ -741,10 +772,37 @@ export function PlanApprovalPanel({
                 type="button"
                 onClick={() => void handleAskInChat()}
                 disabled={busy || !combinedNotes}
-                className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover disabled:opacity-50"
+                className={canApproveNow
+                  ? 'flex items-center gap-1.5 rounded-md border border-primary/40 px-3 py-1.5 text-[12px] font-semibold text-primary transition-colors hover:bg-primary/10 disabled:opacity-50'
+                  : 'flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover disabled:opacity-50'}
               >
                 {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MessageCircleQuestion className="h-3.5 w-3.5" />} Ask in chat
               </button>
+              {/* FLUX-1339: standing Approve — decoupled from a fresh verdict, shown whenever a
+                  Grooming ticket has a plan. Reuses the exact `buildApproveUpdate`/`commit` path as
+                  review mode (any batched notes fold into the approval comment). */}
+              {canApproveNow && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void handleApproveAndStart()}
+                    disabled={revising || busy || startingImpl}
+                    title="Approve into Todo, then immediately create a branch/worktree and dispatch an implementation session"
+                    className="flex items-center gap-1.5 rounded-md border border-emerald-500/40 px-3 py-1.5 text-[12px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-500/10 disabled:opacity-50 dark:text-emerald-300"
+                  >
+                    {startingImpl ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />} Approve & start
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleApprove}
+                    disabled={revising || busy || startingImpl}
+                    title="Approve this plan and move the ticket to Todo"
+                    className="flex items-center gap-1.5 rounded-md bg-emerald-500 px-3 py-1.5 text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-emerald-600 disabled:opacity-50"
+                  >
+                    {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />} Approve
+                  </button>
+                </>
+              )}
             </>
           )}
         </div>
@@ -767,6 +825,9 @@ export function PlanApprovalPanel({
             autoFocus
             value={selNote}
             onChange={(e) => setSelNote(e.target.value)}
+            // FLUX-1339: Esc here only dismisses the selection composer (and is stopped from bubbling
+            // up to the FloatingPanel's minimize-on-Esc).
+            onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); setPendingSel(null); } }}
             placeholder="Note about this part of the plan…"
             rows={2}
             className="eh-border w-full resize-none rounded-lg border bg-[var(--eh-input-bg)] px-2.5 py-1.5 text-[12.5px] outline-none focus:border-amber-500"
@@ -794,6 +855,23 @@ export function PlanApprovalPanel({
           </div>
         </div>
       )}
+
+      {/* FLUX-1362: the unified floating pill — plan-text + artifact annotations in one place, follows
+          the user, expands to edit. Sending is driven by the footer actions (Approve / Send for
+          re-grooming / Ask in chat), so the pill has no Send of its own here. FLUX-1381: raised above
+          this panel's own footer (notes composer + action buttons, ~120-150px tall depending on the
+          unsent-marker/error rows), whose buttons also sit bottom-right when the panel is maximized —
+          bottom-4 landed the pill directly on top of them. Static approximation: the bar is "no
+          overlap with the actions", not pixel-perfect stacking against a variable-height footer. */}
+      <AnnotationPill
+        bottomClass="bottom-36"
+        planItems={annotations}
+        artifactItems={artifactItems}
+        onEditPlan={(index, note) => setAnnotations((prev) => prev.map((a, i) => (i === index ? { ...a, note } : a)))}
+        onRemovePlan={(index) => setAnnotations((prev) => prev.filter((_, i) => i !== index))}
+        onEditArtifact={(id, note) => setArtifactItems((prev) => prev.map((a) => (a.id === id ? { ...a, note } : a)))}
+        onRemoveArtifact={(id) => setArtifactItems((prev) => prev.filter((a) => a.id !== id))}
+      />
     </div>
   );
 }

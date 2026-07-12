@@ -1,6 +1,7 @@
+import { getWorkspace } from '../workspace-context.js';
 import express from 'express';
-import { workspaceRoot } from '../workspace.js';
-import { tasksCache } from '../task-store.js';
+import { getWorkspaceRoot } from '../workspace.js';
+
 import { buildDiffOverview, diffFileContent } from '../diff-aggregator.js';
 
 const router = express.Router();
@@ -13,10 +14,10 @@ router.get('/overview', async (req, res) => {
     // ?uncommitted=1 → loose working-tree changes per root (powers the board
     // header uncommitted panel); default → branch divergence vs merge-base.
     const uncommittedOnly = req.query.uncommitted === '1';
-    const overview = await buildDiffOverview(workspaceRoot!, uncommittedOnly ? { uncommittedOnly: true } : {});
+    const overview = await buildDiffOverview(getWorkspaceRoot()!, uncommittedOnly ? { uncommittedOnly: true } : {});
     const groups = overview.groups.map((g) => {
       if (g.kind !== 'worktree' || !g.branch) return g;
-      const ticket = Object.values(tasksCache).find((t) => t.branch === g.branch);
+      const ticket = Object.values(getWorkspace().tasks).find((t) => t.branch === g.branch);
       return { ...g, ticketId: ticket?.id ?? null, ticketTitle: ticket?.title ?? null };
     });
     res.json({ groups, collisions: overview.collisions });
@@ -37,7 +38,7 @@ router.get('/file', async (req, res) => {
     return res.status(400).json({ error: 'Invalid path' });
   }
   try {
-    const diff = await diffFileContent(workspaceRoot!, ref, file);
+    const diff = await diffFileContent(getWorkspaceRoot()!, ref, file);
     if (!diff) return res.status(404).json({ error: 'No diff for that file' });
     res.type('text/plain').send(diff);
   } catch (err) {

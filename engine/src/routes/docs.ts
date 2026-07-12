@@ -1,3 +1,4 @@
+import { getWorkspace } from '../workspace-context.js';
 import express from 'express';
 import fs from 'fs/promises';
 import path from 'path';
@@ -6,7 +7,7 @@ import {
   serializeDoc, sortDocs, writeDocFile, removeEmptyDocDirectories,
   parseDocOrder, titleFromDocPath, buildDocMarkdown,
 } from '../file-utils.js';
-import { docsCache, loadDoc, loadGroupDoc } from '../task-store.js';
+import { loadDoc, loadGroupDoc } from '../task-store.js';
 import {
   activeGroupDocsLabel,
   getGroupContext,
@@ -64,7 +65,7 @@ function parentStorePath(storeDir: string, storeRel: string): string {
 }
 
 router.get('/', (req, res) => {
-  res.json(sortDocs(Object.values(docsCache).map(serializeDoc)));
+  res.json(sortDocs(Object.values(getWorkspace().docs).map(serializeDoc)));
 });
 
 router.post('/', async (req, res) => {
@@ -77,7 +78,7 @@ router.post('/', async (req, res) => {
     const writer = groupWriterContext();
     const storeRel = writer ? groupDocPathToStoreRelative(docPath) : null;
     if (writer && storeRel) {
-      if (docsCache[docPath]) return res.status(409).json({ error: 'Doc already exists' });
+      if (getWorkspace().docs[docPath]) return res.status(409).json({ error: 'Doc already exists' });
       const title = typeof req.body?.title === 'string' && req.body.title.trim()
         ? req.body.title.trim()
         : titleFromDocPath(docPath);
@@ -87,7 +88,7 @@ router.post('/', async (req, res) => {
         const storeDir = writer.groupStoreDir;
         await submitGroupEdit(writer, [{ path: storeRel, content: buildDocMarkdown(title, order, body) }]);
         await loadGroupDoc(storeDir, parentStorePath(storeDir, storeRel));
-        const created = docsCache[docPath];
+        const created = getWorkspace().docs[docPath];
         return res.status(201).json(created ? serializeDoc(created) : { success: true });
       } catch (error) {
         console.error(`Failed to write new group doc ${docPath}:`, error);
@@ -97,7 +98,7 @@ router.post('/', async (req, res) => {
     }
     return res.status(403).json({ error: groupReadOnlyMessage() });
   }
-  if (docsCache[docPath]) return res.status(409).json({ error: 'Doc already exists' });
+  if (getWorkspace().docs[docPath]) return res.status(409).json({ error: 'Doc already exists' });
 
   const title = typeof req.body?.title === 'string' && req.body.title.trim()
     ? req.body.title.trim()
@@ -110,7 +111,7 @@ router.post('/', async (req, res) => {
     await writeDocFile(filePath, title, order, body);
     await loadDoc(filePath);
 
-    const createdDoc = docsCache[docPath];
+    const createdDoc = getWorkspace().docs[docPath];
     if (!createdDoc) throw new Error('Doc was not loaded after creation');
 
     res.status(201).json(serializeDoc(createdDoc));
@@ -125,7 +126,7 @@ router.get(/^\/.+$/, (req, res) => {
 
   if (!docPath) return res.status(400).json({ error: 'Invalid doc path' });
 
-  const doc = docsCache[docPath];
+  const doc = getWorkspace().docs[docPath];
   if (!doc) return res.status(404).json({ error: 'Doc not found' });
 
   res.json(serializeDoc(doc));
@@ -136,7 +137,7 @@ router.put(/^\/.+$/, async (req, res) => {
 
   if (!docPath) return res.status(400).json({ error: 'Invalid doc path' });
 
-  const existingDoc = docsCache[docPath];
+  const existingDoc = getWorkspace().docs[docPath];
   if (!existingDoc) return res.status(404).json({ error: 'Doc not found' });
   if (existingDoc.group) {
     // Group doc: route the edit to the canonical store writer — the parent edits
@@ -153,7 +154,7 @@ router.put(/^\/.+$/, async (req, res) => {
         const storeDir = writer.groupStoreDir;
         await submitGroupEdit(writer, [{ path: storeRel, content: buildDocMarkdown(title, order, body) }]);
         await loadGroupDoc(storeDir, parentStorePath(storeDir, storeRel));
-        const updated = docsCache[docPath];
+        const updated = getWorkspace().docs[docPath];
         return res.json(updated ? serializeDoc(updated) : { success: true });
       } catch (error) {
         console.error(`Failed to write group edit for ${docPath}:`, error);
@@ -174,7 +175,7 @@ router.put(/^\/.+$/, async (req, res) => {
     await writeDocFile(existingDoc._path, title, order, body);
     await loadDoc(existingDoc._path);
 
-    const updatedDoc = docsCache[docPath];
+    const updatedDoc = getWorkspace().docs[docPath];
     if (!updatedDoc) throw new Error('Doc was not loaded after update');
 
     res.json(serializeDoc(updatedDoc));
@@ -189,7 +190,7 @@ router.delete(/^\/.+$/, async (req, res) => {
 
   if (!docPath) return res.status(400).json({ error: 'Invalid doc path' });
 
-  const doc = docsCache[docPath];
+  const doc = getWorkspace().docs[docPath];
   if (!doc) return res.status(404).json({ error: 'Doc not found' });
   if (doc.group) {
     // Group doc: route the delete to the canonical store writer — the parent
@@ -199,7 +200,7 @@ router.delete(/^\/.+$/, async (req, res) => {
     if (writer && storeRel) {
       try {
         await submitGroupEdit(writer, [{ path: storeRel, delete: true }]);
-        delete docsCache[docPath];
+        delete getWorkspace().docs[docPath];
         return res.json({ success: true });
       } catch (error) {
         console.error(`Failed to write group delete for ${docPath}:`, error);
@@ -212,7 +213,7 @@ router.delete(/^\/.+$/, async (req, res) => {
 
   try {
     await fs.unlink(doc._path);
-    delete docsCache[docPath];
+    delete getWorkspace().docs[docPath];
     await removeEmptyDocDirectories(doc._path);
     res.json({ success: true });
   } catch (error) {
@@ -248,7 +249,7 @@ router.post('/rename-folder', async (req, res) => {
 
   // Collect every local doc at the folder or beneath it.
   const prefix = from + '/';
-  const affected = Object.values(docsCache).filter(
+  const affected = Object.values(getWorkspace().docs).filter(
     (doc) => !doc.group && (doc.path === from || doc.path.startsWith(prefix)),
   );
   if (affected.length === 0) {
@@ -260,7 +261,7 @@ router.post('/rename-folder', async (req, res) => {
   for (const doc of affected) {
     const suffix = doc.path.slice(from.length); // '' or '/rest...'
     const targetPath = to + suffix;
-    if (docsCache[targetPath] && !movingPaths.has(targetPath)) {
+    if (getWorkspace().docs[targetPath] && !movingPaths.has(targetPath)) {
       return res.status(409).json({ error: `A doc already exists at "${targetPath}"` });
     }
   }
@@ -273,7 +274,7 @@ router.post('/rename-folder', async (req, res) => {
       const targetFile = getDocFilePath(targetPath);
       await writeDocFile(targetFile, doc.title, doc.order, doc.body ?? '');
       await fs.unlink(doc._path);
-      delete docsCache[doc.path];
+      delete getWorkspace().docs[doc.path];
       await removeEmptyDocDirectories(doc._path);
       await loadDoc(targetFile);
       moved.push({ from: doc.path, to: targetPath });

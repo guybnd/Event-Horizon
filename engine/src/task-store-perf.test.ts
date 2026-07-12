@@ -1,9 +1,10 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import matter from 'gray-matter';
-import { loadTask, initDir, tasksCache } from './task-store.js';
+import { loadTask, initDir } from './task-store.js';
 import { setWorkspaceRoot } from './workspace.js';
 import { snapshot, resetForTest } from './perf/registry.js';
 
@@ -26,11 +27,11 @@ describe('task-store perf instrumentation (FLUX-1132)', () => {
     fluxDir = path.join(root, '.flux');
     await fs.mkdir(fluxDir, { recursive: true });
     setWorkspaceRoot(root);
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
   });
 
   afterEach(async () => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     await fs.rm(root, { recursive: true, force: true }).catch(() => {});
     vi.restoreAllMocks();
   });
@@ -42,7 +43,7 @@ describe('task-store perf instrumentation (FLUX-1132)', () => {
     await loadTask(filePath);
 
     expect(snapshot().histograms['store.loadTask']?.count).toBe(1);
-    expect(tasksCache['FLUX-1']?.title).toBe('A ticket');
+    expect(getWorkspace().tasks['FLUX-1']?.title).toBe('A ticket');
   });
 
   it('records store.loadTask even when the early "not a top-level task file" guard fires', async () => {
@@ -73,7 +74,7 @@ describe('task-store perf instrumentation (FLUX-1132)', () => {
 
     await initDir();
 
-    expect(tasksCache['FLUX-3']?.title).toBe('Rescanned');
+    expect(getWorkspace().tasks['FLUX-3']?.title).toBe('Rescanned');
     expect(snapshot().histograms['store.fullRescan']?.count).toBe(1);
   });
 
@@ -89,6 +90,6 @@ describe('task-store perf instrumentation (FLUX-1132)', () => {
 
     // 125 files at 50-per-batch yields after file 50 and file 100 — two yields, not zero.
     expect(setImmediateSpy).toHaveBeenCalledTimes(2);
-    expect(Object.keys(tasksCache).length).toBe(fileCount);
+    expect(Object.keys(getWorkspace().tasks).length).toBe(fileCount);
   });
 });

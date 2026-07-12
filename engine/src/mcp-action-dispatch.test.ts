@@ -1,9 +1,10 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { buildMcpServer, permissionDecisionFor } from './mcp-server.js';
-import { tasksCache } from './task-store.js';
+
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -100,7 +101,7 @@ describe('merged-tool action dispatch & per-action validation (in-memory round-t
   beforeAll(async () => {
     // Seed a ticket so the handlers get past their `tasksCache[ticketId]` not_found guard and reach
     // the per-action validation. The guards under test fire before any git/network/disk I/O.
-    tasksCache[TICKET] = { id: TICKET, status: 'Todo', title: 'dispatch test', history: [] };
+    getWorkspace().tasks[TICKET] = { id: TICKET, status: 'Todo', title: 'dispatch test', history: [] };
 
     server = buildMcpServer();
     client = new Client({ name: 'eh-action-dispatch-test', version: '1.0.0' }, { capabilities: {} });
@@ -109,7 +110,7 @@ describe('merged-tool action dispatch & per-action validation (in-memory round-t
   });
 
   afterAll(async () => {
-    delete tasksCache[TICKET];
+    delete getWorkspace().tasks[TICKET];
     await client.close().catch(() => {});
     await server.close().catch(() => {});
   });

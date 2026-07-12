@@ -6,7 +6,7 @@ import fs from 'fs/promises';
 import chokidar from 'chokidar';
 import matter from 'gray-matter';
 import { isOrphanMode, getFluxStoreDir } from './workspace.js';
-import { configCache } from './config.js';
+import { getConfig } from './config.js';
 import {
   buildGitSyncEnv,
   classifyGitError,
@@ -789,8 +789,8 @@ export function startSyncWatcher(): void {
   const storeDir = getFluxStoreDir();
 
   scheduler = createScheduler(
-    () => configCache.syncSettings?.debounceMs ?? 30000,
-    () => configCache.syncSettings?.maxWaitMs ?? 300000,
+    () => getConfig().syncSettings?.debounceMs ?? 30000,
+    () => getConfig().syncSettings?.maxWaitMs ?? 300000,
     () => { void runSync(storeDir, (delayMs?: number) => scheduler?.scheduleRetry(delayMs)); }
   );
 
@@ -814,8 +814,8 @@ export function startSyncWatcher(): void {
   // unhandled 'error' would rethrow and the uncaughtException handler exits the engine.
   watcher.on('error', (err) => console.error('[sync-watcher] file-sync paused:', err));
 
-  const debounceMs = configCache.syncSettings?.debounceMs ?? 30000;
-  const maxWaitMs = configCache.syncSettings?.maxWaitMs ?? 300000;
+  const debounceMs = getConfig().syncSettings?.debounceMs ?? 30000;
+  const maxWaitMs = getConfig().syncSettings?.maxWaitMs ?? 300000;
   log.info(`[sync-watcher] Watching .flux-store/ for changes (${debounceMs / 1000}s debounce, ${maxWaitMs / 1000}s max-wait)`);
 
   // FLUX-1079/FLUX-1088: independent of file-change/retry-timer activity — a dismissed-but-

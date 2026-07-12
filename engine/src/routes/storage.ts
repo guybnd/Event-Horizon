@@ -1,5 +1,5 @@
 import express from 'express';
-import { workspaceRoot, isOrphanMode } from '../workspace.js';
+import { isOrphanMode, getWorkspaceRoot } from '../workspace.js';
 import { migrateToOrphan, restoreToInRepo } from '../storage-sync.js';
 import { activateWorkspace } from '../task-store.js';
 import { startSyncWatcher, stopSyncWatcher, resolveConflicts, getSyncStatus, revalidateConflictState } from '../sync-watcher.js';
@@ -21,6 +21,7 @@ router.get('/mode', (_req, res) => {
 });
 
 router.post('/migrate', async (_req, res) => {
+  const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
   if (isOrphanMode()) return res.status(400).json({ error: 'Already in orphan mode' });
 
@@ -35,6 +36,7 @@ router.post('/migrate', async (_req, res) => {
 });
 
 router.post('/restore', async (_req, res) => {
+  const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
   if (!isOrphanMode()) return res.status(400).json({ error: 'Not in orphan mode' });
 
@@ -49,7 +51,7 @@ router.post('/restore', async (_req, res) => {
 });
 
 router.post('/resolve-conflicts', async (req, res) => {
-  if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
+  if (!getWorkspaceRoot()) return res.status(400).json({ error: 'No workspace active' });
   if (!isOrphanMode()) return res.status(400).json({ error: 'Not in orphan mode' });
 
   const { resolutions } = req.body;

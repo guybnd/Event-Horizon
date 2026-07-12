@@ -10,6 +10,7 @@
 // array is empty and the old code path fired). This test exercises the real MCP tool via an
 // in-memory client/server round-trip and pins that `excluded`/`notes` now survive onto the wire.
 
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -17,7 +18,7 @@ import os from 'os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { buildMcpServer } from './mcp-server.js';
-import { tasksCache } from './task-store.js';
+
 import { setWorkspaceRoot } from './workspace.js';
 import { __resetFurnaceStoreForTests } from './furnace-store.js';
 
@@ -55,12 +56,12 @@ describe('furnace_build MCP tool — excluded survives the zero-tickets error pa
   });
 
   afterEach(async () => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     await fs.rm(root, { recursive: true, force: true }).catch(() => {});
   });
 
   it('a tag scan whose only carrier drifted out of status reports `excluded` (with reason) and `notes`, not just a bare message', async () => {
-    tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Grooming', title: 'drifted', tags: ['burn-furnace'], history: [] };
+    getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Grooming', title: 'drifted', tags: ['burn-furnace'], history: [] };
 
     const res = (await client.callTool({
       name: 'furnace_build',
@@ -123,7 +124,7 @@ describe('furnace_build MCP tool — branch adoption + spawnedFrom (FLUX-1270)',
   });
 
   afterEach(async () => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     await fs.rm(root, { recursive: true, force: true }).catch(() => {});
   });
 
@@ -138,8 +139,8 @@ describe('furnace_build MCP tool — branch adoption + spawnedFrom (FLUX-1270)',
 
   /** Seeds the FLUX-861 (parent, PR open at Ready) / PR-434 (its synthetic PR card) shape. */
   function seedParentWithOpenPr() {
-    tasksCache['FLUX-861'] = { id: 'FLUX-861', status: 'Ready', title: 'Parent', branch: 'flux/FLUX-861-parent', history: [] };
-    tasksCache['PR-434'] = { id: 'PR-434', kind: 'pr', status: 'Ready', branch: 'flux/FLUX-861-parent', prNumber: 434, prState: 'OPEN', history: [] };
+    getWorkspace().tasks['FLUX-861'] = { id: 'FLUX-861', status: 'Ready', title: 'Parent', branch: 'flux/FLUX-861-parent', history: [] };
+    getWorkspace().tasks['PR-434'] = { id: 'PR-434', kind: 'pr', status: 'Ready', branch: 'flux/FLUX-861-parent', prNumber: 434, prState: 'OPEN', history: [] };
   }
 
   it('adopts the parent ticket\'s branch instead of minting one, forces kind sequential, and stamps spawnedFrom', async () => {
@@ -164,7 +165,7 @@ describe('furnace_build MCP tool — branch adoption + spawnedFrom (FLUX-1270)',
     // The follow-up (mid-implementation, no PR of its own yet) then joins via the EXISTING
     // furnace_ticket action:"add" — widened with `allowedStatuses` (FLUX-1270) since a follow-up
     // caught mid-implementation is realistically still `In Progress`, not `Todo`.
-    tasksCache['FLUX-1265'] = { id: 'FLUX-1265', status: 'In Progress', title: 'Follow-up', history: [] };
+    getWorkspace().tasks['FLUX-1265'] = { id: 'FLUX-1265', status: 'In Progress', title: 'Follow-up', history: [] };
     const addRes = (await client.callTool({
       name: 'furnace_ticket',
       arguments: { action: 'add', batchId: (body as { batchId: string }).batchId, ticketId: 'FLUX-1265', allowedStatuses: ['In Progress'] },
@@ -176,23 +177,23 @@ describe('furnace_build MCP tool — branch adoption + spawnedFrom (FLUX-1270)',
   });
 
   it('rejects adoptBranchFrom naming an unknown ticket', async () => {
-    tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', title: 'X', history: [] };
+    getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', title: 'X', history: [] };
     const res = await call({ tickets: ['FLUX-1'], adoptBranchFrom: 'FLUX-404' });
     expect(res.isError).toBe(true);
     expect(res.code).toBe('not_found');
   });
 
   it('rejects adoptBranchFrom naming a ticket with no branch', async () => {
-    tasksCache['FLUX-861'] = { id: 'FLUX-861', status: 'Ready', title: 'Parent', history: [] }; // no `branch`
-    tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', title: 'X', history: [] };
+    getWorkspace().tasks['FLUX-861'] = { id: 'FLUX-861', status: 'Ready', title: 'Parent', history: [] }; // no `branch`
+    getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', title: 'X', history: [] };
     const res = await call({ tickets: ['FLUX-1'], adoptBranchFrom: 'FLUX-861' });
     expect(res.isError).toBe(true);
     expect(res.code).toBe('validation_failed');
   });
 
   it('rejects adoptBranchFrom naming a ticket whose branch has no open PR', async () => {
-    tasksCache['FLUX-861'] = { id: 'FLUX-861', status: 'Ready', title: 'Parent', branch: 'flux/FLUX-861-parent', history: [] };
-    tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', title: 'X', history: [] };
+    getWorkspace().tasks['FLUX-861'] = { id: 'FLUX-861', status: 'Ready', title: 'Parent', branch: 'flux/FLUX-861-parent', history: [] };
+    getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', title: 'X', history: [] };
     // No `kind:'pr'` card at all for this branch — nothing confirms an open PR.
     const res = await call({ tickets: ['FLUX-1'], adoptBranchFrom: 'FLUX-861' });
     expect(res.isError).toBe(true);
@@ -207,7 +208,7 @@ describe('furnace_build MCP tool — branch adoption + spawnedFrom (FLUX-1270)',
   });
 
   it('a build with no adoptBranchFrom is unaffected — mints its own branch, no spawnedFrom (FLUX-1267/1268 shape)', async () => {
-    tasksCache['FLUX-1267'] = { id: 'FLUX-1267', status: 'Todo', title: 'Independent', history: [] };
+    getWorkspace().tasks['FLUX-1267'] = { id: 'FLUX-1267', status: 'Todo', title: 'Independent', history: [] };
     const { body } = await call({ tickets: ['FLUX-1267'] });
     const batch = body.batch as { branch: string; spawnedFrom?: unknown };
     expect(batch.branch).toMatch(/^flux\/furnace-/);

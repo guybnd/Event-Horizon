@@ -1,10 +1,11 @@
+import { getWorkspace } from './workspace-context.js';
 import { createTicketBranch } from './branch-manager.js';
 import { createTaskWorktree, reclaimWorktrees } from './task-worktree.js';
-import { tasksCache, updateTaskWithHistory } from './task-store.js';
+import { updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { buildActivityEntry } from './history.js';
 import { isWorktreeReclaimable } from './pr-cleanup.js';
-import { workspaceRoot } from './workspace.js';
+import { getWorkspaceRoot } from './workspace.js';
 
 /**
  * Canonical ticket-isolation mechanism (FLUX-845).
@@ -53,7 +54,7 @@ export async function ensureTicketIsolation(
   ticketId: string,
   opts: EnsureIsolationOptions,
 ): Promise<EnsureIsolationResult> {
-  const task = tasksCache[ticketId];
+  const task = getWorkspace().tasks[ticketId];
   if (!task) throw new Error(`Ticket ${ticketId} not found`);
   const updatedBy = opts.updatedBy ?? 'Agent';
 
@@ -73,7 +74,7 @@ export async function ensureTicketIsolation(
   if (opts.worktree) {
     const createWorktree = async () => {
       const wt = await createTaskWorktree(
-        workspaceRoot!,
+        getWorkspaceRoot()!,
         ticketId,
         branch!,
         opts.baseBranch ? { baseBranch: opts.baseBranch } : {},
@@ -115,7 +116,7 @@ export async function ensureTicketIsolation(
         // backstop when a spawn is genuinely blocked on the concurrency cap, so a legit new task
         // must never fail to start over a buffer meant to protect an ad hoc reviewer elsewhere.
         const reclaimed = await reclaimWorktrees(
-          workspaceRoot!,
+          getWorkspaceRoot()!,
           (id) => isWorktreeReclaimable(id, { honorReadyGrace: false }),
         ).catch(() => [] as string[]);
         if (reclaimed.length > 0) {

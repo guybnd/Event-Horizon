@@ -8,9 +8,8 @@ import { TicketContextCard, SessionMeter } from './chatContext';
 import { parseQuickReplies } from './chatQuickReplies';
 import { parseRunProposal } from './chatRunProposal';
 import { ChatRequireInputBanner } from './ChatRequireInputBanner';
-import { ChatArtifactCard } from './ChatArtifactCard';
 import { TicketActions } from '../ticket-actions/TicketActions';
-import { ChatPendingInteractions, useComposerAnswer } from '../pendingInteractions';
+import { ChatPendingInteractions, useComposerAnswer, isPlanApprovalPending } from '../pendingInteractions';
 import { useDockActions } from '../DockProvider';
 import { useAppActions, useAppSelector, useConfig } from '../../store/useAppSelector';
 import { getRequireInputStatus } from '../../workflow';
@@ -65,6 +64,12 @@ export function ChatPane({ task }: { task: Task }) {
   // or an unrouted prompt claimed by the single live chat) can be answered from the composer. Mirrors
   // the dock ChatWindow path; multi-question prompts keep to the picker chips. Shared hook.
   const { answerPrompt, onAnswerQuestion } = useComposerAnswer(task.id);
+
+  // FLUX-1362: revision metadata for the in-stream "new revision" markers.
+  const artifactMarkers = useMemo(
+    () => (task.artifacts?.revisions ?? []).map((r) => ({ rev: r.rev, title: r.title, createdAt: r.createdAt })),
+    [task.artifacts?.revisions],
+  );
 
   if (!open) {
     return (
@@ -140,18 +145,15 @@ export function ChatPane({ task }: { task: Task }) {
         orchestrationBlock={runGroup ? (
           <ChatOrchestrationBlock group={runGroup} taskId={task.id} onOpenRun={openRun} onStopSession={stopOne} onStopAll={stopAll} />
         ) : undefined}
-        artifactCard={(task.artifacts?.revisions?.length ?? 0) > 0 ? (
-          <ChatArtifactCard
-            task={task}
-            // The task modal has no sideview of its own — "Open in panel" pops the chat out to its dock
-            // window with the Grooming Artifact viewer revealed (FLUX-887).
-            onOpen={() => {
-              openChat(task.id);
-              openSideView(task.id);
-              setSectionOpen('artifact', true);
-            }}
-          />
-        ) : undefined}
+        artifactMarkers={artifactMarkers}
+        // The task modal has no sideview of its own — opening a revision marker pops the chat out to
+        // its dock window with the Grooming Artifact viewer revealed (FLUX-887 → FLUX-1362).
+        onOpenArtifact={() => {
+          openChat(task.id);
+          openSideView(task.id);
+          setSectionOpen('artifact', true);
+        }}
+        planReadyPresent={isPlanApprovalPending(task, config)}
       />
     </div>
   );

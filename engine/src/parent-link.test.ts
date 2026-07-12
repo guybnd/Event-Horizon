@@ -1,5 +1,6 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach } from 'vitest';
-import { validateParentLink, subtaskIds, tasksCache } from './task-store.js';
+import { validateParentLink, subtaskIds } from './task-store.js';
 
 /**
  * FLUX-1068: `update_ticket` (and the REST PUT route) can now (re)link existing tickets under a
@@ -9,11 +10,11 @@ import { validateParentLink, subtaskIds, tasksCache } from './task-store.js';
 describe('validateParentLink (FLUX-1068)', () => {
   beforeEach(() => {
     // Reset the shared cache to a small ancestry chain: A → B → C (B's parent is A, C's parent is B).
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
-    tasksCache['FLUX-A'] = { id: 'FLUX-A' };
-    tasksCache['FLUX-B'] = { id: 'FLUX-B', parentId: 'FLUX-A' };
-    tasksCache['FLUX-C'] = { id: 'FLUX-C', parentId: 'FLUX-B' };
-    tasksCache['FLUX-D'] = { id: 'FLUX-D' };
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
+    getWorkspace().tasks['FLUX-A'] = { id: 'FLUX-A' };
+    getWorkspace().tasks['FLUX-B'] = { id: 'FLUX-B', parentId: 'FLUX-A' };
+    getWorkspace().tasks['FLUX-C'] = { id: 'FLUX-C', parentId: 'FLUX-B' };
+    getWorkspace().tasks['FLUX-D'] = { id: 'FLUX-D' };
   });
 
   it('allows a valid new parent link', () => {
@@ -42,8 +43,8 @@ describe('validateParentLink (FLUX-1068)', () => {
   });
 
   it('does not loop forever on a pre-existing cycle in the data', () => {
-    tasksCache['FLUX-X'] = { id: 'FLUX-X', parentId: 'FLUX-Y' };
-    tasksCache['FLUX-Y'] = { id: 'FLUX-Y', parentId: 'FLUX-X' };
+    getWorkspace().tasks['FLUX-X'] = { id: 'FLUX-X', parentId: 'FLUX-Y' };
+    getWorkspace().tasks['FLUX-Y'] = { id: 'FLUX-Y', parentId: 'FLUX-X' };
     // FLUX-D is not part of the broken loop, so the walk terminates and the link is allowed.
     expect(validateParentLink('FLUX-D', 'FLUX-X')).toBeNull();
   });

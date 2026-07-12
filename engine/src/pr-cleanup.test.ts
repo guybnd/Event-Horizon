@@ -1,3 +1,4 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -9,7 +10,7 @@ import { setWorkspaceRoot } from './workspace.js';
 import { syncDefaultBranch, isWorktreeReclaimable, reclaimReadyWorktrees, cleanupMergedBranch } from './pr-cleanup.js';
 import { clearNotifications, getNotifications } from './notifications.js';
 import { createTaskWorktree, listTaskWorktrees } from './task-worktree.js';
-import { tasksCache } from './task-store.js';
+
 import {
   cliSessionsById,
   cliSessionsByTaskId,
@@ -127,7 +128,7 @@ describe('syncDefaultBranch dirty-root backstop (FLUX-741)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // FLUX-1031 — reclaim a task worktree when its ticket reaches Ready so the board-wide
 // worktree pool (cap 4) isn't exhausted by tickets resting at Ready awaiting review.
-// Real git + real tasksCache/session-store (the sweep reads both), mirroring the file's
+// Real git + real getWorkspace().tasks/session-store (the sweep reads both), mirroring the file's
 // integration style.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -151,28 +152,28 @@ async function commitInWorktree(wt: string, file: string): Promise<void> {
 
 describe('worktree reclamation at Ready (FLUX-1031)', () => {
   beforeEach(() => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     cliSessionsById.clear();
   });
   afterEach(() => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     cliSessionsById.clear();
   });
 
   describe('isWorktreeReclaimable', () => {
     it('is reclaimable at Ready and at terminal statuses, but not while In Progress', () => {
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Ready' };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready' };
       expect(isWorktreeReclaimable('FLUX-1')).toBe(true);
       for (const s of ['Done', 'Released', 'Archived']) {
-        tasksCache['FLUX-1'].status = s;
+        getWorkspace().tasks['FLUX-1'].status = s;
         expect(isWorktreeReclaimable('FLUX-1')).toBe(true);
       }
-      tasksCache['FLUX-1'].status = 'In Progress';
+      getWorkspace().tasks['FLUX-1'].status = 'In Progress';
       expect(isWorktreeReclaimable('FLUX-1')).toBe(false);
     });
 
     it('is NOT reclaimable while a live session is running on the ticket', () => {
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Ready' };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready' };
       addLiveSession('FLUX-1', 'sess-1');
       expect(isWorktreeReclaimable('FLUX-1')).toBe(false);
     });
@@ -186,21 +187,21 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
       // JOINED A's branch (review-bug-fix ride-along) and is actively editing in A's worktree.
       // B's live session is invisible if we only check A's own sessions — the sweep would delete
       // A's worktree out from under B. The predicate must be branch-sibling-aware.
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/shared' };
-      tasksCache['FLUX-2'] = { id: 'FLUX-2', status: 'In Progress', branch: 'flux/shared' };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/shared' };
+      getWorkspace().tasks['FLUX-2'] = { id: 'FLUX-2', status: 'In Progress', branch: 'flux/shared' };
       addLiveSession('FLUX-2', 'sess-2');
       expect(isWorktreeReclaimable('FLUX-1')).toBe(false);
     });
 
     it('stays reclaimable when a same-branch sibling exists but has no live session', () => {
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/shared' };
-      tasksCache['FLUX-2'] = { id: 'FLUX-2', status: 'In Progress', branch: 'flux/shared' };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/shared' };
+      getWorkspace().tasks['FLUX-2'] = { id: 'FLUX-2', status: 'In Progress', branch: 'flux/shared' };
       expect(isWorktreeReclaimable('FLUX-1')).toBe(true);
     });
 
     it('ignores a live session on a DIFFERENT branch (not a joined sibling)', () => {
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/one' };
-      tasksCache['FLUX-2'] = { id: 'FLUX-2', status: 'In Progress', branch: 'flux/two' };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/one' };
+      getWorkspace().tasks['FLUX-2'] = { id: 'FLUX-2', status: 'In Progress', branch: 'flux/two' };
       addLiveSession('FLUX-2', 'sess-2');
       expect(isWorktreeReclaimable('FLUX-1')).toBe(true);
     });
@@ -213,8 +214,8 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
       const wtB = await createTaskWorktree(repo, 'FLUX-2', 'flux/FLUX-2', { maxWorktrees: 2 });
       await commitInWorktree(wtA, 'a.txt');
       await commitInWorktree(wtB, 'b.txt');
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Ready' };
-      tasksCache['FLUX-2'] = { id: 'FLUX-2', status: 'Ready' };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready' };
+      getWorkspace().tasks['FLUX-2'] = { id: 'FLUX-2', status: 'Ready' };
       expect(await listTaskWorktrees(repo)).toHaveLength(2);
 
       const reclaimed = await reclaimReadyWorktrees(repo);
@@ -230,7 +231,7 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
     it('skips a Ready worktree whose ticket still has a live session (never yanks live work)', async () => {
       const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
       await commitInWorktree(wt, 'a.txt');
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Ready' };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready' };
       addLiveSession('FLUX-1', 'sess-1');
 
       const reclaimed = await reclaimReadyWorktrees(repo);
@@ -245,8 +246,8 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
       // FLUX-2's session (FLUX-1031 review Blocker).
       const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/shared');
       await commitInWorktree(wt, 'a.txt');
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/shared' };
-      tasksCache['FLUX-2'] = { id: 'FLUX-2', status: 'In Progress', branch: 'flux/shared' };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/shared' };
+      getWorkspace().tasks['FLUX-2'] = { id: 'FLUX-2', status: 'In Progress', branch: 'flux/shared' };
       addLiveSession('FLUX-2', 'sess-2');
 
       const reclaimed = await reclaimReadyWorktrees(repo);
@@ -258,7 +259,7 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
     it('leaves In-Progress worktrees alone', async () => {
       const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
       await commitInWorktree(wt, 'a.txt');
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'In Progress' };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'In Progress' };
 
       const reclaimed = await reclaimReadyWorktrees(repo);
 
@@ -277,7 +278,7 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
     it('reclaims a Todo-status worktree whose branch has zero commits ahead of base', async () => {
       const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
       // No commitInWorktree call — the branch sits exactly where it forked from base.
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', branch: 'flux/FLUX-1' };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', branch: 'flux/FLUX-1' };
 
       const reclaimed = await reclaimReadyWorktrees(repo);
 
@@ -288,7 +289,7 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
     it('still leaves a Todo-status worktree alone once it has a real commit ahead of base', async () => {
       const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
       await commitInWorktree(wt, 'a.txt');
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', branch: 'flux/FLUX-1' };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', branch: 'flux/FLUX-1' };
 
       const reclaimed = await reclaimReadyWorktrees(repo);
 
@@ -298,7 +299,7 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
 
     it('does not widen past a live session even with zero commits ahead', async () => {
       const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', branch: 'flux/FLUX-1' };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', branch: 'flux/FLUX-1' };
       addLiveSession('FLUX-1', 'sess-1');
 
       const reclaimed = await reclaimReadyWorktrees(repo);
@@ -314,7 +315,7 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
       // uncommitted work sitting in it (e.g. a session that edited files but never committed).
       const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
       await fs.writeFile(path.join(wt, 'scratch.txt'), 'uncommitted\n', 'utf8');
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', branch: 'flux/FLUX-1' };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', branch: 'flux/FLUX-1' };
 
       const reclaimed = await reclaimReadyWorktrees(repo);
 
@@ -337,7 +338,7 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
       const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
       // No commitInWorktree call — mirrors the incident: a worktree created moments ago, no work
       // done in it yet, no live session (board/chat session, not a dispatched EH session).
-      tasksCache['FLUX-1'] = {
+      getWorkspace().tasks['FLUX-1'] = {
         id: 'FLUX-1',
         status: 'In Progress',
         branch: 'flux/FLUX-1',
@@ -352,7 +353,7 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
 
     it('reclaims it once the worktree-created marker ages past the grace window', async () => {
       const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
-      tasksCache['FLUX-1'] = {
+      getWorkspace().tasks['FLUX-1'] = {
         id: 'FLUX-1',
         status: 'In Progress',
         branch: 'flux/FLUX-1',
@@ -368,7 +369,7 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
     it('does not shield a worktree once it has picked up a real commit, even with a recent marker', async () => {
       const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
       await commitInWorktree(wt, 'a.txt');
-      tasksCache['FLUX-1'] = {
+      getWorkspace().tasks['FLUX-1'] = {
         id: 'FLUX-1',
         status: 'In Progress',
         branch: 'flux/FLUX-1',
@@ -426,13 +427,13 @@ function simulateEngineRestart(): void {
 
 describe('restart-safe worktree reclaim (FLUX-1060)', () => {
   beforeEach(() => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     cliSessionsById.clear();
     cliSessionsByTaskId.clear();
     __resetSessionStubStateForTests();
   });
   afterEach(() => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     cliSessionsById.clear();
     cliSessionsByTaskId.clear();
     __resetSessionStubStateForTests();
@@ -441,7 +442,7 @@ describe('restart-safe worktree reclaim (FLUX-1060)', () => {
   it('does NOT reclaim a waiting-input session\'s worktree after an engine restart', async () => {
     const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
     await commitInWorktree(wt, 'a.txt');
-    tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/FLUX-1' };
+    getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/FLUX-1' };
     addWaitingInputSession('FLUX-1', 'sess-1');
 
     // Persist the stub the way the reconcile tick would (rehydrate first flips the boot flag so the
@@ -463,7 +464,7 @@ describe('restart-safe worktree reclaim (FLUX-1060)', () => {
   });
 
   it('rehydrates the session as resumable so the chat can continue it', async () => {
-    tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/FLUX-1' };
+    getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/FLUX-1' };
     addWaitingInputSession('FLUX-1', 'sess-1', 'resume-xyz');
     await rehydrateSessionStubs();
     await syncActiveSessionStubs();
@@ -480,7 +481,7 @@ describe('restart-safe worktree reclaim (FLUX-1060)', () => {
   it('STILL reclaims a worktree whose session truly ended before the restart (FLUX-1031 preserved)', async () => {
     const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
     await commitInWorktree(wt, 'a.txt');
-    tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/FLUX-1' };
+    getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/FLUX-1' };
     addWaitingInputSession('FLUX-1', 'sess-1');
     await rehydrateSessionStubs();
     await syncActiveSessionStubs(); // stub written while active
@@ -500,7 +501,7 @@ describe('restart-safe worktree reclaim (FLUX-1060)', () => {
 
   describe('post-restart reclaim grace (belt-and-suspenders)', () => {
     it('protects a ticket with very recent session history only while the grace is armed', () => {
-      tasksCache['FLUX-1'] = {
+      getWorkspace().tasks['FLUX-1'] = {
         id: 'FLUX-1',
         status: 'Ready',
         branch: 'flux/FLUX-1',
@@ -519,7 +520,7 @@ describe('restart-safe worktree reclaim (FLUX-1060)', () => {
     });
 
     it('does not protect a ticket whose last session activity predates the grace window', () => {
-      tasksCache['FLUX-1'] = {
+      getWorkspace().tasks['FLUX-1'] = {
         id: 'FLUX-1',
         status: 'Ready',
         branch: 'flux/FLUX-1',
@@ -537,7 +538,7 @@ describe('restart-safe worktree reclaim (FLUX-1060)', () => {
     // live-session guard has no way to see a reviewer that never registered an EH session for
     // THIS ticket. This buffer protects that window without needing a live session at all.
     it('protects a ticket whose last session ended moments ago, with no live session and outside the post-restart window', () => {
-      tasksCache['FLUX-1'] = {
+      getWorkspace().tasks['FLUX-1'] = {
         id: 'FLUX-1',
         status: 'Ready',
         branch: 'flux/FLUX-1',
@@ -547,7 +548,7 @@ describe('restart-safe worktree reclaim (FLUX-1060)', () => {
     });
 
     it('stops protecting once the last session activity is older than the grace window', () => {
-      tasksCache['FLUX-1'] = {
+      getWorkspace().tasks['FLUX-1'] = {
         id: 'FLUX-1',
         status: 'Ready',
         branch: 'flux/FLUX-1',
@@ -557,7 +558,7 @@ describe('restart-safe worktree reclaim (FLUX-1060)', () => {
     });
 
     it('is bypassed by honorReadyGrace:false — the under-pressure cap backstop must reclaim instantly', () => {
-      tasksCache['FLUX-1'] = {
+      getWorkspace().tasks['FLUX-1'] = {
         id: 'FLUX-1',
         status: 'Ready',
         branch: 'flux/FLUX-1',
@@ -575,14 +576,14 @@ describe('restart-safe worktree reclaim (FLUX-1060)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe('cleanupMergedBranch disarms Temper before stopping sessions (FLUX-1297)', () => {
   beforeEach(() => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     cliSessionsById.clear();
     cliSessionsByTaskId.clear();
     __resetSessionStubStateForTests();
     __resetTemperForTests();
   });
   afterEach(() => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     cliSessionsById.clear();
     cliSessionsByTaskId.clear();
     __resetSessionStubStateForTests();
@@ -596,7 +597,7 @@ describe('cleanupMergedBranch disarms Temper before stopping sessions (FLUX-1297
     // Temper's durable flag is still set — the exact race: a bookkeeping Ready move armed Temper right
     // before this cleanup runs. `rehydrateTemper` seeds the in-memory loop from that durable flag,
     // exactly as an engine restart (or the original Ready-move trigger) would.
-    tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Done', branch: 'flux/FLUX-1', tempering: true, temperAttempts: 0 };
+    getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Done', branch: 'flux/FLUX-1', tempering: true, temperAttempts: 0 };
     rehydrateTemper();
     expect(isTempering('FLUX-1')).toBe(true);
 
@@ -609,7 +610,7 @@ describe('cleanupMergedBranch disarms Temper before stopping sessions (FLUX-1297
   it('is a no-op when Temper is not driving the ticket', async () => {
     const wt = await createTaskWorktree(repo, 'FLUX-2', 'flux/FLUX-2');
     await commitInWorktree(wt, 'a.txt');
-    tasksCache['FLUX-2'] = { id: 'FLUX-2', status: 'Done', branch: 'flux/FLUX-2' };
+    getWorkspace().tasks['FLUX-2'] = { id: 'FLUX-2', status: 'Done', branch: 'flux/FLUX-2' };
 
     await expect(cleanupMergedBranch(repo, 'flux/FLUX-2')).resolves.toBeDefined();
     expect(isTempering('FLUX-2')).toBe(false);

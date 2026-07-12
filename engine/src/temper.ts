@@ -30,9 +30,10 @@
 // the new `plan` gate. Only the trigger condition changed here — the loop-forever mechanics below
 // are untouched pending the generalized loop-driver ("Plan-review runner" subtask).
 
+import { getWorkspace } from './workspace-context.js';
 import { log } from './log.js';
-import { configCache } from './config.js';
-import { tasksCache, updateTaskWithHistory } from './task-store.js';
+import { getConfig } from './config.js';
+import { updateTaskWithHistory } from './task-store.js';
 import { cliSessionsById, getActiveSessionsForTask } from './session-store.js';
 import { getBurningBatches, freeSlots, ticketHasObservedWorktree, setTemperReserved, isTemperReserved } from './furnace-store.js';
 import {
@@ -46,6 +47,7 @@ import { resolveGateValue } from './models/gate-policy.js';
 import {
   decideTicketAction,
   dispatchSession,
+  resumeOrDispatchSession,
   parkTicketOnBoard,
   clearReviewState,
   extractPrUrl,
@@ -54,6 +56,7 @@ import {
   pickSessionForPhase,
   refreshWorktreePool,
   SOLE_REVIEWER_FOCUS,
+  deltaReviewFocus,
   REIMPLEMENT_FOCUS,
   REVIEW_NUDGE_FOCUS,
   type TicketAction,
@@ -93,7 +96,7 @@ export function isTicketInActiveFurnaceBatch(ticketId: string): boolean {
   return false;
 }
 
-const readyStatus = (): string => configCache.readyForMergeStatus || 'Ready';
+const readyStatus = (): string => getConfig().readyForMergeStatus || 'Ready';
 
 // ── Trigger ──────────────────────────────────────────────────────────────────
 
@@ -105,16 +108,32 @@ const readyStatus = (): string => configCache.readyForMergeStatus || 'Ready';
  * the durable `tempering` frontmatter flag, and the in-memory registry — the last two are already set for
  * a ticket mid-loop, so its re-implementation's Ready move is a no-op here.
  */
-export async function maybeStartTemper(ticketId: string, newStatus: string, prevStatus: string): Promise<void> {
+export async function maybeStartTemper(
+  ticketId: string,
+  newStatus: string,
+  prevStatus: string,
+  verdictJustRecorded?: 'approved' | 'changes-requested' | null,
+): Promise<void> {
   // Only a genuine ENTER-Ready transition — not a re-affirming Ready→Ready (a review approving in place).
   if (newStatus !== readyStatus() || prevStatus === readyStatus()) return;
-  const task = tasksCache[ticketId];
+  // FLUX-1394: a change_status that CARRIES a review verdict is a review CONCLUDING, never a ticket
+  // ENTERING review — do not (re-)arm Temper. Arming would clearReviewState (the `review` action below),
+  // wiping the verdict just recorded, and dispatch a redundant re-review — wasted cost, and a false
+  // "review completed without a verdict" park when that re-review ends without re-recording one. The
+  // prevStatus/tempering guards below miss an In Progress→Ready approval on a non-tempering ticket (e.g.
+  // a human approving a parked ticket, or a re-dispatched review approving after a park cleared
+  // `tempering`). Mirrors the plan gate, whose `evaluatePlanGateTrigger` already bakes this verdict check
+  // into its trigger predicate. NB: this is the verdict recorded by THIS change_status call — NOT the
+  // persisted `task.reviewState`, which could be a stale 'approved' from a prior cycle that must not
+  // block a genuinely fresh review of re-opened work.
+  if (verdictJustRecorded) return;
+  const task = getWorkspace().tasks[ticketId];
   if (!task) return;
   // FLUX-1261: temperEnabled generalized into gatePolicy.boardDefault.review (+ ticket override
   // cascade). Only 'auto' is wired to Temper's existing loop-forever behavior here — 'auto-then-you'
   // is schema-only until the generalized runner ("Plan-review runner" subtask) lands its
   // one-pass-then-flag semantics.
-  if (resolveGateValue(configCache.gatePolicy, task.gatePolicyOverride, 'review') !== 'auto') return;
+  if (resolveGateValue(getConfig().gatePolicy, task.gatePolicyOverride, 'review') !== 'auto') return;
   // "Green PR" is only meaningful with a branch; branchless tickets are left alone (groomed default).
   if (!task.branch) return;
   // Already looping (durable flag or in-memory) → the reconciler owns it; don't reset attempts.
@@ -203,7 +222,7 @@ async function parkTemper(ticketId: string, reason: string): Promise<void> {
  * FLUX-1237: a full shared worktree pool is NOT a spawn failure — it returns early (a `wait`) without
  * touching `spawnFailures`, so contention with the Furnace for slots can never park a ticket.
  */
-async function spawnTemper(ticket: BatchTicket, phase: FurnacePhase, focusComment?: string): Promise<void> {
+async function spawnTemper(ticket: BatchTicket, phase: FurnacePhase, focusComment?: string, useResume = false): Promise<void> {
   // FLUX-1237: Temper and the Furnace draw from the SAME global worktree pool, so gate the isolated
   // dispatch on slot availability exactly as the Stoker does (`freeSlots`, see furnace-stoker.ts). Without
   // this, a burst of branch tickets entering Ready could each try to grab a slot and, after
@@ -229,9 +248,13 @@ async function spawnTemper(ticket: BatchTicket, phase: FurnacePhase, focusCommen
     }
     setTemperReserved(ticket.ticketId, true);
   }
-  // dispatchSession returns a classified DispatchOutcome (FLUX-1235); Temper only needs the session id
-  // (null = refused). A refusal here is a genuine spawn failure — the pool-full case already returned above.
-  const { sid } = await dispatchSession(ticket.ticketId, phase, focusComment ? { focusComment } : {});
+  // dispatchSession/resumeOrDispatchSession both return a classified DispatchOutcome (FLUX-1235); Temper
+  // only needs the session id (null = refused). A refusal here is a genuine spawn failure — the pool-full
+  // case already returned above. FLUX-1378: `useResume` (currently only the 're-implement' dispatch, mirroring
+  // gate-runner/furnace-stoker) tries resuming the implementer's prior session before falling back to cold.
+  const { sid } = useResume && focusComment
+    ? await resumeOrDispatchSession(ticket.ticketId, phase, { focusComment, resumeMessage: focusComment })
+    : await dispatchSession(ticket.ticketId, phase, focusComment ? { focusComment } : {});
   if (sid) {
     ticket.currentSessionId = sid;
     if (!ticket.sessionIds.includes(sid)) ticket.sessionIds.push(sid);
@@ -267,7 +290,7 @@ async function advanceTemperTicket(ticketId: string, action: TicketAction): Prom
       delete ticket.sessionStartedAt;
       ticket.reviewNudgeSent = false; // a fresh review pass gets a fresh nudge budget (FLUX-1078)
       await clearReviewState(ticketId); // clear a stale verdict before the fresh review reads its own
-      await spawnTemper(ticket, 'review', SOLE_REVIEWER_FOCUS);
+      await spawnTemper(ticket, 'review', SOLE_REVIEWER_FOCUS + deltaReviewFocus(ticketId));
       break;
     }
 
@@ -289,7 +312,7 @@ async function advanceTemperTicket(ticketId: string, action: TicketAction): Prom
       delete ticket.currentSessionId;
       delete ticket.sessionStartedAt;
       await persistTemperAttempts(ticketId, action.attempt);
-      await spawnTemper(ticket, 'implementation', REIMPLEMENT_FOCUS);
+      await spawnTemper(ticket, 'implementation', REIMPLEMENT_FOCUS, true);
       break;
     }
 
@@ -298,7 +321,7 @@ async function advanceTemperTicket(ticketId: string, action: TicketAction): Prom
       delete ticket.currentSessionId;
       delete ticket.sessionStartedAt;
       const focus = action.phase === 'review'
-        ? SOLE_REVIEWER_FOCUS
+        ? SOLE_REVIEWER_FOCUS + deltaReviewFocus(ticketId)
         : ticket.state === 'reimplementing' ? REIMPLEMENT_FOCUS : undefined;
       await spawnTemper(ticket, action.phase, focus);
       break;
@@ -357,7 +380,7 @@ async function reconcileTemperTicket(ticketId: string): Promise<void> {
     if (!ticket.sessionStartedAt) ticket.sessionStartedAt = nowIso();
   }
 
-  const task = tasksCache[ticketId];
+  const task = getWorkspace().tasks[ticketId];
   const prUrl = extractPrUrl(task);
   const sessionOutcome = findSessionOutcome(task, sess?.id ?? ticket.currentSessionId);
   const action = decideTicketAction({
@@ -367,7 +390,7 @@ async function reconcileTemperTicket(ticketId: string): Promise<void> {
     ...(sessionOutcome ? { sessionOutcome } : {}),
     reviewState: task?.reviewState ?? null,
     ...(task?.status ? { ticketStatus: task.status } : {}),
-    ...(configCache.requireInputStatus ? { requireInputStatus: configCache.requireInputStatus } : {}),
+    ...(getConfig().requireInputStatus ? { requireInputStatus: getConfig().requireInputStatus } : {}),
     retryCap: TEMPER_RETRY_CAP,
     ...(prUrl !== undefined ? { prUrl } : {}),
     // FLUX-1080: scope the verdict-marker scan to the CURRENT review pass so a stale prior-round comment
@@ -405,8 +428,8 @@ export async function temperTick(): Promise<void> {
  * point regardless of which phase was mid-flight when the engine went down.
  */
 export function rehydrateTemper(): void {
-  for (const id of Object.keys(tasksCache)) {
-    const t = tasksCache[id];
+  for (const id of Object.keys(getWorkspace().tasks)) {
+    const t = getWorkspace().tasks[id];
     if (t?.tempering === true && !temperTickets.has(id)) {
       const attempts = typeof t.temperAttempts === 'number' ? t.temperAttempts : 0;
       temperTickets.set(id, { ticketId: id, order: 0, state: 'reviewing', attempts, sessionIds: [] });

@@ -262,7 +262,7 @@ export function ChatOrchestrationBlock({ group, taskId, onOpenRun, onStopSession
   return (
     <div className="overflow-hidden rounded-xl border border-l-2 border-violet-200 border-l-violet-400 bg-violet-50/30 shadow-sm dark:border-violet-500/20 dark:border-l-violet-500/60 dark:bg-violet-500/5">
       {/* Identity header band — topology glyph + title + agent count + live pulse + controls. */}
-      <div className="flex items-center gap-2 border-b border-violet-200/70 bg-violet-100/50 px-3 py-2 dark:border-violet-500/20 dark:bg-violet-500/10">
+      <div className="flex flex-wrap items-center gap-2 border-b border-violet-200/70 bg-violet-100/50 px-3 py-2 dark:border-violet-500/20 dark:bg-violet-500/10">
         <button
           type="button"
           onClick={() => setExpanded(false)}
@@ -311,8 +311,10 @@ export function ChatOrchestrationBlock({ group, taskId, onOpenRun, onStopSession
         </div>
       </div>
 
-      {/* Embedded topology map (lead → workers). */}
-      <div className="flex justify-center border-b border-violet-200/50 bg-white/50 px-2 py-2.5 dark:border-violet-500/10 dark:bg-black/20">
+      {/* Embedded topology map (lead → workers). Left-aligned + horizontal-scroll safety valve —
+          `justify-center` would center any overflow and clip both edges under this card's
+          `overflow-hidden` (FLUX-1334); the topology's own flex-wrap should keep it from overflowing. */}
+      <div className="flex overflow-x-auto border-b border-violet-200/50 bg-white/50 px-2 py-2.5 dark:border-violet-500/10 dark:bg-black/20">
         <OrchestrationTopology group={group} variant="map" />
       </div>
 

@@ -32,18 +32,22 @@
 //                     not re-invoking the tool it was triggered from); retryCap exhaustion parks (raises a
 //                     ⛔ gate-parked item via the existing `parkTicketOnBoard` Furnace-park marker).
 
+import { getWorkspace } from './workspace-context.js';
 import { log } from './log.js';
 import { buildActivityEntry, buildCommentEntry } from './history.js';
-import { configCache, nextColumnAfter } from './config.js';
-import { tasksCache, updateTaskWithHistory } from './task-store.js';
+import { nextColumnAfter, getConfig } from './config.js';
+import { updateTaskWithHistory } from './task-store.js';
 import { generateNeedsActionNotification } from './notifications.js';
 import { cliSessionsById, getActiveSessionsForTask } from './session-store.js';
 import { isActiveTicketState, DEFAULT_RETRY_CAP, type BatchTicket, type FurnacePhase } from './models/furnace.js';
 import { planBodyHash, planGateModeForRevise, resolveGateValue, resolvePlanReviewDepth, type PlanReviewDepth } from './models/gate-policy.js';
+import { planLint, formatLintFindings } from './models/plan-lint.js';
+import { listArtifactRevisionsOnDisk } from './artifacts.js';
 import { isTicketInActiveFurnaceBatch } from './temper.js';
 import {
   decideTicketAction,
   dispatchSession,
+  resumeOrDispatchSession,
   parkTicketOnBoard,
   findSessionOutcome,
   lastCommentMatchesVerdictMarker,
@@ -80,19 +84,36 @@ const DUPLICATE_CHECK =
 const ADVERSARIAL_CHECK =
   "Adversarial self-review (Plan Discipline item 4): read the plan as its harshest critic — find what's weak, missing, or wrong: an unanchored step, an implicit hard-to-reverse decision left unstated, a menu of options where the plan should commit to one, an obvious missing decision. A clear-cut fixable gap is Minor; a genuine judgment call the plan ducked is Major/Blocker.";
 
-const ARTIFACT_CHECK =
-  'Artifact check (FLUX-1313): if this plan is UI/UX-shaped (visual layout, a new component, an interaction change) and no `publish_artifact` mockup/diagram has been published for this ticket, flag it in the review comment as a gap — do not approve silently. This is a flag, not a blocker: note it and still record your verdict on the plan\'s own merits.';
+/** FLUX-1379: `hasArtifact` is now a deterministic fact injected by the lint pass (`listArtifactRevisionsOnDisk`),
+ *  not something the reviewer has to go check itself — the check keeps its "flag, not a blocker" judgment
+ *  half (whether the plan is UI/UX-shaped enough to WARRANT one), since that's the half a linter can't do. */
+function artifactCheckText(hasArtifact: boolean): string {
+  return hasArtifact
+    ? 'Artifact check (FLUX-1313): a plan artifact revision has already been published for this ticket (confirmed deterministically by the pre-gate lint) — no gap here regardless of how UI/UX-shaped the plan reads.'
+    : 'Artifact check (FLUX-1313): no `publish_artifact` revision exists for this ticket (confirmed deterministically by the pre-gate lint). If this plan is UI/UX-shaped (visual layout, a new component, an interaction change), flag it in the review comment as a gap — do not approve silently. This is a flag, not a blocker: note it and still record your verdict on the plan\'s own merits.';
+}
 
 const PLAN_VERDICT_CONTRACT =
   'Record your verdict via `change_status` — leave `newStatus` as "Grooming" (do NOT move the ticket) and set `planReviewState` to "approved" or "changes-requested" (never `reviewState`; that is a different field for the post-Todo code-review gate). ' +
   'Posting a comment that starts with **APPROVED** or **CHANGES NEEDED** is not enough by itself — without the `change_status` call the ticket will be parked for a human over an unrecorded verdict.';
 
-/** The focus handed to a plan-review session, scaled to the resolved depth (Quick/Standard/Thorough). */
-export function planReviewFocus(depth: PlanReviewDepth): string {
-  const checks = [ANCHOR_CHECK, ARTIFACT_CHECK];
+/** FLUX-1379: deterministic lint (`models/plan-lint.ts`) already ran ahead of this session — any bounce
+ *  finding would have refused the move before a session was ever dispatched, so only WARN findings (e.g.
+ *  W1, no artifact) can still be here. Handed to the reviewer as already-known facts, not new work. */
+function lintFocusBlock(warnFindingsText: string): string {
+  if (!warnFindingsText) return '';
+  return ` Deterministic lint already ran and flagged this (non-blocking — already reflected in the artifact check above where applicable):\n${warnFindingsText}`;
+}
+
+/** The focus handed to a plan-review session, scaled to the resolved depth (Quick/Standard/Thorough)
+ *  and the deterministic lint's findings (FLUX-1379) — `hasArtifact` reworks the artifact check from a
+ *  reviewer chore into a consumed fact; `warnFindingsText` (pre-formatted via `formatLintFindings`) is
+ *  appended verbatim so the reviewer doesn't re-derive what the lint already found. */
+export function planReviewFocus(depth: PlanReviewDepth, hasArtifact: boolean, warnFindingsText = ''): string {
+  const checks = [ANCHOR_CHECK, artifactCheckText(hasArtifact)];
   if (depth === 'standard' || depth === 'thorough') checks.push(REGROUND_CHECK, AC_COVERAGE_CHECK);
   if (depth === 'thorough') checks.push(DUPLICATE_CHECK, ADVERSARIAL_CHECK);
-  return `${PLAN_REVIEW_BASE} Depth: ${depth}. ${checks.join(' ')} ${PLAN_VERDICT_CONTRACT}`;
+  return `${PLAN_REVIEW_BASE} Depth: ${depth}. ${checks.join(' ')} ${PLAN_VERDICT_CONTRACT}${lintFocusBlock(warnFindingsText)}`;
 }
 
 /** The focus for a "revise the plan" pass after a plan-review pass requested changes. */
@@ -123,8 +144,9 @@ interface GateRunSpec {
   revisePhase: FurnacePhase | 'grooming';
   /** Neither dispatch needs a worktree/branch for `plan` (no diff exists) — Temper's `review` loop does. */
   skipIsolation: boolean;
-  /** Built once per dispatch from the CURRENT ticket (effort/depth may change between passes). */
-  reviewFocus: (ticketId: string) => string;
+  /** Built once per dispatch from the CURRENT ticket (effort/depth may change between passes). Async
+   *  since FLUX-1379 — it reads the deterministic lint's findings off disk (artifact revisions). */
+  reviewFocus: (ticketId: string) => Promise<string>;
   reviseFocus: string;
   reviewNudgeFocus: string;
   /** The gate's terminal-approved action — a parameter, not hardcoded, so a second gate can supply its
@@ -178,10 +200,15 @@ const PLAN_GATE_SPEC: GateRunSpec = {
   attemptsField: 'planGateAttempts',
   revisePhase: 'grooming',
   skipIsolation: true,
-  reviewFocus: (ticketId: string) => {
-    const task = tasksCache[ticketId];
-    const depth = resolvePlanReviewDepth(task?.effort, configCache.planReviewDepth);
-    return planReviewFocus(depth);
+  reviewFocus: async (ticketId: string) => {
+    const task = getWorkspace().tasks[ticketId];
+    const depth = resolvePlanReviewDepth(task?.effort, getConfig().planReviewDepth);
+    // FLUX-1379: bounce findings can never reach here — the `change_status`/`start_plan_review`
+    // guards already refuse the move before a session dispatches. Only warns (e.g. W1) survive to
+    // be injected, plus the deterministic `hasArtifact` fact that reworks the artifact check.
+    const hasArtifact = (await listArtifactRevisionsOnDisk(ticketId)).length > 0;
+    const lint = planLint({ body: typeof task?.body === 'string' ? task.body : '', effort: task?.effort ?? null, hasArtifact });
+    return planReviewFocus(depth, hasArtifact, formatLintFindings(lint.warns));
   },
   reviseFocus: PLAN_REVISE_FOCUS,
   reviewNudgeFocus: PLAN_REVIEW_NUDGE_FOCUS,
@@ -223,7 +250,9 @@ async function persistGateAttempts(spec: GateRunSpec, ticketId: string, attempts
  * `raiseNeedsAction` guard) — a one-shot stop's own review session already ended its turn still sitting
  * in Grooming with no board action, so the generic FLUX-651 backstop (`flagIfParked`) may already have
  * raised a generic "ended its turn without a board action" flag by the time this runs; this overwrites it
- * with the accurate, plan-specific one the AttentionDock/board lane actually want the human to read. */
+ * with the accurate, plan-specific one the AttentionDock/board lane actually want the human to read.
+ * (On the FLUX-1320 eager path the order inverts — this runs while the review session is still alive —
+ * and `flagIfParked` defers to an already-set flag instead, so the specific message wins either way.) */
 async function stopGateRun(spec: GateRunSpec, ticketId: string, note?: string, needsActionMessage?: string): Promise<void> {
   gateRuns.delete(ticketId);
   try {
@@ -234,7 +263,7 @@ async function stopGateRun(spec: GateRunSpec, ticketId: string, note?: string, n
       updatedBy: 'Plan Gate',
     });
     if (needsActionMessage) {
-      const task = tasksCache[ticketId];
+      const task = getWorkspace().tasks[ticketId];
       generateNeedsActionNotification(ticketId, task?.title || ticketId, task?.status ?? '', needsActionMessage);
     }
   } catch (e: unknown) {
@@ -250,7 +279,7 @@ async function parkGate(spec: GateRunSpec, ticketId: string, reason: string): Pr
 
 /** Clear a stale verdict before dispatching a fresh review (mirrors Temper's `clearReviewState`). */
 async function clearGateVerdict(spec: GateRunSpec, ticketId: string): Promise<void> {
-  const t = tasksCache[ticketId];
+  const t = getWorkspace().tasks[ticketId];
   if (t && t[spec.verdictField] != null) {
     try {
       await updateTaskWithHistory(ticketId, { extraFields: { [spec.verdictField]: null }, updatedBy: 'Plan Gate' });
@@ -261,10 +290,22 @@ async function clearGateVerdict(spec: GateRunSpec, ticketId: string): Promise<vo
 }
 
 /** Dispatch a phase session for a gate run, mirroring Temper's `spawnTemper` minus the worktree-slot
- *  gating (this gate never claims a worktree — `spec.skipIsolation` keeps every dispatch branchless). */
-async function spawnGate(entry: GateRunEntry, phase: FurnacePhase | 'grooming', focusComment: string): Promise<void> {
+ *  gating (this gate never claims a worktree — `spec.skipIsolation` keeps every dispatch branchless).
+ *  FLUX-1378: `useResume` is true only for a REVISE dispatch (resumes the groomer with warm context on
+ *  its own prior plan-review feedback) — a review dispatch always stays fresh (`useResume: false`), per
+ *  the plan's independence policy: a reviewer resuming its own session would anchor on its own prior
+ *  verdict instead of judging the revision on its own merits. */
+async function spawnGate(entry: GateRunEntry, phase: FurnacePhase | 'grooming', focusComment: string, useResume = false): Promise<void> {
   const { spec, ticket } = entry;
-  const { sid } = await dispatchSession(ticket.ticketId, phase, { focusComment, skipIsolation: spec.skipIsolation });
+  // FLUX-1373: this module ONLY drives the plan gate (see file header) — so every 'review' dispatch
+  // here IS the plan gate's own review pass, never Temper's separate code-review pass (a different
+  // module, temper.ts, which calls dispatchSession with no taskKey override and so derives the
+  // ordinary `review.lead` via deriveTaskKey's phase+position rule). Pin `planReview` explicitly;
+  // the 'grooming' revise-pass dispatch is left alone (derives `grooming.lead` normally).
+  const taskKey = phase === 'review' ? 'planReview' : undefined;
+  const { sid } = useResume
+    ? await resumeOrDispatchSession(ticket.ticketId, phase, { focusComment, skipIsolation: spec.skipIsolation, resumeMessage: focusComment })
+    : await dispatchSession(ticket.ticketId, phase, { focusComment, skipIsolation: spec.skipIsolation, ...(taskKey ? { taskKey } : {}) });
   if (sid) {
     ticket.currentSessionId = sid;
     if (!ticket.sessionIds.includes(sid)) ticket.sessionIds.push(sid);
@@ -294,7 +335,7 @@ async function advanceGateTicket(ticketId: string, action: TicketAction): Promis
       delete ticket.sessionStartedAt;
       ticket.reviewNudgeSent = false;
       await clearGateVerdict(spec, ticketId);
-      await spawnGate(entry, 'review', spec.reviewFocus(ticketId));
+      await spawnGate(entry, 'review', await spec.reviewFocus(ticketId));
       break;
     }
 
@@ -324,15 +365,18 @@ async function advanceGateTicket(ticketId: string, action: TicketAction): Promis
       delete ticket.currentSessionId;
       delete ticket.sessionStartedAt;
       await persistGateAttempts(spec, ticketId, action.attempt);
-      await spawnGate(entry, spec.revisePhase, spec.reviseFocus);
+      await spawnGate(entry, spec.revisePhase, spec.reviseFocus, true);
       break;
     }
 
     case 'redrive': {
+      // No observable session (spawn failed last tick, or the engine restarted) — re-drive the phase.
+      // FLUX-1378: stays a cold dispatch, matching furnace-stoker's/temper's untouched redrive — the
+      // plan wires resume into the named revise/reimplement dispatches only, not this recovery path.
       delete ticket.currentSessionId;
       delete ticket.sessionStartedAt;
       const isReview = action.phase === 'review';
-      const focus = isReview ? spec.reviewFocus(ticketId) : (ticket.state === 'reimplementing' ? spec.reviseFocus : spec.reviewFocus(ticketId));
+      const focus = isReview ? await spec.reviewFocus(ticketId) : (ticket.state === 'reimplementing' ? spec.reviseFocus : await spec.reviewFocus(ticketId));
       await spawnGate(entry, isReview ? 'review' : spec.revisePhase, focus);
       break;
     }
@@ -398,7 +442,7 @@ async function reconcileGateTicket(ticketId: string): Promise<void> {
   // or an agent moved the ticket out of Grooming while a run was in flight, stop the run instead of
   // driving a re-review against a Todo/In-Progress ticket (whose reviewer would then yank it back
   // to Grooming via its verdict-recording change_status, or park it there via parkStatus).
-  const currentTask = tasksCache[ticketId];
+  const currentTask = getWorkspace().tasks[ticketId];
   if (currentTask && currentTask.status !== GROOMING_STATUS) {
     await stopGateRun(spec, ticketId, `${spec.gate} gate stopped — the ticket left ${GROOMING_STATUS} (now ${currentTask.status}) while a run was in flight.`);
     log.info(`[gate:${spec.gate}] ${ticketId} left ${GROOMING_STATUS} mid-run — stopping.`);
@@ -415,7 +459,7 @@ async function reconcileGateTicket(ticketId: string): Promise<void> {
     if (!ticket.sessionStartedAt) ticket.sessionStartedAt = nowIso();
   }
 
-  const task = tasksCache[ticketId];
+  const task = getWorkspace().tasks[ticketId];
   const verdict = (task?.[spec.verdictField] ?? null) as 'approved' | 'changes-requested' | null;
   const sessionOutcome = findSessionOutcome(task, sess?.id ?? ticket.currentSessionId);
   const action = decideTicketAction({
@@ -425,7 +469,7 @@ async function reconcileGateTicket(ticketId: string): Promise<void> {
     ...(sessionOutcome ? { sessionOutcome } : {}),
     reviewState: verdict,
     ...(task?.status ? { ticketStatus: task.status } : {}),
-    ...(configCache.requireInputStatus ? { requireInputStatus: configCache.requireInputStatus } : {}),
+    ...(getConfig().requireInputStatus ? { requireInputStatus: getConfig().requireInputStatus } : {}),
     retryCap: DEFAULT_RETRY_CAP,
     reviewVerdictMarkerSeen: lastCommentMatchesVerdictMarker(task?.history, ticket.sessionStartedAt),
   });
@@ -451,7 +495,7 @@ function planGateStartRefusal(
   ticketId: string,
   kind: 'review' | 'revise',
 ): { ok: false; message: string; reason: 'not-found' | 'wrong-status' | 'already-running' | 'furnace-owned' } | null {
-  const task = tasksCache[ticketId];
+  const task = getWorkspace().tasks[ticketId];
   if (!task) return { ok: false, message: `Ticket ${ticketId} not found.`, reason: 'not-found' };
   if (task.status !== GROOMING_STATUS) {
     const verb = kind === 'review' ? 'the plan-review gate only runs' : 'a plan revise only runs';
@@ -548,10 +592,10 @@ export async function startPlanReviseNow(
 ): Promise<{ ok: boolean; message: string; reason?: 'not-found' | 'wrong-status' | 'already-running' | 'furnace-owned' | 'notes-required' | 'persist-failed' }> {
   const refusal = planGateStartRefusal(ticketId, 'revise');
   if (refusal) return refusal;
-  const task = tasksCache[ticketId]!;
+  const task = getWorkspace().tasks[ticketId]!;
 
   const spec = PLAN_GATE_SPEC;
-  const gateValue = resolveGateValue(configCache.gatePolicy, task.gatePolicyOverride, 'plan');
+  const gateValue = resolveGateValue(getConfig().gatePolicy, task.gatePolicyOverride, 'plan');
   const mode: PlanGateMode = planGateModeForRevise(gateValue);
   const user = opts.user?.trim() || 'User';
   const notes = opts.notes?.trim() || '';
@@ -617,7 +661,7 @@ export async function startPlanReviseNow(
     const focus = notes
       ? `${spec.reviseFocus}\n\nThe user attached these notes for this revision — address every point in them too (verbatim, from the human):\n${notes}`
       : spec.reviseFocus;
-    await spawnGate(entry, spec.revisePhase, focus);
+    await spawnGate(entry, spec.revisePhase, focus, true);
   } finally {
     entry.starting = false;
   }
@@ -628,6 +672,41 @@ export async function startPlanReviseNow(
       ? `Revise session dispatched for ${ticketId} — the gate re-reviews the revision${mode === 'one-pass' ? ' once, then flags you' : ''}.`
       : `Revise requested for ${ticketId} — waiting for a session to become available.`,
   };
+}
+
+/**
+ * FLUX-1320: eagerly resolve a just-recorded plan verdict instead of waiting for the next
+ * `gateRunnerTick`. Called by the `change_status` handler (mcp-server.ts) the moment it persists an
+ * explicit `planReviewState` — the tick path only acts once the review SESSION completes AND the next
+ * 5s tick observes it, so `planGateRunning` (the "Revising…" flag) lingered 5-15s after the chat
+ * already said approved.
+ *
+ * Reproduces ONLY the loop-TERMINAL decisions the tick would make, through the same
+ * `advanceGateTicket` cases (`pr-open`; `reimplement`'s one-pass stop), so the needsAction messages,
+ * the `onApproved` move and the logging stay identical — only WHEN they fire changes. A
+ * `changes-requested` verdict under a looping mode is deliberately LEFT TO THE TICK: its next step is
+ * the auto-revise dispatch, which must wait for the review session to actually complete (two agents
+ * must not write the ticket at once). Every terminal case runs `stopGateRun`, which drops the
+ * registry entry — so the tick that fires afterward is a no-op for this ticket (no double-stop, no
+ * double-move).
+ */
+export async function resolvePlanVerdictNow(ticketId: string, verdict: 'approved' | 'changes-requested'): Promise<void> {
+  const entry = gateRuns.get(ticketId);
+  if (!entry || entry.starting) return;
+  // A verdict concludes a REVIEW pass only — one recorded mid-revise (against the revise focus's
+  // explicit "do not call change_status") must not stop the loop before the re-review ran.
+  if (entry.ticket.state !== 'reviewing') return;
+  // Ownership/status preconditions, mirroring reconcileGateTicket's guards: a ticket owned by an
+  // active Furnace batch, or one that already left Grooming, is stopped by the tick with its own
+  // dedicated note — leave both to it.
+  if (isTicketInActiveFurnaceBatch(ticketId)) return;
+  if (getWorkspace().tasks[ticketId]?.status !== GROOMING_STATUS) return;
+
+  if (verdict === 'approved') {
+    await advanceGateTicket(ticketId, { type: 'pr-open' });
+  } else if (entry.mode === 'one-pass') {
+    await advanceGateTicket(ticketId, { type: 'reimplement', attempt: entry.ticket.attempts + 1 });
+  }
 }
 
 // ── Tick orchestration ──────────────────────────────────────────────────────────────────────────
@@ -654,8 +733,8 @@ export async function gateRunnerTick(): Promise<void> {
 /** Restore the in-memory registry from durable frontmatter after an engine restart (mirrors `rehydrateTemper`). */
 export function rehydrateGateRunner(): void {
   const spec = PLAN_GATE_SPEC;
-  for (const id of Object.keys(tasksCache)) {
-    const t = tasksCache[id];
+  for (const id of Object.keys(getWorkspace().tasks)) {
+    const t = getWorkspace().tasks[id];
     if (t?.[spec.runningField] === true && !gateRuns.has(id)) {
       const attempts = typeof t[spec.attemptsField] === 'number' ? t[spec.attemptsField] : 0;
       // FLUX-1288: a ticket already mid-loop when this upgrade deploys still carries the legacy boolean

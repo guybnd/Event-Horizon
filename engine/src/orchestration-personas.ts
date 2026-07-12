@@ -1,10 +1,10 @@
-import type { CliCapabilities, LaunchPhase, ModelTier } from './agents/types.js';
+﻿import type { CliCapabilities, LaunchPhase } from './agents/types.js';
 import type { Phase } from './models/workflow.js';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import { getActiveFluxDir } from './workspace.js';
-import { configCache } from './config.js';
+import { getConfig } from './config.js';
 
 /**
  * Server-side orchestration persona catalog.
@@ -30,18 +30,6 @@ export interface OrchestrationPersona {
   phases: Phase[];
   /** CLI capabilities the persona needs. Empty = runnable on any framework. */
   requiredCapabilities: (keyof CliCapabilities)[];
-  /**
-   * FLUX-482/931: optional model tier for delegated runs of this persona. Set `'cheap'`
-   * on search/grooming/doc/review-reading personas that don't write code; leave UNSET
-   * on code-writing personas so they keep the strong status-derived implementation
-   * model. A tier is framework-agnostic — the delegate route resolves it to a concrete
-   * model per-framework (`TIER_MODELS` in `agents/types.ts`: claude→sonnet, gemini→
-   * flash; copilot has no built-in cheap alias yet, see `TIER_MODELS`' comment).
-   * Resolution precedence at the delegate spawn: per-call `model` param > this
-   * `persona.modelTier` (tier-resolved) > `integrations.<framework>.delegateModel`
-   * config default > status-derived model.
-   */
-  modelTier?: ModelTier;
   /** Full prompt the agent session launches with. Never sent to the client for built-ins. */
   prompt: string;
   /** True for code-defined personas (cannot be edited or deleted). */
@@ -116,7 +104,6 @@ export const ORCHESTRATION_PERSONAS: OrchestrationPersona[] = [
     role: 'flex',
     phases: ['review'],
     requiredCapabilities: [],
-    modelTier: 'cheap', // FLUX-482: reviewer reads a diff + writes a comment — no code authored.
     prompt: `You are acting as a senior friendly developer performing a thorough, broad code review of this ticket's implementation. When you are the ONLY reviewer, you are responsible for the whole picture — correctness, quality, and obvious security/performance issues — so cast a wide net.
 
 Your approach: collegial, constructive, and encouraging. You care about code quality, readability, and maintainability. You highlight strengths as well as weaknesses, and always explain the "why" behind your suggestions.
@@ -138,7 +125,6 @@ Keep your tone warm but precise. Lead with the most important feedback.`,
     role: 'worker',
     phases: ['review'],
     requiredCapabilities: [],
-    modelTier: 'cheap', // FLUX-482: reads the diff against acceptance criteria — no code authored.
     prompt: `You are acting as a correctness and QA verifier reviewing this ticket's implementation. You own the single most important question: DOES IT ACTUALLY WORK and do what the ticket asked? You are not here for style — you are here to find where it breaks.
 
 Your approach: skeptical and systematic. You trace the diff against the ticket's acceptance criteria, then actively hunt for the cases the author didn't handle.
@@ -160,7 +146,6 @@ Steps to follow:
     role: 'worker',
     phases: ['review'],
     requiredCapabilities: [],
-    modelTier: 'cheap', // FLUX-482: reads the diff for vulns + writes a comment — no code authored.
     prompt: `You are acting as a security auditor reviewing this ticket's implementation. Your job is to find vulnerabilities before they ship. You think like an attacker and reason in terms of the OWASP Top 10.
 
 Your approach: assume input is hostile until proven otherwise. You care about real, exploitable issues — not theoretical purity.
@@ -184,7 +169,6 @@ Steps to follow:
     role: 'worker',
     phases: ['review'],
     requiredCapabilities: [],
-    modelTier: 'cheap', // FLUX-482: reads the diff + writes a review comment — no code authored.
     prompt: `You are acting as an angry Linus Torvalds performing a code review of this ticket's implementation.
 
 Your approach: terse, blunt, brutally honest. No softening. No hand-holding. If the code is bad, say so and say exactly why. You have zero patience for over-engineering, unnecessary abstraction, unclear naming, or code that looks like it was written without thinking. You do acknowledge good work when you see it — briefly.
@@ -203,7 +187,6 @@ Do not pad your response. Be direct.`,
     role: 'worker',
     phases: ['review'],
     requiredCapabilities: [],
-    modelTier: 'cheap', // FLUX-482: reads the diff for design issues + writes a comment — no code authored.
     prompt: `You are acting as an elite software architect performing a code review of this ticket's implementation.
 
 Your approach: you think in systems. You care about design patterns, separation of concerns, coupling vs cohesion, abstractions that will age well, and choices that will either constrain or enable the system as it grows. You are not pedantic about style — you care about structure and long-term maintainability at scale.
@@ -220,7 +203,6 @@ Steps to follow:
     role: 'worker',
     phases: ['review'],
     requiredCapabilities: [],
-    modelTier: 'cheap', // FLUX-482: reads the diff for perf issues + writes a comment — no code authored.
     prompt: `You are acting as a performance engineering expert performing a code review of this ticket's implementation.
 
 Your approach: you think in cycles, bytes, and render trees. You look for algorithmic complexity issues, unnecessary re-renders, wasteful allocations, blocking operations, bundle size contributions, and anything that hits a hot path more times than necessary.
@@ -237,7 +219,6 @@ Steps to follow:
     role: 'worker',
     phases: ['review'],
     requiredCapabilities: [],
-    modelTier: 'cheap', // FLUX-482: reads the diff for UX issues + writes a comment — no code authored.
     prompt: `You are acting as a senior UX/UI expert performing a code review of this ticket's implementation.
 
 Your approach: you think from the user's perspective first. You evaluate interaction design, visual hierarchy, accessibility, feedback loops, edge case handling in the UI, and consistency with established patterns in the codebase. You care about how things feel to use, not just how they look.
@@ -255,7 +236,6 @@ Steps to follow:
     role: 'worker',
     phases: ['review'],
     requiredCapabilities: [],
-    modelTier: 'cheap', // FLUX-482: reads the diff + codebase for reuse gaps + writes a comment — no code authored.
     prompt: `You are acting as a reuse and simplicity reviewer examining this ticket's implementation. Your job is to catch duplicated logic and reinvented code — the most common defect class in agent-authored diffs. You are the post-hoc twin of the Context Scout: where Context Scout finds what to reuse before code is written, you check whether the diff actually reused it.
 
 Your approach: pragmatic, not zealous. Real duplication is a bug worth flagging; incidental similarity is not. Two occurrences of similar-looking code is not yet a pattern (rule of three) — don't demand an abstraction for it. An abstraction that couples unrelated call sites is worse than the duplication it removes. Never demand speculative generality "for the future."
@@ -275,7 +255,6 @@ Steps to follow:
     role: 'worker',
     phases: ['grooming'],
     requiredCapabilities: [],
-    modelTier: 'cheap', // FLUX-482: search/recon — reads code, writes a comment; no code authored.
     prompt: `You are acting as a context scout grooming this ticket. Your job is to ground the upcoming plan in how the codebase ACTUALLY works today — not to plan or write code. You are the antidote to ungrounded plans.
 
 Steps to follow:
@@ -302,7 +281,6 @@ IMPORTANT: Do NOT use \`change_status\` or \`update_ticket\`. You are one input 
     role: 'worker',
     phases: ['grooming'],
     requiredCapabilities: [],
-    modelTier: 'cheap', // FLUX-482: requirements analysis — writes a comment; no code authored.
     prompt: `You are acting as a requirements interrogator grooming this ticket. Your job is to REDUCE UNCERTAINTY before any code is planned — surface what's ambiguous, frame the real problem, and define what "done" means. You do not plan implementation or write code.
 
 Steps to follow:
@@ -333,7 +311,6 @@ IMPORTANT: Do NOT use \`update_ticket\`. Do NOT use \`change_status\` to move to
     role: 'lead',
     phases: ['grooming'],
     requiredCapabilities: [],
-    modelTier: 'cheap', // FLUX-482: planning/doc-writing — rewrites the ticket body; no code authored.
     prompt: `You are acting as the planning agent grooming this ticket. Your job is to turn the requirements into a concrete, actionable implementation plan — not to write code. When run alongside a Context Scout and Requirements Interrogator, you are the COMBINER: synthesize their findings into the final plan.
 
 Steps to follow:
@@ -359,7 +336,6 @@ Keep the plan tight and specific. Prefer the smallest change that satisfies the 
     role: 'worker',
     phases: ['grooming', 'implementation'],
     requiredCapabilities: [],
-    modelTier: 'cheap', // FLUX-482: reads code + rewrites the ticket body — no product code authored.
     prompt: `You are acting as a regrounder for this ticket. Your only job is to execute the "⚠️ Reground before starting" ritual (FLUX-1048): treat the ticket's plan as a stale snapshot and re-verify it against the codebase as it exists right now, before anyone plans further or writes code. You do not design the plan and you do not write product code — you re-ground it.
 
 Steps to follow:
@@ -378,7 +354,6 @@ IMPORTANT: Other than the Require Input case above, do NOT use \`change_status\`
     role: 'worker',
     phases: ['grooming'],
     requiredCapabilities: [],
-    modelTier: 'cheap', // FLUX-482: planning/writing subtask bodies — no code authored.
     prompt: `You are acting as an epic decomposer grooming this ticket. Your job is to split an L/XL-effort ticket into a set of independent, Furnace-sized subtasks. You do not implement anything, and you never create subtasks without human sign-off first.
 
 Steps to follow:
@@ -474,7 +449,6 @@ Be precise and honest. If a step genuinely cannot be completed, stop and explain
     role: 'worker',
     phases: ['finalize'],
     requiredCapabilities: [],
-    modelTier: 'cheap', // FLUX-482: doc-sync — reads the diff, edits markdown docs; no product code authored.
     prompt: `You are acting as a documentation auditor for a single ticket that is Ready. Your only job is to make sure documentation matches the shipped code before the ticket is finalized.
 
 Steps to follow:
@@ -496,7 +470,6 @@ Do not commit or change ticket status — a later step handles that.`,
     role: 'worker',
     phases: ['finalize'],
     requiredCapabilities: [],
-    modelTier: 'cheap', // FLUX-482: stages, commits, and does git/PR mechanics — no code authored.
     prompt: `You are acting as a shipper for a single ticket that is Ready. Commit, push, and merge are strictly sequential stages of one git flow — they can never usefully run in parallel — so you own the whole flow end to end.
 
 Steps to follow:
@@ -868,7 +841,7 @@ export function resolvePersonaPrompt(id: string, focusComment?: string, phase?: 
   // FLUX-1175: mode-gated authority contract, keyed off the `furnaceSettings.smelterMode`
   // config setting rather than launch phase — see SMELTER_MODE_CONTRACTS above.
   if (id === 'smelter') {
-    const mode: SmelterMode = configCache.furnaceSettings?.smelterMode === 'operator' ? 'operator' : 'drafting';
+    const mode: SmelterMode = getConfig().furnaceSettings?.smelterMode === 'operator' ? 'operator' : 'drafting';
     composed = `${composed}\n\n${SMELTER_MODE_CONTRACTS[mode]}`;
   }
   const focus = focusComment?.trim();

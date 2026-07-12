@@ -1,9 +1,10 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import matter from 'gray-matter';
-import { tasksCache, updateTaskWithHistory } from './task-store.js';
+import { updateTaskWithHistory } from './task-store.js';
 
 /**
  * FLUX-987 (audit finding C2) regression guard. create_ticket's parent-link write used to do its
@@ -30,7 +31,7 @@ describe('updateTaskWithHistory appendSubtask is serialized with a concurrent wr
       matter.stringify('body', { id: parentId, title: 'Parent', status: 'In Progress', swimlane: null, subtasks: [], history: [] }),
     );
 
-    tasksCache[parentId] = {
+    getWorkspace().tasks[parentId] = {
       id: parentId,
       title: 'Parent',
       status: 'In Progress',
@@ -42,7 +43,7 @@ describe('updateTaskWithHistory appendSubtask is serialized with a concurrent wr
   });
 
   afterEach(async () => {
-    delete tasksCache[parentId];
+    delete getWorkspace().tasks[parentId];
     vi.restoreAllMocks();
     await fs.rm(fluxDir, { recursive: true, force: true }).catch(() => {});
   });

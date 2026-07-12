@@ -693,26 +693,6 @@ export function summarizeFieldChanges(previousTask: FieldChangeSource, nextFront
   return messages;
 }
 
-/**
- * FLUX-1311: whether `nextHistory` already carries a `from`→`to` status_change that's novel
- * relative to `existingHistory` — used by the PUT /:id route to decide whether it still needs to
- * append its own fallback status_change entry. Delegates to `reconcileNovelHistoryEntries`'
- * identity-based matching (defined below) rather than an exact-prefix + slice-by-length check:
- * the old `historyPrefixMatches` required `nextHistory` to start with EXACTLY `existingHistory`'s
- * entries, byte for byte. A stale full-history writer whose submission already contains its own
- * status_change entry — correctly recognized as novel by `reconcileNovelHistoryEntries` — would
- * fail that exact-prefix check (its snapshot diverges from the server's current history), making
- * this function wrongly return `false` and causing the route to append a SECOND, duplicate
- * status_change. Identity-based matching has no such prefix requirement.
- */
-export function hasAppendedStatusChange(existingHistory: unknown[] = [], nextHistory: unknown[] = [], from?: string, to?: string): boolean {
-  if (!from || !to) return false;
-  return reconcileNovelHistoryEntries(existingHistory, nextHistory).some((entry) => {
-    const e = asEntry(entry);
-    return e?.type === 'status_change' && e?.from === from && e?.to === to;
-  });
-}
-
 /** Recursive, key-order-independent JSON serialization — used only to build an equality
  *  signature for history entries, never for storage. Plain `JSON.stringify` with a key-array
  *  replacer would DROP any nested key not named at the top level (e.g. an `agent_session`

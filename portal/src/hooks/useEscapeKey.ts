@@ -52,12 +52,23 @@ function isTypingElement(el: Element | null): boolean {
   return !!el.closest('.xterm');
 }
 
-function handleGlobalKeyDown(e: KeyboardEvent) {
-  if (e.key !== 'Escape') return;
+/**
+ * FLUX-1314: fire the current top-of-stack handler programmatically, with the exact semantics of a
+ * real Escape keydown on `window` (LIFO top-only, ignoreWhenTyping guard included). For Escape
+ * presses that physically can't reach the shared window listener — e.g. keydowns inside the
+ * sandboxed artifact iframe, which the injected annotator forwards to the host over postMessage.
+ * No-op when the stack is empty.
+ */
+export function triggerEscape(): void {
   const top = stack[stack.length - 1];
   if (!top) return;
   if (top.ignoreWhenTyping && isTypingElement(document.activeElement)) return;
   top.onEscape();
+}
+
+function handleGlobalKeyDown(e: KeyboardEvent) {
+  if (e.key !== 'Escape') return;
+  triggerEscape();
 }
 
 function ensureListener() {

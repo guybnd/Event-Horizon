@@ -1,5 +1,5 @@
 import path from 'path';
-import { workspaceRoot } from './workspace.js';
+import { getWorkspaceRoot } from './workspace.js';
 import { taskWorktreeDir } from './task-worktree.js';
 
 /**
@@ -187,6 +187,7 @@ function normalizeToolName(block: ToolUseBlock | undefined): string {
  */
 function relativizeEditPath(filePath: unknown, taskId: string): string | undefined {
   if (typeof filePath !== 'string' || !filePath.trim()) return undefined;
+  const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return undefined;
   const abs = path.resolve(filePath);
   const roots = [taskWorktreeDir(workspaceRoot, taskId), workspaceRoot];

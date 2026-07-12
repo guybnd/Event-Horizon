@@ -20,13 +20,18 @@ vi.mock('child_process', async (importOriginal) => {
   return { ...actual, spawn: vi.fn() };
 });
 vi.mock('../workspace.js', () => ({
-  workspaceRoot: '/tmp/test-repo',
+  getWorkspaceRoot: () => '/tmp/test-repo',
   getActiveFluxDir: () => '/tmp/test-repo/.flux',
   getTaskAssetsDir: () => '/tmp/test-repo/.flux/assets',
 }));
-vi.mock('../config.js', () => ({ configCache: {} }));
+// FLUX-1373: resolveModel (shared.ts, kept real per the note above) reads
+// INTEGRATION_TIER_DEFAULTS/MODEL_POLICY_PRESETS from this module too — keep the real exports via
+// importOriginal, only stub getConfig.
+vi.mock('../config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config.js')>();
+  return { ...actual, getConfig: () => ({}) };
+});
 vi.mock('../task-store.js', () => ({
-  tasksCache: {} as Record<string, unknown>,
   updateTaskWithHistory: vi.fn().mockResolvedValue(undefined),
   updateAgentSession: vi.fn().mockResolvedValue(undefined),
   estimateCostUSD: vi.fn(() => 0),
@@ -114,8 +119,8 @@ describe('claude-code.ts — raiseNeedsAction wiring for a crashed spawn/resume 
       lastProc = fakeChildProcess();
       return lastProc as unknown as ReturnType<typeof spawn>;
     }) as typeof spawn);
-    const { tasksCache } = await import('../task-store.js');
-    for (const key of Object.keys(tasksCache)) delete (tasksCache as Record<string, unknown>)[key];
+    const { getWorkspace } = await import('../workspace-context.js');
+    for (const key of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[key];
   });
 
   describe('initial spawn (startCliSession)', () => {
@@ -181,8 +186,8 @@ describe('claude-code.ts — raiseNeedsAction wiring for a crashed spawn/resume 
 
   describe('resume (sendCliSessionInput)', () => {
     async function seedResumableSession(overrides: Partial<CliSessionRecord> = {}) {
-      const { tasksCache } = await import('../task-store.js');
-      (tasksCache as Record<string, unknown>)['FLUX-TEST'] = { status: 'In Progress' };
+      const { getWorkspace } = await import('../workspace-context.js');
+      getWorkspace().tasks['FLUX-TEST'] = { status: 'In Progress' };
       return fakeSession({
         sessionHistoryEntry: {
           type: 'agent_session', sessionId: 'test-session-entry', startedAt: new Date().toISOString(),

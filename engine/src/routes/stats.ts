@@ -1,12 +1,13 @@
+import { getWorkspace } from '../workspace-context.js';
 import express from 'express';
-import { tasksCache } from '../task-store.js';
+
 
 const router = express.Router();
 
 router.get('/tokens', (req, res) => {
   const lifetime = { inputTokens: 0, outputTokens: 0, costUSD: 0, costIsEstimated: false };
   const byTask: Record<string, { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean }> = {};
-  for (const [id, task] of Object.entries(tasksCache)) {
+  for (const [id, task] of Object.entries(getWorkspace().tasks)) {
     if (task.tokenMetadata) {
       const tm = task.tokenMetadata;
       byTask[id] = {

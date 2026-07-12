@@ -1,3 +1,4 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // ─── Top-level mocks (Vitest hoists these) ───────────────────────────────────
@@ -15,7 +16,7 @@ vi.mock('./diff-aggregator.js', () => ({
 }));
 
 import { buildResumePreamble } from './resume-preamble.js';
-import { tasksCache } from './task-store.js';
+
 import { getDefaultBranch, getTicketBranchStatus } from './branch-manager.js';
 import { changedFilesMasterSideOfBranch } from './diff-aggregator.js';
 
@@ -41,7 +42,7 @@ describe('buildResumePreamble', () => {
   const seeded: string[] = [];
 
   beforeEach(() => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     seeded.length = 0;
     // Reset git mocks to their "nothing moved" defaults so each test sets only what it exercises.
     vi.mocked(getDefaultBranch).mockResolvedValue('main');
@@ -50,11 +51,11 @@ describe('buildResumePreamble', () => {
   });
 
   afterEach(() => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
   });
 
   function seed(id: string, task: { history: ReturnType<typeof statusChange>[] }) {
-    tasksCache[id] = { id, ...task };
+    getWorkspace().tasks[id] = { id, ...task };
     seeded.push(id);
   }
 
@@ -106,14 +107,14 @@ describe('buildResumePreamble', () => {
  */
 describe('buildResumePreamble — git-backed sections (mocked)', () => {
   beforeEach(() => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     vi.mocked(getDefaultBranch).mockResolvedValue('main');
     vi.mocked(getTicketBranchStatus).mockResolvedValue({ exists: false, aheadCount: 0, behindCount: 0 });
     vi.mocked(changedFilesMasterSideOfBranch).mockResolvedValue([]);
   });
 
   afterEach(() => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
   });
 
   it('section 1: renders the branch ahead/behind line with the resolved default-branch label', async () => {

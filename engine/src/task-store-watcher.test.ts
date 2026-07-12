@@ -1,10 +1,11 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import fs from 'fs/promises';
 import { realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import matter from 'gray-matter';
-import { initDir, startWatchers, tasksCache, reconcileBackgroundPull } from './task-store.js';
+import { initDir, startWatchers, reconcileBackgroundPull } from './task-store.js';
 import { setWorkspaceRoot } from './workspace.js';
 import { snapshot, resetForTest } from './perf/registry.js';
 import { resetWatchStormForTest } from './perf/watch-storm.js';
@@ -48,11 +49,11 @@ describe('startWatchers() boot behavior (FLUX-1184)', () => {
     fluxDir = path.join(root, '.flux');
     await fs.mkdir(fluxDir, { recursive: true });
     setWorkspaceRoot(root);
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
   });
 
   afterEach(async () => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     await fs.rm(root, { recursive: true, force: true }).catch(() => {});
     vi.restoreAllMocks();
   });
@@ -73,7 +74,7 @@ describe('startWatchers() boot behavior (FLUX-1184)', () => {
     }
 
     await initDir(); // boot's real rescan — loads all 5 directly
-    expect(Object.keys(tasksCache)).toHaveLength(5);
+    expect(Object.keys(getWorkspace().tasks)).toHaveLength(5);
 
     await startWatchers();
 
@@ -105,10 +106,10 @@ describe('startWatchers() boot behavior (FLUX-1184)', () => {
     // rescan" (below), not "exactly one watch event per write" (FLUX-1194).
     expect(snapshot().counters['store.watchEvents']).toBeGreaterThanOrEqual(3);
     expect(snapshot().histograms['store.fullRescan']?.count ?? 0).toBe(fullRescanCountBefore);
-    expect(tasksCache['FLUX-1']?.title).toBe('Ticket 1 updated');
-    expect(tasksCache['FLUX-2']?.title).toBe('Ticket 2 updated');
-    expect(tasksCache['FLUX-3']?.title).toBe('Ticket 3 updated');
-    expect(tasksCache['FLUX-4']?.title).toBe('Ticket 4'); // untouched — proves it's per-file, not a rescan
+    expect(getWorkspace().tasks['FLUX-1']?.title).toBe('Ticket 1 updated');
+    expect(getWorkspace().tasks['FLUX-2']?.title).toBe('Ticket 2 updated');
+    expect(getWorkspace().tasks['FLUX-3']?.title).toBe('Ticket 3 updated');
+    expect(getWorkspace().tasks['FLUX-4']?.title).toBe('Ticket 4'); // untouched — proves it's per-file, not a rescan
   }, 15_000);
 });
 
@@ -138,18 +139,18 @@ describe('reconcileBackgroundPull() — orphan-mode background-pull catch-up (FL
     // bootstrapNewWorkspace() before initDir() runs; do the same here.
     await fs.mkdir(path.join(root, '.flux'), { recursive: true });
     setWorkspaceRoot(root);
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
   });
 
   afterEach(async () => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     await fs.rm(root, { recursive: true, force: true }).catch(() => {});
   });
 
   it('loads a file the background pull added after initDir() already ran', async () => {
     await fs.writeFile(path.join(storeDir, 'FLUX-1.md'), ticketContent('FLUX-1', 'Existing ticket'));
     await initDir();
-    expect(Object.keys(tasksCache)).toEqual(['FLUX-1']);
+    expect(Object.keys(getWorkspace().tasks)).toEqual(['FLUX-1']);
 
     // Simulates the pull landing a new ticket file mid-boot, after initDir()'s own scan — this is
     // exactly the write the old chokidar-replay safety net used to catch.
@@ -157,30 +158,30 @@ describe('reconcileBackgroundPull() — orphan-mode background-pull catch-up (FL
 
     await reconcileBackgroundPull(storeDir, ['FLUX-2.md']);
 
-    expect(tasksCache['FLUX-2']?.title).toBe('Pulled-in ticket');
-    expect(Object.keys(tasksCache).sort()).toEqual(['FLUX-1', 'FLUX-2']);
+    expect(getWorkspace().tasks['FLUX-2']?.title).toBe('Pulled-in ticket');
+    expect(Object.keys(getWorkspace().tasks).sort()).toEqual(['FLUX-1', 'FLUX-2']);
   });
 
   it('refreshes a file whose content the pull changed after initDir() cached the stale version', async () => {
     await fs.writeFile(path.join(storeDir, 'FLUX-1.md'), ticketContent('FLUX-1', 'Stale title'));
     await initDir();
-    expect(tasksCache['FLUX-1']?.title).toBe('Stale title');
+    expect(getWorkspace().tasks['FLUX-1']?.title).toBe('Stale title');
 
     await fs.writeFile(path.join(storeDir, 'FLUX-1.md'), ticketContent('FLUX-1', 'Pulled title'));
     await reconcileBackgroundPull(storeDir, ['FLUX-1.md']);
 
-    expect(tasksCache['FLUX-1']?.title).toBe('Pulled title');
+    expect(getWorkspace().tasks['FLUX-1']?.title).toBe('Pulled title');
   });
 
   it('removes a ticket the pull deleted', async () => {
     await fs.writeFile(path.join(storeDir, 'FLUX-1.md'), ticketContent('FLUX-1', 'To be deleted'));
     await initDir();
-    expect(tasksCache['FLUX-1']).toBeDefined();
+    expect(getWorkspace().tasks['FLUX-1']).toBeDefined();
 
     await fs.rm(path.join(storeDir, 'FLUX-1.md'));
     await reconcileBackgroundPull(storeDir, ['FLUX-1.md']);
 
-    expect(tasksCache['FLUX-1']).toBeUndefined();
+    expect(getWorkspace().tasks['FLUX-1']).toBeUndefined();
   });
 
   it('ignores nested/non-ticket paths from the pull diff (assets, session files)', async () => {
@@ -192,6 +193,6 @@ describe('reconcileBackgroundPull() — orphan-mode background-pull catch-up (FL
     // spurious cache entry for it.
     await reconcileBackgroundPull(storeDir, ['assets/FLUX-1/note.png']);
 
-    expect(Object.keys(tasksCache)).toHaveLength(0);
+    expect(Object.keys(getWorkspace().tasks)).toHaveLength(0);
   });
 });

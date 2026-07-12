@@ -30,22 +30,31 @@ describe('computeLaunchPromptMetrics', () => {
 });
 
 describe('computeSkillModuleMetrics', () => {
-  it('reports all six skill modules', async () => {
-    const m = await computeSkillModuleMetrics();
-    expect(m.modules.length).toBe(6);
-    expect(m.modules.map((x) => x.name).sort()).toEqual(
-      ['grooming', 'implementation', 'mapping', 'orchestrator', 'release', 'review'].sort(),
-    );
+  it('FLUX-1377: reports the core plus the phase module, not all six modules', async () => {
+    const m = await computeSkillModuleMetrics('implementation');
+    expect(m.modules.length).toBe(2);
+    expect(m.modules[0]!.name).toContain('core');
+    expect(m.modules[1]!.name).toContain('implementation module');
+    expect(m.coreTokensEst).toBeGreaterThan(0);
+    expect(m.coreTokensEst).toBeLessThan(m.totalTokensEst);
+    // The trimmed core stays well under the ~4k-token ceiling the ticket targets.
+    expect(m.coreTokensEst).toBeLessThan(4000);
+  });
+
+  it('reports the core only when no phase module applies', async () => {
+    const m = await computeSkillModuleMetrics(undefined);
+    expect(m.modules.length).toBe(1);
+    expect(m.totalTokensEst).toBe(m.coreTokensEst);
   });
 });
 
 describe('computeContextBudget', () => {
-  it('combines payload + launch prompt + skills and totals them', async () => {
+  it('combines payload + launch prompt + core (not core+module, already counted in launchPrompt) and totals them', async () => {
     const b = await computeContextBudget(task);
     expect(b.ticketId).toBe('FLUX-1');
     expect(b.agentPayload.totalTokensEst).toBeGreaterThan(0);
     expect(b.ehMeasurableTotalTokensEst).toBe(
-      b.agentPayload.totalTokensEst + b.launchPrompt.totalTokensEst + b.skillModules.totalTokensEst,
+      b.agentPayload.totalTokensEst + b.launchPrompt.totalTokensEst + b.skillModules.coreTokensEst,
     );
     expect(b.caveats.length).toBeGreaterThan(0);
   });

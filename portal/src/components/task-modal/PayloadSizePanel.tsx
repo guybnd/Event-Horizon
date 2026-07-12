@@ -139,7 +139,7 @@ export function PayloadSizePanel({ taskId }: { taskId: string }) {
               <GroupHeading label={`launch prompt${budget.launchPrompt.phase ? ` (${budget.launchPrompt.phase})` : ''}`} tokens={budget.launchPrompt.totalTokensEst} />
               <Bars sections={budget.launchPrompt.sections} />
 
-              <GroupHeading label="skill modules · every session" tokens={budget.skillModules.totalTokensEst} />
+              <GroupHeading label="skill modules · core + phase" tokens={budget.skillModules.totalTokensEst} />
               {budget.skillModules.modules.map((m) => (
                 <div key={m.name} className="flex items-center justify-between text-gray-600 dark:text-gray-300">
                   <span>{m.name}{m.missing ? ' (missing)' : ''}</span>

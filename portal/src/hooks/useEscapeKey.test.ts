@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, renderHook } from '@testing-library/react';
-import { useEscapeKey } from './useEscapeKey';
+import { triggerEscape, useEscapeKey } from './useEscapeKey';
 
 function pressEscape() {
   fireEvent.keyDown(window, { key: 'Escape' });
@@ -186,5 +186,36 @@ describe('useEscapeKey', () => {
 
     expect(() => pressEscape()).not.toThrow();
     expect(onEscape).not.toHaveBeenCalled();
+  });
+
+  // FLUX-1314: Escape presses that can't physically reach the window listener (e.g. keydowns inside
+  // the sandboxed artifact iframe, forwarded to the host over postMessage) fire the stack via this
+  // programmatic entry point — same semantics as a real keydown.
+  describe('triggerEscape', () => {
+    it('fires only the top-of-stack handler, same LIFO semantics as a real keydown', () => {
+      const outer = vi.fn();
+      const inner = vi.fn();
+      renderHook(() => useEscapeKey(outer));
+      renderHook(() => useEscapeKey(inner));
+
+      triggerEscape();
+
+      expect(inner).toHaveBeenCalledTimes(1);
+      expect(outer).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op (does not throw) when the stack is empty', () => {
+      expect(() => triggerEscape()).not.toThrow();
+    });
+
+    it('respects the ignoreWhenTyping guard like a real keydown', () => {
+      const onEscape = vi.fn();
+      mountFocusable('input', 'text');
+      renderHook(() => useEscapeKey(onEscape));
+
+      triggerEscape();
+
+      expect(onEscape).not.toHaveBeenCalled();
+    });
   });
 });

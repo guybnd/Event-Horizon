@@ -449,6 +449,46 @@ describe('task-worktree', () => {
       expect(await currentBranch(repo)).toBe('master');
     });
 
+    // FLUX-1341: resolveDefaultBaseBranch's origin/HEAD fallback is only reached when
+    // neither local master nor main exists. In that degenerate case the bare branch
+    // name (e.g. `trunk` stripped from `origin/trunk`) may have no local copy to
+    // resolve against, so `git worktree add -b <branch> <target> trunk` fails with
+    // "invalid reference". The unstripped `origin/trunk` remote-tracking ref always
+    // resolves.
+    it('falls back to the unstripped origin/<default> ref when neither local master nor main exists', async () => {
+      const remoteParent = await makeParent();
+      const bareRemote = path.join(remoteParent, 'remote.git');
+      await execFileAsync('git', ['init', '--bare', '-b', 'trunk', bareRemote], { windowsHide: true });
+
+      // Seed the bare remote with a commit on `trunk` via a scratch clone.
+      const seed = path.join(remoteParent, 'seed');
+      await execFileAsync('git', ['clone', bareRemote, seed], { windowsHide: true });
+      await execFileAsync('git', ['-C', seed, 'config', 'user.email', 'test@test.com'], { windowsHide: true });
+      await execFileAsync('git', ['-C', seed, 'config', 'user.name', 'Test'], { windowsHide: true });
+      await fs.writeFile(path.join(seed, 'README.md'), '# test\n', 'utf8');
+      await execFileAsync('git', ['-C', seed, 'add', '.'], { windowsHide: true });
+      await execFileAsync('git', ['-C', seed, 'commit', '-m', 'init'], { windowsHide: true });
+      await execFileAsync('git', ['-C', seed, 'push', 'origin', 'trunk'], { windowsHide: true });
+
+      // The repo under test: cloned from the remote (so origin/HEAD -> origin/trunk is
+      // set up), then moved off `trunk` onto an unrelated branch and its local `trunk`
+      // copy deleted — leaving ONLY the remote-tracking ref, no local master/main/trunk.
+      const remoteOnlyRepo = path.join(remoteParent, 'remote-only-checkout');
+      await execFileAsync('git', ['clone', bareRemote, remoteOnlyRepo], { windowsHide: true });
+      await execFileAsync('git', ['-C', remoteOnlyRepo, 'config', 'user.email', 'test@test.com'], { windowsHide: true });
+      await execFileAsync('git', ['-C', remoteOnlyRepo, 'config', 'user.name', 'Test'], { windowsHide: true });
+      await execFileAsync('git', ['-C', remoteOnlyRepo, 'checkout', '-b', 'scratch'], { windowsHide: true });
+      await execFileAsync('git', ['-C', remoteOnlyRepo, 'branch', '-D', 'trunk'], { windowsHide: true });
+
+      const wt = await createTaskWorktree(remoteOnlyRepo, 'FLUX-1341', 'flux/FLUX-1341-demo');
+      expect(existsSync(wt)).toBe(true);
+      expect(await currentBranch(wt)).toBe('flux/FLUX-1341-demo');
+      expect(existsSync(path.join(wt, 'README.md'))).toBe(true);
+
+      await execFileAsync('git', ['-C', remoteOnlyRepo, 'worktree', 'remove', '--force', wt], { windowsHide: true }).catch(() => {});
+      await fs.rm(remoteParent, { recursive: true, force: true }).catch(() => {});
+    });
+
     it('is idempotent: returns the same path for the same ticket + branch', async () => {
       const a = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1-demo');
       const b = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1-demo');
@@ -484,6 +524,25 @@ describe('task-worktree', () => {
       expect(realpathSync(resolved)).toBe(realpathSync(external));
       // ...and it did NOT spin up a second worktree at the EH target.
       expect(existsSync(taskWorktreeDir(repo, 'FLUX-50'))).toBe(false);
+    });
+
+    // FLUX-167 follow-up: the ONE external tree that must NOT be reused in place is
+    // the main checkout itself — reusing it hands the agent the primary tree
+    // (run-on-master). Fail with the actionable "free the branch" remedy, not the
+    // cryptic `git worktree add` "already checked out" error.
+    it('throws an actionable "free the main checkout" error when the branch is pinned in the main tree', async () => {
+      const branch = 'flux/FLUX-51-pinned';
+      await execFileAsync('git', ['-C', repo, 'checkout', '-b', branch], { windowsHide: true });
+      const err = await createTaskWorktree(repo, 'FLUX-51', branch).then(
+        () => null,
+        (e: Error) => e,
+      );
+      expect(err).toBeTruthy();
+      expect(err!.message).toMatch(/checked out in the main checkout/i);
+      expect(err!.message).toContain(branch);
+      expect(err!.message).toMatch(/git checkout master/);
+      // It did NOT reuse the main checkout or spin up a second worktree at the EH target.
+      expect(existsSync(taskWorktreeDir(repo, 'FLUX-51'))).toBe(false);
     });
 
     it('recreates at the EH target when an external worktree record is stale (dir removed) (FLUX-1059)', async () => {
@@ -1028,6 +1087,25 @@ describe('task-worktree', () => {
       await expect(
         resolveTaskExecutionRoot({ id: 'FLUX-5', branch: 'flux/FLUX-5' }, repo, { maxWorktrees: 1 }),
       ).rejects.toThrow(/missing and could not be recreated|refusing to run the agent on master/i);
+    });
+
+    // FLUX-167 follow-up: a branch checked out in the MAIN checkout is the
+    // run-on-master trap — resolving it to `repo` made the downstream spawn guard
+    // emit a misleading "worktree is missing". Surface the real cause + remedy here
+    // instead, and never resolve to the engine root.
+    it('throws an actionable error (never resolves to master) when the branch is pinned in the main tree', async () => {
+      const branch = 'flux/FLUX-7-pinned';
+      await execFileAsync('git', ['-C', repo, 'checkout', '-b', branch], { windowsHide: true });
+      const err = await resolveTaskExecutionRoot({ id: 'FLUX-7', branch }, repo).then(
+        () => null,
+        (e: Error) => e,
+      );
+      expect(err).toBeTruthy();
+      expect(err!.message).toMatch(/checked out in the main checkout/i);
+      expect(err!.message).toContain('FLUX-7');
+      expect(err!.message).toMatch(/git checkout master/);
+      // It did not fall back to the engine root, and created nothing under .eh-worktrees.
+      expect(await listTaskWorktrees(repo)).toHaveLength(0);
     });
 
     // FLUX-1031: the changes-requested round-trip. A Ready ticket's worktree is reclaimed to

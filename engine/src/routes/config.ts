@@ -1,5 +1,5 @@
 import express from 'express';
-import { configCache, saveConfig } from '../config.js';
+import { saveConfig, getConfig } from '../config.js';
 import { BUILTIN_MODULES, getWorkspaceMcpServers, getModuleMcpServers, type ModuleDeclaration } from '../modules.js';
 import { probeModule, probeAllEnabled, getAllProbeStatuses } from '../module-probe.js';
 import { scaffoldModuleDirs } from '../storage-sync.js';
@@ -23,7 +23,7 @@ router.get('/', (req, res) => {
   // actually LAUNCH (the adapter registry), which is narrower than the skill installer's 8-framework
   // list. The portal surfaces the gap by badging install-only frameworks "Skills only".
   res.json({
-    ...configCache,
+    ...getConfig(),
     cliCapabilities: CLI_CAPABILITIES,
     defaultFramework: resolveDefaultFramework(),
     boardConversationId: BOARD_CONVERSATION_ID,
@@ -41,12 +41,12 @@ router.get('/mcp-phases', (_req, res) => {
   const ids = new Set<string>([
     ...Object.keys(getWorkspaceMcpServers()),
     ...Object.keys(getModuleMcpServers()),
-    ...Object.keys((configCache.mcpServerPhases as Record<string, string[]>) ?? {}),
+    ...Object.keys((getConfig().mcpServerPhases as Record<string, string[]>) ?? {}),
   ]);
   res.json({
     servers: [...ids].sort(),
     phases: SCOPE_PHASES,
-    mcpServerPhases: (configCache.mcpServerPhases as Record<string, string[]>) ?? {},
+    mcpServerPhases: (getConfig().mcpServerPhases as Record<string, string[]>) ?? {},
   });
 });
 
@@ -66,23 +66,23 @@ router.put('/mcp-phases', async (req, res) => {
       if (valid.length > 0) clean[id] = valid;
     }
   }
-  configCache.mcpServerPhases = clean;
-  await saveConfig(configCache);
+  getConfig().mcpServerPhases = clean;
+  await saveConfig(getConfig());
   res.json({ mcpServerPhases: clean });
 });
 
 router.put('/', async (req, res) => {
   try {
-    const prevModules: ModuleDeclaration[] = Array.isArray(configCache.modules) ? configCache.modules : [];
+    const prevModules: ModuleDeclaration[] = Array.isArray(getConfig().modules) ? getConfig().modules : [];
     const prevEnabledIds = new Set(prevModules.filter(m => m.enabled && m.mcpServer).map((m) => m.id));
 
     // FLUX-744: merge over the existing config rather than replacing it wholesale, so engine-managed
     // fields the portal doesn't echo back (e.g. the `chatOpenDefaultMigrated` migration marker) survive
     // a Settings save. The portal always sends complete values for the fields it owns, so a shallow
     // merge is equivalent for those and only ADDS preservation of engine-only keys.
-    await saveConfig({ ...configCache, ...req.body });
+    await saveConfig({ ...getConfig(), ...req.body });
 
-    const nextModules: ModuleDeclaration[] = Array.isArray(configCache.modules) ? configCache.modules : [];
+    const nextModules: ModuleDeclaration[] = Array.isArray(getConfig().modules) ? getConfig().modules : [];
     const newlyEnabled = nextModules.filter(m => m.enabled && m.mcpServer && !prevEnabledIds.has(m.id));
     if (newlyEnabled.length > 0) {
       probeAllEnabled(newlyEnabled).catch(() => {});
@@ -98,7 +98,7 @@ router.put('/', async (req, res) => {
       }
     }
 
-    res.json(configCache);
+    res.json(getConfig());
   } catch {
     res.status(500).json({ error: 'Failed to save config' });
   }
@@ -113,7 +113,7 @@ router.get('/modules/status', (_req, res) => {
 });
 
 router.post('/modules/:id/probe', (req, res) => {
-  const modules: ModuleDeclaration[] = Array.isArray(configCache.modules) ? configCache.modules : [];
+  const modules: ModuleDeclaration[] = Array.isArray(getConfig().modules) ? getConfig().modules : [];
   const module = modules.find((m) => m.id === req.params.id);
   if (!module) {
     return res.status(404).json({ error: 'Module not found' });

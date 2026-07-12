@@ -1,3 +1,4 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -22,7 +23,7 @@ vi.mock('./task-worktree.js', async () => {
 });
 
 import { buildMcpServer } from './mcp-server.js';
-import { tasksCache } from './task-store.js';
+
 import { setWorkspaceRoot } from './workspace.js';
 import { getTicketBranchStatus, createPullRequest, checkGhAuth } from './branch-manager.js';
 import { findWorktreeForBranch, worktreeUncommittedCount } from './task-worktree.js';
@@ -94,11 +95,11 @@ describe('change_status noDiffExpected handler path (FLUX-1268)', () => {
     };
     const filePath = path.join(fluxDir, `${id}.md`);
     await fs.writeFile(filePath, matter.stringify('', frontmatter), 'utf-8');
-    tasksCache[id] = { ...frontmatter, body: '', id, _path: filePath };
+    getWorkspace().tasks[id] = { ...frontmatter, body: '', id, _path: filePath };
   }
 
   function dropTask(id: string) {
-    delete tasksCache[id];
+    delete getWorkspace().tasks[id];
   }
 
   it('noDiffExpected:true on a clean, 0-ahead worktree branch skips PR creation and records the zero-diff activity entry', async () => {
@@ -116,7 +117,7 @@ describe('change_status noDiffExpected handler path (FLUX-1268)', () => {
       });
       expect(res.isError).toBeFalsy();
 
-      const task = tasksCache[TICKET];
+      const task = getWorkspace().tasks[TICKET];
       expect(task.status).toBe('Ready');
       // No PR was opened: the create call never fired, and neither field it would have set is present.
       expect(createPullRequest).not.toHaveBeenCalled();
@@ -151,7 +152,7 @@ describe('change_status noDiffExpected handler path (FLUX-1268)', () => {
       });
       expect(res.isError).toBe(true);
 
-      const task = tasksCache[TICKET];
+      const task = getWorkspace().tasks[TICKET];
       expect(task.status).toBe('In Progress');
       expect(createPullRequest).not.toHaveBeenCalled();
     } finally {

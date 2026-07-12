@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import { broadcastEvent } from './events.js';
 import type { ModuleDeclaration } from './modules.js';
 import { ensureSharedServer, isSharedHttpPlatformProven } from './shared-mcp-server.js';
-import { workspaceRoot } from './workspace.js';
+import { getWorkspaceRoot } from './workspace.js';
 
 export type ProbeStatus = 'ok' | 'error' | 'checking' | 'unknown';
 
@@ -38,6 +38,7 @@ export async function probeModule(m: ModuleDeclaration): Promise<ProbeResult> {
   // server and report its health, instead of spawning a throwaway stdio stack.
   if (m.sharedHttp && isSharedHttpPlatformProven()) {
     broadcast(m.id, { status: 'checking', message: 'Starting shared HTTP server…', checkedAt: new Date().toISOString() });
+    const workspaceRoot = getWorkspaceRoot();
     if (!workspaceRoot) {
       const result: ProbeResult = { status: 'error', message: 'No active workspace — cannot start shared server', checkedAt: new Date().toISOString() };
       broadcast(m.id, result);

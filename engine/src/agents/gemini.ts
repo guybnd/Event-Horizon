@@ -1,11 +1,12 @@
+import { getWorkspace } from '../workspace-context.js';
 import { log } from '../log.js';
 import { spawn, exec, type ChildProcessWithoutNullStreams } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs';
-import { configCache } from '../config.js';
+import { getConfig } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentSessionEntry, type AgentSessionProgress } from '../history.js';
-import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
+import { updateTaskWithHistory, updateAgentSession, estimateCostUSD } from '../task-store.js';
 import { resolveTaskExecutionRoot, resolveResumeExecutionRoot, assertIsolatedSpawnRoot } from '../task-worktree.js';
 import { notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
@@ -17,7 +18,7 @@ import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { appendTranscriptLine } from '../transcript.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote, resolveModel } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   Bash: 'Running command',
@@ -451,7 +452,7 @@ export function attachStdoutProcessing(
           enqueueSessionWrite(session, async () => {
             await updateTaskWithHistory(taskId, {
               updatedBy: 'Agent',
-              nextStatus: configCache.requireInputStatus || 'Require Input',
+              nextStatus: getConfig().requireInputStatus || 'Require Input',
               entries: [buildActivityEntry(`${session.label} blocked: ${reason}`, 'Agent', new Date().toISOString())],
             });
           });
@@ -490,13 +491,16 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
 
   await checkBinaryInstalled(binaryName);
 
-  const geminiIntegration = configCache.integrations?.geminiCli;
-  const groomingStatuses = [configCache.requireInputStatus || 'Require Input', 'Grooming'];
+  const groomingStatuses = [getConfig().requireInputStatus || 'Require Input', 'Grooming'];
   // FLUX-931: session.model carries a delegate's resolved model (routes/cli-session.ts
-  // /delegate) — honor it over the status-derived grooming/implementation model, mirroring
+  // /delegate) — honor it over the task-tier-resolved model, mirroring
   // claude-code.ts's `session.model || selectedModel`.
-  const selectedModelRaw = session.model || (geminiIntegration && framework === 'gemini'
-    ? (groomingStatuses.includes(task.status) ? geminiIntegration.groomingModel : geminiIntegration.implementationModel)
+  // FLUX-1373: resolve via the task-tier policy (session.taskKey -> modelPolicy.assignments ->
+  // integrations.geminiCli.tiers), superseding the old status-based groomingModel/implementationModel
+  // fields. session.taskKey is stamped by createPendingSession at spawn time; a missing value (a
+  // pre-migration in-flight session) falls back to implementation.lead.
+  const selectedModelRaw = session.model || (framework === 'gemini'
+    ? resolveModel(session.taskKey ?? 'implementation.lead', framework, getConfig())
     : null);
 
   // Validate the model name against known Gemini CLI models
@@ -534,7 +538,7 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
   // free-form "Conversational session" instructions — was unreachable for Copilot/Gemini chat.
   const taskPhase = session.phase ?? (groomingStatuses.includes(task.status) ? 'grooming'
     : (task.status === 'In Progress' || task.status === 'Todo') ? 'implementation'
-    : task.status === (configCache?.readyForMergeStatus || 'Ready') ? 'review'
+    : task.status === (getConfig()?.readyForMergeStatus || 'Ready') ? 'review'
     : undefined);
 
   // FLUX-1123: Gemini has no --disallowed-tools equivalent (see FILE_MUTATION_TOOLS's comment in
@@ -557,7 +561,7 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
   log.info(`[${id}] Args:`, geminiArgs);
 
   const effortCap = CLI_CAPABILITIES[framework].effort;
-  const globalEffort = configCache.effortLevel as string | undefined;
+  const globalEffort = getConfig().effortLevel as string | undefined;
   const taskEffort = task.effortLevel;
   const effectiveEffort = (effortOverrideRaw || taskEffort || globalEffort || '') as string;
   if (effortCap.supported && effortCap.flag && EFFORT_LEVELS.includes(effectiveEffort as EffortLevel)) {
@@ -689,7 +693,7 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
 
     const tokenUpdate = (session.inputTokens ?? 0) > 0 || (session.outputTokens ?? 0) > 0
       ? (() => {
-          const prev = tasksCache[id]?.tokenMetadata || { inputTokens: 0, outputTokens: 0, costUSD: 0 };
+          const prev = getWorkspace().tasks[id]?.tokenMetadata || { inputTokens: 0, outputTokens: 0, costUSD: 0 };
           return {
             inputTokens: (prev.inputTokens ?? 0) + (session.inputTokens ?? 0),
             outputTokens: (prev.outputTokens ?? 0) + (session.outputTokens ?? 0),
@@ -830,7 +834,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   // into an HTTP-500-only response — see surfaceResumeFailure in shared.ts.
   let executionRoot: string;
   try {
-    executionRoot = await resolveResumeExecutionRoot(session, tasksCache[id], workspaceRoot);
+    executionRoot = await resolveResumeExecutionRoot(session, getWorkspace().tasks[id], workspaceRoot);
   } catch (error) {
     return surfaceResumeFailure(session, id, error);
   }
@@ -857,7 +861,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const safeMessage = message.replace(/\0/g, '');
   // FLUX-926 / FLUX-1123: same advisory "why is this blocked" note as the initial spawn,
   // recomputed per resumed turn (Gemini has no real block — see the editsGated comment above).
-  const promptForCli = prependEditGateNote(session, tasksCache[id] as GeminiTask, 'gemini', safeMessage);
+  const promptForCli = prependEditGateNote(session, getWorkspace().tasks[id] as GeminiTask, 'gemini', safeMessage);
   const geminiScopeArgs = buildGeminiScopeArgs(workspaceRoot);
   const resumeArgs = session.resumeSessionId
     ? ['-p', promptForCli, '--resume', session.resumeSessionId, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs]

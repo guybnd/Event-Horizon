@@ -1,3 +1,4 @@
+import { getWorkspace } from './workspace-context.js';
 import { log } from './log.js';
 import { performance } from 'node:perf_hooks';
 import { recordDuration } from './perf/registry.js';
@@ -6,7 +7,7 @@ import { warnIfSlowLoadTask } from './perf/load-task-timing.js';
 import { recordWatchEvent } from './perf/watch-storm.js';
 import { finalMessageNeedsUser } from './final-message-heuristic.js';
 import fs from 'fs/promises';
-import { renameSync, realpathSync, existsSync } from 'fs';
+import { realpathSync, existsSync } from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
 import chokidar from 'chokidar';
@@ -14,19 +15,18 @@ import chokidar from 'chokidar';
 // timeout, no non-interactive env — so it could hang EVERY create_ticket in orphan mode forever
 // on a slow/unreachable remote or a stalled credential prompt. Route through the S1 runner.
 import { runGit } from './git-exec.js';
-import { getActiveFluxDir, getTaskAssetsDir, getFluxStoreDir, isOrphanMode, setWorkspaceRoot, workspaceRoot, getWorkspacesList } from './workspace.js';
+import { getActiveFluxDir, getTaskAssetsDir, getFluxStoreDir, isOrphanMode, setWorkspaceRoot, getWorkspacesList, getWorkspaceRoot } from './workspace.js';
 import { attachWorktreeIfPresent, migrateStrandedFluxTickets } from './storage-sync.js';
 import { startSyncWatcher, allocateNewTicketId, triggerSync } from './sync-watcher.js';
-import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
+import { loadConfig, autoRegisterUnknownTags, getConfig } from './config.js';
 import { loadCustomPersonas } from './orchestration-personas.js';
-import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp, digestHistoryForAgent, buildHistoryDigest, compactSessionProgress, extractRecentUserComments, extractLaunchFocus, type HistoryEntryLike } from './history.js';
+import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp, compactSessionProgress, type HistoryEntryLike } from './history.js';
 import { generatePromptNotification, generateCompletionNotification, clearNotifications, checkSkillStaleness, addNotification } from './notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
-import { broadcastEvent } from './events.js';
+import { broadcastEvent, bumpTasksVersion } from './events.js';
 import { rehydrateOpenPrompts } from './hitl-prompts.js';
-import { getCliSessionSummaryForTask, getListCliSessionSummaryForTask, getAllSessionSummariesForTask, getListSessionSummariesForTask, slimSessionSummaryForAgent, cliSessionsById, cliSessionIdByTaskId, rehydrateSessionStubs, armReclaimGrace } from './session-store.js';
+import { cliSessionsById, cliSessionIdByTaskId, rehydrateSessionStubs, armReclaimGrace } from './session-store.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
-import type { StoredDoc } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
 import { bootstrapNewWorkspace, installSkillsForWorkspace } from './bootstrap.js';
 import { activateGroup, activateMemberBinding, getGroupContext, getMemberBinding, activeGroupDocsLabel } from './group.js';
@@ -34,55 +34,17 @@ import { attachMemberWorktree } from './group-member-worktree.js';
 import { pruneTaskWorktrees } from './task-worktree.js';
 import { probeAllEnabled } from './module-probe.js';
 
-/**
- * Minimal shape of a cached/validated ticket as accessed by this file's helpers. `tasksCache`
- * itself intentionally stays `Record<string, any>` right below (see that export's comment) —
- * narrowing ITS declared value type cascades into ~40 other files that read/assign
- * `tasksCache[id]` directly (empirically verified while working this ticket: doing so broke
- * agents/{claude-code,copilot,gemini}.ts, furnace-stoker.ts, mcp-server.ts, and several test
- * fixtures that construct partial ticket literals — `noUncheckedIndexedAccess` adds `| undefined`
- * to every `tasksCache[id]` read the instant the value type isn't literally `any`). A function
- * that merely RECEIVES an `any`-typed task value can still declare a real parameter type, though:
- * an `any` argument satisfies any parameter type without a cast. Only fields this file actually
- * reads are named here; every other frontmatter field still round-trips through the index
- * signature untouched.
- */
-export interface TaskRecord {
-  id: string;
-  title: string;
-  status: string;
-  body: string;
-  _path: string;
-  priority?: string | null | undefined;
-  effort?: string | null | undefined;
-  assignee?: string | null | undefined;
-  swimlane?: string | null | undefined;
-  [key: string]: unknown;
-}
+// FLUX-343 (plan step 1): the pure serializer/validator/util surface moved to task-serialize.ts.
+// Re-exported here so the ~60 existing importers keep one stable import path; task-store's own
+// internal uses go through the import below.
+export { atomicWriteFile, serializeTaskForApi, serializeTaskForAgent, serializeTaskForList, getTerminalStatuses, subtaskIds, validateParentLink, repairTicket, truncateBodyForAgent, AGENT_BODY_LIMIT } from './task-serialize.js';
+export type { TaskRecord, TaskFrontmatter } from './task-serialize.js';
+import { atomicWriteFile, subtaskIds, repairTicket } from './task-serialize.js';
+import type { TaskRecord, TaskFrontmatter } from './task-serialize.js';
 
-/**
- * Frontmatter bag as read fresh from disk (readTaskFromDisk) and mutated in place before being
- * written back (updateAgentSessionLocked / updateTaskWithHistoryLocked). Narrower than TaskRecord
- * because a freshly-read or partially-repaired file may legitimately be missing any field (hence
- * the `!frontmatter.title`-style guards below) — only fields read with a concrete expected type
- * are named; everything else (including fields only ever written, like `needsAction`/
- * `tokenMetadata`) flows through the index signature, since writing a concrete value into an
- * `unknown`-typed slot never needs narrowing.
- */
-export interface TaskFrontmatter {
-  title?: string | undefined;
-  createdBy?: string | undefined;
-  swimlane?: string | null | undefined;
-  [key: string]: unknown;
-}
-
-// FLUX-1073: `tasksCache`'s value type intentionally stays `any` — see the TaskRecord doc comment
-// above for why narrowing it is out of scope for a single-file typing pass.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export let tasksCache: Record<string, any> = {};
-export let docsCache: Record<string, StoredDoc> = {};
-export let parseErrors: Record<string, { id: string; path: string; error: string }> = {};
-export let workspaceActivating = false;
+// FLUX-343: the mutable workspace state (tasks/docs/parse-errors/isActivating) that used to be
+// exported `let` singletons here now lives on the Workspace object — read it via getWorkspace()
+// from workspace-context.ts.
 
 const repairingPaths = new Set<string>();
 
@@ -97,186 +59,6 @@ const recentEngineWrites = new Set<string>();
 // Sessions whose final message we've already surfaced as a notification (FLUX-570) —
 // dedup across the multiple terminal persists a single session can make.
 const surfacedFinalMessages = new Set<string>();
-
-/**
- * Write file atomically: write to a .tmp sibling then rename over the target.
- * Prevents partial/empty reads when another async operation reads mid-write.
- * Falls back to direct write if rename fails (e.g., cross-device).
- */
-export async function atomicWriteFile(filePath: string, content: string): Promise<void> {
-  const tmpPath = filePath + '.tmp';
-  await fs.writeFile(tmpPath, content, 'utf-8');
-  try {
-    renameSync(tmpPath, filePath);
-  } catch {
-    // rename can fail on some FS setups; fall back to direct write
-    await fs.writeFile(filePath, content, 'utf-8');
-    await fs.unlink(tmpPath).catch(() => {});
-  }
-}
-
-export function serializeTaskForApi(task: TaskRecord) {
-  const cliSessions = getAllSessionSummariesForTask(task.id);
-  return {
-    ...task,
-    cliSession: getCliSessionSummaryForTask(task.id),
-    cliSessions: cliSessions.length > 0 ? cliSessions : undefined,
-  };
-}
-
-// Default history window for the agent-facing serializer. Agents need the
-// recent conversation, not the full archaeology — older entries stay on disk
-// and are reported via `olderHistoryEntries`.
-const AGENT_HISTORY_LIMIT = 20;
-
-// AXI #3 (content truncation + size hint, FLUX-879) for the ticket `body` in the
-// agent view. The body is load-bearing (the plan / acceptance criteria live there),
-// so the threshold is GENEROUS — normal tickets are never touched; this targets only
-// pathological bodies that would otherwise dominate the get_ticket payload on every
-// read (agent-payload-metrics measures `body` as its own section). ~12k chars ≈ 3k tokens.
-export const AGENT_BODY_LIMIT = 12_000;
-
-/**
- * Truncate an oversized ticket `body` for the agent view, mirroring the history
- * truncation idiom: keep the head and append a recoverable size hint with an
- * opt-in escape hatch (`get_ticket(..., fullBody:true)`). Returns `{}` when the
- * body should pass through untouched (escape hatch set, not a string, or under the
- * limit) so the caller's `...task` body is left intact; returns the truncated body
- * plus `bodyTruncated`/`bodyOmittedChars` signals only when it actually trims. Pure
- * + exported for unit test (mirrors the `evaluateWorktreeReadyRefusal` idiom).
- */
-export function truncateBodyForAgent(
-  body: unknown,
-  fullBody?: boolean,
-): { body?: string; bodyTruncated?: true; bodyOmittedChars?: number } {
-  if (fullBody || typeof body !== 'string' || body.length <= AGENT_BODY_LIMIT) return {};
-  const omitted = body.length - AGENT_BODY_LIMIT;
-  const head = body.slice(0, AGENT_BODY_LIMIT);
-  return {
-    body: `${head}\n\n…[${omitted} of ${body.length} body chars omitted to save context — pass fullBody:true to get_ticket, or open the ticket, to see all]`,
-    bodyTruncated: true,
-    bodyOmittedChars: omitted,
-  };
-}
-
-/**
- * Agent-facing serializer for the MCP `get_ticket` tool. Unlike
- * {@link serializeTaskForApi} it digests `agent_session` history entries to
- * one-line summaries (dropping `progress[]`, which is per-second output noise
- * from prior sessions and the dominant weight on heavily-worked tickets) and
- * windows history to the most recent entries. REST detail stays full-fat for
- * the portal. Use `get_session_log` semantics (fetch by sessionId) for raw
- * progress when an agent genuinely needs it.
- */
-export function serializeTaskForAgent(task: TaskRecord, historyLimit?: number, opts: { expand?: string[] | undefined; fullHistory?: boolean | undefined; fullBody?: boolean | undefined } = {}) {
-  const keepRecent = configCache?.commentDigest?.keepRecent ?? 3;
-  const fullHistory = Array.isArray(task.history) ? task.history : [];
-  const { history, olderHistoryEntries, collapsedCount } = digestHistoryForAgent(
-    fullHistory,
-    historyLimit ?? AGENT_HISTORY_LIMIT,
-    keepRecent,
-    opts,
-  );
-  // FLUX-480: always surface the last few user-authored comments (even if they
-  // fall outside the history window) and the persisted launch focus, plus cheap
-  // boolean/timestamp flags so routing/preview consumers (FLUX-478/483) can read
-  // them without pulling full history.
-  const keepUserComments = configCache?.commentDigest?.recentUserComments ?? 3;
-  const recentUserComments = extractRecentUserComments(fullHistory, keepUserComments);
-  const launchFocus = extractLaunchFocus(fullHistory);
-  const cliSession = getCliSessionSummaryForTask(task.id);
-  const cliSessions = getListSessionSummariesForTask(task.id).map(slimSessionSummaryForAgent);
-  return {
-    ...task,
-    // AXI #3 body truncation (FLUX-879): override the spread `body` only when oversized.
-    ...truncateBodyForAgent(task.body, opts.fullBody),
-    // FLUX-985: coerce nullable/absent frontmatter. A hand-edited or legacy ticket can carry
-    // status/priority/effort/assignee = null or tags = null (an empty YAML line parses to null),
-    // and the engine's own validator permits it. The MCP get_ticket outputSchema is strict on
-    // these declared fields — and .optional() REJECTS null — so an un-coerced null would make the
-    // whole read return "Output validation error" instead of the ticket. Normalize to the same
-    // defaults create_ticket uses so agents never see null (FLUX-950 regression).
-    status: task.status ?? '',
-    priority: task.priority ?? 'None',
-    effort: task.effort ?? 'None',
-    assignee: task.assignee ?? 'unassigned',
-    tags: Array.isArray(task.tags) ? task.tags.filter((x) => typeof x === 'string') : [],
-    history,
-    ...(olderHistoryEntries > 0 ? { olderHistoryEntries } : {}),
-    ...(collapsedCount ? { collapsedCount } : {}),
-    ...(recentUserComments.length > 0
-      ? {
-          recentUserComments,
-          hasUserComments: true,
-          lastUserCommentAt: recentUserComments[recentUserComments.length - 1]!.date,
-        }
-      : { hasUserComments: false }),
-    ...(launchFocus ? { launchFocus: launchFocus.launchFocus, hasLaunchFocus: true } : {}),
-    cliSession: cliSession ? slimSessionSummaryForAgent(cliSession) : undefined,
-    cliSessions: cliSessions.length > 0 ? cliSessions : undefined,
-  };
-}
-
-/**
- * Terminal statuses shared by the MCP `list_tickets` active-by-default screen
- * (FLUX-489) and the REST `GET /api/tasks?active=true` filter (FLUX-970) — one
- * definition so both surfaces agree on what "resting" means.
- */
-export function getTerminalStatuses(): string[] {
-  return ['Done', 'Released', configCache?.archiveStatus || 'Archived'];
-}
-
-/**
- * List-endpoint serializer. Like {@link serializeTaskForApi} but attaches a
- * capped `cliSessions[]` (active sessions + most-recent completed group, with
- * truncated `liveOutput`) so `GET /api/tasks` payload doesn't grow with session
- * history. The detail endpoint keeps {@link serializeTaskForApi}.
- */
-export function serializeTaskForList(task: TaskRecord) {
-  const cliSessions = getListSessionSummariesForTask(task.id);
-  // FLUX-725: replace the raw `history[]` (fetched + parsed on every ~3s poll / `taskUpdated` SSE on
-  // a large board) with a compact derived `historyDigest` the cards + attention surfaces read for
-  // their aggregates (flow arrows, done-streak, rust, time-in-column, speed-demon, unread, require-
-  // input). The bulk — every status_change, activity, and terminal agent_session (the latter carrying
-  // long finalMessage/summary/token metadata) — is dropped. We KEEP the entry types the card renders
-  // INLINE: `comment` (the hover comment popover shows text + threaded replies) and the ACTIVE
-  // agent_session (the card's inline live-progress reads it, keyed by sessionId). The detail endpoint
-  // (serializeTaskForApi) still carries full `history` for the modal/chat, which lazy-fetch on open.
-  const fullHistory = Array.isArray(task.history) ? task.history : [];
-  const { history: _history, ...rest } = task;
-  // FLUX-957: collect the inline-rendered entries in the same pass buildHistoryDigest already
-  // makes over fullHistory, instead of a second O(n) `.filter`. Comments and active sessions are
-  // collected into separate buckets (each tagged with its traversal index) so FLUX-1144 can cap
-  // comments to the most recent few below without disturbing the active-session entries or the
-  // original relative order once both buckets are merged back together.
-  const commentEntries: Array<{ i: number; e: HistoryEntryLike }> = [];
-  const sessionEntries: Array<{ i: number; e: HistoryEntryLike }> = [];
-  let entryIndex = 0;
-  const historyDigest = buildHistoryDigest(fullHistory, task.status, task.swimlane, undefined, (e) => {
-    const i = entryIndex++;
-    if (e?.type === 'comment') commentEntries.push({ i, e });
-    else if (e?.type === 'agent_session' && e?.status === 'active') sessionEntries.push({ i, e });
-  }, task.planReviewState as string | null | undefined);
-  // FLUX-1144: comments were ~50% of a full-board list response (4,257 comments / 11MB measured
-  // 2026-07-05) — the hover popover only ever needs recent context at a glance ("Open in full
-  // view" reads the complete thread off the detail endpoint). Cap the full-text comments shipped
-  // here to the most recent `keepRecent`; board-wide unread badges + "mark all read" already read
-  // comment ids from `historyDigest.comments` (full, text-free) rather than this array, so capping
-  // it only changes which comments render inline on hover, not what counts as read/unread.
-  const keepRecentComments = configCache?.commentDigest?.keepRecent ?? 3;
-  const keptComments = keepRecentComments > 0 ? commentEntries.slice(-keepRecentComments) : [];
-  const inlineHistory = [...keptComments, ...sessionEntries]
-    .sort((a, b) => a.i - b.i)
-    .map(({ e }) => e);
-  return {
-    ...rest,
-    history: inlineHistory,
-    historyDigest,
-    // FLUX-1144: truncates `liveOutput` to a short tail — see getListCliSessionSummaryForTask.
-    cliSession: getListCliSessionSummaryForTask(task.id),
-    cliSessions: cliSessions.length > 0 ? cliSessions : undefined,
-  };
-}
 
 export async function readTaskFromDisk(task: TaskRecord): Promise<{ frontmatter: TaskFrontmatter; body: string }> {
   const fallbackFromCache = () => {
@@ -329,7 +111,7 @@ export function updateAgentSession(taskId: string, sessionId: string, updater: (
 }
 
 async function updateAgentSessionLocked(taskId: string, sessionId: string, updater: (session: Record<string, unknown>) => void) {
-  const task = tasksCache[taskId];
+  const task = getWorkspace().tasks[taskId];
   if (!task) return null;
 
   const { frontmatter, body } = await readTaskFromDisk(task);
@@ -386,8 +168,8 @@ async function updateAgentSessionLocked(taskId: string, sessionId: string, updat
   const fileContent = matter.stringify(body, frontmatter);
   recentEngineWrites.add(task._path);
   await atomicWriteFile(task._path, fileContent);
-  tasksCache[taskId] = { ...frontmatter, body, id: taskId, _path: task._path };
-  return tasksCache[taskId];
+  getWorkspace().tasks[taskId] = { ...frontmatter, body, id: taskId, _path: task._path };
+  return getWorkspace().tasks[taskId];
 }
 
 // Per-ticket write serialization (FLUX-645). With a single shared MCP server, concurrent
@@ -447,7 +229,7 @@ async function updateTaskWithHistoryLocked(taskId: string, options: {
   tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean; cacheReadTokens?: number; cacheCreationTokens?: number } | undefined;
   appendSubtask?: string;
 }) {
-  const task = tasksCache[taskId];
+  const task = getWorkspace().tasks[taskId];
   if (!task) return null;
 
   const actor = options.updatedBy || task.updatedBy || 'Agent';
@@ -465,13 +247,26 @@ async function updateTaskWithHistoryLocked(taskId: string, options: {
   ).history;
 
   if (options.nextStatus && frontmatter.status !== options.nextStatus) {
-    entries.push({
-      type: 'status_change',
-      from: frontmatter.status,
-      to: options.nextStatus,
-      user: actor,
-      date: activityTimestamp,
+    // FLUX-1044: the REST PUT route (now routed through this helper too) can already carry a
+    // matching status_change among its entries — the portal's FLUX-725 writers send the move
+    // (with its required comment) as an appendHistory delta, and a stale full-history submission
+    // can contain one as well (FLUX-1311). Only auto-append the fallback entry when none of the
+    // caller's entries records this exact transition, so a portal move doesn't get a second,
+    // comment-less duplicate. MCP callers never pass status_change entries, so this is a no-op
+    // for them.
+    const callerRecordedMove = entries.some((raw) => {
+      const e = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : undefined;
+      return e?.type === 'status_change' && e?.from === frontmatter.status && e?.to === options.nextStatus;
     });
+    if (!callerRecordedMove) {
+      entries.push({
+        type: 'status_change',
+        from: frontmatter.status,
+        to: options.nextStatus,
+        user: actor,
+        date: activityTimestamp,
+      });
+    }
     frontmatter.status = options.nextStatus;
     // FLUX-651: any real status move is a board action — clear the "agent parked" flag so the
     // ticket stops showing as Needs Action (covers the agent advancing it AND the user moving
@@ -532,11 +327,11 @@ async function updateTaskWithHistoryLocked(taskId: string, options: {
   const fileContent = matter.stringify(useBody || '', frontmatter);
   recentEngineWrites.add(_path);
   await atomicWriteFile(_path, fileContent);
-  tasksCache[taskId] = { ...frontmatter, body: useBody, id: taskId, _path };
+  getWorkspace().tasks[taskId] = { ...frontmatter, body: useBody, id: taskId, _path };
 
   if (options.nextStatus) {
-    const requireInputStatus = configCache.requireInputStatus || 'Require Input';
-    const readyStatus = configCache.readyForMergeStatus || 'Ready';
+    const requireInputStatus = getConfig().requireInputStatus || 'Require Input';
+    const readyStatus = getConfig().readyForMergeStatus || 'Ready';
     if (options.nextStatus === requireInputStatus || options.nextStatus === readyStatus) {
       generatePromptNotification(taskId, frontmatter.title || taskId, options.nextStatus);
     } else if (options.nextStatus === 'Done') {
@@ -544,39 +339,7 @@ async function updateTaskWithHistoryLocked(taskId: string, options: {
     }
   }
 
-  return tasksCache[taskId];
-}
-
-/**
- * Normalize a ticket's `subtasks` frontmatter (string ids or legacy inline `{id}` objects)
- * to a plain string[] of child ids. Shared by the parent/subtask link sync (FLUX-1068).
- */
-export function subtaskIds(subtasks: unknown): string[] {
-  return (Array.isArray(subtasks) ? subtasks : [])
-    .map((s) => (typeof s === 'string' ? s : s?.id))
-    .filter(Boolean);
-}
-
-/**
- * Guard against self-parenting and cycles before (re)linking a child to a parent (FLUX-1068).
- * Walks the prospective parent's ancestor chain via the cache; if it reaches the child, the link
- * would create a cycle (A→B→A). Returns a human-readable error string, or null when the link is
- * valid. A pre-existing cycle in the data stops the walk rather than looping forever.
- */
-export function validateParentLink(childId: string, newParentId: string | null | undefined): string | null {
-  if (!newParentId) return null;
-  if (newParentId === childId) return `Cannot set ${childId} as its own parent.`;
-  const seen = new Set<string>();
-  let cursor: string | null | undefined = newParentId;
-  while (cursor) {
-    if (cursor === childId) {
-      return `Cannot set parent ${newParentId} on ${childId}: it would create a cycle (${childId} is already an ancestor of ${newParentId}).`;
-    }
-    if (seen.has(cursor)) break; // pre-existing cycle in the data — don't loop
-    seen.add(cursor);
-    cursor = tasksCache[cursor]?.parentId || null;
-  }
-  return null;
+  return getWorkspace().tasks[taskId];
 }
 
 /**
@@ -599,7 +362,7 @@ export async function syncParentSubtaskLinks(opts: {
   const newSubtasks = opts.newSubtasks ?? [];
 
   const writeParentSubtasks = async (parentId: string, subtasks: string[]) => {
-    const parent = tasksCache[parentId];
+    const parent = getWorkspace().tasks[parentId];
     if (!parent) return;
     const parentRaw = await fs.readFile(parent._path, 'utf-8');
     const parentParsed = matter(parentRaw);
@@ -607,12 +370,12 @@ export async function syncParentSubtaskLinks(opts: {
     parentParsed.data.updatedBy = actor;
     recentEngineWrites.add(parent._path);
     await atomicWriteFile(parent._path, matter.stringify(parentParsed.content, parentParsed.data));
-    tasksCache[parentId] = { ...tasksCache[parentId], subtasks, updatedBy: actor };
+    getWorkspace().tasks[parentId] = { ...getWorkspace().tasks[parentId], subtasks, updatedBy: actor };
     broadcastEvent('taskUpdated', { id: parentId });
   };
 
   const writeChildParent = async (childId: string, parentId: string | null) => {
-    const child = tasksCache[childId];
+    const child = getWorkspace().tasks[childId];
     if (!child) return;
     const childRaw = await fs.readFile(child._path, 'utf-8');
     const childParsed = matter(childRaw);
@@ -621,19 +384,19 @@ export async function syncParentSubtaskLinks(opts: {
     childParsed.data.updatedBy = actor;
     recentEngineWrites.add(child._path);
     await atomicWriteFile(child._path, matter.stringify(childParsed.content, childParsed.data));
-    tasksCache[childId] = { ...tasksCache[childId], parentId: parentId ?? undefined, updatedBy: actor };
+    getWorkspace().tasks[childId] = { ...getWorkspace().tasks[childId], parentId: parentId ?? undefined, updatedBy: actor };
     broadcastEvent('taskUpdated', { id: childId });
   };
 
   // parentId changed → remove from old parent's subtasks, add to new parent's subtasks.
   if (newParentId !== oldParentId) {
-    if (oldParentId && tasksCache[oldParentId]) {
-      const cur = subtaskIds(tasksCache[oldParentId].subtasks);
+    if (oldParentId && getWorkspace().tasks[oldParentId]) {
+      const cur = subtaskIds(getWorkspace().tasks[oldParentId].subtasks);
       const filtered = cur.filter((sid) => sid !== id);
       if (filtered.length !== cur.length) await writeParentSubtasks(oldParentId, filtered);
     }
-    if (newParentId && tasksCache[newParentId]) {
-      const cur = subtaskIds(tasksCache[newParentId].subtasks);
+    if (newParentId && getWorkspace().tasks[newParentId]) {
+      const cur = subtaskIds(getWorkspace().tasks[newParentId].subtasks);
       if (!cur.includes(id)) await writeParentSubtasks(newParentId, [...cur, id]);
     }
   }
@@ -643,15 +406,15 @@ export async function syncParentSubtaskLinks(opts: {
   const addedChildren = newSubtasks.filter((sid) => !oldSubtasks.includes(sid));
 
   for (const childId of removedChildren) {
-    const child = tasksCache[childId];
+    const child = getWorkspace().tasks[childId];
     if (child && child.parentId === id) await writeChildParent(childId, null);
   }
   for (const childId of addedChildren) {
-    const child = tasksCache[childId];
+    const child = getWorkspace().tasks[childId];
     if (child && child.parentId !== id) {
       // Remove the child from its previous parent's subtasks before re-linking it here.
-      if (child.parentId && tasksCache[child.parentId]) {
-        const prev = subtaskIds(tasksCache[child.parentId].subtasks).filter((sid) => sid !== childId);
+      if (child.parentId && getWorkspace().tasks[child.parentId]) {
+        const prev = subtaskIds(getWorkspace().tasks[child.parentId].subtasks).filter((sid) => sid !== childId);
         await writeParentSubtasks(child.parentId, prev);
       }
       await writeChildParent(childId, id);
@@ -723,13 +486,13 @@ async function getMaxIdFromRemote(projectKey: string): Promise<number> {
 }
 
 export async function createTask(options: CreateTaskOptions): Promise<CreateTaskResult> {
-  const pKey = options.projectKey || configCache.projects?.[0] || 'FLUX';
+  const pKey = options.projectKey || getConfig().projects?.[0] || 'FLUX';
   // FLUX-1225: scratch chats live in their own `SCRATCH-n` id namespace so they never consume the
   // `FLUX-n` sequence and are trivially distinguishable from board tickets. The counter is scanned
   // (cache + remote) against this prefix, so scratch and project ids increment independently.
   const idPrefix = options.kind === 'scratch' ? 'SCRATCH' : pKey;
   let maxId = 0;
-  Object.keys(tasksCache).forEach((key) => {
+  Object.keys(getWorkspace().tasks).forEach((key) => {
     if (key.startsWith(`${idPrefix}-`)) {
       const num = parseInt(key.replace(`${idPrefix}-`, ''), 10);
       if (!isNaN(num) && num > maxId) maxId = num;
@@ -783,12 +546,12 @@ export async function createTask(options: CreateTaskOptions): Promise<CreateTask
   const fileContent = matter.stringify(body, frontmatter);
   recentEngineWrites.add(filePath);
   await atomicWriteFile(filePath, fileContent);
-  tasksCache[nextId] = { ...frontmatter, body, id: nextId, _path: filePath };
+  getWorkspace().tasks[nextId] = { ...frontmatter, body, id: nextId, _path: filePath };
   if (!options.skipBroadcast) {
     broadcastEvent('taskCreated', { id: nextId, ...(options.parentId && { parentId: options.parentId }) });
   }
 
-  return { id: nextId, task: tasksCache[nextId] };
+  return { id: nextId, task: getWorkspace().tasks[nextId] };
 }
 
 /**
@@ -800,8 +563,8 @@ export async function createTask(options: CreateTaskOptions): Promise<CreateTask
  * `extractTicket` (FLUX-738) to remove an orphan card when the curation op fails to persist.
  */
 export async function deleteTask(id: string): Promise<void> {
-  const task = tasksCache[id];
-  delete tasksCache[id];
+  const task = getWorkspace().tasks[id];
+  delete getWorkspace().tasks[id];
   if (task?._path) {
     await fs.unlink(task._path).catch(() => {});
   }
@@ -824,7 +587,7 @@ export async function upsertManagedTicket(
   fields: Record<string, unknown>,
   body = '',
 ): Promise<{ task: TaskRecord; created: boolean; changed: boolean }> {
-  const existing = tasksCache[id];
+  const existing = getWorkspace().tasks[id];
   const fieldsChanged = !existing || Object.entries(fields).some(([k, v]) => JSON.stringify(existing[k]) !== JSON.stringify(v));
   // A non-empty `body` that differs forces a rewrite (e.g. a gh PR description changed but no
   // field did — FLUX-751). An empty `body` arg never marks changed: it means "keep existing
@@ -844,9 +607,9 @@ export async function upsertManagedTicket(
 
   recentEngineWrites.add(filePath);
   await atomicWriteFile(filePath, matter.stringify(useBody, frontmatter));
-  tasksCache[id] = { ...frontmatter, body: useBody, id, _path: filePath };
+  getWorkspace().tasks[id] = { ...frontmatter, body: useBody, id, _path: filePath };
   broadcastEvent(existing ? 'taskUpdated' : 'taskCreated', { id });
-  return { task: tasksCache[id], created: !existing, changed: true };
+  return { task: getWorkspace().tasks[id], created: !existing, changed: true };
 }
 
 /**
@@ -931,138 +694,6 @@ export async function normalizeInlineSubtasks(frontmatter: Record<string, unknow
   return normalizedIds;
 }
 
-/** Shape of a raw (pre-repair) history entry — every field is unverified, hence all-optional. */
-interface RepairableHistoryEntry {
-  type?: string;
-  from?: string;
-  to?: string;
-  oldStatus?: string;
-  newStatus?: string;
-  comment?: string;
-  sessionId?: string;
-  date?: string;
-  user?: string;
-  [key: string]: unknown;
-}
-
-/**
- * Attempt to repair common schema violations in-place before validation.
- * Returns a list of repairs made, or empty array if nothing was fixed.
- */
-export function repairTicket(frontmatter: Record<string, unknown>, filePath: string): string[] {
-  const repairs: string[] = [];
-
-  // Missing/invalid status → default to a safe fallback so a repaired ticket never lands in
-  // the cache with status: undefined, which crashes the portal's column lookup (FLUX-1076: a
-  // conflicted flux-data merge left tickets with corrupt frontmatter that repaired a title but
-  // not a status). "Todo" mirrors the default createTask/normalizeInlineSubtasks already use
-  // for brand-new tickets, so a recovered ticket lands wherever new work normally starts.
-  if (typeof frontmatter.status !== 'string' || !frontmatter.status.trim()) {
-    frontmatter.status = 'Todo';
-    repairs.push('Recovered missing/invalid status → "Todo"');
-  }
-
-  // Missing title → derive from filename
-  if (!frontmatter.title || (typeof frontmatter.title === 'string' && !frontmatter.title.trim())) {
-    const derived = path.basename(filePath, '.md');
-    frontmatter.title = `${derived} (recovered)`;
-    repairs.push(`Recovered missing title from filename → "${frontmatter.title}"`);
-  }
-
-  // Repair history entries
-  if (Array.isArray(frontmatter.history)) {
-    for (let i = 0; i < frontmatter.history.length; i++) {
-      const entry = frontmatter.history[i] as RepairableHistoryEntry | null | undefined;
-      if (!entry || typeof entry !== 'object') continue;
-
-      // oldStatus/newStatus → from/to
-      if (entry.type === 'status_change') {
-        if (entry.from == null && typeof entry.oldStatus === 'string') {
-          entry.from = entry.oldStatus;
-          delete entry.oldStatus;
-          repairs.push(`history[${i}]: renamed oldStatus → from`);
-        }
-        if (entry.to == null && typeof entry.newStatus === 'string') {
-          entry.to = entry.newStatus;
-          delete entry.newStatus;
-          repairs.push(`history[${i}]: renamed newStatus → to`);
-        }
-      }
-
-      // Infer missing type from entry shape
-      if (!entry.type || typeof entry.type !== 'string') {
-        if (typeof entry.from === 'string' && typeof entry.to === 'string') {
-          entry.type = 'status_change';
-          repairs.push(`history[${i}]: inferred type "status_change" from from/to fields`);
-        } else if (typeof entry.oldStatus === 'string' && typeof entry.newStatus === 'string') {
-          entry.type = 'status_change';
-          entry.from = entry.oldStatus;
-          entry.to = entry.newStatus;
-          delete entry.oldStatus;
-          delete entry.newStatus;
-          repairs.push(`history[${i}]: inferred type "status_change", renamed oldStatus/newStatus → from/to`);
-        } else if (typeof entry.comment === 'string' && entry.comment.trim()) {
-          entry.type = 'comment';
-          repairs.push(`history[${i}]: inferred type "comment" from comment field`);
-        } else if (typeof entry.sessionId === 'string') {
-          entry.type = 'agent_session';
-          repairs.push(`history[${i}]: inferred type "agent_session" from sessionId field`);
-        }
-      }
-
-      // Fix malformed dates
-      if (entry.date && typeof entry.date === 'string') {
-        const parsed = new Date(entry.date);
-        if (Number.isNaN(parsed.getTime())) {
-          const relaxed = new Date(entry.date.replace(/[^\d\-T:.Z+]/g, ''));
-          const relaxedYear = relaxed.getFullYear();
-          if (!Number.isNaN(relaxed.getTime()) && relaxedYear >= 2020 && relaxedYear <= 2030) {
-            entry.date = relaxed.toISOString();
-            repairs.push(`history[${i}]: repaired malformed date`);
-          } else {
-            entry.date = new Date().toISOString();
-            repairs.push(`history[${i}]: replaced unparseable date with current timestamp`);
-          }
-        }
-      } else if (!entry.date) {
-        entry.date = new Date().toISOString();
-        repairs.push(`history[${i}]: added missing date`);
-      }
-
-      // Ensure user field
-      if (!entry.user || typeof entry.user !== 'string') {
-        entry.user = 'Unknown';
-        repairs.push(`history[${i}]: set missing user to "Unknown"`);
-      }
-    }
-  }
-
-  // subtasks containing inline objects with id → extract to string array
-  if (Array.isArray(frontmatter.subtasks)) {
-    let subtasksRepaired = false;
-    frontmatter.subtasks = frontmatter.subtasks
-      .map((entry: unknown): string | null => {
-        if (typeof entry === 'string') return entry;
-        if (entry && typeof entry === 'object' && typeof (entry as { id?: unknown }).id === 'string') {
-          subtasksRepaired = true;
-          return (entry as { id: string }).id;
-        }
-        if (entry && typeof entry === 'object') {
-          // id-less inline object — normalizeInlineSubtasks should have handled
-          // this on load; warn rather than silently discarding (FLUX-286).
-          console.warn(`[repairTicket] Discarding id-less inline subtask object in ${path.basename(filePath, '.md')} — expected normalization on load`);
-        }
-        return null;
-      })
-      .filter((entry): entry is string => entry != null);
-    if (subtasksRepaired) {
-      repairs.push('Normalized inline subtask objects to string IDs');
-    }
-  }
-
-  return repairs;
-}
-
 export async function loadTask(filePath: string) {
   // FLUX-1132: thin timing wrapper — every exit path (including the early-return guards below)
   // feeds `store.loadTask`, so the histogram reflects the real call rate off the file watcher.
@@ -1108,8 +739,8 @@ async function loadTaskInner(filePath: string) {
         ? `contains unresolved git conflict markers (<<<<<<< / ======= / >>>>>>>) — a sync merge committed an unresolved conflict. Resolve the markers (keep both history entries, chronological order) and save again.`
         : `YAML frontmatter is invalid: ${msg}`;
       console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  ${detail}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
-      delete tasksCache[id];
-      parseErrors[id] = { id, path: filePath, error: detail };
+      delete getWorkspace().tasks[id];
+      getWorkspace().parseErrors[id] = { id, path: filePath, error: detail };
       return;
     }
 
@@ -1117,7 +748,7 @@ async function loadTaskInner(filePath: string) {
     // file lost it (and other critical fields), this is a corrupt/partial write —
     // ignore it rather than repairing it into a "(recovered)" zombie.
     const existingId = parsed.data.id || path.basename(filePath, '.md');
-    const existingCached = tasksCache[existingId];
+    const existingCached = getWorkspace().tasks[existingId];
     if (existingCached && existingCached.title && !parsed.data.title && !parsed.data.status) {
       console.warn(`[loadTask] Ignoring corrupt write for ${existingId}: file lost title+status while cache has "${existingCached.title}". Likely a partial write or unauthorized direct edit.`);
       return;
@@ -1152,8 +783,8 @@ async function loadTaskInner(filePath: string) {
         const summary = formatValidationErrors(postRepairErrors);
         console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  Schema validation failed (auto-repair insufficient):\n${summary}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
         const id = path.basename(filePath, '.md');
-        delete tasksCache[id];
-        parseErrors[id] = { id, path: filePath, error: `Schema validation failed (auto-repair attempted but insufficient):\n${summary}` };
+        delete getWorkspace().tasks[id];
+        getWorkspace().parseErrors[id] = { id, path: filePath, error: `Schema validation failed (auto-repair attempted but insufficient):\n${summary}` };
         return;
       }
     }
@@ -1170,7 +801,7 @@ async function loadTaskInner(filePath: string) {
     // dropped when a spawned agent rewrites the ticket file. The agent only knows
     // about a subset of entry types and may silently discard the rest.
     let historyReinjected = false;
-    const existingTask = tasksCache[id];
+    const existingTask = getWorkspace().tasks[id];
     if (existingTask && Array.isArray(existingTask.history)) {
       const fileSessionIds = new Set(
         history.filter((e) => e?.type === 'agent_session').map((e) => e.sessionId)
@@ -1218,12 +849,12 @@ async function loadTaskInner(filePath: string) {
     if (validationErrors.length > 0) {
       const summary = formatValidationErrors(validationErrors);
       console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  Schema validation failed:\n${summary}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
-      delete tasksCache[id];
-      parseErrors[id] = { id, path: filePath, error: `Schema validation failed:\n${summary}` };
+      delete getWorkspace().tasks[id];
+      getWorkspace().parseErrors[id] = { id, path: filePath, error: `Schema validation failed:\n${summary}` };
       return;
     }
 
-    tasksCache[id] = {
+    getWorkspace().tasks[id] = {
       ...normalizedFrontmatter,
       id,
       body: parsed.content,
@@ -1231,7 +862,7 @@ async function loadTaskInner(filePath: string) {
     };
 
     // Clear any previous parse error for this ticket
-    delete parseErrors[id];
+    delete getWorkspace().parseErrors[id];
 
     if (normalizedHistory.changed || subtasksNormalized || historyReinjected || historyCompacted) {
       const normalizedContent = matter.stringify(parsed.content, normalizedFrontmatter);
@@ -1266,7 +897,7 @@ export async function loadDoc(filePath: string) {
     const directory = docPath.includes('/') ? docPath.slice(0, docPath.lastIndexOf('/')) : '';
     const slugSource = docPath.split('/').filter(Boolean).pop() || docPath;
 
-    docsCache[docPath] = {
+    getWorkspace().docs[docPath] = {
       path: docPath,
       title,
       body: parsed.content.replace(/\r\n/g, '\n'),
@@ -1327,7 +958,7 @@ export async function loadGroupDoc(storeDir: string, filePath: string) {
     const directory = docPath.slice(0, docPath.lastIndexOf('/'));
     const slugSource = docPath.split('/').filter(Boolean).pop() || docPath;
 
-    docsCache[docPath] = {
+    getWorkspace().docs[docPath] = {
       path: docPath,
       title,
       body: parsed.content.replace(/\r\n/g, '\n'),
@@ -1389,7 +1020,7 @@ export async function reconcileOrphanedSessions() {
   const now = new Date().toISOString();
   let recoveredCount = 0;
 
-  for (const task of Object.values(tasksCache)) {
+  for (const task of Object.values(getWorkspace().tasks)) {
     const history: HistoryEntryLike[] = Array.isArray(task.history) ? task.history : [];
 
     // Find all active agent_session entries
@@ -1480,9 +1111,9 @@ async function seedStarterDocs(docsDir: string): Promise<void> {
   const entries = await fs.readdir(docsDir).catch(() => [] as string[]);
   if (entries.length > 0) return;
 
-  const projects: string[] = Array.isArray(configCache.projects) ? configCache.projects : [];
+  const projects: string[] = Array.isArray(getConfig().projects) ? getConfig().projects : [];
   const projectKey = projects[0]
-    || path.basename(workspaceRoot || 'PROJECT').toUpperCase().replace(/[^A-Z0-9_-]/g, '')
+    || path.basename(getWorkspaceRoot() || 'PROJECT').toUpperCase().replace(/[^A-Z0-9_-]/g, '')
     || 'PROJECT';
 
   const overviewFile = path.join(docsDir, 'project-overview.md');
@@ -1552,11 +1183,11 @@ export async function initDir() {
  * and swimlane set to 'require-input'. This runs after all tasks are loaded.
  */
 async function migrateRequireInputToSwimlane() {
-  const hasSwimlanes = configCache.swimlanes && configCache.swimlanes.length > 0;
+  const hasSwimlanes = getConfig().swimlanes && getConfig().swimlanes.length > 0;
   if (!hasSwimlanes) return;
 
-  const requireInputStatus = configCache.requireInputStatus || 'Require Input';
-  const tasksToMigrate = Object.values(tasksCache).filter(
+  const requireInputStatus = getConfig().requireInputStatus || 'Require Input';
+  const tasksToMigrate = Object.values(getWorkspace().tasks).filter(
     (task) => task.status === requireInputStatus && !task.swimlane
   );
 
@@ -1592,15 +1223,14 @@ async function migrateRequireInputToSwimlane() {
   }
 }
 
-let activeFluxWatcher: ReturnType<typeof chokidar.watch> | null = null;
-let activeDocsWatcher: ReturnType<typeof chokidar.watch> | null = null;
-let activeGroupDocsWatcher: ReturnType<typeof chokidar.watch> | null = null;
+// FLUX-343: the three chokidar watcher handles live on the Workspace object now
+// (getWorkspace().fluxWatcher / .docsWatcher / .groupDocsWatcher).
 
 // FLUX-1184: shared by the watcher's 'unlink' handler below and reconcileBackgroundPull — a
 // ticket's frontmatter `id` can differ from its filename, so prefer the cache entry whose
 // `_path` matches before falling back to the basename.
 function findTaskIdForPath(filePath: string): string {
-  const taskEntry = Object.entries(tasksCache).find(([, task]) => task._path === filePath);
+  const taskEntry = Object.entries(getWorkspace().tasks).find(([, task]) => task._path === filePath);
   return taskEntry?.[0] || path.basename(filePath, '.md');
 }
 
@@ -1619,21 +1249,22 @@ export async function reconcileBackgroundPull(storeDir: string, changedRelativeP
       await loadTask(filePath);
     } else {
       const id = findTaskIdForPath(filePath);
-      delete tasksCache[id];
+      delete getWorkspace().tasks[id];
       log.info(`Removed task: ${id} (background sync pull)`);
     }
   }
 }
 
 export async function startWatchers() {
-  if (activeFluxWatcher) { await activeFluxWatcher.close(); activeFluxWatcher = null; }
-  if (activeDocsWatcher) { await activeDocsWatcher.close(); activeDocsWatcher = null; }
-  if (activeGroupDocsWatcher) { await activeGroupDocsWatcher.close(); activeGroupDocsWatcher = null; }
+  const ws = getWorkspace();
+  if (ws.fluxWatcher) { await ws.fluxWatcher.close(); ws.fluxWatcher = null; }
+  if (ws.docsWatcher) { await ws.docsWatcher.close(); ws.docsWatcher = null; }
+  if (ws.groupDocsWatcher) { await ws.groupDocsWatcher.close(); ws.groupDocsWatcher = null; }
 
   const fluxDir = getActiveFluxDir();
   const configFile = path.join(fluxDir, 'config.json');
 
-  activeFluxWatcher = chokidar.watch(fluxDir, {
+  ws.fluxWatcher = chokidar.watch(fluxDir, {
     ignored: (filePath: string) => {
       const basename = path.basename(filePath);
       if (basename.endsWith('.tmp')) return true;
@@ -1656,7 +1287,7 @@ export async function startWatchers() {
     persistent: true,
   });
 
-  activeFluxWatcher
+  ws.fluxWatcher
     .on('add', (filePath) => {
       // FLUX-1132: count reload events the watcher actually triggers (not every fs event chokidar
       // sees — e.g. our own write-back is filtered out inside loadTask, not here).
@@ -1686,7 +1317,7 @@ export async function startWatchers() {
     .on('unlink', (filePath) => {
       if (isTopLevelTaskFile(filePath)) {
         const id = findTaskIdForPath(filePath);
-        delete tasksCache[id];
+        delete getWorkspace().tasks[id];
         log.info(`Removed task: ${id}`);
       }
     })
@@ -1695,7 +1326,7 @@ export async function startWatchers() {
     // the whole engine. Degrade to "file-sync paused" instead of crashing the board.
     .on('error', (err) => console.error('[watcher:flux] file-sync paused:', err));
 
-  activeDocsWatcher = chokidar.watch(getDocsDir(), {
+  ws.docsWatcher = chokidar.watch(getDocsDir(), {
     ignored: (filePath: string) => {
       const basename = path.basename(filePath);
       return basename.startsWith('.') && basename !== '.docs';
@@ -1708,12 +1339,12 @@ export async function startWatchers() {
 
   const isPricingFile = (filePath: string) => path.basename(filePath) === 'model-pricing.md';
 
-  activeDocsWatcher
+  ws.docsWatcher
     .on('add', (filePath) => { if (isDocFile(filePath)) { void loadDoc(filePath); if (isPricingFile(filePath)) void loadPricingDoc(); } })
     .on('change', (filePath) => { if (isDocFile(filePath)) { void loadDoc(filePath); if (isPricingFile(filePath)) void loadPricingDoc(); } })
     .on('unlink', (filePath) => {
       const docPath = getDocPathFromFile(filePath);
-      if (docPath) { delete docsCache[docPath]; log.info(`Removed doc: ${docPath}`); }
+      if (docPath) { delete getWorkspace().docs[docPath]; log.info(`Removed doc: ${docPath}`); }
     })
     .on('error', (err) => console.error('[watcher:docs] file-sync paused:', err)); // FLUX-784
 }
@@ -1723,11 +1354,12 @@ export async function startWatchers() {
  * fan-out / mapping run. No-op in single-repo mode. Called after activateGroup.
  */
 export async function startGroupDocsWatcher() {
-  if (activeGroupDocsWatcher) { await activeGroupDocsWatcher.close(); activeGroupDocsWatcher = null; }
+  const ws = getWorkspace();
+  if (ws.groupDocsWatcher) { await ws.groupDocsWatcher.close(); ws.groupDocsWatcher = null; }
   const storeDir = activeGroupStoreDir();
   if (!storeDir) return;
 
-  activeGroupDocsWatcher = chokidar.watch(storeDir, {
+  ws.groupDocsWatcher = chokidar.watch(storeDir, {
     ignored: (filePath: string) => path.basename(filePath) === '.git',
     ignoreInitial: true,
     persistent: true,
@@ -1736,19 +1368,29 @@ export async function startGroupDocsWatcher() {
   const reload = (filePath: string) => {
     if (filePath.toLowerCase().endsWith('.md')) void loadGroupDoc(storeDir, filePath);
   };
-  activeGroupDocsWatcher
+  ws.groupDocsWatcher
     .on('add', reload)
     .on('change', reload)
     .on('unlink', (filePath) => {
       const docPath = groupDocPathFromFile(storeDir, filePath);
-      if (docPath) { delete docsCache[docPath]; log.info(`Removed group doc: ${docPath}`); }
+      if (docPath) { delete getWorkspace().docs[docPath]; log.info(`Removed group doc: ${docPath}`); }
     })
     .on('error', (err) => console.error('[watcher:group-docs] file-sync paused:', err)); // FLUX-784
 }
 
 
+/**
+ * FLUX-343: every activation runs through the ActivationLock so two concurrent switch calls
+ * (portal workspace picker + storage-mode migration + boot, all of which call this) serialize
+ * instead of interleaving cache-clear / watcher teardown / root reassignment. The lock lives on
+ * the Workspace object; `isActivating` stays the cheap read-only signal downstream guards check.
+ */
 export async function activateWorkspace(newRoot: string): Promise<string> {
-  workspaceActivating = true;
+  return getWorkspace().activationLock.runExclusive(() => doActivateWorkspace(newRoot));
+}
+
+async function doActivateWorkspace(newRoot: string): Promise<string> {
+  getWorkspace().isActivating = true;
   // FLUX-1216 review fix: arm the post-restart reclaim grace synchronously, right here, BEFORE any
   // async work in this function runs (including the pruneTaskWorktrees fire-and-forget call below).
   // Previously this was armed only from the activeFluxWatcher 'ready' handler further down, AFTER
@@ -1775,9 +1417,9 @@ export async function activateWorkspace(newRoot: string): Promise<string> {
     // flag can't diverge for a short/symlinked root (FLUX-711). Throws if missing, so guard it.
     try { newRoot = realpathSync.native(newRoot); } catch { /* missing/unresolvable — keep as given */ }
     setWorkspaceRoot(newRoot);
-    tasksCache = {};
-    docsCache = {};
-    parseErrors = {};
+    getWorkspace().tasks = {};
+    getWorkspace().docs = {};
+    getWorkspace().parseErrors = {};
     clearNotifications();
     log.info(`Workspace: ${newRoot}`);
     await bootstrapNewWorkspace();
@@ -1820,19 +1462,34 @@ export async function activateWorkspace(newRoot: string): Promise<string> {
     await loadGroupDocs();
     await startGroupDocsWatcher();
     seedPromptNotifications();
-    const modulesToProbe = Array.isArray(configCache.modules) ? configCache.modules : [];
+    const modulesToProbe = Array.isArray(getConfig().modules) ? getConfig().modules : [];
     probeAllEnabled(modulesToProbe).catch(() => {});
     return newRoot; // the canonical bound root — callers persist/respond with THIS (FLUX-711)
   } finally {
-    workspaceActivating = false;
+    // FLUX-1338: the task set was swapped out wholesale for a different workspace, but this path
+    // fires no per-task taskUpdated/Created/Deleted event (and the watchers rescan with
+    // ignoreInitial), so `tasksVersion` — which the GET /api/tasks ETag is keyed on — would
+    // otherwise stay put across the switch. Bump it so every cached conditional-GET ETag from the
+    // previous workspace is invalidated; without this the portal's first post-switch poll gets a
+    // 304 and the board keeps rendering the OLD workspace's tickets until an unrelated mutation or
+    // a hard reload. The bump MUST sit here at the END of activation, not next to the task-set
+    // clear above: the engine keeps serving GET /api/tasks throughout the multi-second activation
+    // (requireWorkspace doesn't gate on isActivating), so an early bump would let a mid-activation
+    // poll cache a fresh ETag over the EMPTY/partial task set — and since the bulk reload in
+    // initDir() broadcasts no per-task events, nothing would ever invalidate it and the board
+    // would stick on an empty board. Bumping in `finally` also invalidates ETags handed out
+    // mid-activation when activation FAILS after clearing the tasks; a mid-activation 200 over a
+    // partial set remains possible but self-heals on the next poll.
+    bumpTasksVersion();
+    getWorkspace().isActivating = false;
     recordWorkspaceActivation(performance.now() - __activateWorkspaceStartedAt);
   }
 }
 
 function seedPromptNotifications() {
-  const requireInputStatus = configCache.requireInputStatus || 'Require Input';
-  const readyStatus = configCache.readyForMergeStatus || 'Ready';
-  for (const task of Object.values(tasksCache)) {
+  const requireInputStatus = getConfig().requireInputStatus || 'Require Input';
+  const readyStatus = getConfig().readyForMergeStatus || 'Ready';
+  for (const task of Object.values(getWorkspace().tasks)) {
     if (task.swimlane === 'require-input') {
       generatePromptNotification(task.id, task.title || task.id, 'Require Input');
     } else if (task.status === requireInputStatus || task.status === readyStatus) {

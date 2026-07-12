@@ -1,6 +1,8 @@
 import type { CliSessionSummary, CliSessionStatus, ExecutionPattern, GroupVariant } from './types';
 
-export const ACTIVE_SESSION_STATUSES: CliSessionStatus[] = ['pending', 'running', 'waiting-input'];
+// FLUX-1390: 'scheduled' is a session honoring a ScheduleWakeup call — asleep, not idle or done; it
+// must read as active everywhere this list gates (dots, pulses, "any active session" checks, …).
+export const ACTIVE_SESSION_STATUSES: CliSessionStatus[] = ['pending', 'running', 'waiting-input', 'scheduled'];
 
 /** FLUX-803: normalized names of the MCP tools that spawn a subagent group. Mirrors the engine's
  *  `DELEGATION_TOOLS` (projection.ts) — the projector tags these tool rows with `tool`, and the
@@ -234,8 +236,16 @@ export function groupAggregateLine(group: SessionGroup, agg: GroupAggregate): st
  * stamped with a supervisor groupId but no delegates — yields null, so the rail/block never appear
  * for the common single-session case (the `isMulti` flag is supervisor-true even when solo, so it is
  * deliberately NOT used here). When the current chat session isn't itself a 2+ group lead, falls back
- * to the newest 2+ group that is still LIVE — so a live run still resolves, but a stale completed run
- * from a prior phase never surfaces as a surprise block on an unrelated later chat.
+ * to the newest 2+ group regardless of whether any of its sessions are still live (FLUX-1334) — so a
+ * finished hand-off run persists as the durable collapsed chip across minimize/reopen instead of
+ * vanishing once its sessions terminate. `groupSessions` already orders groups newest-first, so this
+ * still can't have an old run shadow a newer one. Critically, the fallback only fires when the
+ * newest group *of any size* on the ticket is the 2+ one — if a later, unrelated phase started its
+ * own (even solo) session since, that later group is the newest and the fallback yields null instead
+ * of resurrecting the stale run. Without this, a stale durable group would shadow a later solo
+ * `delegate` call's own transcript row forever (FLUX-1334 review). The live-only presence rail is
+ * gated separately on `.some(isActiveSession)` at the call sites, so this relaxation does not
+ * resurrect it for a dead run.
  */
 export function selectChatRunGroup(
   task: { cliSession?: CliSessionSummary | null; cliSessions?: CliSessionSummary[] },
@@ -244,7 +254,8 @@ export function selectChatRunGroup(
   const gid = task.cliSession?.groupId;
   const byLead = gid ? groups.find((g) => g.groupId === gid && g.sessions.length >= 2) : undefined;
   if (byLead) return byLead;
-  return groups.find((g) => g.sessions.length >= 2 && g.sessions.some(isActiveSession)) ?? null;
+  const newest = groups[0];
+  return newest && newest.sessions.length >= 2 ? newest : null;
 }
 
 /** Minimal shape of the FLUX-626 live-session slice this module reads (avoids a store import). */
@@ -277,6 +288,8 @@ export function statusDotColor(status: CliSessionStatus): string {
       return 'text-emerald-500';
     case 'waiting-input':
       return 'text-amber-500';
+    case 'scheduled':
+      return 'text-sky-500';
     case 'failed':
     case 'cancelled':
       return 'text-red-500';
@@ -298,6 +311,8 @@ export function statusDotLabel(status: CliSessionStatus): string {
       return 'pending';
     case 'waiting-input':
       return 'needs input';
+    case 'scheduled':
+      return 'scheduled';
     case 'failed':
       return 'failed';
     case 'cancelled':

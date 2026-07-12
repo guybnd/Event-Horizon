@@ -5,14 +5,14 @@
 // (board.ts) passed into `makeBoardAdapter`. Lifted out of claude-board.ts, which is now just
 // the Claude `BoardSpec`.
 import type { ChildProcessWithoutNullStreams, spawn } from 'child_process';
-import { configCache } from '../config.js';
+import { getConfig } from '../config.js';
 import { broadcastEvent } from '../events.js';
 import { appendTranscriptEvent } from '../transcript.js';
 import { generateOrchestratorReplyNotification } from '../notifications.js';
 import { buildBoardDigest } from '../board-digest.js';
 import { buildResumePreamble } from '../resume-preamble.js';
 import { buildBoardReprime } from '../board-reprime.js';
-import { workspaceRoot as canonicalWorkspaceRoot } from '../workspace.js';
+import { getWorkspaceRoot } from '../workspace.js';
 import type { CliSessionRecord, SendInputOptions } from './types.js';
 import { checkBinaryInstalled, appendSessionOutput, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction } from './shared.js';
 import { BOARD_CONVERSATION_ID, type BoardAdapter, type BoardSpec } from './board.js';
@@ -40,7 +40,7 @@ function defaultBoardIdentity(key: string): string {
 // non-board virtual conversation) doesn't need the whole-board digest prepended, so callers pass
 // `false` for it; defaults to `true` so every other/existing call site (board turns) is unaffected.
 export function buildBoardPrompt(firstMessage: string, priorContext?: string, identity?: string, includeDigest: boolean = true): string {
-  const key = configCache.projects?.[0] || 'PROJECT';
+  const key = getConfig().projects?.[0] || 'PROJECT';
   const digest = includeDigest ? buildBoardDigest() : '';
   // FLUX-1211: a personaId-only silent boot (no user-typed text) must never fabricate a fake user
   // message — but the spawned CLI still needs a well-formed final line. This internal instruction
@@ -131,7 +131,7 @@ async function startBoardSession(spec: BoardSpec, session: CliSessionRecord, fir
     // sinceIso from the last prior transcript turn's ts — the in-memory lastOutputAt is gone
     // after restart. Board scope has no branch → preamble degrades to ticket-movement only.
     resumePreamble = await buildResumePreamble({
-      workspaceRoot: canonicalWorkspaceRoot ?? workspaceRoot,
+      workspaceRoot: getWorkspaceRoot() ?? workspaceRoot,
       sinceIso: reprime.sinceIso,
     });
   }
@@ -191,7 +191,7 @@ async function sendBoardInput(spec: BoardSpec, session: CliSessionRecord, messag
   let resumePreamble: string | null = null;
   if (session.resumeSessionId) {
     resumePreamble = await buildResumePreamble({
-      workspaceRoot: canonicalWorkspaceRoot ?? workspaceRoot,
+      workspaceRoot: getWorkspaceRoot() ?? workspaceRoot,
       sinceIso,
     });
     if (resumePreamble) {

@@ -1,11 +1,12 @@
+import { getWorkspace } from '../workspace-context.js';
 import { log } from '../log.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as path from 'path';
-import { configCache } from '../config.js';
+import { getConfig } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentSessionEntry } from '../history.js';
-import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
+import { updateTaskWithHistory, updateAgentSession, estimateCostUSD } from '../task-store.js';
 import { resolveTaskExecutionRoot, resolveResumeExecutionRoot, assertIsolatedSpawnRoot } from '../task-worktree.js';
-import { workspaceRoot as canonicalWorkspaceRoot } from '../workspace.js';
+import { getWorkspaceRoot } from '../workspace.js';
 import { notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { emitOperationEvent, type OperationOutcome } from '../operation-telemetry.js';
@@ -24,7 +25,7 @@ import { ensureSharedServer, getSharedServerUrl, isSharedHttpPlatformProven } fr
 import { buildResumePreamble } from '../resume-preamble.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest, SendInputOptions } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote, resolveModel } from './shared.js';
 import { BOARD_CONVERSATION_ID } from './board.js';
 
 /**
@@ -56,7 +57,7 @@ function buildModuleServerMap(phase?: string, tags?: string[], projectPath?: str
   // for THIS session's execution root so a worktree session gets its own server,
   // not the workspace-root one. Falls back to the workspace root for board /
   // single-checkout sessions (no distinct worktree path) — same behavior as before.
-  const lookupPath = projectPath || canonicalWorkspaceRoot || '';
+  const lookupPath = projectPath || getWorkspaceRoot() || '';
   for (const m of getActiveModules(phase, tags)) {
     // Shared HTTP path: one server per (module, worktree), on proven platforms.
     if (m.sharedHttp && isSharedHttpPlatformProven()) {
@@ -169,7 +170,7 @@ export function filterMcpServersByPhase(
 }
 
 export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string, conversationId?: string): string[] {
-  const serverPhases = configCache.mcpServerPhases as Record<string, string[]> | undefined;
+  const serverPhases = getConfig().mcpServerPhases as Record<string, string[]> | undefined;
   const hasProfiles = !!serverPhases && typeof serverPhases === 'object' && Object.keys(serverPhases).length > 0;
   if (!hasProfiles) return buildModuleMcpConfigArgs(phase, tags, projectPath, conversationId);
 
@@ -209,7 +210,7 @@ export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], project
 // module servers (.mcp.json/user/global also load, not enumerated). In strict
 // mode the list is exactly what the agent gets.
 export function getEffectiveSpawnServers(phase?: string, tags?: string[]): { strict: boolean; servers: string[]; note: string } {
-  const serverPhases = configCache.mcpServerPhases as Record<string, string[]> | undefined;
+  const serverPhases = getConfig().mcpServerPhases as Record<string, string[]> | undefined;
   const hasProfiles = !!serverPhases && typeof serverPhases === 'object' && Object.keys(serverPhases).length > 0;
   if (!hasProfiles) {
     return {
@@ -374,7 +375,7 @@ export function isRateLimitError(message: string | undefined | null): boolean {
 }
 
 /** Claude Code `--output-format stream-json` content block (`assistant`/`user` message content[]). */
-interface ClaudeContentBlock {
+export interface ClaudeContentBlock {
   type?: string;
   text?: string;
   name?: string;
@@ -410,6 +411,42 @@ interface ClaudeCliEvent {
   api_error_status?: number;
   result?: string;
   tool_name?: string;
+  /** FLUX-1378: per-model breakdown the CLI reports alongside a `result` event's `usage` — the only
+   *  place `contextWindow` is surfaced. Keyed by model id; a turn that only used the main model has
+   *  one entry, but a turn with haiku sub-agent calls can carry several — pick the entry with the
+   *  most tokens as the "driving" model for the live-context gauge. */
+  modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; contextWindow?: number }>;
+}
+
+/**
+ * FLUX-1378 (absorbing FLUX-1375 step 6): compute the ticket-level `tokenMetadata` delta to persist
+ * for this session, and advance the session's flushed baselines so a LATER flush (e.g. a resumed
+ * turn's exit handler) only adds what accumulated SINCE this flush — session.inputTokens/etc. keep
+ * accumulating for the session's whole lifetime (they also drive the live per-session cost badge),
+ * so flushing the raw cumulative value a second time would double-count everything the first flush
+ * already persisted. Returns null when nothing new accumulated (nothing to write).
+ */
+export function buildTokenMetadataUpdate(taskId: string, session: CliSessionRecord) {
+  const deltaInput = (session.inputTokens ?? 0) - (session.flushedInputTokens ?? 0);
+  const deltaOutput = (session.outputTokens ?? 0) - (session.flushedOutputTokens ?? 0);
+  if (deltaInput <= 0 && deltaOutput <= 0) return null;
+  const deltaCost = (session.costUSD ?? 0) - (session.flushedCostUSD ?? 0);
+  const deltaCacheRead = (session.cacheReadTokens ?? 0) - (session.flushedCacheReadTokens ?? 0);
+  const deltaCacheCreation = (session.cacheCreationTokens ?? 0) - (session.flushedCacheCreationTokens ?? 0);
+  const prev = getWorkspace().tasks[taskId]?.tokenMetadata || { inputTokens: 0, outputTokens: 0, costUSD: 0 };
+  session.flushedInputTokens = session.inputTokens ?? 0;
+  session.flushedOutputTokens = session.outputTokens ?? 0;
+  session.flushedCostUSD = session.costUSD ?? 0;
+  session.flushedCacheReadTokens = session.cacheReadTokens ?? 0;
+  session.flushedCacheCreationTokens = session.cacheCreationTokens ?? 0;
+  return {
+    inputTokens: (prev.inputTokens ?? 0) + deltaInput,
+    outputTokens: (prev.outputTokens ?? 0) + deltaOutput,
+    costUSD: parseFloat(((prev.costUSD ?? 0) + deltaCost).toFixed(6)),
+    costIsEstimated: prev.costIsEstimated || session.costIsEstimated || false,
+    cacheReadTokens: (prev.cacheReadTokens ?? 0) + deltaCacheRead,
+    cacheCreationTokens: (prev.cacheCreationTokens ?? 0) + deltaCacheCreation,
+  };
 }
 
 export function attachStdoutProcessing(
@@ -574,6 +611,8 @@ export function attachStdoutProcessing(
               // FLUX-981: remember id→name so a later `user` tool_result carrying is_error can be
               // labeled with the tool that failed (the result block carries only tool_use_id).
               (session.toolNamesById ??= {})[block.id] = block.name;
+              // FLUX-1390: stage an honored ScheduleWakeup call; consumed at turn-end.
+              if (block.name === 'ScheduleWakeup') captureScheduledWakeup(session, block);
             }
           }
         } else {
@@ -605,6 +644,19 @@ export function attachStdoutProcessing(
             session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.resumeSessionId, inputTok, outputTok);
             session.costIsEstimated = true;
           }
+          // FLUX-1378: live (non-cumulative) context-headroom gauge — overwritten every `result`
+          // event, unlike the accumulators above. `inputTok` here already sums fresh+cache-read+
+          // cache-creation, i.e. exactly the session's context size as of THIS turn.
+          session.lastTurnContextTokens = inputTok;
+          const modelEntries = evt.modelUsage ? Object.values(evt.modelUsage) : [];
+          if (modelEntries.length > 0) {
+            const primary = modelEntries.reduce((best, cur) => {
+              const curTok = (cur.inputTokens ?? 0) + (cur.cacheReadInputTokens ?? 0) + (cur.cacheCreationInputTokens ?? 0);
+              const bestTok = (best.inputTokens ?? 0) + (best.cacheReadInputTokens ?? 0) + (best.cacheCreationInputTokens ?? 0);
+              return curTok > bestTok ? cur : best;
+            });
+            if (typeof primary.contextWindow === 'number') session.contextWindow = primary.contextWindow;
+          }
         }
         if (evt.type === 'tool_use_blocked' || (evt.type === 'result' && evt.is_error && /permission|not allowed|denied/i.test(String(evt.error || '')))) {
           const reason = evt.tool_name
@@ -616,7 +668,7 @@ export function attachStdoutProcessing(
           enqueueSessionWrite(session, async () => {
             await updateTaskWithHistory(taskId, {
               updatedBy: 'Agent',
-              nextStatus: configCache.requireInputStatus || 'Require Input',
+              nextStatus: getConfig().requireInputStatus || 'Require Input',
               entries: [buildActivityEntry(`${session.label} blocked: ${reason}`, 'Agent', new Date().toISOString())],
             });
           });
@@ -704,10 +756,192 @@ export const FILE_MUTATION_TOOLS = [
 // import live.
 export { isChatEditGated };
 
+// FLUX-1389 / FLUX-1390: `ScheduleWakeup` (the /loop dynamic-mode self-pacing tool) ends the current
+// turn expecting a persistent runtime to honor the wakeup and resume it later. Every dispatched phase
+// session is a one-shot `claude -p` process that exits at turn end (see startCliSession above) —
+// there is no runtime left to honor it by default, so the wakeup silently no-ops and the ticket gets
+// parked as "review completed without a verdict" (real incident: FLUX-1378). Block it for every
+// session EXCEPT `chat` (genuinely interactive/resumable already) — UNLESS `agents.honorScheduledWakeups`
+// is on, in which case the block is lifted and the wakeup is actually honored (captureScheduledWakeup /
+// tryEnterScheduledWake below): the ticket sleeps in the `scheduled` state and the engine resumes it via
+// `--resume` at wakeAt. Off by default, so FLUX-1389's block stays byte-identical until opted in.
+// `undefined` phase (ad-hoc API launches, no explicit phase) is treated as an unattended dispatch too —
+// same rationale as isDispatchedSession's `session.phase !== 'chat'` check.
 export function disallowedToolsArgs(session: { phase?: CliSessionRecord['phase'] | undefined }, task: { status?: string | undefined } | undefined): string[] {
   const tools = ['AskUserQuestion'];
+  if (session.phase !== 'chat' && !honorScheduledWakeupsEnabled()) tools.push('ScheduleWakeup');
   if (isChatEditGated(session, task)) tools.push(...FILE_MUTATION_TOOLS);
   return ['--disallowed-tools', ...tools];
+}
+
+/** FLUX-1390: is the opt-in ScheduleWakeup-honoring path on? Default off (see CONFIG_DEFAULTS.agents). */
+export function honorScheduledWakeupsEnabled(): boolean {
+  return getConfig().agents?.honorScheduledWakeups === true;
+}
+
+// FLUX-1390: bounds so an honored ScheduleWakeup can't wedge a ticket asleep forever — mirrors
+// ScheduleWakeup's own runtime clamp for the delay, and caps how many times one session may
+// re-sleep before failing closed to a normal terminal end.
+const MIN_SCHEDULED_WAKE_DELAY_SECONDS = 60;
+const MAX_SCHEDULED_WAKE_DELAY_SECONDS = 3600;
+const MAX_SCHEDULED_WAKE_RESUMES = 5;
+
+/**
+ * FLUX-1390: called for every `ScheduleWakeup` tool_use block seen in a dispatched (non-chat) turn's
+ * stream. Stages the requested wakeup on the session as `pendingWakeAt`/`pendingWakeReason` — NOT
+ * committed yet, since the turn might still error out before exiting cleanly. `tryEnterScheduledWake`
+ * (below) consumes the pending pair at turn-end and decides whether to actually honor it. A no-op
+ * when the flag is off or this is a chat session (chat manages its own resumability already) — belt
+ * and braces alongside `disallowedToolsArgs`, which should have kept the call from ever reaching the
+ * model in either case.
+ */
+export function captureScheduledWakeup(session: CliSessionRecord, block: ClaudeContentBlock): void {
+  if (session.phase === 'chat' || !honorScheduledWakeupsEnabled()) return;
+  const rawDelay = Number(block.input?.delaySeconds);
+  if (!Number.isFinite(rawDelay)) return;
+  const seconds = Math.min(Math.max(rawDelay, MIN_SCHEDULED_WAKE_DELAY_SECONDS), MAX_SCHEDULED_WAKE_DELAY_SECONDS);
+  session.pendingWakeAt = new Date(Date.now() + seconds * 1000).toISOString();
+  const reason = typeof block.input?.reason === 'string' ? block.input.reason.trim() : '';
+  // exactOptionalPropertyTypes: `delete` instead of assigning `undefined`.
+  if (reason) session.pendingWakeReason = reason;
+  else delete session.pendingWakeReason;
+}
+
+/**
+ * FLUX-1390: consumed at turn-end (both the initial spawn's and a resumed reply's exit handler) to
+ * decide whether a ScheduleWakeup call staged this turn should actually put the session to sleep.
+ * Returns true — and mutates `session` into the `scheduled` state — only for a clean (`code === 0`),
+ * non-cancelled, non-paused-for-input turn that staged a wakeup, the flag is (still) on, and this
+ * session hasn't already spent its resume budget. Every other case clears the pending fields and
+ * returns false so the caller falls through to its normal terminal finalization — the fail-closed
+ * side of the bound (a session that keeps trying to sleep past its cap just ends normally instead of
+ * looping forever).
+ */
+export function tryEnterScheduledWake(session: CliSessionRecord, code: number | null): boolean {
+  if (!session.pendingWakeAt) return false;
+  // Any non-clean turn end (crash, user stop, Require-Input pause) or the flag being off must clear
+  // the staged pending pair here — otherwise a stale pendingWakeAt from THIS turn would leak into a
+  // later, unrelated clean turn that never called ScheduleWakeup itself, sleeping it on an already-
+  // elapsed timestamp (self-heals via one extra wake-ticker cycle, but wastes a scheduledResumeCount).
+  if (session.requestedStop || session.pausedForInput || code !== 0 || !honorScheduledWakeupsEnabled()) {
+    delete session.pendingWakeAt;
+    delete session.pendingWakeReason;
+    return false;
+  }
+  if ((session.scheduledResumeCount ?? 0) >= MAX_SCHEDULED_WAKE_RESUMES) {
+    appendErrorToSession(session, `ScheduleWakeup ignored — this session has already self-scheduled ${MAX_SCHEDULED_WAKE_RESUMES} wakeup(s); ending the turn normally instead of sleeping again.`);
+    delete session.pendingWakeAt;
+    delete session.pendingWakeReason;
+    return false;
+  }
+  session.status = 'scheduled';
+  session.wakeAt = session.pendingWakeAt;
+  if (session.pendingWakeReason) session.wakeReason = session.pendingWakeReason;
+  else delete session.wakeReason;
+  delete session.pendingWakeAt;
+  delete session.pendingWakeReason;
+  delete session.endedAt;
+  return true;
+}
+
+/**
+ * FLUX-1390: shared terminal finalization for a session ending completed/failed/cancelled — token
+ * flush into the task's cumulative `tokenMetadata`, closing the persisted `agent_session` history
+ * entry (or the old-behavior fallback activity entry), the final-comment write, `flagIfParked`, the
+ * delegation/group-fan-in barriers, and `checkAutoRestart`. Originally only `startCliSession`'s
+ * initial-spawn exit handler ran this. A wake-resumed turn that finishes cleanly (no further sleep)
+ * is just as terminal and needs the identical bookkeeping — otherwise the board-visible history entry
+ * stays frozen at "scheduled" forever and that turn's tokens/cost silently never reach the ticket's
+ * total. Factored here so both call sites share one implementation instead of drifting out of sync.
+ */
+async function finalizeTerminalSession(
+  session: CliSessionRecord,
+  id: string,
+  finalStatus: 'completed' | 'failed' | 'cancelled',
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): Promise<void> {
+  const label = session.label;
+  const outcome = session.requestedStop
+    ? `${label} session stopped by user.`
+    : `${label} session ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
+
+  // FLUX-981: a nonzero/signal exit that the user did NOT cancel surfaces inline in the chat, in
+  // addition to the outcome/activity record below. `finalStatus` is 'failed' ONLY for a genuine
+  // failure — requestedStop maps to 'cancelled'. Await the write queue so the injected ⚠️ line lands
+  // in progress[] before it's snapshotted below.
+  if (finalStatus === 'failed') {
+    const stderrHint = session.stderrCapture?.trim();
+    const fullMessage = stderrHint ? `${outcome}\n${stderrHint}` : outcome;
+    appendErrorToSession(session, fullMessage);
+    await session.writeQueue;
+  }
+
+  // FLUX-849: bracket the dispatched session's board narration with a terminal marker.
+  teeDispatchActivityToBoard(session, id, finalStatus, DISPATCH_LIFECYCLE_LABEL[finalStatus]);
+
+  // FLUX-1378 merge: use the delta-against-flushed-baseline helper (not a naive cumulative add) so a
+  // session that flushes tokens more than once — a resumed turn (FLUX-1378) or a wake-resume finalize
+  // (FLUX-1390, the other caller of this helper) — doesn't double-count what an earlier flush already
+  // rolled into the ticket's tokenMetadata. Returns null when there's no un-flushed delta.
+  const tokenUpdate = buildTokenMetadataUpdate(id, session);
+
+  // Close the session entry with outcome and flush accumulated progress
+  if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
+    const accumulatedProgress = session.sessionHistoryEntry.progress || [];
+    await updateAgentSession(id, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
+      sessionEntry.status = finalStatus;
+      sessionEntry.outcome = outcome;
+      sessionEntry.endedAt = session.endedAt;
+      // Merge in-memory progress accumulated during the session
+      sessionEntry.progress = accumulatedProgress;
+    });
+
+    // Save the agent's final message as a comment on the ticket
+    const textEntries = accumulatedProgress.filter((p) => p.type === 'text' && p.message?.trim());
+    const lastText = textEntries.length > 0 ? textEntries[textEntries.length - 1]?.message : '';
+    if (lastText && finalStatus === 'completed') {
+      const maxCommentLen = 3000;
+      const commentBody = lastText.length > maxCommentLen ? lastText.slice(0, maxCommentLen) + '...' : lastText;
+      await updateTaskWithHistory(id, {
+        updatedBy: 'Agent',
+        entries: [buildCommentEntry(label, commentBody, session.endedAt!)],
+        tokenMetadata: tokenUpdate ?? undefined,
+      });
+    } else if (tokenUpdate) {
+      await updateTaskWithHistory(id, {
+        updatedBy: 'Agent',
+        entries: [],
+        tokenMetadata: tokenUpdate,
+      });
+    }
+  } else {
+    // Fallback to old behavior
+    await updateTaskWithHistory(id, {
+      updatedBy: 'Agent',
+      entries: [buildActivityEntry(outcome, 'Agent', session.endedAt!)],
+      tokenMetadata: tokenUpdate ?? undefined,
+    });
+  }
+
+  if (finalStatus === 'completed') {
+    checkFrameworkHealth(session.framework).catch(() => {});
+    checkSkillStaleness(session.framework).catch(() => {});
+    // FLUX-651: a phase session that ended cleanly but left the ticket in a working status
+    // without taking a board action gets flagged Needs Action (surface, don't auto-resume).
+    await flagIfParked(session, id);
+  }
+
+  // Notify delegation awaiters (supervisor pattern).
+  notifyDelegationComplete(session);
+
+  // Fan-in: if this session belongs to a run group, a deferred combiner may
+  // be waiting for every worker to finish. Notify the barrier.
+  if (session.groupId) {
+    notifyGroupSessionTerminal(session.taskId, session.groupId).catch(() => {});
+  }
+
+  checkAutoRestart();
 }
 
 export async function startCliSession(session: CliSessionRecord, task: ClaudeTask, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
@@ -725,13 +959,15 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
 
   await checkBinaryInstalled(binaryName);
 
-  const claudeIntegration = configCache.integrations?.claudeCode;
-  const groomingStatuses = [configCache.requireInputStatus || 'Require Input', 'Grooming'];
-  const selectedModel = claudeIntegration && framework === 'claude'
-    ? (groomingStatuses.includes(task.status) ? claudeIntegration.groomingModel : claudeIntegration.implementationModel)
+  // FLUX-1373: resolve via the task-tier policy (session.taskKey -> modelPolicy.assignments ->
+  // integrations.claudeCode.tiers), superseding the old status-based groomingModel/implementationModel
+  // fields. session.taskKey is stamped by createPendingSession at spawn time; a missing value (a
+  // pre-migration in-flight session) falls back to implementation.lead.
+  const selectedModel = framework === 'claude'
+    ? resolveModel(session.taskKey ?? 'implementation.lead', framework, getConfig())
     : null;
 
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { diffBlock: session.diffBlock, phase: session.phase, framework: 'claude', editsGated: isChatEditGated(session, task) });
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { diffBlock: session.diffBlock, phase: session.phase, framework: 'claude', editsGated: isChatEditGated(session, task), patternPosition: session.patternPosition });
 
   // FLUX-579: ensure this session's per-worktree shared HTTP server(s) exist (keyed
   // by execution root) before building the MCP config that looks them up.
@@ -757,7 +993,7 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
   ];
 
   const effortCap = CLI_CAPABILITIES[framework].effort;
-  const globalEffort = configCache.effortLevel as string | undefined;
+  const globalEffort = getConfig().effortLevel as string | undefined;
   const taskEffort = task.effortLevel;
   const effectiveEffort = (session.effortOverride || effortOverrideRaw || taskEffort || globalEffort || '') as string;
   if (effortCap.supported && effortCap.flag && EFFORT_LEVELS.includes(effectiveEffort as EffortLevel)) {
@@ -955,6 +1191,23 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
     flushSessionOutput(session, true);
     await session.writeQueue;
 
+    // FLUX-1390: an honored ScheduleWakeup call sleeps the session instead of finalizing it — see
+    // tryEnterScheduledWake. decideTicketAction treats 'scheduled' as `wait` (never a false "no
+    // verdict" park) and the wake ticker (scheduled-wake.ts) resumes this same session via
+    // `--resume` once wakeAt passes.
+    if (tryEnterScheduledWake(session, code)) {
+      const wakeHistoryEntry = session.sessionHistoryEntry;
+      if (wakeHistoryEntry?.sessionId) {
+        await updateAgentSession(id, wakeHistoryEntry.sessionId, (sessionEntry) => {
+          sessionEntry.status = 'scheduled';
+          sessionEntry.outcome = `${label} scheduled a wakeup — resumes at ${session.wakeAt}.`;
+          sessionEntry.progress = wakeHistoryEntry.progress || [];
+        });
+      }
+      broadcastEvent('taskUpdated', { id });
+      return;
+    }
+
     let finalStatus: 'completed' | 'failed' | 'cancelled' | 'waiting-input';
     if (session.requestedStop) {
       session.endedAt = new Date().toISOString();
@@ -986,19 +1239,7 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
     // Paused for user input — session stays alive and resumable. Flush tokens
     // but do NOT mark as terminal, notify barriers, or log an "ended" activity.
     if (finalStatus === 'waiting-input') {
-      const tokenUpdate = (session.inputTokens ?? 0) > 0 || (session.outputTokens ?? 0) > 0
-        ? (() => {
-            const prev = tasksCache[id]?.tokenMetadata || { inputTokens: 0, outputTokens: 0, costUSD: 0 };
-            return {
-              inputTokens: (prev.inputTokens ?? 0) + (session.inputTokens ?? 0),
-              outputTokens: (prev.outputTokens ?? 0) + (session.outputTokens ?? 0),
-              costUSD: parseFloat(((prev.costUSD ?? 0) + (session.costUSD ?? 0)).toFixed(6)),
-              costIsEstimated: prev.costIsEstimated || session.costIsEstimated || false,
-              cacheReadTokens: (prev.cacheReadTokens ?? 0) + (session.cacheReadTokens ?? 0),
-              cacheCreationTokens: (prev.cacheCreationTokens ?? 0) + (session.cacheCreationTokens ?? 0),
-            };
-          })()
-        : null;
+      const tokenUpdate = buildTokenMetadataUpdate(id, session);
       if (tokenUpdate) {
         await updateTaskWithHistory(id, { updatedBy: 'Agent', entries: [], tokenMetadata: tokenUpdate });
       }
@@ -1019,96 +1260,8 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
       return;
     }
 
-    const outcome = session.requestedStop
-      ? `${label} session stopped by user.`
-      : `${label} session ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
-
-    // FLUX-981: a nonzero/signal exit that the user did NOT cancel surfaces inline in the chat, in
-    // addition to the outcome/activity record below. `finalStatus` is 'failed' ONLY for a genuine
-    // failure — requestedStop maps to 'cancelled' and pausedForInput returned above — so this keeps
-    // the cancelled-guard: a user-stopped session is never reported as an error. Await the write
-    // queue so the injected ⚠️ line lands in progress[] before it's snapshotted below.
-    if (finalStatus === 'failed') {
-      const stderrHint = session.stderrCapture?.trim();
-      const fullMessage = stderrHint ? `${outcome}\n${stderrHint}` : outcome;
-      appendErrorToSession(session, fullMessage);
-      await session.writeQueue;
-    }
-
-    // FLUX-849: bracket the dispatched session's board narration with a terminal marker.
     // `finalStatus` here is one of completed / failed / cancelled (waiting-input returns above).
-    teeDispatchActivityToBoard(session, id, finalStatus, DISPATCH_LIFECYCLE_LABEL[finalStatus]);
-
-    const tokenUpdate = (session.inputTokens ?? 0) > 0 || (session.outputTokens ?? 0) > 0
-      ? (() => {
-          const prev = tasksCache[id]?.tokenMetadata || { inputTokens: 0, outputTokens: 0, costUSD: 0 };
-          return {
-            inputTokens: (prev.inputTokens ?? 0) + (session.inputTokens ?? 0),
-            outputTokens: (prev.outputTokens ?? 0) + (session.outputTokens ?? 0),
-            costUSD: parseFloat(((prev.costUSD ?? 0) + (session.costUSD ?? 0)).toFixed(6)),
-            costIsEstimated: prev.costIsEstimated || session.costIsEstimated || false,
-            cacheReadTokens: (prev.cacheReadTokens ?? 0) + (session.cacheReadTokens ?? 0),
-            cacheCreationTokens: (prev.cacheCreationTokens ?? 0) + (session.cacheCreationTokens ?? 0),
-          };
-        })()
-      : null;
-
-    // Close the session entry with outcome and flush accumulated progress
-    if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
-      const accumulatedProgress = session.sessionHistoryEntry.progress || [];
-      await updateAgentSession(id, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
-        sessionEntry.status = finalStatus;
-        sessionEntry.outcome = outcome;
-        sessionEntry.endedAt = session.endedAt;
-        // Merge in-memory progress accumulated during the session
-        sessionEntry.progress = accumulatedProgress;
-      });
-
-      // Save the agent's final message as a comment on the ticket
-      const textEntries = accumulatedProgress.filter((p) => p.type === 'text' && p.message?.trim());
-      const lastText = textEntries.length > 0 ? textEntries[textEntries.length - 1]?.message : '';
-      if (lastText && finalStatus === 'completed') {
-        const maxCommentLen = 3000;
-        const commentBody = lastText.length > maxCommentLen ? lastText.slice(0, maxCommentLen) + '...' : lastText;
-        await updateTaskWithHistory(id, {
-          updatedBy: 'Agent',
-          entries: [buildCommentEntry(label, commentBody, session.endedAt!)],
-          tokenMetadata: tokenUpdate ?? undefined,
-        });
-      } else if (tokenUpdate) {
-        await updateTaskWithHistory(id, {
-          updatedBy: 'Agent',
-          entries: [],
-          tokenMetadata: tokenUpdate,
-        });
-      }
-    } else {
-      // Fallback to old behavior
-      await updateTaskWithHistory(id, {
-        updatedBy: 'Agent',
-        entries: [buildActivityEntry(outcome, 'Agent', session.endedAt!)],
-        tokenMetadata: tokenUpdate ?? undefined,
-      });
-    }
-
-    if (finalStatus === 'completed') {
-      checkFrameworkHealth(session.framework).catch(() => {});
-      checkSkillStaleness(session.framework).catch(() => {});
-      // FLUX-651: a phase session that ended cleanly but left the ticket in a working status
-      // without taking a board action gets flagged Needs Action (surface, don't auto-resume).
-      await flagIfParked(session, id);
-    }
-
-    // Notify delegation awaiters (supervisor pattern).
-    notifyDelegationComplete(session);
-
-    // Fan-in: if this session belongs to a run group, a deferred combiner may
-    // be waiting for every worker to finish. Notify the barrier.
-    if (session.groupId) {
-      notifyGroupSessionTerminal(session.taskId, session.groupId).catch(() => {});
-    }
-
-    checkAutoRestart();
+    await finalizeTerminalSession(session, id, finalStatus, code, signal);
   });}
 
 export class ClaudeCodeAdapter implements AgentAdapter {
@@ -1154,7 +1307,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   // into an HTTP-500-only response — see surfaceResumeFailure in shared.ts.
   let executionRoot: string;
   try {
-    executionRoot = await resolveResumeExecutionRoot(session, tasksCache[id], workspaceRoot);
+    executionRoot = await resolveResumeExecutionRoot(session, getWorkspace().tasks[id], workspaceRoot);
   } catch (error) {
     // FLUX-1182: bracket this with the same board narration the other resumed-turn failure
     // paths get (reply spawn-error / reply-exit crash, below) — a board-dispatched session
@@ -1190,7 +1343,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const attachments = opts?.attachments ?? [];
   const attachmentAbsPaths = resolveAttachmentAbsPaths(attachments);
 
-  const task = tasksCache[id] as ClaudeTask;
+  const task = getWorkspace().tasks[id] as ClaudeTask;
 
   // FLUX-655: on a RESUMED turn, re-ground the agent in the moved tree. If the world actually
   // changed (branch fell behind, master rewrote files underneath us, sibling tickets merged), build
@@ -1202,7 +1355,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     resumePreamble = await buildResumePreamble({
       taskId: id,
       branch: typeof task?.branch === 'string' ? task.branch : undefined,
-      workspaceRoot: canonicalWorkspaceRoot ?? workspaceRoot,
+      workspaceRoot: getWorkspaceRoot() ?? workspaceRoot,
       sinceIso,
     });
     if (resumePreamble) {
@@ -1365,13 +1518,54 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     }
     commitReplyPending();
     flushSessionOutput(session, true);
+
+    // FLUX-1390: an honored ScheduleWakeup call on a resumed (wake or human) turn sleeps the session
+    // again instead of finalizing — same bound/consumption as the initial-spawn path above.
+    if (tryEnterScheduledWake(session, code)) {
+      const wakeHistoryEntry = session.sessionHistoryEntry;
+      if (wakeHistoryEntry?.sessionId) {
+        await updateAgentSession(id, wakeHistoryEntry.sessionId, (sessionEntry) => {
+          sessionEntry.status = 'scheduled';
+          sessionEntry.outcome = `${session.label} scheduled another wakeup — resumes at ${session.wakeAt}.`;
+        });
+      }
+      broadcastEvent('taskUpdated', { id });
+      return;
+    }
+
     // FLUX-915/921: terminalize a user-requested stop as 'cancelled' instead of blindly reverting to
     // 'waiting-input'. The stop route synchronously set status='cancelled'+endedAt and killed the
     // proc; this async exit handler used to overwrite that back to 'waiting-input', so Stop never
     // stuck and the session showed active forever (getActiveSessionsForTask counts waiting-input;
     // reconcileDeadSessions skips it). A clean OR crashed resumed turn stays resumable — a persistent
     // conversation recovers via --resume, and the board tee below still surfaces a crash.
+    //
+    // FLUX-1390: EXCEPT an engine-driven wake-resume (opts.wakeResume) that finished without sleeping
+    // again — that is a normal dispatched-phase turn ending, not a human handing control back to
+    // itself, so finalize it the same way the initial spawn does: completed/failed + endedAt, PLUS
+    // the same token-flush / persisted-history-closure / delegation-barrier bookkeeping via the shared
+    // `finalizeTerminalSession` helper (previously this branch only set the in-memory status/endedAt
+    // and left the on-disk `agent_session` history entry frozen at "scheduled" forever, silently
+    // dropping this turn's tokens/cost from the ticket's tokenMetadata). Return immediately after —
+    // finalizeTerminalSession already covers the board tee / flagIfParked / error-surfacing this
+    // handler's trailing logic does for the other (non-wake-resume) exit paths below.
+    if (opts?.wakeResume && !session.pausedForInput && !session.requestedStop) {
+      const finalStatus = code === 0 ? 'completed' : 'failed';
+      session.status = finalStatus;
+      session.endedAt = new Date().toISOString();
+      await finalizeTerminalSession(session, id, finalStatus, code, signal);
+      return;
+    }
     terminalizeResumedExit(session);
+    // FLUX-1378 (absorbing FLUX-1375 step 6): the resume/reply exit path previously never flushed
+    // tokenMetadata at all — only the INITIAL spawn's exit handler did — so every resumed turn's
+    // cost was silently dropped from the ticket's cost meter. Mirror the initial-spawn flush here,
+    // unconditionally (regardless of why this turn ended): buildTokenMetadataUpdate diffs against
+    // the session's own flushed baseline, so this is correct however many resumed turns have run.
+    const resumeTokenUpdate = buildTokenMetadataUpdate(id, session);
+    if (resumeTokenUpdate) {
+      await updateTaskWithHistory(id, { updatedBy: 'Agent', entries: [], tokenMetadata: resumeTokenUpdate });
+    }
     // FLUX-651: resumed chat turn ended — flag if the agent parked without acting. Skip a turn the
     // agent paused for Require Input (that IS an action) or one the user stopped (FLUX-915).
     if (!session.pausedForInput && !session.requestedStop) await flagIfParked(session, id);

@@ -1,5 +1,6 @@
-import { tasksCache, getTerminalStatuses } from './task-store.js';
-import { configCache } from './config.js';
+import { getWorkspace } from './workspace-context.js';
+import { getTerminalStatuses } from './task-store.js';
+import { getConfig } from './config.js';
 import { getPullRequestStatus } from './branch-manager.js';
 
 /**
@@ -101,7 +102,7 @@ interface DuplicateGroup { normalizedTitle: string; ids: string[] }
 interface DeadPrSignal { id: string; state: 'no-pr' | 'MERGED' | 'CLOSED'; prNumber?: number }
 
 function computeStaleSignals(tickets: TriageTicket[]): StaleSignal[] {
-  const requireInputStatus = configCache.requireInputStatus || 'Require Input';
+  const requireInputStatus = getConfig().requireInputStatus || 'Require Input';
   const out: StaleSignal[] = [];
   for (const t of tickets) {
     // Require Input is a swimlane on this board (status is left unchanged) — check both, like
@@ -180,11 +181,11 @@ async function computeDeadPrSignals(candidates: TriageTicket[]): Promise<DeadPrS
  * dead-PR check is a read-only remote `gh` call; everything else is a synchronous in-memory read.
  */
 export async function buildTriageFragment(): Promise<string> {
-  const tickets = Object.values(tasksCache) as unknown as TriageTicket[];
+  const tickets = Object.values(getWorkspace().tasks) as unknown as TriageTicket[];
   const byId = new Map(tickets.map((t) => [t.id, t]));
   const terminal = new Set(getTerminalStatuses());
 
-  const readyStatus = configCache.readyForMergeStatus || 'Ready';
+  const readyStatus = getConfig().readyForMergeStatus || 'Ready';
   const prCandidates = tickets.filter((t) => t.status === readyStatus && t.branch);
   const checkedCandidates = prCandidates.slice(0, MAX_PR_CHECKS);
 

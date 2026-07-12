@@ -23,13 +23,14 @@
 //   no verdict, but the last comment looks like a verdict (FLUX-1078) -> ONE corrective nudge, then park
 //   no verdict (no marker) / fail / waiting-input -> park (needs a human; stays In Progress + Require Input swimlane)
 
+import { getWorkspace } from './workspace-context.js';
 import { getEnginePort } from './packaged-mode.js';
 import { log } from './log.js';
-import { configCache } from './config.js';
-import { tasksCache, updateTaskWithHistory } from './task-store.js';
+import { getConfig } from './config.js';
+import { updateTaskWithHistory } from './task-store.js';
 import { addNotification } from './notifications.js';
-import { cliSessionsById, getActiveSessionsForTask, stopAllSessionsForTask } from './session-store.js';
-import type { CliSessionStatus } from './agents/types.js';
+import { cliSessionsById, getActiveSessionsForTask, getAllSessionsForTask, stopAllSessionsForTask } from './session-store.js';
+import type { CliSessionRecord, CliSessionStatus, TaskKey } from './agents/types.js';
 import {
   getFurnaceBatch,
   getFurnaceBatchesCache,
@@ -68,7 +69,7 @@ import {
   DEFAULT_RATE_LIMIT_RETRY_INTERVAL_MS,
   DEFAULT_RATE_LIMIT_MAX_WAIT_MS,
 } from './models/furnace.js';
-import { DEFAULT_MAX_TASK_WORKTREES, listTaskWorktrees, ticketIdFromWorktreePath } from './task-worktree.js';
+import { DEFAULT_MAX_TASK_WORKTREES, listTaskWorktrees, ticketIdFromWorktreePath, isRegisteredWorktree, resolveTaskExecutionRoot } from './task-worktree.js';
 import { requireWorkspaceRoot } from './workspace.js';
 import { postPrReview } from './branch-manager.js';
 import { reclaimReadyWorktrees, worktreeUnreclaimableReason, type UnreclaimableReason } from './pr-cleanup.js';
@@ -119,9 +120,23 @@ export function furnaceFollowupFocus(batch: FurnaceBatch): string {
   return ` This review is running inside Furnace batch \`${batch.id}\` (a ${batch.kind} burn). If you spot a genuine, small, clearly-related follow-up worth doing in this same burn, you may \`create_ticket\` for it and then \`furnace_ticket\` (action:'add', batchId:'${batch.id}') to queue it into this batch immediately — no approval needed, same trust as your verdict. Keep it scoped and note the addition (and why) in your review comment; tangential ideas still go to the normal backlog.`;
 }
 
-/** Furnace review-phase dispatch options: the configured persona (if any) plus the sole-reviewer focus every review session needs to actually record its verdict, and the batch-follow-up affordance (FLUX-1218). */
-function reviewDispatchOpts(batch: FurnaceBatch): { personaId?: string; focusComment: string } {
-  return { ...(batch.reviewPersonaId ? { personaId: batch.reviewPersonaId } : {}), focusComment: SOLE_REVIEWER_FOCUS + furnaceFollowupFocus(batch) };
+/**
+ * FLUX-1378: delta re-review focus addendum. `lastReviewedCommit` is stamped by mcp-server.ts's
+ * `change_status` handler alongside every fresh `reviewState` verdict — its presence means this
+ * ticket has already been reviewed at least once. Point the reviewer at just the delta since that
+ * commit plus its own prior named findings, instead of implicitly re-reviewing the whole PR from
+ * scratch. Returns '' on a ticket's FIRST review (no `lastReviewedCommit` yet) — nothing to scope.
+ */
+export function deltaReviewFocus(ticketId: string): string {
+  const task = getWorkspace().tasks[ticketId] as { lastReviewedCommit?: string } | undefined;
+  const since = typeof task?.lastReviewedCommit === 'string' ? task.lastReviewedCommit : undefined;
+  if (!since) return '';
+  return ` This ticket was already reviewed once and sent back for changes (as of commit ${since.slice(0, 12)}). Re-read your own prior review comment for the named findings and verify each is actually fixed, then scan \`git diff ${since}..HEAD\` for anything else introduced in that delta. You do not need to re-review the whole PR from scratch — just the named findings plus this delta.`;
+}
+
+/** Furnace review-phase dispatch options: the configured persona (if any) plus the sole-reviewer focus every review session needs to actually record its verdict, the delta-scoping addendum (FLUX-1378) for a re-review, and the batch-follow-up affordance (FLUX-1218). */
+function reviewDispatchOpts(batch: FurnaceBatch, ticketId: string): { personaId?: string; focusComment: string } {
+  return { ...(batch.reviewPersonaId ? { personaId: batch.reviewPersonaId } : {}), focusComment: SOLE_REVIEWER_FOCUS + deltaReviewFocus(ticketId) + furnaceFollowupFocus(batch) };
 }
 
 /** Exported for tests (FLUX-1080): assert this exact string is what reaches the outgoing dispatch body. */
@@ -252,8 +267,10 @@ export function decideTicketAction(input: {
   // No observable session → the phase never recorded a session or the engine restarted: re-drive it.
   if (sessionStatus === undefined) return { type: 'redrive', phase: currentPhase };
 
-  // Still working.
-  if (sessionStatus === 'pending' || sessionStatus === 'running') return { type: 'wait' };
+  // Still working. FLUX-1390: 'scheduled' is a session honoring a ScheduleWakeup call — asleep,
+  // not idle — the engine's own wake ticker resumes it via `--resume` at wakeAt, so it must never be
+  // treated as a false "no verdict" park the way 'waiting-input' (below) is.
+  if (sessionStatus === 'pending' || sessionStatus === 'running' || sessionStatus === 'scheduled') return { type: 'wait' };
 
   // The agent parked itself waiting for input — an unattended run can't answer, so it needs a human.
   if (sessionStatus === 'waiting-input') {
@@ -393,7 +410,10 @@ export async function dispatchSession(
   // review, so 'implementation' doesn't fit; 'grooming' is the phase that already knows how to read +
   // rewrite a ticket's plan). Furnace/Temper callers only ever pass 'implementation' | 'review'.
   phase: FurnacePhase | 'grooming',
-  opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean } = {},
+  // FLUX-1373: `taskKey` is an explicit task-tier policy override, forwarded verbatim as the
+  // start route's `taskKey` body param. Needed by callers (the plan-gate review pass) whose
+  // dispatched phase alone doesn't map to the right key — see gate-runner.ts's spawnGate.
+  opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean; taskKey?: TaskKey } = {},
 ): Promise<DispatchOutcome> {
   // A sequential follower reuses the anchor's shared worktree (resolved server-side by the shared
   // branch), so it must NOT request isolation — that would check the same branch out twice.
@@ -409,6 +429,7 @@ export async function dispatchSession(
   };
   if (opts.personaId) body.personaId = opts.personaId;
   if (opts.focusComment) body.focusComment = opts.focusComment;
+  if (opts.taskKey) body.taskKey = opts.taskKey;
   try {
     const res = await fetch(`${engineBase()}/api/tasks/${encodeURIComponent(ticketId)}/cli-session/start`, {
       method: 'POST',
@@ -434,12 +455,153 @@ export async function dispatchSession(
   }
 }
 
+// ── Resume, don't respawn (FLUX-1378) ──────────────────────────────────────────────────────────
+//
+// A revise/re-implement loop cold-spawns a FRESH session today even though the engine already has a
+// working resume primitive (`--resume <sessionId>`, the same one portal chat uses). `resumeOrDispatchSession`
+// is the seam: it runs the viability checks below PRE-FLIGHT (before the resume POST), so a non-viable
+// target never trips the resume route's own terminal failure path (`surfaceResumeFailure` — see
+// task-worktree.ts / agents/shared.ts). Any non-viable or failed resume falls back to `dispatchSession`
+// unchanged, so today's cold-spawn behavior stays the safety net.
+
+/** Cold-spawn once the session's last recorded context size exceeds this fraction of its known window —
+ *  past that point a resumed turn pays a large cache-read bill AND sits near auto-compaction, which
+ *  summarizes away the very warm context that made resuming worth it. */
+const RESUME_CONTEXT_RATIO = 0.6;
+/** Conservative context-window assumption when the adapter/CLI never reported one. */
+const RESUME_CONTEXT_FALLBACK_WINDOW = 150_000;
+/** Turn-count-since-last-cold-spawn fallback proxy for a session with no recorded usage at all. */
+const RESUME_TURN_COUNT_CAP = 8;
+/** A session idle longer than this is treated as stale — cold spawn instead of resuming into it. */
+const RESUME_STALE_MS = 30 * 60_000;
+
+interface ResumeCandidate {
+  session: CliSessionRecord;
+  worktreeRecreated: boolean;
+}
+
+/**
+ * Find the most recent session for `phase` on this ticket and run the resume-viability decision table
+ * against it (resumable? -> engine-restart guard -> context headroom / turn-count proxy -> staleness ->
+ * worktree registered, healing a reclaimed-but-live-branch worktree by recreating it once). Returns null
+ * when no session qualifies — the caller falls back to a cold spawn.
+ */
+async function findResumeCandidate(ticketId: string, phase: FurnacePhase | 'grooming'): Promise<ResumeCandidate | null> {
+  const sessions = getAllSessionsForTask(ticketId);
+  let candidate: CliSessionRecord | undefined;
+  for (let i = sessions.length - 1; i >= 0; i--) {
+    if (sessions[i]!.phase === phase) { candidate = sessions[i]; break; }
+  }
+  if (!candidate) return null;
+
+  // Session not resumable — mirrors session-store.ts's own `resumable` derivation, EXCEPT 'running'
+  // is deliberately excluded: today's only caller (reimplement) targets a completed implementation
+  // session, never a live one, so this narrower set is a defensive rail against a future caller
+  // resuming a live-phase session out from under itself (FLUX-1396 H1).
+  const resumable = ['waiting-input', 'completed'].includes(candidate.status) && !!candidate.resumeSessionId;
+  if (!resumable) return null;
+
+  // Engine-restart guard (conservative v1 — no engineStartedAt/boot-id primitive exists yet, and the
+  // safe default is cold-spawn either way): a session rehydrated from an on-disk stub after a restart
+  // never gets a `sessionHistoryEntry` (see rehydratedRecord in session-store.ts), so its absence here
+  // is a reliable "this session predates the current engine process" signal.
+  if (!candidate.sessionHistoryEntry) return null;
+
+  // Context headroom, else the no-usage-recorded turn-count proxy.
+  if (candidate.lastTurnContextTokens != null) {
+    const window = candidate.contextWindow ?? RESUME_CONTEXT_FALLBACK_WINDOW;
+    if (window > 0 && candidate.lastTurnContextTokens / window > RESUME_CONTEXT_RATIO) return null;
+  } else if ((candidate.resumeTurnCount ?? 0) >= RESUME_TURN_COUNT_CAP) {
+    return null;
+  }
+
+  // Staleness.
+  const lastBeat = Date.parse(candidate.lastOutputAt ?? candidate.startedAt) || 0;
+  if (Date.now() - lastBeat > RESUME_STALE_MS) return null;
+
+  // Worktree gone/reclaimed — a branch-bearing ticket whose recorded root is no longer a registered
+  // worktree gets ONE recreation attempt (the branch tip holds everything a Ready-gated ticket
+  // committed, FLUX-730) before giving up. Branchless dispatches never claim a worktree, so they skip
+  // this check entirely.
+  let worktreeRecreated = false;
+  const task = getWorkspace().tasks[ticketId];
+  if (task?.branch && candidate.executionRoot) {
+    const workspaceRoot = requireWorkspaceRoot();
+    if (candidate.executionRoot !== workspaceRoot) {
+      const registered = await isRegisteredWorktree(workspaceRoot, candidate.executionRoot);
+      if (!registered) {
+        try {
+          candidate.executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot, { create: true });
+          worktreeRecreated = true;
+        } catch (e: unknown) {
+          log.warn(`[furnace] resume worktree recreate for ${ticketId} failed, falling back to cold spawn: ${e instanceof Error ? e.message : String(e)}`);
+          return null;
+        }
+      }
+    }
+  }
+
+  return { session: candidate, worktreeRecreated };
+}
+
+/** POST a resumed turn to the existing session — mirrors `dispatchSession`'s self-fetch pattern. */
+async function postResumeInput(ticketId: string, sessionId: string, message: string): Promise<DispatchOutcome> {
+  try {
+    const res = await fetch(`${engineBase()}/api/tasks/${encodeURIComponent(ticketId)}/cli-session/input`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, user: 'Furnace', sessionId }),
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      return { sid: null, status: res.status, error: err?.error || res.statusText };
+    }
+    return { sid: sessionId };
+  } catch (e: unknown) {
+    return { sid: null, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export interface ResumeDispatchOutcome extends DispatchOutcome {
+  /** True when this dispatched by resuming the prior session; false when it fell back to a cold spawn. */
+  resumed: boolean;
+}
+
+/**
+ * FLUX-1378: resume the prior phase session for this ticket when viable, else fall back to
+ * `dispatchSession` (cold spawn) unchanged. `opts.resumeMessage` is the turn sent on a successful
+ * resume; `opts.focusComment` (etc.) are forwarded to `dispatchSession` on the cold-spawn path only —
+ * a resumed turn already has its context, so it gets the shorter, delta-scoped `resumeMessage` instead.
+ */
+export async function resumeOrDispatchSession(
+  ticketId: string,
+  phase: FurnacePhase | 'grooming',
+  opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean; resumeMessage: string },
+): Promise<ResumeDispatchOutcome> {
+  const candidate = await findResumeCandidate(ticketId, phase);
+  if (candidate) {
+    const message = candidate.worktreeRecreated
+      ? `${opts.resumeMessage}\n\n⚠️ Your worktree was reclaimed and has been recreated from the branch tip — any uncommitted scratch state is gone. Re-verify the current file state before editing.`
+      : opts.resumeMessage;
+    let outcome = await postResumeInput(ticketId, candidate.session.id, message);
+    // Resume POST failed — retry once (transient EBUSY/network) before giving up on resume entirely.
+    if (!outcome.sid) outcome = await postResumeInput(ticketId, candidate.session.id, message);
+    if (outcome.sid) {
+      candidate.session.resumeTurnCount = (candidate.session.resumeTurnCount ?? 0) + 1;
+      return { ...outcome, resumed: true };
+    }
+    log.warn(`[furnace] resume ${phase} for ${ticketId} failed twice, falling back to cold spawn: ${outcome.error}`);
+  }
+  const cold = await dispatchSession(ticketId, phase, opts);
+  return { ...cold, resumed: false };
+}
+
 /**
  * Clear a stale review verdict before dispatching a fresh review (it persists across re-impl by design).
  * FLUX-1071: exported for the Temper reconciler (temper.ts), which dispatches its own review passes.
  */
 export async function clearReviewState(ticketId: string): Promise<void> {
-  const t = tasksCache[ticketId];
+  const t = getWorkspace().tasks[ticketId];
   if (t && t.reviewState != null) {
     try {
       await updateTaskWithHistory(ticketId, { extraFields: { reviewState: null }, updatedBy: 'Furnace' });
@@ -451,7 +613,7 @@ export async function clearReviewState(ticketId: string): Promise<void> {
 
 /** The In-Progress status a parked ticket should rest in (mirrors mcp-server's status derivation). */
 function inProgressStatus(): string {
-  const columnNames: string[] = (configCache.columns || []).map((c: { name: string }) => c.name);
+  const columnNames: string[] = (getConfig().columns || []).map((c: { name: string }) => c.name);
   const i = columnNames.findIndex((c) => c.toLowerCase() === 'todo');
   return (i >= 0 && i + 1 < columnNames.length ? columnNames[i + 1] : undefined) || 'In Progress';
 }
@@ -515,8 +677,8 @@ async function addTicketActivity(ticketId: string, comment: string): Promise<boo
  * fallbacks; matched case-insensitively.
  */
 function boardSuccessStatuses(): string[] {
-  const ready = (configCache.readyForMergeStatus as string) || 'Ready';
-  const archive = (configCache.archiveStatus as string) || 'Archived';
+  const ready = (getConfig().readyForMergeStatus as string) || 'Ready';
+  const archive = (getConfig().archiveStatus as string) || 'Archived';
   return [ready, 'Done', 'Released', archive].map((s) => s.toLowerCase());
 }
 
@@ -623,7 +785,7 @@ export function clearTakeoverTracking(ticketId: string): void {
 
 /** Clear the Furnace-raised `require-input` swimlane on a ticket (best-effort; no-op if not set). */
 async function clearFurnaceFlag(ticketId: string, note?: string): Promise<void> {
-  const t = tasksCache[ticketId];
+  const t = getWorkspace().tasks[ticketId];
   if (!t || t.swimlane !== 'require-input') return;
   try {
     await updateTaskWithHistory(ticketId, {
@@ -693,7 +855,7 @@ export async function reconcileBatch(batchId: string): Promise<void> {
   for (const ticket of batch.tickets) {
     // Leave tickets the Stoker is actively driving to reconcileTicket (which mirrors the review verdict).
     if (isActiveTicketState(ticket.state)) continue;
-    const task = tasksCache[ticket.ticketId];
+    const task = getWorkspace().tasks[ticket.ticketId];
     const prUrl = extractPrUrl(task);
     const change = decideReconcile(ticket, {
       takenOver: debouncedTakeover(ticket.ticketId, detectHumanTakeover(ticket)),
@@ -805,7 +967,7 @@ async function ensureBatchBranchAssigned(batchId: string): Promise<void> {
   if (!batch || batch.kind !== 'sequential') return;
   const branch = batch.branch;
   for (const member of batch.tickets) {
-    const t = tasksCache[member.ticketId];
+    const t = getWorkspace().tasks[member.ticketId];
     if (!t || t.branch === branch) continue;
     if (t.branch && t.branch !== branch) {
       log.warn(`[furnace] ${member.ticketId} already on branch ${t.branch}; not reassigning to batch branch ${branch}`);
@@ -1008,12 +1170,20 @@ async function spawnOrCount(
   batchId: string,
   ticketId: string,
   phase: FurnacePhase,
-  opts: { personaId?: string; focusComment?: string } = {},
+  opts: { personaId?: string; focusComment?: string; resumeMessage?: string } = {},
 ): Promise<{ sid: string | null; parked: boolean }> {
   const batch0 = getFurnaceBatch(batchId);
   const t0 = batch0 ? findTicket(batch0, ticketId) : undefined;
   const skipIsolation = !!(batch0 && t0 && isSequentialFollower(batch0, t0));
-  const outcome = await dispatchSession(ticketId, phase, { ...opts, ...(skipIsolation ? { skipIsolation: true } : {}) });
+  // FLUX-1378: a caller that supplies `resumeMessage` wants the resume-don't-respawn seam (currently
+  // only the 'reimplement' case below) — everything else (review/review-nudge) stays a cold dispatch,
+  // per the plan's independence policy (a reviewer resuming its own session anchors on its own prior
+  // verdict; delta-scoping keeps a fresh spawn's cost close to resume cost anyway).
+  const { resumeMessage, ...dispatchOpts } = opts;
+  const finalOpts = { ...dispatchOpts, ...(skipIsolation ? { skipIsolation: true } : {}) };
+  const outcome = resumeMessage
+    ? await resumeOrDispatchSession(ticketId, phase, { ...finalOpts, resumeMessage })
+    : await dispatchSession(ticketId, phase, finalOpts);
   if (outcome.sid) return { sid: outcome.sid, parked: false };
 
   const deterministic = classifySpawnRefusal(phase, outcome);
@@ -1081,7 +1251,7 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
         const t = findTicket(b, ticketId);
         if (t) t.reviewNudgeSent = false;
       });
-      const r = await spawnOrCount(batchId, ticketId, 'review', reviewDispatchOpts(batch));
+      const r = await spawnOrCount(batchId, ticketId, 'review', reviewDispatchOpts(batch, ticketId));
       if (r.sid) await recordSession(batchId, ticketId, r.sid);
       break;
     }
@@ -1106,6 +1276,7 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
       await advanceState(batchId, ticketId, 'reimplementing', action.attempt);
       const r = await spawnOrCount(batchId, ticketId, 'implementation', {
         focusComment: REIMPLEMENT_FOCUS,
+        resumeMessage: REIMPLEMENT_FOCUS,
       });
       if (r.sid) await recordSession(batchId, ticketId, r.sid);
       break;
@@ -1122,7 +1293,7 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
           delete t.currentSessionId;
           delete t.currentPhase;
           clearCooldownState(t); // FLUX-1063
-          const prBranch = b.kind === 'sequential' ? b.branch : (tasksCache[ticketId]?.branch || b.branch);
+          const prBranch = b.kind === 'sequential' ? b.branch : (getWorkspace().tasks[ticketId]?.branch || b.branch);
           upsertBatchPr(b, { ...(action.prUrl ? { url: action.prUrl } : {}), branch: prBranch, ticketId, reviewState: 'approved' });
         }
         b.consecutiveFailures = 0; // a success breaks the failure streak (circuit breaker)
@@ -1160,7 +1331,7 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
     case 'redrive': {
       const batch = getFurnaceBatch(batchId);
       if (!batch) return;
-      const opts = action.phase === 'review' ? reviewDispatchOpts(batch) : {};
+      const opts = action.phase === 'review' ? reviewDispatchOpts(batch, ticketId) : {};
       const r = await spawnOrCount(batchId, ticketId, action.phase, opts);
       if (r.sid) await recordSession(batchId, ticketId, r.sid);
       break;
@@ -1177,7 +1348,7 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
         delete t.sessionStartedAt;
       });
       try { stopAllSessionsForTask(ticketId, 'furnace retrying context-exhausted ticket'); } catch { /* best effort */ }
-      const opts = action.phase === 'review' ? reviewDispatchOpts(batch) : {};
+      const opts = action.phase === 'review' ? reviewDispatchOpts(batch, ticketId) : {};
       const r = await spawnOrCount(batchId, ticketId, action.phase, opts);
       if (r.sid) await recordSession(batchId, ticketId, r.sid);
       log.info(`[furnace] ${ticketId} ${action.phase} session ran out of context — retrying with a fresh session (attempt ${action.attempt}/${batch.exhaustionRetryCap}).`);
@@ -1232,7 +1403,7 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
       // Re-supply the re-implementation focus if we were mid-reimplement; else the phase's reviewer persona.
       const opts = restored === 'reimplementing'
         ? { focusComment: REIMPLEMENT_FOCUS }
-        : action.phase === 'review' ? reviewDispatchOpts(batch) : {};
+        : action.phase === 'review' ? reviewDispatchOpts(batch, ticketId) : {};
       const r = await spawnOrCount(batchId, ticketId, action.phase, opts);
       if (r.sid) await recordSession(batchId, ticketId, r.sid);
       log.info(`[furnace] ${ticketId} rate-limit cooldown elapsed — retrying ${action.phase} with a fresh session (attempt ${action.attempt}).`);
@@ -1285,7 +1456,7 @@ async function reconcileTicket(batchId: string, ticketId: string): Promise<void>
     });
   }
 
-  const task = tasksCache[ticketId];
+  const task = getWorkspace().tasks[ticketId];
   const batch = getFurnaceBatch(batchId);
   if (!batch) return;
   const prUrl = extractPrUrl(task);
@@ -1297,7 +1468,7 @@ async function reconcileTicket(batchId: string, ticketId: string): Promise<void>
     ...(sessionOutcome ? { sessionOutcome } : {}),
     reviewState: task?.reviewState ?? null,
     ...(task?.status ? { ticketStatus: task.status } : {}),
-    ...(configCache.requireInputStatus ? { requireInputStatus: configCache.requireInputStatus } : {}),
+    ...(getConfig().requireInputStatus ? { requireInputStatus: getConfig().requireInputStatus } : {}),
     retryCap: batch.retryCap,
     exhaustionRetryCap: batch.exhaustionRetryCap,
     ...(prUrl !== undefined ? { prUrl } : {}),
@@ -1381,7 +1552,7 @@ export async function mirrorReviewVerdictToPr(
   // Reflect the verdict on the batch's PR list (changes-requested here; approved is set in the pr-open path).
   if (verdict === 'changes-requested') {
     await mutateFurnaceBatch(batch.id, (b) => {
-      const prBranch = b.kind === 'sequential' ? b.branch : (tasksCache[ticketId]?.branch || b.branch);
+      const prBranch = b.kind === 'sequential' ? b.branch : (getWorkspace().tasks[ticketId]?.branch || b.branch);
       upsertBatchPr(b, { url: prUrl, branch: prBranch, ticketId, reviewState: 'changes_requested' });
     });
   }

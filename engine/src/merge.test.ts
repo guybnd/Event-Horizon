@@ -1,3 +1,4 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -14,7 +15,7 @@ import { projectTranscript } from './projection.js';
 import { mergeTickets } from './merge.js';
 import { extractTicket } from './extract.js';
 import { readCurationOps } from './curation-ops.js';
-import { createTask, tasksCache } from './task-store.js';
+import { createTask } from './task-store.js';
 import { proposeBoardRebase, resolveBoardRebase } from './board-rebase.js';
 
 /** Minimal `tasksCache` ticket shape as read by this test — only the fields it inspects. */
@@ -105,7 +106,7 @@ describe('merge verb (FLUX-657)', () => {
     await mergeTickets({ into: survivor, from: [a, b] });
 
     for (const src of [a, b]) {
-      const task = tasksCache[src] as CachedTask;
+      const task = getWorkspace().tasks[src] as CachedTask;
       expect(task).toBeTruthy(); // not deleted
       expect(task.mergedInto).toBe(survivor);
       expect(task.status).toBe('Archived');
@@ -115,8 +116,8 @@ describe('merge verb (FLUX-657)', () => {
       expect(pinnedTombstone).toBeTruthy();
     }
     // The survivor itself is untouched metadata-wise (not archived).
-    expect(tasksCache[survivor].mergedInto).toBeUndefined();
-    expect(tasksCache[survivor].status).not.toBe('Archived');
+    expect(getWorkspace().tasks[survivor].mergedInto).toBeUndefined();
+    expect(getWorkspace().tasks[survivor].status).not.toBe('Archived');
   });
 
   it('re-running the projection from substrate + op-log reproduces the merged view (round-trip)', async () => {

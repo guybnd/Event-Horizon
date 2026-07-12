@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   GitCompare, RefreshCw, FolderGit2, GitBranch, History, AlertTriangle,
-  ChevronDown, ChevronRight, Loader2,
+  ChevronDown, ChevronRight, Loader2, Undo2,
 } from 'lucide-react';
 import {
-  fetchDiffOverview, fetchDiffFile, fetchTaskDiff,
+  fetchDiffOverview, fetchDiffFile, fetchTaskDiff, discardFiles,
   type DiffOverview, type DiffGroup, type DiffChangedFile,
 } from '../../api';
 import { useAppActions, useAppSelector } from '../../store/useAppSelector';
 import { getTaskActivityTimestamp } from '../../taskSearch';
 import { DiffLines } from '../DiffLines';
+import { ConfirmDiscardDialog } from '../ConfirmDiscardDialog';
 import type { Task } from '../../types';
 
 const POLL_MS = 6000;
@@ -26,6 +27,8 @@ interface FileRow {
   collidesWith?: string[];
   /** Worktree files only: committed-ahead of master (true) vs loose/uncommitted (false). */
   committed?: boolean;
+  /** True when the file carries uncommitted work — a Discard control applies (FLUX-1333). */
+  uncommitted?: boolean;
 }
 
 type FetchSource = { kind: 'live'; ref: string } | { kind: 'done'; ticketId: string };
@@ -40,6 +43,9 @@ interface Section {
   status?: string;
   files: FileRow[];
   source: FetchSource;
+  /** True while an agent session is actively executing in this section's checkout —
+   *  Discard controls are disabled (the endpoint also refuses 409 server-side, FLUX-1333). */
+  sessionActive?: boolean;
 }
 
 interface Selection { sectionKey: string; path: string; label: string; source: FetchSource }
@@ -47,6 +53,9 @@ interface Selection { sectionKey: string; path: string; label: string; source: F
 function groupRef(g: DiffGroup): string {
   return g.kind === 'main' ? 'main' : (g.branch ?? g.path);
 }
+
+/** An agent session that is actively executing (a parked 'waiting-input' chat doesn't block a discard). */
+const isActiveSession = (status?: string | null) => status === 'running' || status === 'pending';
 
 const STATUS_BADGE: Record<FileStatus, { letter: string; cls: string; title: string }> = {
   added: { letter: 'A', cls: 'text-emerald-600 dark:text-emerald-400', title: 'added' },
@@ -71,6 +80,10 @@ export function ChangesScreen() {
   const [selected, setSelected] = useState<Selection | null>(null);
   const [fileDiff, setFileDiff] = useState<string | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
+  // Discard flow (FLUX-1333): pending confirm target, in-flight flag, and last failure.
+  const [confirmDiscard, setConfirmDiscard] = useState<{ ref: string; files: string[]; scopeLabel: string } | null>(null);
+  const [discarding, setDiscarding] = useState(false);
+  const [discardError, setDiscardError] = useState<string | null>(null);
 
   // Monotonic load counter — drop any poll response superseded by a newer load
   // (out-of-order responses would otherwise clobber fresher data).
@@ -127,8 +140,14 @@ export function ChangesScreen() {
           file: f.file, additions: f.additions, deletions: f.deletions, status: f.status,
           ...(f.collidesWith ? { collidesWith: f.collidesWith } : {}),
           ...(f.committed ? { committed: true } : {}),
+          ...(f.uncommitted ? { uncommitted: true } : {}),
         })),
         source: { kind: 'live', ref: fetchRef },
+        // FLUX-1333: worktree checkout → the owning ticket's session; the shared main tree →
+        // any branchless ticket's session (those execute in the main checkout).
+        sessionActive: g.kind === 'worktree'
+          ? isActiveSession(ticket?.cliSession?.status)
+          : tasks.some((t) => !t.branch && isActiveSession(t.cliSession?.status)),
       });
     }
     // Recently merged (Done) tickets with a stored committed diff — post-hoc review.
@@ -217,6 +236,33 @@ export function ChangesScreen() {
 
   const totalChanged = useMemo(() => sections.reduce((n, s) => n + s.files.length, 0), [sections]);
 
+  // Execute a confirmed discard (FLUX-1333). Per-file failures surface in the banner and the
+  // file stays listed; this view is poll-based, so always reload immediately rather than
+  // waiting out the 6s tick.
+  const doDiscard = useCallback(async () => {
+    if (!confirmDiscard) return;
+    setDiscarding(true);
+    setDiscardError(null);
+    const res = await discardFiles(confirmDiscard.ref, confirmDiscard.files);
+    setDiscarding(false);
+    setConfirmDiscard(null);
+    const failures = res.error
+      ? [res.error]
+      : (res.results ?? []).filter((r) => !r.ok).map((r) => `${r.file}: ${r.error ?? 'failed'}`);
+    if (failures.length > 0) setDiscardError(failures.join(' · '));
+    void load();
+  }, [confirmDiscard, load]);
+
+  const requestDiscard = useCallback((s: Section, files: string[]) => {
+    if (s.source.kind !== 'live' || files.length === 0) return;
+    setDiscardError(null);
+    setConfirmDiscard({
+      ref: s.source.ref,
+      files,
+      scopeLabel: s.idLabel ? `${s.label} (${s.idLabel})` : s.label,
+    });
+  }, []);
+
   const toggle = (key: string) =>
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -234,44 +280,86 @@ export function ChangesScreen() {
 
   // A single selectable file row (status letter + path + collision flag + ± counts),
   // shared by flat sections and the worktree committed/loose sub-groups (FLUX-582).
+  // Rows with uncommitted work get a hover-revealed Discard control (FLUX-1333).
   const renderFileRow = (s: Section, f: FileRow) => {
     const isSel = selected?.sectionKey === s.key && selected?.path === f.file;
     const badge = f.status ? STATUS_BADGE[f.status] : null;
+    const discardable = s.source.kind === 'live' && f.uncommitted === true;
+    return (
+      <div key={f.file} className="group/row flex items-center">
+        <button
+          onClick={() => setSelected({ sectionKey: s.key, path: f.file, label: s.label, source: s.source })}
+          className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 pl-8 pr-2 text-left text-[11px] transition-colors ${isSel ? 'bg-primary/10 text-primary' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/5'}`}
+        >
+          {badge
+            ? <span className={`flex-none font-mono font-bold ${badge.cls}`} title={badge.title}>{badge.letter}</span>
+            : <span className="w-[1ch] flex-none" />}
+          <span className="min-w-0 flex-1 truncate font-mono" title={f.file}>{f.file}</span>
+          {f.collidesWith && f.collidesWith.length > 0 && (
+            <span className="flex-none" title={`Also changed in: ${f.collidesWith.join(', ')}`}>
+              <AlertTriangle className="h-3 w-3 text-amber-500" />
+            </span>
+          )}
+          {f.status !== 'untracked' && (
+            <span className="flex-none font-mono text-[10px] tabular-nums text-gray-400">
+              <span className="text-emerald-500">+{f.additions}</span>{' '}
+              <span className="text-red-500">−{f.deletions}</span>
+            </span>
+          )}
+        </button>
+        {discardable && (
+          <button
+            onClick={() => requestDiscard(s, [f.file])}
+            disabled={s.sessionActive}
+            title={s.sessionActive
+              ? 'An agent session is active in this checkout — wait for it to finish before discarding'
+              : 'Discard this file’s uncommitted changes (restore to last commit)'}
+            className={`mr-1 flex-none rounded p-1 transition-opacity ${s.sessionActive
+              ? 'cursor-not-allowed text-gray-300 opacity-0 group-hover/row:opacity-60 dark:text-gray-600'
+              : 'text-gray-400 opacity-0 hover:bg-red-50 hover:text-red-500 group-hover/row:opacity-100 dark:hover:bg-red-500/10'}`}
+          >
+            <Undo2 className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  // Section-scoped "Discard all" (FLUX-1333) — acts on the section's UNCOMMITTED files only.
+  const renderDiscardAll = (s: Section, files: FileRow[]) => {
+    if (s.source.kind !== 'live') return null;
+    const targets = files.filter((f) => f.uncommitted).map((f) => f.file);
+    if (targets.length === 0) return null;
     return (
       <button
-        key={f.file}
-        onClick={() => setSelected({ sectionKey: s.key, path: f.file, label: s.label, source: s.source })}
-        className={`flex w-full items-center gap-2 rounded-md py-1 pl-8 pr-2 text-left text-[11px] transition-colors ${isSel ? 'bg-primary/10 text-primary' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/5'}`}
+        onClick={() => requestDiscard(s, targets)}
+        disabled={s.sessionActive}
+        title={s.sessionActive
+          ? 'An agent session is active in this checkout — wait for it to finish before discarding'
+          : `Discard all ${targets.length} uncommitted change${targets.length === 1 ? '' : 's'} in this section`}
+        className={`ml-auto flex flex-none items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-medium normal-case tracking-normal transition-colors ${s.sessionActive
+          ? 'cursor-not-allowed text-gray-300 dark:text-gray-600'
+          : 'text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10'}`}
       >
-        {badge
-          ? <span className={`flex-none font-mono font-bold ${badge.cls}`} title={badge.title}>{badge.letter}</span>
-          : <span className="w-[1ch] flex-none" />}
-        <span className="min-w-0 flex-1 truncate font-mono" title={f.file}>{f.file}</span>
-        {f.collidesWith && f.collidesWith.length > 0 && (
-          <span className="flex-none" title={`Also changed in: ${f.collidesWith.join(', ')}`}>
-            <AlertTriangle className="h-3 w-3 text-amber-500" />
-          </span>
-        )}
-        {f.status !== 'untracked' && (
-          <span className="flex-none font-mono text-[10px] tabular-nums text-gray-400">
-            <span className="text-emerald-500">+{f.additions}</span>{' '}
-            <span className="text-red-500">−{f.deletions}</span>
-          </span>
-        )}
+        <Undo2 className="h-2.5 w-2.5" />
+        Discard all
       </button>
     );
   };
 
   // Worktree sections split into committed-ahead-of-master vs still-loose files (FLUX-582).
+  // The loose sub-group carries the section's "Discard all" control (FLUX-1333) — never the
+  // committed one (committed work is not discardable here).
   const renderWorktreeSplit = (s: Section) => {
     const committed = s.files.filter((f) => f.committed);
     const loose = s.files.filter((f) => !f.committed);
-    const subGroup = (title: string, hint: string, files: FileRow[]) =>
+    const subGroup = (title: string, hint: string, files: FileRow[], action?: ReactNode) =>
       files.length === 0 ? null : (
         <div key={title}>
           <div className="flex items-center gap-1.5 px-2 pt-1.5 pb-0.5 pl-8 text-[9px] font-semibold uppercase tracking-wider text-gray-400" title={hint}>
             <span>{title}</span>
             <span className="rounded-full bg-gray-100 px-1.5 text-[9px] font-medium text-gray-500 dark:bg-white/10 dark:text-gray-400">{files.length}</span>
+            {action}
           </div>
           {files.map((f) => renderFileRow(s, f))}
         </div>
@@ -279,7 +367,7 @@ export function ChangesScreen() {
     return (
       <>
         {subGroup('Committed (ahead of master)', 'Committed on this branch, ahead of master', committed)}
-        {subGroup('Uncommitted (loose)', 'Not yet committed in this worktree', loose)}
+        {subGroup('Uncommitted (loose)', 'Not yet committed in this worktree', loose, renderDiscardAll(s, loose))}
       </>
     );
   };
@@ -365,6 +453,12 @@ export function ChangesScreen() {
           {error}
         </div>
       )}
+      {discardError && (
+        <div className="mb-3 flex items-start gap-2 rounded-lg border border-red-300/50 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">
+          <span className="min-w-0 flex-1">Discard failed — {discardError}</span>
+          <button onClick={() => setDiscardError(null)} className="flex-none font-bold" title="Dismiss">×</button>
+        </div>
+      )}
 
       {/* Two-pane body */}
       <div className="flex min-h-0 flex-1 gap-4">
@@ -375,6 +469,7 @@ export function ChangesScreen() {
           )}
           {visibleSections.map((s) => {
             const sectionCollapsed = isCollapsed(s);
+            const mainDiscardAll = s.kind === 'main' ? renderDiscardAll(s, s.files) : null;
             return (
               <div key={s.key} className="mb-1.5">
                 <button
@@ -403,7 +498,14 @@ export function ChangesScreen() {
                 {!sectionCollapsed && (
                   s.kind === 'worktree'
                     ? renderWorktreeSplit(s)
-                    : s.files.map((f) => renderFileRow(s, f))
+                    : (
+                      <>
+                        {mainDiscardAll && (
+                          <div className="flex items-center px-2 pt-1 pb-0.5 pl-8">{mainDiscardAll}</div>
+                        )}
+                        {s.files.map((f) => renderFileRow(s, f))}
+                      </>
+                    )
                 )}
               </div>
             );
@@ -431,6 +533,16 @@ export function ChangesScreen() {
           )}
         </div>
       </div>
+
+      {confirmDiscard && (
+        <ConfirmDiscardDialog
+          files={confirmDiscard.files}
+          scopeLabel={confirmDiscard.scopeLabel}
+          busy={discarding}
+          onCancel={() => setConfirmDiscard(null)}
+          onConfirm={() => void doDiscard()}
+        />
+      )}
     </div>
   );
 }

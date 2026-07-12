@@ -231,7 +231,13 @@ export async function createPullRequest(branch: string, title: string, body: str
     // No existing PR (or unreadable) — fall through to create one.
   }
 
-  const { stdout } = await gh(['pr', 'create', '--title', title, '--body', body, '--head', branch]);
+  // Embed the per-ticket marker in the OPENING body too, in the same section shape the append path
+  // writes. Without this, a ticket's create body carries no marker, so a later re-raise while the PR
+  // is still OPEN (Ready → In Progress → Ready round-trip, or "Raise PR" pressed twice) fails the
+  // `!currentBody.includes(marker)` dedup check above and appends the whole body again — the PR
+  // description renders twice. Keep the raw body when no ticketId is supplied (back-compat).
+  const createBody = ticketId ? `${ticketSectionMarker(ticketId)}\n### ${title}\n\n${body}` : body;
+  const { stdout } = await gh(['pr', 'create', '--title', title, '--body', createBody, '--head', branch]);
   return stdout.trim();
 }
 

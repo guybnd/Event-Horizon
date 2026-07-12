@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { isGateParkedTicket, isPlanApprovalPending, isPlanApprovalNeedsYou, isPlanGateRevising, planReviewFeedback, planTldr, revisePlan, dismissPlanReview } from './pendingInteractions';
+import { isGateParkedTicket, isPlanApprovalPending, isPlanApprovalNeedsYou, isPlanGateRevising, canApprovePlan, planReviewFeedback, planTldr, revisePlan, dismissPlanReview } from './pendingInteractions';
 import { updateTask, startPlanRevise } from '../api';
 import type { Config, Task } from '../types';
 
@@ -87,6 +87,30 @@ describe('isPlanApprovalPending (FLUX-1262 / FLUX-1296)', () => {
   it('a per-ticket gate override does not affect it either — only status + verdict matter now', () => {
     const task = makeTask({ status: 'Grooming', planReviewState: 'approved', gatePolicyOverride: { plan: 'auto-then-you' } });
     expect(isPlanApprovalPending(task, youConfig)).toBe(true);
+  });
+});
+
+describe('canApprovePlan (FLUX-1339 — standing Approve, decoupled from the verdict)', () => {
+  it('is true for a Grooming ticket with a plan body but NO verdict (the iterated-in-chat case)', () => {
+    const task = makeTask({ status: 'Grooming', body: '## Implementation plan\n\nDo the thing.' });
+    expect(task.planReviewState).toBeUndefined();
+    expect(canApprovePlan(task)).toBe(true);
+  });
+
+  it('stays true regardless of the verdict — approved or changes-requested both approvable', () => {
+    expect(canApprovePlan(makeTask({ status: 'Grooming', body: 'plan', planReviewState: 'approved' }))).toBe(true);
+    expect(canApprovePlan(makeTask({ status: 'Grooming', body: 'plan', planReviewState: 'changes-requested' }))).toBe(true);
+  });
+
+  it('is false when the plan body is empty or whitespace-only', () => {
+    expect(canApprovePlan(makeTask({ status: 'Grooming', body: '' }))).toBe(false);
+    expect(canApprovePlan(makeTask({ status: 'Grooming', body: '   \n  ' }))).toBe(false);
+    expect(canApprovePlan(makeTask({ status: 'Grooming' }))).toBe(false);
+  });
+
+  it('is false outside Grooming even with a plan body', () => {
+    expect(canApprovePlan(makeTask({ status: 'Todo', body: 'plan' }))).toBe(false);
+    expect(canApprovePlan(makeTask({ status: 'In Progress', body: 'plan' }))).toBe(false);
   });
 });
 

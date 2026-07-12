@@ -239,6 +239,24 @@ export interface Task {
 // the UI reads to decide what to show. Keep these keys in lockstep with the engine union.
 export type CliFramework = 'claude' | 'copilot' | 'gemini';
 
+// FLUX-1373: the three-tier spend model. Each CLI defines what a tier resolves to
+// (`integrations.<cli>.tiers`); `modelPolicy.assignments` maps a task key to a tier.
+export type Tier = 'smart' | 'efficient' | 'cheap';
+
+/** Stable persisted task-key contract — exactly 9 keys, stamped on every session at dispatch. */
+export type TaskKey =
+  | 'grooming.lead'
+  | 'grooming.workers'
+  | 'planReview'
+  | 'implementation.lead'
+  | 'implementation.workers'
+  | 'review.lead'
+  | 'review.workers'
+  | 'finalize'
+  | 'chat';
+
+export type ModelPreset = 'splurge' | 'balanced' | 'frugal' | 'custom';
+
 /** Mirror of the engine's CliCapabilities (engine/src/agents/types.ts), served on /api/config.
  *  The UI gates features off these flags (FLUX-906) instead of `framework === 'claude'`. */
 export interface CliCapabilities {
@@ -257,7 +275,7 @@ export interface CliCapabilities {
   spawnTimeMcpConfig: boolean;
   imageAttachments: boolean;
 }
-export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'completed' | 'failed' | 'cancelled';
+export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'scheduled' | 'completed' | 'failed' | 'cancelled';
 
 export type ExecutionPattern = 'relay' | 'scatter-gather' | 'supervisor';
 export type PatternPosition = 'lead' | 'assistant' | 'combiner' | 'step' | 'standalone';
@@ -287,6 +305,11 @@ export interface CliSessionSummary {
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
   role?: string;
+  /** FLUX-1281: the launch phase this session was dispatched under (mirror of the engine's
+   *  `LaunchPhase`). Lets the dock tab's leading glyph prefer the ACTIVE session's identity over
+   *  the ticket's board status — e.g. a plan-review-gate pass on a Grooming ticket shows the
+   *  review Eye while it runs. 'chat' = the persistent per-ticket conversation (no phase glyph). */
+  phase?: 'grooming' | 'implementation' | 'review' | 'finalize' | 'fast-path' | 'chat';
   pattern?: ExecutionPattern;
   patternPosition?: PatternPosition;
   groupId?: string;
@@ -296,6 +319,10 @@ export interface CliSessionSummary {
   groupVariant?: GroupVariant;
   /** True when this session can be continued via `claude --resume` (FLUX-606). */
   resumable?: boolean;
+  /** FLUX-1390: ISO time a `scheduled` (sleeping) session will be auto-resumed via `--resume`. */
+  wakeAt?: string;
+  /** FLUX-1390: the agent's own reason for the pending wakeup, if it gave one. */
+  wakeReason?: string;
 }
 
 export interface TaskLiveEvent {
@@ -433,6 +460,14 @@ export interface Config {
    *  Quick/Standard/Thorough from the ticket's effort; a fixed value forces that depth for every plan
    *  review regardless of effort. Dialed in the same Grooming-column ⚙ modal as `gatePolicy`. */
   planReviewDepth?: 'auto' | 'quick' | 'standard' | 'thorough';
+  /** FLUX-1379: deterministic pre-gate plan lint (`engine/src/models/plan-lint.ts`) — bounces
+   *  mechanical plan defects for free in the `change_status` guard, before any LLM review session
+   *  spawns. Default `true`. Dialed in the same Grooming-column ⚙ modal as `gatePolicy`. */
+  planLint?: boolean;
+  /** FLUX-1379: XS/S tickets auto-skip the automatic `plan` gate trigger by default (a review can't
+   *  pay for itself on a ticket that small). Default `true`. Lint (above) still runs regardless.
+   *  Dialed in the same Grooming-column ⚙ modal as `gatePolicy`. */
+  planGateSkipSmall?: boolean;
   /** FLUX-1290: gates the `finish_ticket` merge-lock's runtime "a human touched this" check.
    *  Default `false` — an agent session can merge a branch/PR ticket with no prior human touch;
    *  `true` restores the always-on refusal. A plain on/off switch, not a `gatePolicy` key — dialed
@@ -455,13 +490,22 @@ export interface Config {
   };
   integrations?: {
     claudeCode?: {
-      groomingModel?: string;
-      implementationModel?: string;
+      /** FLUX-1373: what each spend tier resolves to for this CLI. Blank = shipped default. */
+      tiers?: { smart?: string; efficient?: string; cheap?: string };
     };
     geminiCli?: {
-      groomingModel?: string;
-      implementationModel?: string;
+      tiers?: { smart?: string; efficient?: string; cheap?: string };
     };
+    /** FLUX-1373: was silently dropped by the narrower type before — Copilot never had a model card. */
+    copilotCli?: {
+      tiers?: { smart?: string; efficient?: string; cheap?: string };
+    };
+  };
+  /** FLUX-1373: task -> tier policy. `preset` is 'custom' whenever `assignments` diverges from all
+   *  three named presets (Splurge/Balanced/Frugal); editing any assignment flips it to 'custom'. */
+  modelPolicy?: {
+    preset: ModelPreset;
+    assignments: Record<TaskKey, Tier>;
   };
   defaultAgent?: CliFramework | 'auto';
   // ─── FLUX-906: served by /api/config so the portal stops hardcoding Claude ───
@@ -500,6 +544,12 @@ export interface Config {
      *  real burn-lifecycle action needs confirmation) vs 'operator' (autonomous full authority
      *  once asked to manage a burn). */
     smelterMode?: 'drafting' | 'operator';
+  };
+  agents?: {
+    /** FLUX-1390: opt-in — honor `ScheduleWakeup` in unattended dispatched (non-chat) phase sessions
+     *  instead of blocking it (FLUX-1389's default). A session that calls it enters the `scheduled`
+     *  session state and is auto-resumed via `--resume` once its wakeAt passes. Default false. */
+    honorScheduledWakeups?: boolean;
   };
   agentProgress?: {
     enabled: boolean;

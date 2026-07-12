@@ -143,6 +143,16 @@ export function isPlanApprovalPending(task: Task, _config: Config | null | undef
   return task.status === 'Grooming' && task.planReviewState != null;
 }
 
+/** FLUX-1339: the STANDING "Approve → Todo" gate — decoupled from `planReviewState`. A user who
+ *  iterates on the plan conversationally in chat (no fresh re-review) clears the verdict, yet should
+ *  still be able to approve; and even before any review a written plan is approvable. So the only
+ *  requirements are: the ticket is in Grooming and has a non-empty plan body. The verdict, when one
+ *  exists, is advisory (an emphasis/badge), never a gate on whether Approve can be clicked. */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper colocated with the pending-interactions model it feeds (FLUX-1339); shared with PlanApprovalPanel.
+export function canApprovePlan(task: Task): boolean {
+  return task.status === 'Grooming' && !!(task.body && task.body.trim());
+}
+
 /** FLUX-1319: the gate loop is ACTIVELY revising toward a verdict — `planGateRunning` AND the current
  *  verdict is `changes-requested` (mid review→revise→re-review). Crucially an `approved` verdict is
  *  NOT "revising": the loop has finished and only its cleanup lingers (`planGateRunning` stays true

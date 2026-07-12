@@ -4,7 +4,10 @@
 // with that architecture; this covers the pure, high-value surfaces: the per-ticket decision core, the
 // two batch kinds, worktree-slot math, and the burn report.
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
 import {
   newFurnaceBatch,
   newBatchTicket,
@@ -42,7 +45,21 @@ import {
   lastCommentMatchesVerdictMarker,
   findSessionOutcome,
   upsertBatchPr,
+  stokerTick,
 } from './furnace-stoker.js';
+import { setWorkspaceRoot } from './workspace.js';
+import { getWorkspace } from './workspace-context.js';
+import { createTask } from './task-store.js';
+import {
+  createFurnaceBatch,
+  mutateFurnaceBatch,
+  getFurnaceBatch,
+  ensureFurnaceLoaded,
+  __resetFurnaceStoreForTests,
+} from './furnace-store.js';
+import { cliSessionsById, cliSessionsByTaskId, registerSession } from './session-store.js';
+import * as sessionStoreModule from './session-store.js';
+import type { CliSessionRecord } from './agents/types.js';
 
 // FLUX-1057/FLUX-1049: mock the real GitHub call so verdict-gating tests never shell out to `gh`.
 const postPrReview = vi.fn(async () => 'approved' as const);
@@ -158,6 +175,12 @@ describe('sequential anchor / follower', () => {
 describe('decideTicketAction (pure decision core)', () => {
   it('waits while the session is running', () => {
     const a = decideTicketAction({ ticket: mkTicket({ state: 'implementing' }), sessionStatus: 'running', retryCap: 2 });
+    expect(a.type).toBe('wait');
+  });
+  // FLUX-1390: a 'scheduled' session is honoring a ScheduleWakeup call — asleep, not idle — and
+  // must never be treated as a false "no verdict" park the way 'waiting-input' is (below).
+  it('waits (never parks) while the session is scheduled — an honored ScheduleWakeup sleep', () => {
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'implementing' }), sessionStatus: 'scheduled', retryCap: 2 });
     expect(a.type).toBe('wait');
   });
   it('re-drives when there is no observable session', () => {
@@ -296,6 +319,89 @@ describe('decideTicketAction (pure decision core)', () => {
   it('a FAILED (crashed) session still parks even when the ticket board status already reads Done — only a deliberate cancel yields', () => {
     const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'failed', ticketStatus: 'Done', retryCap: 2 });
     expect(a.type).toBe('park');
+  });
+});
+
+// FLUX-1396 (Group B): additional decideTicketAction edge cases the earlier per-ticket tickets didn't
+// pin down explicitly — precise park reasons, branch-precedence (a session outcome wins over a stale
+// verdict), and a couple of matrix cells (scheduled/waiting-input/cancelled/undefined-session) asserted
+// with full-shape `toEqual` rather than a loose `type` check, so a future refactor can't quietly change
+// the reason text or failure class without a test noticing.
+describe('FLUX-1396 (Group B) — decideTicketAction matrix', () => {
+  // Item 6: a completed review with no verdict at all (no marker-nudge in play) must park with the exact
+  // "no verdict" reason — this is the ScheduleWakeup-false-park class of bug: a caller that mistakenly
+  // treats this as some other park class (e.g. a bogus needs-input) would silently change behavior.
+  it('a completed review with reviewState null parks with the exact "no verdict" reason', () => {
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'completed', reviewState: null, retryCap: 2 });
+    expect(a).toEqual({ type: 'park', reason: 'review completed without a verdict (reviewState unset)', failureClass: 'hard-fail' });
+  });
+  it('a completed review with reviewState left undefined (never even cleared) parks the same way', () => {
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'completed', retryCap: 2 });
+    expect(a).toEqual({ type: 'park', reason: 'review completed without a verdict (reviewState unset)', failureClass: 'hard-fail' });
+  });
+
+  // Item 7: the `sessionStatus === 'failed'` branch (furnace-stoker.ts ~line 296) sits BEFORE the
+  // verdict-read branch (~line 318) and must win outright — a STALE reviewState left on the ticket from a
+  // prior review round (persists across re-implementation by design — see `clearReviewState`) must never
+  // be misread as this round's verdict just because the session that was supposed to update it crashed.
+  it('a FAILED session with a stale reviewState="approved" still hard-fails — never a false pr-open', () => {
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'failed', reviewState: 'approved', retryCap: 2 });
+    expect(a).toEqual({ type: 'park', reason: 'the review session ended failed', failureClass: 'hard-fail' });
+  });
+  it('a FAILED session with a stale reviewState="changes-requested" still hard-fails — never a false reimplement', () => {
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing', attempts: 0 }), sessionStatus: 'failed', reviewState: 'changes-requested', retryCap: 2 });
+    expect(a).toEqual({ type: 'park', reason: 'the review session ended failed', failureClass: 'hard-fail' });
+  });
+
+  // Item 8: the session-status matrix, locked with full-shape equality.
+  describe('session-status matrix', () => {
+    it('scheduled (an honored ScheduleWakeup sleep) waits, never a false "no verdict" park', () => {
+      expect(decideTicketAction({ ticket: mkTicket({ state: 'implementing' }), sessionStatus: 'scheduled', retryCap: 2 })).toEqual({ type: 'wait' });
+    });
+    it('waiting-input parks needs-input (an unattended run cannot answer)', () => {
+      expect(decideTicketAction({ ticket: mkTicket({ state: 'implementing' }), sessionStatus: 'waiting-input', retryCap: 2 }))
+        .toEqual({ type: 'park', reason: 'the implementation session is waiting for input (an unattended run can\'t answer)', failureClass: 'needs-input' });
+    });
+    it('cancelled + ticket already Done (FLUX-1297) yields instead of parking', () => {
+      expect(decideTicketAction({ ticket: mkTicket({ state: 'implementing' }), sessionStatus: 'cancelled', ticketStatus: 'Done', retryCap: 2 }))
+        .toEqual({ type: 'yield', reason: 'the implementation session was stopped and the ticket is already Done' });
+    });
+    it('FLUX-1297 nuance: cancelled + ticketStatus="Archived" still PARKS — Archived counts as board-success elsewhere but is NOT "merged" for this yield check', () => {
+      expect(decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'cancelled', ticketStatus: 'Archived', retryCap: 2 }).type).toBe('park');
+    });
+    it('undefined session status (no observable session) cold-redrives the current phase', () => {
+      expect(decideTicketAction({ ticket: mkTicket({ state: 'implementing' }), retryCap: 2 })).toEqual({ type: 'redrive', phase: 'implementation' });
+      expect(decideTicketAction({ ticket: mkTicket({ state: 'reimplementing' }), retryCap: 2 })).toEqual({ type: 'redrive', phase: 'implementation' });
+    });
+  });
+
+  // Item 9: context-exhaustion retry/park boundary, plus a rate-limit cooldown entered from `reviewing`
+  // (the existing coverage only exercised it from `implementing`).
+  describe('exhaustion + rate-limit boundaries', () => {
+    it('retries under the exhaustion cap, parks exactly AT the cap (not one past it)', () => {
+      const underCap = decideTicketAction({ ticket: mkTicket({ state: 'implementing', exhaustionAttempts: 1 }), sessionStatus: 'failed', terminalReason: 'context-exhausted', retryCap: 2, exhaustionRetryCap: 2 });
+      expect(underCap).toEqual({ type: 'retry-exhausted', phase: 'implementation', attempt: 2 });
+      const atCap = decideTicketAction({ ticket: mkTicket({ state: 'implementing', exhaustionAttempts: 2 }), sessionStatus: 'failed', terminalReason: 'context-exhausted', retryCap: 2, exhaustionRetryCap: 2 });
+      expect(atCap).toEqual({ type: 'park', reason: 'the implementation session ran out of context 2 time(s) — retries spent', failureClass: 'hard-fail' });
+    });
+    it('a rate-limited failure while REVIEWING also cools down (not just implementing)', () => {
+      const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'failed', terminalReason: 'rate-limited', retryCap: 2 });
+      expect(a).toEqual({ type: 'cooldown-rate-limited' });
+    });
+  });
+
+  // Item 10: the FLUX-1078 review-nudge is capped at exactly one — model the real two-call sequence
+  // `advanceTicket`'s 'review-nudge' case produces (it sets `reviewNudgeSent = true` once it dispatches
+  // the corrective session), rather than two independently-constructed tickets.
+  it('review-nudge fires once for a fresh ticket, then the SAME ticket (now reviewNudgeSent) falls back to park on the next pass', () => {
+    const fresh = mkTicket({ state: 'reviewing' });
+    const first = decideTicketAction({ ticket: fresh, sessionStatus: 'completed', reviewState: null, reviewVerdictMarkerSeen: true, retryCap: 2 });
+    expect(first).toEqual({ type: 'review-nudge' });
+
+    // Mirrors advanceTicket's 'review-nudge' mutation before the follow-up session is dispatched.
+    const afterNudgeDispatched = { ...fresh, reviewNudgeSent: true };
+    const second = decideTicketAction({ ticket: afterNudgeDispatched, sessionStatus: 'completed', reviewState: null, reviewVerdictMarkerSeen: true, retryCap: 2 });
+    expect(second).toEqual({ type: 'park', reason: 'review completed without a verdict (reviewState unset)', failureClass: 'hard-fail' });
   });
 });
 
@@ -741,5 +847,167 @@ describe('FLUX-1223 — upsertBatchPr accumulates every ticket that lands on a s
     upsertBatchPr(b, { url: 'http://pr/2', branch: 'flux/b', ticketId: 'FLUX-2', reviewState: 'approved' });
     expect(b.prs).toHaveLength(2);
     expect(b.prs.map((p) => p.ticketIds)).toEqual([['FLUX-1'], ['FLUX-2']]);
+  });
+});
+
+// FLUX-1396 (Group E): watchdog / stoker integration. `runWatchdog`, `reconcileTicket`, and `feedCoal`
+// are internal (unexported) — the only exported seam that drives all three together is `stokerTick`, so
+// these tests spin up the REAL furnace-store + task-store (mirroring furnace-integration.test.ts's
+// established pattern: a tmpdir workspace root, mocked only at the two external edges — the agent-session
+// spawn `fetch` and `postPrReview`, already mocked file-wide above) rather than hand-rolling an in-memory
+// fake of the store.
+describe('FLUX-1396 (Group E) — watchdog / stoker integration', () => {
+  let root: string;
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let sessCounter = 0;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-furnace-e2e-'));
+    await fs.mkdir(path.join(root, '.flux'), { recursive: true });
+    setWorkspaceRoot(root);
+    __resetFurnaceStoreForTests();
+    await ensureFurnaceLoaded();
+    cliSessionsById.clear();
+    cliSessionsByTaskId.clear();
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
+    sessCounter = 0;
+
+    // Stub the spawn route the Stoker calls to start an implementation/review session — register a
+    // running session for (taskId, phase) and hand back its id, mirroring POST /cli-session/start for
+    // real, minus an actual agent (same stub shape as furnace-integration.test.ts).
+    fetchMock = vi.fn(async (url: unknown, init: { body: string }) => {
+      const m = String(url).match(/\/api\/tasks\/([^/]+)\/cli-session\/start/);
+      if (!m || !m[1]) throw new Error(`unexpected fetch in FLUX-1396 watchdog/stoker tests: ${String(url)}`);
+      const taskId = decodeURIComponent(m[1]);
+      const id = `sess-${++sessCounter}`;
+      const body = JSON.parse(init.body) as { phase: string };
+      cliSessionsById.set(id, { id, taskId, status: 'running', phase: body.phase } as CliSessionRecord);
+      registerSession(taskId, id);
+      return { ok: true, json: async () => ({ session: { id } }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await fs.rm(root, { recursive: true, force: true }).catch(() => {});
+  });
+
+  /** Every ticketId a `/cli-session/start` call was made for. */
+  function dispatchedTicketIds(): string[] {
+    return fetchMock.mock.calls
+      .map((c) => String(c[0]).match(/\/api\/tasks\/([^/]+)\/cli-session\/start/))
+      .filter((m: RegExpMatchArray | null): m is RegExpMatchArray => !!m)
+      .map((m) => decodeURIComponent(m[1]!));
+  }
+
+  // Item 14: runWatchdog (furnace-stoker.ts ~line 1086-1104, re-verified above at ~1593) kills a session
+  // that outlived its watchdog timeout and hard-fails the ticket — the per-session escape hatch for a
+  // truly stuck agent that never reaches a terminal session status on its own.
+  it('runWatchdog hard-fails a timed-out ticket: state -> failed, hard-fail, session stopped, currentSessionId cleared, consecutiveFailures bumped', async () => {
+    const { id: ticketId } = await createTask({ title: 'Timed out', status: 'In Progress' });
+    const batch = await createFurnaceBatch({
+      title: 'watchdog', kind: 'parallel', tickets: [newBatchTicket(ticketId, 0)], sessionTimeoutMs: 45 * 60_000,
+    });
+    await mutateFurnaceBatch(batch.id, (b) => {
+      b.status = 'burning';
+      const t = b.tickets[0]!;
+      t.state = 'implementing';
+      t.currentSessionId = 'stuck-sess';
+      t.sessionIds = ['stuck-sess'];
+      t.sessionStartedAt = new Date(Date.now() - 60 * 60_000).toISOString(); // 60m ago > the 45m timeout
+    });
+    cliSessionsById.set('stuck-sess', { id: 'stuck-sess', taskId: ticketId, status: 'running', phase: 'implementation' } as CliSessionRecord);
+    registerSession(ticketId, 'stuck-sess');
+    const stopSpy = vi.spyOn(sessionStoreModule, 'stopAllSessionsForTask');
+
+    await stokerTick(batch.id);
+
+    const after = getFurnaceBatch(batch.id)!.tickets[0]!;
+    expect(after.state).toBe('failed');
+    expect(after.failureClass).toBe('hard-fail');
+    expect(after.currentSessionId).toBeUndefined();
+    expect(stopSpy).toHaveBeenCalledWith(ticketId, expect.any(String));
+    expect(cliSessionsById.get('stuck-sess')?.status).toBe('cancelled');
+    expect(getFurnaceBatch(batch.id)!.consecutiveFailures).toBe(1);
+    stopSpy.mockRestore();
+  });
+
+  // Item 15: park-is-terminal — a ticket already `failed` must never be picked back up by a later tick.
+  // `reconcileTicket` only ever visits `isActiveTicketState` tickets and `feedCoal` only ever starts
+  // `queued` ones, so a `failed` ticket structurally falls outside both loops; this regression-locks that
+  // invariant against the actual `stokerTick` entry point rather than trusting the state-filter reasoning
+  // in isolation.
+  it('a failed ticket is never resumed or redriven by a later tick (no-resume-after-timeout)', async () => {
+    const { id: failedId } = await createTask({ title: 'Already failed', status: 'In Progress' });
+    const { id: queuedId } = await createTask({ title: 'Sibling', status: 'Todo' });
+    const batch = await createFurnaceBatch({
+      title: 'no-resume', kind: 'parallel', burnRate: 2,
+      tickets: [newBatchTicket(failedId, 0), newBatchTicket(queuedId, 1)],
+    });
+    await mutateFurnaceBatch(batch.id, (b) => {
+      b.status = 'burning';
+      const t = b.tickets.find((x) => x.ticketId === failedId)!;
+      t.state = 'failed';
+      t.failureClass = 'hard-fail';
+      t.note = 'a prior watchdog timeout';
+    });
+
+    await stokerTick(batch.id);
+
+    const failedTicket = getFurnaceBatch(batch.id)!.tickets.find((t) => t.ticketId === failedId)!;
+    expect(failedTicket.state).toBe('failed'); // untouched — never resumed
+    expect(failedTicket.currentSessionId).toBeUndefined();
+    expect(dispatchedTicketIds()).not.toContain(failedId);
+    // The still-queued sibling IS fed — confirms the tick actually ran and simply skipped the failed one.
+    expect(dispatchedTicketIds()).toContain(queuedId);
+  });
+
+  describe('engine-restart-mid-stall (item 16)', () => {
+    it('a rehydrated waiting-input session (no sessionHistoryEntry) on an implementing ticket parks needs-input', async () => {
+      const { id: ticketId } = await createTask({ title: 'Restarted mid-wait', status: 'In Progress' });
+      const batch = await createFurnaceBatch({ title: 'restart-wait', kind: 'parallel', tickets: [newBatchTicket(ticketId, 0)] });
+      await mutateFurnaceBatch(batch.id, (b) => {
+        b.status = 'burning';
+        const t = b.tickets[0]!;
+        t.state = 'implementing';
+        t.currentSessionId = 'rehydrated-sess';
+        t.sessionIds = ['rehydrated-sess'];
+      });
+      // Simulate a session record rehydrated after an engine restart: the real `status` a restart can
+      // reconstruct, but deliberately no `sessionHistoryEntry` (that durable "what happened" field is only
+      // ever attached once something replays it) — decideTicketAction must still park correctly off
+      // `status` alone rather than implicitly depending on that extra bookkeeping field.
+      cliSessionsById.set('rehydrated-sess', { id: 'rehydrated-sess', taskId: ticketId, status: 'waiting-input', phase: 'implementation' } as CliSessionRecord);
+      registerSession(ticketId, 'rehydrated-sess');
+
+      await stokerTick(batch.id);
+
+      const after = getFurnaceBatch(batch.id)!.tickets[0]!;
+      expect(after.state).toBe('parked');
+      expect(after.failureClass).toBe('needs-input');
+    });
+
+    it('a missing session (currentSessionId no longer resolvable, as after a restart wiped the in-memory session map) cold-redrives with a fresh spawn', async () => {
+      const { id: ticketId } = await createTask({ title: 'Restarted, session gone', status: 'In Progress' });
+      const batch = await createFurnaceBatch({ title: 'restart-cold', kind: 'parallel', tickets: [newBatchTicket(ticketId, 0)] });
+      await mutateFurnaceBatch(batch.id, (b) => {
+        b.status = 'burning';
+        const t = b.tickets[0]!;
+        t.state = 'reviewing';
+        t.currentSessionId = 'gone-sess'; // stale pointer — an engine restart clears cliSessionsById
+        t.sessionIds = ['gone-sess'];
+      });
+      // Deliberately do NOT register 'gone-sess' in cliSessionsById/cliSessionsByTaskId: an engine restart
+      // starts both maps empty, so the ticket's own bookkeeping is the only thing left remembering it.
+
+      await stokerTick(batch.id);
+
+      expect(dispatchedTicketIds()).toContain(ticketId);
+      const after = getFurnaceBatch(batch.id)!.tickets[0]!;
+      expect(after.state).toBe('reviewing'); // redrive keeps the same in-flight state, just a fresh session
+      expect(after.currentSessionId).toBeTruthy();
+      expect(after.currentSessionId).not.toBe('gone-sess'); // a brand-new session, not the stale one
+    });
   });
 });

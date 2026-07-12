@@ -7,6 +7,7 @@ import {
   type WorkspaceEntry,
 } from './global-settings.js';
 import { isPkg, isSea, getSeaExtractDir } from './packaged-mode.js';
+import { getWorkspace } from './workspace-context.js';
 
 // In CJS bundles (esbuild output / pkg executable), __dirname is provided by Node.
 // In ESM dev mode (tsx / Node 20+), use import.meta for the source directory.
@@ -23,10 +24,14 @@ const __dirname_resolved: string = (() => {
   return path.join(process.cwd(), 'src');
 })();
 
-export let workspaceRoot: string | null = null;
+// FLUX-343: the active-root pointer lives on the Workspace object (workspace-context.ts) now,
+// not as a module-level `export let` here. These accessors are the compatibility surface.
+export function getWorkspaceRoot(): string | null {
+  return getWorkspace().root;
+}
 
 export function setWorkspaceRoot(root: string) {
-  workspaceRoot = root;
+  getWorkspace().root = root;
 }
 
 /**
@@ -39,7 +44,8 @@ export function setWorkspaceRoot(root: string) {
  * store missing — e.g. the orphan-mode `.flux-store` worktree was removed during an update).
  */
 export function requireWorkspaceRoot(): string {
-  if (!workspaceRoot) {
+  const root = getWorkspace().root;
+  if (!root) {
     throw new Error(
       'No active Event Horizon workspace is bound. The engine is running but has not loaded ' +
       'a project folder — usually the saved workspace was lost or its store is missing after ' +
@@ -48,18 +54,36 @@ export function requireWorkspaceRoot(): string {
       'removed). Open the Event Horizon portal and re-select your project folder to rebind it.',
     );
   }
-  return workspaceRoot;
+  return root;
 }
 
 export function getFluxDir() { return path.join(requireWorkspaceRoot(), '.flux'); }
 export function getFluxStoreDir() { return path.join(requireWorkspaceRoot(), '.flux-store'); }
 // Boolean probe: must never throw when unbound — answer "not orphan" instead of letting
 // path.join(null, …) blow up (FLUX-705). Callers branch on this before resolving real paths.
-export function isOrphanMode() { return workspaceRoot != null && existsSync(path.join(workspaceRoot, '.flux-store')); }
+export function isOrphanMode() {
+  const root = getWorkspace().root;
+  return root != null && existsSync(path.join(root, '.flux-store'));
+}
 export function getActiveFluxDir() { return isOrphanMode() ? getFluxStoreDir() : getFluxDir(); }
 export function getConfigFile() {
-  const storeConfig = path.join(getFluxStoreDir(), 'config.json');
-  if (isOrphanMode() && existsSync(storeConfig)) return storeConfig;
+  // Orphan mode: config.json lives in .flux-store. It's gitignored (FLUX-532), so a workspace set
+  // up by freshly cloning an existing flux-data branch has NO .flux-store/config.json yet — and it
+  // must STILL resolve here, not fall through to the in-repo .flux/ path whose directory doesn't
+  // exist on a clone. Returning .flux/config.json in that case made loadConfig()'s first-run default
+  // write throw ENOENT on .flux/config.json.tmp, aborting workspace activation before any ticket
+  // loaded — an empty board on every fresh orphan clone (FLUX-1340).
+  if (isOrphanMode()) {
+    const storeConfig = path.join(getFluxStoreDir(), 'config.json');
+    if (existsSync(storeConfig)) return storeConfig;
+    // Legacy pre-migration copy still sitting in .flux/: read it in place. migrateStrandedFluxTickets
+    // moves it into the store before initDir(), so only prefer it while it actually exists.
+    const legacyConfig = path.join(getFluxDir(), 'config.json');
+    if (existsSync(legacyConfig)) return legacyConfig;
+    // Neither exists yet — point at the store so the first-run default write lands in a directory
+    // that exists (.flux-store), never the phantom .flux/.
+    return storeConfig;
+  }
   return path.join(getFluxDir(), 'config.json');
 }
 export function getTaskAssetsDir() { return path.join(getActiveFluxDir(), 'assets'); }

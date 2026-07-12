@@ -8,6 +8,7 @@
 // (action:"add"/"remove") — updated in place here rather than renaming the file, since the underlying
 // behavior pinned below is unchanged, only the tool name + action discriminator.
 
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -15,7 +16,7 @@ import os from 'os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { buildMcpServer } from './mcp-server.js';
-import { tasksCache } from './task-store.js';
+
 import { setWorkspaceRoot } from './workspace.js';
 import { createFurnaceBatch, updateFurnaceBatch, mutateFurnaceBatch, getFurnaceBatch, __resetFurnaceStoreForTests } from './furnace-store.js';
 import { reconcileBatch } from './furnace-stoker.js';
@@ -68,7 +69,7 @@ describe('furnace_batch action:"discard" / furnace_ticket actions:"add"/"remove"
   });
 
   afterEach(async () => {
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     cliSessionsById.clear();
     cliSessionsByTaskId.clear();
     await fs.rm(root, { recursive: true, force: true }).catch(() => {});
@@ -122,7 +123,7 @@ describe('furnace_batch action:"discard" / furnace_ticket actions:"add"/"remove"
         title: 'Add ticket',
         tickets: [newBatchTicket('FLUX-1', 0), newBatchTicket('FLUX-2', 1)],
       });
-      tasksCache['FLUX-3'] = { id: 'FLUX-3', status: 'Todo', title: 'Third ticket', history: [] };
+      getWorkspace().tasks['FLUX-3'] = { id: 'FLUX-3', status: 'Todo', title: 'Third ticket', history: [] };
 
       const res = await callTool({ name: 'furnace_ticket', arguments: { action: 'add', batchId: batch.id, ticketId: 'FLUX-3' } });
       expect(res.isError).toBeFalsy();
@@ -137,7 +138,7 @@ describe('furnace_batch action:"discard" / furnace_ticket actions:"add"/"remove"
     it('rejects appending to a done batch with invalid_state', async () => {
       const batch = await createFurnaceBatch({ title: 'Done batch' });
       await updateFurnaceBatch(batch.id, { status: 'done' });
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', title: 'Ticket', history: [] };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', title: 'Ticket', history: [] };
 
       const res = await callTool({ name: 'furnace_ticket', arguments: { action: 'add', batchId: batch.id, ticketId: 'FLUX-1' } });
       expect(res.isError).toBe(true);
@@ -146,7 +147,7 @@ describe('furnace_batch action:"discard" / furnace_ticket actions:"add"/"remove"
 
     it('rejects a ticket already in the batch with invalid_state', async () => {
       const batch = await createFurnaceBatch({ title: 'Dup ticket', tickets: [newBatchTicket('FLUX-1', 0)] });
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', title: 'Ticket', history: [] };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', title: 'Ticket', history: [] };
 
       const res = await callTool({ name: 'furnace_ticket', arguments: { action: 'add', batchId: batch.id, ticketId: 'FLUX-1' } });
       expect(res.isError).toBe(true);
@@ -163,7 +164,7 @@ describe('furnace_batch action:"discard" / furnace_ticket actions:"add"/"remove"
 
     it('rejects a ticket with a disallowed status with validation_failed', async () => {
       const batch = await createFurnaceBatch({ title: 'Bad status ticket' });
-      tasksCache['FLUX-5'] = { id: 'FLUX-5', status: 'Grooming', title: 'Not ready', history: [] };
+      getWorkspace().tasks['FLUX-5'] = { id: 'FLUX-5', status: 'Grooming', title: 'Not ready', history: [] };
 
       const res = await callTool({ name: 'furnace_ticket', arguments: { action: 'add', batchId: batch.id, ticketId: 'FLUX-5' } });
       expect(res.isError).toBe(true);
@@ -172,7 +173,7 @@ describe('furnace_batch action:"discard" / furnace_ticket actions:"add"/"remove"
     });
 
     it('rejects a ticket already queued in another non-terminal batch, naming the owner (FLUX-1051)', async () => {
-      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', title: 'One', history: [] };
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', title: 'One', history: [] };
       const owner = await createFurnaceBatch({ title: 'Owner', tickets: [newBatchTicket('FLUX-1', 0, 'One')] });
       const other = await createFurnaceBatch({ title: 'Other' });
 
@@ -260,7 +261,7 @@ describe('furnace_batch action:"discard" / furnace_ticket actions:"add"/"remove"
       await updateFurnaceBatch(batch1.id, { status: 'done' }); // reconcileBatch only needs status !== 'draft'
       cliSessionsById.set('human-sess-1094', { id: 'human-sess-1094', taskId: 'RE-1094', status: 'running', phase: 'implementation' } as unknown as CliSessionRecord);
       registerSession('RE-1094', 'human-sess-1094');
-      tasksCache['RE-1094'] = { id: 'RE-1094', status: 'In Progress' };
+      getWorkspace().tasks['RE-1094'] = { id: 'RE-1094', status: 'In Progress' };
 
       await reconcileBatch(batch1.id); // pass 1 in batch1: suspected, not confirmed
       expect(getFurnaceBatch(batch1.id)?.tickets[0]?.owner).toBeUndefined();
@@ -280,7 +281,7 @@ describe('furnace_batch action:"discard" / furnace_ticket actions:"add"/"remove"
       await updateFurnaceBatch(batch1.id, { status: 'done' });
       cliSessionsById.set('human-sess-1094b', { id: 'human-sess-1094b', taskId: 'RE-1094B', status: 'running', phase: 'implementation' } as unknown as CliSessionRecord);
       registerSession('RE-1094B', 'human-sess-1094b');
-      tasksCache['RE-1094B'] = { id: 'RE-1094B', status: 'In Progress' };
+      getWorkspace().tasks['RE-1094B'] = { id: 'RE-1094B', status: 'In Progress' };
 
       await reconcileBatch(batch1.id);
       expect(getFurnaceBatch(batch1.id)?.tickets[0]?.owner).toBeUndefined();

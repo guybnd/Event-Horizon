@@ -1,10 +1,10 @@
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // resolveMergedPrTickets touches the engine's task store + event bus; mock both so the unit test
 // asserts the resolution behavior without real disk writes or socket emits. The pure-logic tests
 // below don't use either, so the mocks are inert for them.
 vi.mock('./task-store.js', () => ({
-  tasksCache: {},
   upsertManagedTicket: vi.fn().mockResolvedValue(undefined),
   updateTaskWithHistory: vi.fn().mockResolvedValue(undefined),
 }));
@@ -24,7 +24,7 @@ vi.mock('./sync-watcher.js', () => ({
   isSyncUnhealthy: vi.fn(() => syncHealthState.unhealthy),
 }));
 
-import { tasksCache, upsertManagedTicket, updateTaskWithHistory } from './task-store.js';
+import { upsertManagedTicket, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { selectMembers, prTicketFields, prTicketId, sharedNonDoneSiblings, membersToBounce, prTicketsOnBranch, resolveMergedPrTickets, syncPrTickets, deriveCiStatus } from './pr-tickets.js';
 
@@ -262,13 +262,13 @@ describe('prTicketsOnBranch (pure selection)', () => {
  */
 describe('resolveMergedPrTickets (immediate post-merge PR resolution)', () => {
   beforeEach(() => {
-    for (const k of Object.keys(tasksCache)) delete (tasksCache as Record<string, unknown>)[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete (getWorkspace().tasks as Record<string, unknown>)[k];
     vi.mocked(upsertManagedTicket).mockClear();
     vi.mocked(broadcastEvent).mockClear();
   });
 
   it('resolves only the branch\'s PR tickets to Done + MERGED + swimlane:null, immediately', async () => {
-    Object.assign(tasksCache, {
+    Object.assign(getWorkspace().tasks, {
       'PR-9': { id: 'PR-9', kind: 'pr', branch: 'feature/x', status: 'Ready', prState: 'OPEN' },
       'FLUX-1': { id: 'FLUX-1', branch: 'feature/x', status: 'Ready' }, // normal member → not this fn's job
       'PR-8': { id: 'PR-8', kind: 'pr', branch: 'feature/y', status: 'Ready' }, // other branch → untouched
@@ -283,7 +283,7 @@ describe('resolveMergedPrTickets (immediate post-merge PR resolution)', () => {
   });
 
   it('is a no-op when the merged branch carries no PR ticket', async () => {
-    Object.assign(tasksCache, { 'FLUX-1': { id: 'FLUX-1', branch: 'feature/x', status: 'Ready' } });
+    Object.assign(getWorkspace().tasks, { 'FLUX-1': { id: 'FLUX-1', branch: 'feature/x', status: 'Ready' } });
 
     const resolved = await resolveMergedPrTickets('feature/x');
 
@@ -296,7 +296,7 @@ describe('resolveMergedPrTickets (immediate post-merge PR resolution)', () => {
 /** FLUX-751: syncPrTickets pulls the gh PR description into the card body (3rd upsert arg). */
 describe('syncPrTickets (PR body carried into the card)', () => {
   beforeEach(() => {
-    for (const k of Object.keys(tasksCache)) delete (tasksCache as Record<string, unknown>)[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete (getWorkspace().tasks as Record<string, unknown>)[k];
     vi.mocked(upsertManagedTicket).mockClear();
   });
 
@@ -332,14 +332,14 @@ describe('syncPrTickets (PR body carried into the card)', () => {
  */
 describe('syncPrTickets clears a bounced member\'s stale reviewState (FLUX-1089)', () => {
   beforeEach(() => {
-    for (const k of Object.keys(tasksCache)) delete (tasksCache as Record<string, unknown>)[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete (getWorkspace().tasks as Record<string, unknown>)[k];
     vi.mocked(upsertManagedTicket).mockClear();
     vi.mocked(updateTaskWithHistory).mockClear();
     syncHealthState.unhealthy = false;
   });
 
   it('clears reviewState on the Ready member bounced by a CHANGES_REQUESTED PR', async () => {
-    Object.assign(tasksCache, {
+    Object.assign(getWorkspace().tasks, {
       'PR-13': { id: 'PR-13', kind: 'pr', branch: 'feature/v', prNumber: 13, status: 'Ready', prState: 'OPEN' },
       'FLUX-1': { id: 'FLUX-1', branch: 'feature/v', status: 'Ready', reviewState: 'approved' },
     });
@@ -364,13 +364,13 @@ describe('syncPrTickets clears a bounced member\'s stale reviewState (FLUX-1089)
  */
 describe('syncPrTickets preserves the merge-conflict swimlane across a poll (FLUX-986)', () => {
   beforeEach(() => {
-    for (const k of Object.keys(tasksCache)) delete (tasksCache as Record<string, unknown>)[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete (getWorkspace().tasks as Record<string, unknown>)[k];
     vi.mocked(upsertManagedTicket).mockClear();
     syncHealthState.unhealthy = false;
   });
 
   it('does not clobber a merge-conflict swimlane on the next poll while the PR is still open', async () => {
-    Object.assign(tasksCache, {
+    Object.assign(getWorkspace().tasks, {
       'PR-20': { id: 'PR-20', kind: 'pr', branch: 'feature/conflict', prNumber: 20, status: 'In Progress', prState: 'OPEN', swimlane: 'merge-conflict' },
     });
     ghState.stdout = JSON.stringify([
@@ -383,7 +383,7 @@ describe('syncPrTickets preserves the merge-conflict swimlane across a poll (FLU
   });
 
   it('CHANGES_REQUESTED still overrides a stale merge-conflict swimlane during a poll', async () => {
-    Object.assign(tasksCache, {
+    Object.assign(getWorkspace().tasks, {
       'PR-21': { id: 'PR-21', kind: 'pr', branch: 'feature/conflict2', prNumber: 21, status: 'In Progress', prState: 'OPEN', swimlane: 'merge-conflict' },
     });
     ghState.stdout = JSON.stringify([
@@ -397,7 +397,7 @@ describe('syncPrTickets preserves the merge-conflict swimlane across a poll (FLU
 });
 
 /**
- * FLUX-1076: while flux-data sync is wedged, tasksCache can be stale — a PR whose full ticket
+ * FLUX-1076: while flux-data sync is wedged, getWorkspace().tasks can be stale — a PR whose full ticket
  * already exists on the remote just looks "missing" locally. Creating a fresh skeleton for it
  * guarantees an add/add conflict on the next successful pull, which is how the incident this
  * ticket hardens against kept re-triggering itself. Only NET-NEW creation defers; existing PR
@@ -405,7 +405,7 @@ describe('syncPrTickets preserves the merge-conflict swimlane across a poll (FLU
  */
 describe('syncPrTickets defers new-ticket creation while sync is unhealthy (FLUX-1076)', () => {
   beforeEach(() => {
-    for (const k of Object.keys(tasksCache)) delete (tasksCache as Record<string, unknown>)[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete (getWorkspace().tasks as Record<string, unknown>)[k];
     vi.mocked(upsertManagedTicket).mockClear();
     syncHealthState.unhealthy = false;
   });
@@ -423,7 +423,7 @@ describe('syncPrTickets defers new-ticket creation while sync is unhealthy (FLUX
 
   it('still updates an existing PR ticket while sync is unhealthy', async () => {
     syncHealthState.unhealthy = true;
-    Object.assign(tasksCache, {
+    Object.assign(getWorkspace().tasks, {
       'PR-11': { id: 'PR-11', kind: 'pr', branch: 'feature/z', status: 'Ready', prState: 'OPEN' },
     });
     ghState.stdout = JSON.stringify([

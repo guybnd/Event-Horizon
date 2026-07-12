@@ -11,7 +11,6 @@ vi.mock('./agents/index.js', () => ({
 }));
 
 vi.mock('./task-store.js', () => ({
-  tasksCache: {},
   updateTaskWithHistory: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -20,7 +19,7 @@ vi.mock('./history.js', () => ({
 }));
 
 vi.mock('../workspace.js', () => ({
-  workspaceRoot: '/tmp/test',
+  getWorkspaceRoot: () => '/tmp/test',
 }));
 
 import {
@@ -41,6 +40,8 @@ import {
   stopAllSessionsForTask,
   reapStaleParkedSessions,
   reconcileDeadSessions,
+  getActiveSessionCount,
+  getLiveProcessSessionCount,
 } from './session-store.js';
 import type { CliSessionRecord } from './agents/types.js';
 import type { ChildProcessWithoutNullStreams } from 'child_process';
@@ -634,5 +635,59 @@ describe('session-store', () => {
       expect(slim.argsChars).toBeUndefined();
       expect(slim.liveOutput!.length).toBe(2048);
     });
+  });
+});
+
+// FLUX-1338: the workspace-switch guard must count only sessions backed by a live OS process, not
+// resumable resting sessions rehydrated from disk stubs (waiting-input, no proc) — those are what
+// made the switch dialog falsely warn "N agent sessions running" when nothing was running.
+describe('getLiveProcessSessionCount vs getActiveSessionCount (FLUX-1338)', () => {
+  const liveProc = { exitCode: null, signalCode: null } as unknown as ChildProcessWithoutNullStreams;
+  const deadProc = { exitCode: 0, signalCode: null } as unknown as ChildProcessWithoutNullStreams;
+
+  beforeEach(() => {
+    cliSessionsById.clear();
+    cliSessionsByTaskId.clear();
+  });
+
+  it('counts a session backed by a live process', () => {
+    const s = createMockSession({ id: 'sess-live', status: 'running', proc: liveProc });
+    cliSessionsById.set(s.id, s);
+    expect(getLiveProcessSessionCount()).toBe(1);
+  });
+
+  it('counts a proc-less pending session (dispatch still in the pre-spawn window)', () => {
+    // createPendingSession registers the record before worktree creation + spawn attach a `proc` —
+    // a multi-second window on cold starts. A switch during it would strand the spawn in a
+    // switched-out workspace, so the guard must still warn.
+    const s = createMockSession({ id: 'sess-prespawn', status: 'pending' });
+    cliSessionsById.set(s.id, s);
+    expect(getLiveProcessSessionCount()).toBe(1);
+  });
+
+  it('does NOT count a proc-less waiting-input session (rehydrated resumable stub)', () => {
+    // Mirrors rehydratedRecord(): waiting-input, no `proc`. This is the phantom the guard was counting.
+    const s = createMockSession({ id: 'sess-stub', status: 'waiting-input' });
+    cliSessionsById.set(s.id, s);
+    expect(getLiveProcessSessionCount()).toBe(0);
+    // ...but the broad count still treats it as active — unchanged, so checkAutoRestart still sees
+    // the board as "not idle" and won't auto-restart over a resumable session.
+    expect(getActiveSessionCount()).toBe(1);
+  });
+
+  it('does NOT count a session whose process has already exited', () => {
+    // A `waiting-input` session with a dead proc is likewise not "running" for switch purposes.
+    const s = createMockSession({ id: 'sess-exited', status: 'waiting-input', proc: deadProc });
+    cliSessionsById.set(s.id, s);
+    expect(getLiveProcessSessionCount()).toBe(0);
+  });
+
+  it('diverges from getActiveSessionCount exactly on the phantom stubs', () => {
+    const live = createMockSession({ id: 'sess-a', status: 'running', proc: liveProc });
+    const stub1 = createMockSession({ id: 'sess-b', status: 'waiting-input' });
+    const stub2 = createMockSession({ id: 'sess-c', status: 'waiting-input' });
+    for (const s of [live, stub1, stub2]) cliSessionsById.set(s.id, s);
+    expect(getActiveSessionCount()).toBe(3); // 1 live + 2 resumable stubs
+    expect(getLiveProcessSessionCount()).toBe(1); // only the live process — no phantom warning
   });
 });

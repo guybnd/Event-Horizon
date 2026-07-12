@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import express from 'express';
-import { workspaceRoot, getWorkspacesList } from '../workspace.js';
+import { getWorkspacesList, getWorkspaceRoot } from '../workspace.js';
 import { planGroupSetup, applyGroupSetup, ensureGroupRegistered, type GroupSetupInput } from '../group-setup.js';
 import { scanFolderForRepos, discoverFromRegistry, createDedicatedParent, type CreateParentInput, type CreateParentMember } from '../group-discovery.js';
 import { syncGroup } from '../group-sync.js';
@@ -64,7 +64,7 @@ function parseBody(body: unknown): GroupSetupInput | { error: string } {
     });
   }
   return {
-    parentRoot: workspaceRoot!,
+    parentRoot: getWorkspaceRoot()!,
     groupName: name,
     members: parsed,
     force: Boolean(force),
@@ -74,7 +74,7 @@ function parseBody(body: unknown): GroupSetupInput | { error: string } {
 
 /** Dry-run: compute the intrusive actions without writing anything. */
 router.post('/plan', async (req, res) => {
-  if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
+  if (!getWorkspaceRoot()) return res.status(400).json({ error: 'No workspace active' });
   const input = parseBody(req.body);
   if ('error' in input) return res.status(400).json({ error: input.error });
   try {
@@ -87,7 +87,7 @@ router.post('/plan', async (req, res) => {
 
 /** Apply: perform the writes (group.json, .gitignore, store, member register). */
 router.post('/apply', async (req, res) => {
-  if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
+  if (!getWorkspaceRoot()) return res.status(400).json({ error: 'No workspace active' });
   const input = parseBody(req.body);
   if ('error' in input) return res.status(400).json({ error: input.error });
   try {
@@ -112,7 +112,7 @@ router.post('/apply', async (req, res) => {
  * the folder-scan wizard (FLUX-407).
  */
 router.post('/ensure-registered', async (_req, res) => {
-  if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
+  if (!getWorkspaceRoot()) return res.status(400).json({ error: 'No workspace active' });
   const group = getGroupContext() ?? getMemberBinding()?.parentGroup;
   if (!group) {
     return res.status(400).json({ error: 'No multi-repo group is configured for this workspace.' });
@@ -206,7 +206,7 @@ router.post('/create-parent', async (req, res) => {
 
 
 router.post('/sync', async (_req, res) => {
-  if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
+  if (!getWorkspaceRoot()) return res.status(400).json({ error: 'No workspace active' });
   const group = getGroupContext();
   if (!group) return res.status(400).json({ error: 'No multi-repo group is configured' });
   try {
@@ -240,7 +240,7 @@ function parseEdits(body: unknown): GroupEditFile[] | { error: string } {
 
 /** Apply a sub-repo doc edit through the parent, commit, and re-fan-out. */
 router.post('/submit-edit', async (req, res) => {
-  if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
+  if (!getWorkspaceRoot()) return res.status(400).json({ error: 'No workspace active' });
   // The parent edits its own group; a bound member (Case 1) routes through the parent's context.
   const group = getGroupContext() ?? getMemberBinding()?.parentGroup;
   if (!group) {
@@ -271,6 +271,7 @@ type PromotionOrigin =
   | { kind: 'member'; memberRoot: string; parentGroup: GroupContext };
 
 function resolvePromotionOrigin(res: express.Response): PromotionOrigin | null {
+  const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) {
     res.status(400).json({ error: 'No workspace active' });
     return null;
@@ -288,7 +289,7 @@ router.post('/promote-docs/plan', async (_req, res) => {
   const origin = resolvePromotionOrigin(res);
   if (!origin) return;
   try {
-    const plan = await planDocsPromotion(workspaceRoot!);
+    const plan = await planDocsPromotion(getWorkspaceRoot()!);
     res.json(plan);
   } catch (err: unknown) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
@@ -342,6 +343,7 @@ router.post('/promote-docs/apply', async (req, res) => {
  * group context so the new label takes effect immediately.
  */
 router.patch('/docs-label', async (req, res) => {
+  const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
   const ctx = getGroupContext();
   if (!ctx) return res.status(400).json({ error: 'No group configured — only the parent workspace can update the docs label.' });

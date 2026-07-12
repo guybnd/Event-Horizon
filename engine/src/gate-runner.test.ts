@@ -6,6 +6,7 @@
 // too (backed by the real `furnace-store.js`), so the Furnace-yield precedence is tested against real
 // batch state rather than a mock.
 
+import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -27,6 +28,16 @@ vi.mock('./furnace-stoker.js', async (importOriginal) => {
   return {
     ...actual,
     dispatchSession: (t: string, p: string, o?: unknown) => dispatchSession(t, p, o),
+    // FLUX-1378: `resumeOrDispatchSession` is now the real revise-dispatch call site — mocked here as
+    // a passthrough to the SAME `dispatchSession` mock rather than reused from `actual`, because
+    // `actual.resumeOrDispatchSession`'s internal call to `dispatchSession` is an ESM same-module
+    // reference to the REAL function, not this factory's mocked export (mocking one export doesn't
+    // rebind another export's internal calls to it). No test here seeds a resumable session, so this
+    // mirrors production's own fallback-to-cold-spawn behavior in that case.
+    resumeOrDispatchSession: async (t: string, p: string, o?: unknown) => {
+      const r = await dispatchSession(t, p, o);
+      return { ...r, resumed: false };
+    },
     parkTicketOnBoard: (t: string, r: string, o?: unknown) => parkTicketOnBoard(t, r, o),
     decideTicketAction: (input: Parameters<typeof actual.decideTicketAction>[0]) =>
       forceYieldFor && input.ticket.ticketId === forceYieldFor
@@ -37,12 +48,13 @@ vi.mock('./furnace-stoker.js', async (importOriginal) => {
 
 vi.mock('./task-store.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./task-store.js')>();
+  const { getWorkspace: getWs } = await import('./workspace-context.js');
   const updateTaskWithHistory = vi.fn(async (taskId: string, options: {
     extraFields?: Record<string, unknown>;
     deleteFields?: string[];
     nextStatus?: string;
   }) => {
-    const t = actual.tasksCache[taskId];
+    const t = getWs().tasks[taskId];
     if (!t) return true;
     if (options.extraFields) Object.assign(t, options.extraFields);
     if (options.deleteFields) for (const f of options.deleteFields) delete t[f];
@@ -52,19 +64,19 @@ vi.mock('./task-store.js', async (importOriginal) => {
   return { ...actual, updateTaskWithHistory };
 });
 
-import { tasksCache } from './task-store.js';
+
 import { cliSessionsById } from './session-store.js';
 import { __resetFurnaceStoreForTests, createFurnaceBatch, mutateFurnaceBatch } from './furnace-store.js';
 import { newBatchTicket, DEFAULT_RETRY_CAP } from './models/furnace.js';
-import { configCache } from './config.js';
-import { startPlanGateNow, startPlanReviseNow, gateRunnerTick, isGateRunning, rehydrateGateRunner, __resetGateRunnerForTests } from './gate-runner.js';
+import { getConfig } from './config.js';
+import { startPlanGateNow, startPlanReviseNow, resolvePlanVerdictNow, gateRunnerTick, isGateRunning, rehydrateGateRunner, __resetGateRunnerForTests } from './gate-runner.js';
 
 function putSession(id: string, phase: string, status: CliSessionStatus): void {
   cliSessionsById.set(id, { id, phase, status } as unknown as ReturnType<typeof cliSessionsById.get> & object);
 }
 
 function seedGrooming(id: string, extra: Record<string, unknown> = {}): void {
-  tasksCache[id] = { id, status: 'Grooming', title: id, ...extra };
+  getWorkspace().tasks[id] = { id, status: 'Grooming', title: id, ...extra };
 }
 
 describe('Plan-review gate runner (FLUX-1263)', () => {
@@ -72,7 +84,7 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-gate-runner-'));
     await fs.mkdir(path.join(root, '.flux'), { recursive: true });
     setWorkspaceRoot(root);
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     cliSessionsById.clear();
     __resetGateRunnerForTests();
     __resetFurnaceStoreForTests();
@@ -80,12 +92,12 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     parkTicketOnBoard.mockClear();
     sessionSeq = 0;
     forceYieldFor = null;
-    configCache.gatePolicy = { boardDefault: { plan: 'auto', review: 'you' } };
-    configCache.requireInputStatus = 'Require Input';
-    configCache.columns = [
+    getConfig().gatePolicy = { boardDefault: { plan: 'auto', review: 'you' } };
+    getConfig().requireInputStatus = 'Require Input';
+    getConfig().columns = [
       { name: 'Grooming' }, { name: 'Todo' }, { name: 'In Progress' }, { name: 'Ready' }, { name: 'Done' },
     ];
-    configCache.planReviewDepth = 'auto';
+    getConfig().planReviewDepth = 'auto';
   });
 
   it('starts a run and dispatches the first (branchless) review pass', async () => {
@@ -93,13 +105,13 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     const res = await startPlanGateNow('P-1', { mode: 'loop-auto' });
     expect(res.ok).toBe(true);
     expect(isGateRunning('P-1')).toBe(true);
-    expect(tasksCache['P-1'].planGateRunning).toBe(true);
-    expect(tasksCache['P-1'].planGateAttempts).toBe(0);
+    expect(getWorkspace().tasks['P-1'].planGateRunning).toBe(true);
+    expect(getWorkspace().tasks['P-1'].planGateAttempts).toBe(0);
     expect(dispatchSession).toHaveBeenCalledWith('P-1', 'review', expect.objectContaining({ skipIsolation: true }));
   });
 
   it('refuses to start when the ticket is not in Grooming', async () => {
-    tasksCache['NG-1'] = { id: 'NG-1', status: 'Todo', title: 'NG-1' };
+    getWorkspace().tasks['NG-1'] = { id: 'NG-1', status: 'Todo', title: 'NG-1' };
     const res = await startPlanGateNow('NG-1', { mode: 'loop-auto' });
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('wrong-status');
@@ -142,38 +154,38 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     seedGrooming('AP-1');
     await startPlanGateNow('AP-1', { mode: 'loop-auto' });
     putSession('sess-1', 'review', 'completed');
-    tasksCache['AP-1'].planReviewState = 'approved';
+    getWorkspace().tasks['AP-1'].planReviewState = 'approved';
     await gateRunnerTick();
     expect(isGateRunning('AP-1')).toBe(false);
-    expect(tasksCache['AP-1'].status).toBe('Todo');
-    expect(tasksCache['AP-1'].planReviewState).toBeNull();
-    expect(tasksCache['AP-1'].planGateRunning).toBeUndefined();
+    expect(getWorkspace().tasks['AP-1'].status).toBe('Todo');
+    expect(getWorkspace().tasks['AP-1'].planReviewState).toBeNull();
+    expect(getWorkspace().tasks['AP-1'].planGateRunning).toBeUndefined();
   });
 
   it('approved under a one-shot pass stops WITHOUT moving status — never auto-confirms', async () => {
     seedGrooming('OS-AP-1');
     await startPlanGateNow('OS-AP-1', { mode: 'one-pass' });
     putSession('sess-1', 'review', 'completed');
-    tasksCache['OS-AP-1'].planReviewState = 'approved';
+    getWorkspace().tasks['OS-AP-1'].planReviewState = 'approved';
     await gateRunnerTick();
     expect(isGateRunning('OS-AP-1')).toBe(false);
-    expect(tasksCache['OS-AP-1'].status).toBe('Grooming');
-    expect(tasksCache['OS-AP-1'].planReviewState).toBe('approved');
-    expect(tasksCache['OS-AP-1'].planGateRunning).toBeUndefined();
+    expect(getWorkspace().tasks['OS-AP-1'].status).toBe('Grooming');
+    expect(getWorkspace().tasks['OS-AP-1'].planReviewState).toBe('approved');
+    expect(getWorkspace().tasks['OS-AP-1'].planGateRunning).toBeUndefined();
     // FLUX-1273: an accurate, plan-specific needsAction — not left to the generic FLUX-651 backstop's
     // "ended its turn without a board action" message, which reads as if the agent did nothing.
-    expect(tasksCache['OS-AP-1'].needsAction).toMatch(/verdict: approved/i);
+    expect(getWorkspace().tasks['OS-AP-1'].needsAction).toMatch(/verdict: approved/i);
   });
 
   it('dispatches a `grooming`-phase revise pass on changes-requested within the retry cap, under `auto` (loop-auto)', async () => {
     seedGrooming('CR-1');
     await startPlanGateNow('CR-1', { mode: 'loop-auto' });
     putSession('sess-1', 'review', 'completed');
-    tasksCache['CR-1'].planReviewState = 'changes-requested';
+    getWorkspace().tasks['CR-1'].planReviewState = 'changes-requested';
     dispatchSession.mockClear();
     await gateRunnerTick();
     expect(dispatchSession).toHaveBeenCalledWith('CR-1', 'grooming', expect.objectContaining({ skipIsolation: true }));
-    expect(tasksCache['CR-1'].planGateAttempts).toBe(1);
+    expect(getWorkspace().tasks['CR-1'].planGateAttempts).toBe(1);
     expect(isGateRunning('CR-1')).toBe(true);
   });
 
@@ -181,15 +193,15 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     seedGrooming('OS-CR-1');
     await startPlanGateNow('OS-CR-1', { mode: 'one-pass' });
     putSession('sess-1', 'review', 'completed');
-    tasksCache['OS-CR-1'].planReviewState = 'changes-requested';
+    getWorkspace().tasks['OS-CR-1'].planReviewState = 'changes-requested';
     dispatchSession.mockClear();
     await gateRunnerTick();
     expect(dispatchSession).not.toHaveBeenCalled();
     expect(isGateRunning('OS-CR-1')).toBe(false);
-    expect(tasksCache['OS-CR-1'].status).toBe('Grooming');
-    expect(tasksCache['OS-CR-1'].planReviewState).toBe('changes-requested');
+    expect(getWorkspace().tasks['OS-CR-1'].status).toBe('Grooming');
+    expect(getWorkspace().tasks['OS-CR-1'].planReviewState).toBe('changes-requested');
     // FLUX-1273: same accurate needsAction on the changes-requested one-shot stop.
-    expect(tasksCache['OS-CR-1'].needsAction).toMatch(/verdict: changes requested/i);
+    expect(getWorkspace().tasks['OS-CR-1'].needsAction).toMatch(/verdict: changes requested/i);
   });
 
   // FLUX-1288: `auto-then-you` (`loop-confirm`) loops changes-requested -> revise -> re-review just like
@@ -198,11 +210,11 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     seedGrooming('LC-CR-1');
     await startPlanGateNow('LC-CR-1', { mode: 'loop-confirm' });
     putSession('sess-1', 'review', 'completed');
-    tasksCache['LC-CR-1'].planReviewState = 'changes-requested';
+    getWorkspace().tasks['LC-CR-1'].planReviewState = 'changes-requested';
     dispatchSession.mockClear();
     await gateRunnerTick();
     expect(dispatchSession).toHaveBeenCalledWith('LC-CR-1', 'grooming', expect.objectContaining({ skipIsolation: true }));
-    expect(tasksCache['LC-CR-1'].planGateAttempts).toBe(1);
+    expect(getWorkspace().tasks['LC-CR-1'].planGateAttempts).toBe(1);
     expect(isGateRunning('LC-CR-1')).toBe(true);
   });
 
@@ -210,13 +222,13 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     seedGrooming('LC-AP-1');
     await startPlanGateNow('LC-AP-1', { mode: 'loop-confirm' });
     putSession('sess-1', 'review', 'completed');
-    tasksCache['LC-AP-1'].planReviewState = 'approved';
+    getWorkspace().tasks['LC-AP-1'].planReviewState = 'approved';
     await gateRunnerTick();
     expect(isGateRunning('LC-AP-1')).toBe(false);
-    expect(tasksCache['LC-AP-1'].status).toBe('Grooming');
-    expect(tasksCache['LC-AP-1'].planReviewState).toBe('approved');
-    expect(tasksCache['LC-AP-1'].planGateRunning).toBeUndefined();
-    expect(tasksCache['LC-AP-1'].needsAction).toMatch(/verdict: approved/i);
+    expect(getWorkspace().tasks['LC-AP-1'].status).toBe('Grooming');
+    expect(getWorkspace().tasks['LC-AP-1'].planReviewState).toBe('approved');
+    expect(getWorkspace().tasks['LC-AP-1'].planGateRunning).toBeUndefined();
+    expect(getWorkspace().tasks['LC-AP-1'].needsAction).toMatch(/verdict: approved/i);
   });
 
   it('parks (Grooming, gate-parked marker) after retryCap revise attempts still request changes', async () => {
@@ -225,7 +237,7 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     let n = 1;
     for (let attempt = 1; attempt <= DEFAULT_RETRY_CAP; attempt++) {
       putSession(`sess-${n}`, 'review', 'completed');
-      tasksCache['PK-1'].planReviewState = 'changes-requested';
+      getWorkspace().tasks['PK-1'].planReviewState = 'changes-requested';
       await gateRunnerTick(); // dispatches a revise pass
       n += 1;
       putSession(`sess-${n}`, 'grooming', 'completed');
@@ -233,7 +245,7 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
       n += 1;
     }
     putSession(`sess-${n}`, 'review', 'completed');
-    tasksCache['PK-1'].planReviewState = 'changes-requested';
+    getWorkspace().tasks['PK-1'].planReviewState = 'changes-requested';
     await gateRunnerTick(); // retryCap exhausted -> park
     expect(parkTicketOnBoard).toHaveBeenCalledWith('PK-1', expect.stringContaining('plan review:'), expect.objectContaining({ status: 'Grooming' }));
     expect(isGateRunning('PK-1')).toBe(false);
@@ -249,7 +261,7 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     forceYieldFor = 'YLD-1';
     await gateRunnerTick();
     expect(isGateRunning('YLD-1')).toBe(false);
-    expect(tasksCache['YLD-1'].planGateRunning).toBeUndefined();
+    expect(getWorkspace().tasks['YLD-1'].planGateRunning).toBeUndefined();
     expect(parkTicketOnBoard).not.toHaveBeenCalled();
   });
 
@@ -263,7 +275,7 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
   });
 
   it('rehydrates an in-flight run from frontmatter after an engine restart', () => {
-    tasksCache['RH-1'] = { id: 'RH-1', status: 'Grooming', title: 'RH-1', planGateRunning: true, planGateAttempts: 1, planGateMode: 'loop-auto' };
+    getWorkspace().tasks['RH-1'] = { id: 'RH-1', status: 'Grooming', title: 'RH-1', planGateRunning: true, planGateAttempts: 1, planGateMode: 'loop-auto' };
     expect(isGateRunning('RH-1')).toBe(false);
     rehydrateGateRunner();
     expect(isGateRunning('RH-1')).toBe(true);
@@ -275,26 +287,26 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
   // `currentSessionId`, so its first tick redrives a fresh review session (mirrors a real restart);
   // completing THAT session with a verdict then exercises the resolved mode's terminal behavior.
   it('rehydrates `planGateMode: "loop-confirm"` and stops-and-flags (not auto-move) on approval', async () => {
-    tasksCache['RH-LC'] = { id: 'RH-LC', status: 'Grooming', title: 'RH-LC', planGateRunning: true, planGateAttempts: 0, planGateMode: 'loop-confirm' };
+    getWorkspace().tasks['RH-LC'] = { id: 'RH-LC', status: 'Grooming', title: 'RH-LC', planGateRunning: true, planGateAttempts: 0, planGateMode: 'loop-confirm' };
     rehydrateGateRunner();
     expect(isGateRunning('RH-LC')).toBe(true);
     await gateRunnerTick(); // no session on record -> redrives a fresh review session
     putSession(`sess-${sessionSeq}`, 'review', 'completed');
-    tasksCache['RH-LC'].planReviewState = 'approved';
+    getWorkspace().tasks['RH-LC'].planReviewState = 'approved';
     await gateRunnerTick();
     expect(isGateRunning('RH-LC')).toBe(false);
-    expect(tasksCache['RH-LC'].status).toBe('Grooming');
-    expect(tasksCache['RH-LC'].planReviewState).toBe('approved');
-    expect(tasksCache['RH-LC'].needsAction).toMatch(/verdict: approved/i);
+    expect(getWorkspace().tasks['RH-LC'].status).toBe('Grooming');
+    expect(getWorkspace().tasks['RH-LC'].planReviewState).toBe('approved');
+    expect(getWorkspace().tasks['RH-LC'].needsAction).toMatch(/verdict: approved/i);
   });
 
   it('rehydrates a legacy `planGateOneShot: true` ticket as `one-pass` — stops without auto-revise', async () => {
-    tasksCache['RH-LEGACY-OS'] = { id: 'RH-LEGACY-OS', status: 'Grooming', title: 'RH-LEGACY-OS', planGateRunning: true, planGateAttempts: 0, planGateOneShot: true };
+    getWorkspace().tasks['RH-LEGACY-OS'] = { id: 'RH-LEGACY-OS', status: 'Grooming', title: 'RH-LEGACY-OS', planGateRunning: true, planGateAttempts: 0, planGateOneShot: true };
     rehydrateGateRunner();
     expect(isGateRunning('RH-LEGACY-OS')).toBe(true);
     await gateRunnerTick(); // redrives a fresh review session
     putSession(`sess-${sessionSeq}`, 'review', 'completed');
-    tasksCache['RH-LEGACY-OS'].planReviewState = 'changes-requested';
+    getWorkspace().tasks['RH-LEGACY-OS'].planReviewState = 'changes-requested';
     dispatchSession.mockClear();
     await gateRunnerTick();
     expect(dispatchSession).not.toHaveBeenCalled();
@@ -302,15 +314,15 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
   });
 
   it('rehydrates a legacy ticket with no `planGateOneShot`/`planGateMode` as `loop-auto`', async () => {
-    tasksCache['RH-LEGACY-AUTO'] = { id: 'RH-LEGACY-AUTO', status: 'Grooming', title: 'RH-LEGACY-AUTO', planGateRunning: true, planGateAttempts: 0 };
+    getWorkspace().tasks['RH-LEGACY-AUTO'] = { id: 'RH-LEGACY-AUTO', status: 'Grooming', title: 'RH-LEGACY-AUTO', planGateRunning: true, planGateAttempts: 0 };
     rehydrateGateRunner();
     expect(isGateRunning('RH-LEGACY-AUTO')).toBe(true);
     await gateRunnerTick(); // redrives a fresh review session
     putSession(`sess-${sessionSeq}`, 'review', 'completed');
-    tasksCache['RH-LEGACY-AUTO'].planReviewState = 'approved';
+    getWorkspace().tasks['RH-LEGACY-AUTO'].planReviewState = 'approved';
     await gateRunnerTick();
     expect(isGateRunning('RH-LEGACY-AUTO')).toBe(false);
-    expect(tasksCache['RH-LEGACY-AUTO'].status).toBe('Todo');
+    expect(getWorkspace().tasks['RH-LEGACY-AUTO'].status).toBe('Todo');
   });
 
   // ── FLUX-1303: startPlanReviseNow — the atomic "Send for re-grooming" entry point ──────────────
@@ -321,7 +333,7 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
       const res = await startPlanReviseNow('RV-1', { notes: 'also fix the button color', user: 'Guy' });
       expect(res.ok).toBe(true);
       expect(isGateRunning('RV-1')).toBe(true);
-      const t = tasksCache['RV-1'];
+      const t = getWorkspace().tasks['RV-1'];
       expect(t.planGateRunning).toBe(true);
       expect(t.planGateAttempts).toBe(1);
       // A revise of an approved plan is a human override — the verdict flips to changes-requested
@@ -338,37 +350,37 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
 
     it('re-reviews the revision when the revise session completes (the loop machinery takes over)', async () => {
       seedGrooming('RV-2', { body: 'plan body', planReviewState: 'changes-requested' });
-      configCache.gatePolicy = { boardDefault: { plan: 'auto-then-you', review: 'you' } };
+      getConfig().gatePolicy = { boardDefault: { plan: 'auto-then-you', review: 'you' } };
       const res = await startPlanReviseNow('RV-2', { user: 'Guy' });
       expect(res.ok).toBe(true);
-      expect(tasksCache['RV-2'].planGateMode).toBe('loop-confirm');
+      expect(getWorkspace().tasks['RV-2'].planGateMode).toBe('loop-confirm');
       putSession(`sess-${sessionSeq}`, 'grooming', 'completed');
       dispatchSession.mockClear();
       await gateRunnerTick();
       // revise completed → verdict cleared, fresh review pass dispatched
-      expect(tasksCache['RV-2'].planReviewState).toBeNull();
+      expect(getWorkspace().tasks['RV-2'].planReviewState).toBeNull();
       expect(dispatchSession).toHaveBeenCalledWith('RV-2', 'review', expect.objectContaining({ skipIsolation: true }));
     });
 
     it("under a 'you' gate the revision gets exactly ONE re-review, then stops and flags the human", async () => {
       seedGrooming('RV-3', { body: 'plan body', planReviewState: 'changes-requested' });
-      configCache.gatePolicy = { boardDefault: { plan: 'you', review: 'you' } };
+      getConfig().gatePolicy = { boardDefault: { plan: 'you', review: 'you' } };
       await startPlanReviseNow('RV-3', { user: 'Guy' });
-      expect(tasksCache['RV-3'].planGateMode).toBe('one-pass');
+      expect(getWorkspace().tasks['RV-3'].planGateMode).toBe('one-pass');
       putSession(`sess-${sessionSeq}`, 'grooming', 'completed');
       await gateRunnerTick(); // dispatches the single re-review
       putSession(`sess-${sessionSeq}`, 'review', 'completed');
-      tasksCache['RV-3'].planReviewState = 'changes-requested';
+      getWorkspace().tasks['RV-3'].planReviewState = 'changes-requested';
       dispatchSession.mockClear();
       await gateRunnerTick();
       // one-pass: a second changes-requested verdict stops the run instead of auto-revising again
       expect(dispatchSession).not.toHaveBeenCalled();
       expect(isGateRunning('RV-3')).toBe(false);
-      expect(tasksCache['RV-3'].needsAction).toMatch(/changes requested/i);
+      expect(getWorkspace().tasks['RV-3'].needsAction).toMatch(/changes requested/i);
     });
 
     it('refuses when the ticket is not in Grooming or a run is already in flight', async () => {
-      tasksCache['RV-4'] = { id: 'RV-4', status: 'Todo', title: 'RV-4' };
+      getWorkspace().tasks['RV-4'] = { id: 'RV-4', status: 'Todo', title: 'RV-4' };
       const wrong = await startPlanReviseNow('RV-4', { user: 'Guy' });
       expect(wrong.ok).toBe(false);
       expect(wrong.reason).toBe('wrong-status');
@@ -385,7 +397,7 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
       const bare = await startPlanReviseNow('RV-6', { user: 'Guy' });
       expect(bare.ok).toBe(false);
       expect(bare.reason).toBe('notes-required');
-      expect(tasksCache['RV-6'].planReviewState).toBe('approved'); // untouched
+      expect(getWorkspace().tasks['RV-6'].planReviewState).toBe('approved'); // untouched
       expect(dispatchSession).not.toHaveBeenCalled();
       const withNotes = await startPlanReviseNow('RV-6', { user: 'Guy', notes: 'the plan misses the migration step' });
       expect(withNotes.ok).toBe(true);
@@ -405,7 +417,7 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     it('clears a stale gate-park require-input swimlane — the revise IS the answer', async () => {
       seedGrooming('RV-8', { planReviewState: 'changes-requested', swimlane: 'require-input' });
       await startPlanReviseNow('RV-8', { user: 'Guy', notes: 'redo step 2' });
-      expect(tasksCache['RV-8'].swimlane).toBeNull();
+      expect(getWorkspace().tasks['RV-8'].swimlane).toBeNull();
     });
 
     it('closes the tick-vs-revise race: a background tick firing before the notes-bearing dispatch must not redrive with a notes-less focus', async () => {
@@ -422,7 +434,7 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
       const persistGate = new Promise<void>((resolve) => { releasePersist = resolve; });
       vi.mocked(updateTaskWithHistory).mockImplementationOnce(async (taskId: string, options: { extraFields?: Record<string, unknown> }) => {
         await persistGate;
-        const t = tasksCache[taskId];
+        const t = getWorkspace().tasks[taskId];
         if (t && options.extraFields) Object.assign(t, options.extraFields);
         return true;
       });
@@ -452,14 +464,14 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     seedGrooming('LG-1', { planReviewState: 'changes-requested' });
     await startPlanReviseNow('LG-1', { user: 'Guy' });
     expect(isGateRunning('LG-1')).toBe(true);
-    tasksCache['LG-1'].status = 'Todo'; // human approves anyway / drags the card while the revise runs
+    getWorkspace().tasks['LG-1'].status = 'Todo'; // human approves anyway / drags the card while the revise runs
     await gateRunnerTick();
     expect(isGateRunning('LG-1')).toBe(false);
-    expect(tasksCache['LG-1'].planGateRunning).toBeUndefined();
+    expect(getWorkspace().tasks['LG-1'].planGateRunning).toBeUndefined();
   });
 
   it('rehydrates a run whose grooming REVISE session survived as reimplementing, not reviewing', async () => {
-    tasksCache['RH-RV'] = { id: 'RH-RV', status: 'Grooming', title: 'RH-RV', planGateRunning: true, planGateAttempts: 1, planGateMode: 'loop-confirm' };
+    getWorkspace().tasks['RH-RV'] = { id: 'RH-RV', status: 'Grooming', title: 'RH-RV', planGateRunning: true, planGateAttempts: 1, planGateMode: 'loop-confirm' };
     putSession('sess-live-revise', 'grooming', 'running');
     const { cliSessionsByTaskId } = await import('./session-store.js');
     cliSessionsByTaskId.set('RH-RV', ['sess-live-revise']);
@@ -471,5 +483,120 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     // pass against the not-yet-revised plan (two agents writing the same ticket at once).
     expect(dispatchSession).not.toHaveBeenCalled();
     cliSessionsByTaskId.delete('RH-RV');
+  });
+
+  // ── FLUX-1320: eager verdict resolution — change_status stops a loop-terminal run the moment the
+  // verdict persists (while the review session is still RUNNING), instead of waiting for the review
+  // session to complete and the next 5s tick to observe it.
+
+  describe('resolvePlanVerdictNow (FLUX-1320)', () => {
+    it('approved under `loop-auto` moves Grooming -> Todo and stops synchronously, mid-session — no tick', async () => {
+      seedGrooming('EG-1');
+      await startPlanGateNow('EG-1', { mode: 'loop-auto' });
+      putSession('sess-1', 'review', 'running'); // the reviewer is still mid-turn — the tick could not act yet
+      getWorkspace().tasks['EG-1'].planReviewState = 'approved'; // what change_status just persisted
+      await resolvePlanVerdictNow('EG-1', 'approved');
+      expect(isGateRunning('EG-1')).toBe(false);
+      expect(getWorkspace().tasks['EG-1'].status).toBe('Todo');
+      expect(getWorkspace().tasks['EG-1'].planReviewState).toBeNull();
+      expect(getWorkspace().tasks['EG-1'].planGateRunning).toBeUndefined();
+    });
+
+    it('approved under `loop-confirm` stops + flags with the tick path\'s exact needsAction, synchronously', async () => {
+      seedGrooming('EG-2');
+      await startPlanGateNow('EG-2', { mode: 'loop-confirm' });
+      putSession('sess-1', 'review', 'running');
+      getWorkspace().tasks['EG-2'].planReviewState = 'approved';
+      await resolvePlanVerdictNow('EG-2', 'approved');
+      expect(isGateRunning('EG-2')).toBe(false);
+      expect(getWorkspace().tasks['EG-2'].status).toBe('Grooming');
+      expect(getWorkspace().tasks['EG-2'].planReviewState).toBe('approved');
+      expect(getWorkspace().tasks['EG-2'].planGateRunning).toBeUndefined();
+      expect(getWorkspace().tasks['EG-2'].needsAction).toMatch(/verdict: approved/i);
+    });
+
+    it('changes-requested under `one-pass` stops + flags synchronously, never dispatching a revise', async () => {
+      seedGrooming('EG-3');
+      await startPlanGateNow('EG-3', { mode: 'one-pass' });
+      putSession('sess-1', 'review', 'running');
+      getWorkspace().tasks['EG-3'].planReviewState = 'changes-requested';
+      dispatchSession.mockClear();
+      await resolvePlanVerdictNow('EG-3', 'changes-requested');
+      expect(dispatchSession).not.toHaveBeenCalled();
+      expect(isGateRunning('EG-3')).toBe(false);
+      expect(getWorkspace().tasks['EG-3'].planGateRunning).toBeUndefined();
+      expect(getWorkspace().tasks['EG-3'].needsAction).toMatch(/verdict: changes requested/i);
+    });
+
+    it('changes-requested under a looping mode is NOT short-circuited — the tick still auto-revises', async () => {
+      seedGrooming('EG-4');
+      await startPlanGateNow('EG-4', { mode: 'loop-auto' });
+      putSession('sess-1', 'review', 'running');
+      getWorkspace().tasks['EG-4'].planReviewState = 'changes-requested';
+      dispatchSession.mockClear();
+      await resolvePlanVerdictNow('EG-4', 'changes-requested');
+      expect(isGateRunning('EG-4')).toBe(true); // untouched — the revise must wait for the session to end
+      expect(getWorkspace().tasks['EG-4'].planGateRunning).toBe(true);
+      expect(dispatchSession).not.toHaveBeenCalled();
+      // ...and once the review session actually completes, the ordinary tick dispatches the revise.
+      putSession('sess-1', 'review', 'completed');
+      await gateRunnerTick();
+      expect(dispatchSession).toHaveBeenCalledWith('EG-4', 'grooming', expect.objectContaining({ skipIsolation: true }));
+      expect(isGateRunning('EG-4')).toBe(true);
+    });
+
+    it('a tick firing after an eager stop is a no-op — no double-move, double-stop, or re-dispatch', async () => {
+      seedGrooming('EG-5');
+      await startPlanGateNow('EG-5', { mode: 'loop-auto' });
+      putSession('sess-1', 'review', 'completed'); // even with the tick's own trigger condition met
+      getWorkspace().tasks['EG-5'].planReviewState = 'approved';
+      await resolvePlanVerdictNow('EG-5', 'approved');
+      expect(getWorkspace().tasks['EG-5'].status).toBe('Todo');
+      dispatchSession.mockClear();
+      parkTicketOnBoard.mockClear();
+      await gateRunnerTick();
+      expect(getWorkspace().tasks['EG-5'].status).toBe('Todo');
+      expect(dispatchSession).not.toHaveBeenCalled();
+      expect(parkTicketOnBoard).not.toHaveBeenCalled();
+      expect(isGateRunning('EG-5')).toBe(false);
+    });
+
+    it('no-ops for a verdict recorded while the run is mid-REVISE (a verdict only concludes a review pass)', async () => {
+      seedGrooming('EG-6', { planReviewState: 'changes-requested' });
+      await startPlanReviseNow('EG-6', { user: 'Guy' }); // registers the run in the reimplementing state
+      expect(isGateRunning('EG-6')).toBe(true);
+      await resolvePlanVerdictNow('EG-6', 'approved');
+      expect(isGateRunning('EG-6')).toBe(true);
+      expect(getWorkspace().tasks['EG-6'].status).toBe('Grooming');
+      expect(getWorkspace().tasks['EG-6'].planGateRunning).toBe(true);
+    });
+
+    it('no-ops when no run is active (a manual verdict with the gate off)', async () => {
+      seedGrooming('EG-7', { planReviewState: 'approved' });
+      await resolvePlanVerdictNow('EG-7', 'approved');
+      expect(getWorkspace().tasks['EG-7'].status).toBe('Grooming');
+      expect(isGateRunning('EG-7')).toBe(false);
+    });
+
+    it('defers to the tick when the ticket already left Grooming mid-run (its stop note is the tick\'s)', async () => {
+      seedGrooming('EG-8');
+      await startPlanGateNow('EG-8', { mode: 'loop-auto' });
+      getWorkspace().tasks['EG-8'].status = 'In Progress'; // human dragged the card out while the run was in flight
+      getWorkspace().tasks['EG-8'].planReviewState = 'approved';
+      await resolvePlanVerdictNow('EG-8', 'approved');
+      expect(isGateRunning('EG-8')).toBe(true); // untouched — the next tick stops it with the left-Grooming note
+      expect(getWorkspace().tasks['EG-8'].status).toBe('In Progress'); // and no onApproved move fired on top
+    });
+
+    it('defers to the tick when an active Furnace batch owns the ticket (the tick yields it)', async () => {
+      seedGrooming('EG-9');
+      await startPlanGateNow('EG-9', { mode: 'loop-auto' });
+      const batch = await createFurnaceBatch({ title: 'b', tickets: [newBatchTicket('EG-9', 0, 'EG-9')] });
+      await mutateFurnaceBatch(batch.id, (b) => { b.status = 'burning'; b.tickets[0]!.state = 'implementing'; });
+      getWorkspace().tasks['EG-9'].planReviewState = 'approved';
+      await resolvePlanVerdictNow('EG-9', 'approved');
+      expect(isGateRunning('EG-9')).toBe(true);
+      expect(getWorkspace().tasks['EG-9'].status).toBe('Grooming');
+    });
   });
 });

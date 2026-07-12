@@ -4,6 +4,7 @@
 // sliced from the SERVER's length against the CLIENT's shorter array). See history.ts's
 // `reconcileNovelHistoryEntries` for the identity-based replacement.
 
+import { getWorkspace } from '../workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -13,7 +14,7 @@ import type { AddressInfo } from 'net';
 import express from 'express';
 import { setWorkspaceRoot } from '../workspace.js';
 import { requireWorkspace } from '../middleware.js';
-import { tasksCache } from '../task-store.js';
+
 
 describe('PUT /api/tasks/:id — history reconciliation by identity (FLUX-1308)', () => {
   let root: string;
@@ -31,8 +32,8 @@ describe('PUT /api/tasks/:id — history reconciliation by identity (FLUX-1308)'
     await fs.mkdir(path.join(root, '.flux'), { recursive: true });
     setWorkspaceRoot(root);
 
-    for (const k of Object.keys(tasksCache)) delete tasksCache[k];
-    tasksCache['FLUX-1'] = {
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
+    getWorkspace().tasks['FLUX-1'] = {
       id: 'FLUX-1',
       title: 'Test ticket',
       status: 'Todo',
