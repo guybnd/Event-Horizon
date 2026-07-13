@@ -11,7 +11,7 @@ Scope: Write code, validate logic, format commits, and close tickets during the 
 
 # Event Horizon Agent — Implementation Skill
 
-Version: 2.13.0
+Version: 2.14.0
 
 ## When This Skill Applies
 
@@ -51,6 +51,7 @@ Full contract lives in the orchestrator skill's "End-of-Turn Action Contract" se
     - `.docs/event-horizon/reference/*` — if you changed ticket schema, MCP tools, REST endpoints, realtime channels, or the agent-adapter contract, the matching reference page MUST be updated.
     - `.docs/event-horizon/architecture/code-map.md` — add an entry when a new module becomes the right "land here first" file for future agents.
     - `.docs/event-horizon/agent-integrations.md`, `workflow/*.md`, root `README.md`, and `.flux/skills/` templates when user-facing or agent-facing behavior changes.
+    - `.docs/design/style-guide.md` (if present) — if the ticket changes the visual system (palette, type scale, spacing/radius, component vocabulary, interaction conventions), update the guide in the same ticket. See the grooming skill's "Design Style Guide" section for the convention and the bootstrap flow if the guide doesn't exist yet.
     - If nothing needs updating, say so explicitly in the completion comment ("no docs needed because …") instead of skipping the check silently.
 11. On `finish <ticket>`:
     - **Branchless tickets:** stage all relevant files (code + docs), create the commit, then use `finish_ticket` with `implementationLink` (commit hash) and `completionComment`. Status moves to Done atomically. If you skipped the `completion` payload at `Ready` (or the ticket has no `Ready` step at all), `finish_ticket` accepts the same `completion` param — same judgment call as step 9.

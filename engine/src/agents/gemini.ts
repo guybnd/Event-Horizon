@@ -18,7 +18,7 @@ import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { appendTranscriptLine } from '../transcript.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote, resolveModel } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote, resolveModel, buildTokenMetadataUpdate } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   Bash: 'Running command',
@@ -421,7 +421,15 @@ export function attachStdoutProcessing(
           if (typeof evt.stats.total_cost_usd === 'number') {
             session.costUSD = (session.costUSD ?? 0) + evt.stats.total_cost_usd;
           } else {
-            session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.resumeSessionId, inputTok, outputTok);
+            // FLUX-1375: session.model (not session.resumeSessionId, a UUID that never matched any
+            // pricing row); `input_tokens` includes the cached portion, so price it as fresh input
+            // minus the cache-read tokens (billed at their own, cheaper rate) rather than double-
+            // counting the same tokens at the full input rate.
+            session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.model, {
+              freshInputTokens: Math.max(0, inputTok - cacheRead),
+              cacheReadTokens: cacheRead,
+              outputTokens: outputTok,
+            });
             session.costIsEstimated = true;
           }
         } else if (evt.type === 'result' && evt.usage) {
@@ -438,7 +446,15 @@ export function attachStdoutProcessing(
           if (typeof evt.total_cost_usd === 'number') {
             session.costUSD = (session.costUSD ?? 0) + evt.total_cost_usd;
           } else {
-            session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.resumeSessionId, inputTok, outputTok);
+            // FLUX-1375: session.model (not session.resumeSessionId, a UUID that never matched any
+            // pricing row) — and price fresh/cache-read/cache-creation tokens at their own rates
+            // instead of blending them all into the full input rate.
+            session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.model, {
+              freshInputTokens: freshInput,
+              cacheReadTokens: cacheRead,
+              cacheCreationTokens: cacheCreation,
+              outputTokens: outputTok,
+            });
             session.costIsEstimated = true;
           }
         }
@@ -529,6 +545,10 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
       selectedModel = null;
     }
   }
+  // FLUX-1375: persist the resolved model onto the session — previously only a local var, so the
+  // fallback cost estimator had no real model to key on (it was passed session.resumeSessionId, a
+  // UUID, instead).
+  if (selectedModel) session.model = selectedModel;
 
   // FLUX-1193: prefer the session's own launch phase — set by the caller (routes/cli-session.ts
   // passes 'chat' for ticket chat, per useChatSession.ts) — over a status-derived guess, mirroring
@@ -691,19 +711,9 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
       ? `${label} session stopped by user.`
       : `${label} session ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
 
-    const tokenUpdate = (session.inputTokens ?? 0) > 0 || (session.outputTokens ?? 0) > 0
-      ? (() => {
-          const prev = getWorkspace().tasks[id]?.tokenMetadata || { inputTokens: 0, outputTokens: 0, costUSD: 0 };
-          return {
-            inputTokens: (prev.inputTokens ?? 0) + (session.inputTokens ?? 0),
-            outputTokens: (prev.outputTokens ?? 0) + (session.outputTokens ?? 0),
-            costUSD: parseFloat(((prev.costUSD ?? 0) + (session.costUSD ?? 0)).toFixed(6)),
-            costIsEstimated: prev.costIsEstimated || session.costIsEstimated || false,
-            cacheReadTokens: (prev.cacheReadTokens ?? 0) + (session.cacheReadTokens ?? 0),
-            cacheCreationTokens: (prev.cacheCreationTokens ?? 0) + (session.cacheCreationTokens ?? 0),
-          };
-        })()
-      : null;
+    // FLUX-1375: delta-based (buildTokenMetadataUpdate advances session.flushed*Tokens), so the
+    // reply exit handler below can flush again without double-counting what this flush persists.
+    const tokenUpdate = buildTokenMetadataUpdate(id, session);
 
     // FLUX-985: paused for user input — flush tokens + mark the session entry waiting-input, but do
     // NOT go terminal: no completion comment (the last text is the agent's Require-Input message, not
@@ -913,6 +923,15 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     // (which counted the killed session as active forever). Otherwise the resumable conversation
     // stays waiting-input.
     terminalizeResumedExit(session);
+    // FLUX-1375: the resume/reply exit path previously never flushed tokenMetadata at all — only the
+    // INITIAL spawn's exit handler did — so every resumed chat turn's cost was silently dropped from
+    // the ticket's cost meter. Mirror the initial-spawn flush here, unconditionally (regardless of why
+    // this turn ended): buildTokenMetadataUpdate diffs against the session's own flushed baseline, so
+    // this is correct however many resumed turns have run.
+    const resumeTokenUpdate = buildTokenMetadataUpdate(id, session);
+    if (resumeTokenUpdate) {
+      await updateTaskWithHistory(id, { updatedBy: 'Agent', entries: [], tokenMetadata: resumeTokenUpdate });
+    }
     // FLUX-651: resumed turn ended — flag if the agent parked without acting. Skip a stopped turn.
     if (!session.pausedForInput && !session.requestedStop) await flagIfParked(session, id);
     broadcastEvent('taskUpdated', { id });

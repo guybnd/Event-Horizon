@@ -4,7 +4,7 @@ import { createTaskWorktree, reclaimWorktrees } from './task-worktree.js';
 import { updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { buildActivityEntry } from './history.js';
-import { isWorktreeReclaimable } from './pr-cleanup.js';
+import { isWorktreeReclaimable, isTicketTerminal } from './pr-cleanup.js';
 import { getWorkspaceRoot } from './workspace.js';
 
 /**
@@ -118,6 +118,10 @@ export async function ensureTicketIsolation(
         const reclaimed = await reclaimWorktrees(
           getWorkspaceRoot()!,
           (id) => isWorktreeReclaimable(id, { honorReadyGrace: false }),
+          // FLUX-1405: also detach a dirty worktree on a terminal ticket here — this is the
+          // last-resort backstop for a spawn genuinely blocked on the cap, so a stray dirty
+          // leftover (e.g. a Done ticket's stray package-lock.json) must not keep failing it.
+          { isTerminal: isTicketTerminal },
         ).catch(() => [] as string[]);
         if (reclaimed.length > 0) {
           try {

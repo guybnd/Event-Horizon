@@ -82,12 +82,15 @@ jobs:
             echo "Release ${VERSION}" >> release-body.md
           fi
 
+      # FLUX-835: created as a draft so it can never appear as "Latest" before the finalize
+      # job has verified the full artifact set — release-windows and finalize both run after
+      # this and operate on the draft by tag.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
           body_path: release-body.md
-          draft: false
+          draft: true
           prerelease: false
           files: |
             event-horizon-source.zip
@@ -146,3 +149,51 @@ jobs:
           files: electron/dist/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # FLUX-835: the gate between "assets attached" and "release visible as Latest". Runs after
+  # both asset-producing jobs so it sees the final asset list regardless of which one finishes
+  # last. Core artifacts (source zip + both SEA zips) are required — release.yml's Electron
+  # steps are continue-on-error, so without this gate a missing .dmg/.exe (or a build-side glob
+  # miss on a core zip) could go public unnoticed, same as the "green but wrong" v1.0.0 miss.
+  finalize:
+    needs: [release, release-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Verify artifacts and publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -e
+          assets="$(gh release view "$VERSION" --json assets -q '.assets[].name')"
+          echo "Attached assets:"
+          echo "$assets"
+
+          missing_core=""
+          echo "$assets" | grep -qx 'event-horizon-source.zip' || missing_core="$missing_core event-horizon-source.zip"
+          echo "$assets" | grep -q '^event-horizon-macos-.*\.zip$' || missing_core="$missing_core event-horizon-macos-*.zip"
+          echo "$assets" | grep -q '^event-horizon-win-.*\.zip$' || missing_core="$missing_core event-horizon-win-*.zip"
+
+          if [ -n "$missing_core" ]; then
+            echo "::error::Release $VERSION is missing core artifact(s):$missing_core — leaving as draft."
+            exit 1
+          fi
+
+          missing_desktop=""
+          echo "$assets" | grep -q '\.dmg$' || missing_desktop="$missing_desktop macOS .dmg"
+          echo "$assets" | grep -q '\.exe$' || missing_desktop="$missing_desktop Windows .exe"
+
+          if [ -n "$missing_desktop" ]; then
+            echo "::warning::Release $VERSION is missing desktop artifact(s):$missing_desktop — publishing as a partial release."
+            gh release view "$VERSION" --json body -q '.body' > notes.md
+            {
+              echo ""
+              echo "⚠️ Partial release — desktop app missing:$missing_desktop"
+            } >> notes.md
+            gh release edit "$VERSION" --notes-file notes.md
+          fi
+
+          gh release edit "$VERSION" --draft=false --latest

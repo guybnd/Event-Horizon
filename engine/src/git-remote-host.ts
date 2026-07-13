@@ -1,7 +1,4 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-
-const execFileAsync = promisify(execFile);
+import { runGit } from './git-exec.js';
 
 /**
  * Resolve the hostname of a git repo's `origin` remote, cached (FLUX-987).
@@ -43,11 +40,12 @@ export async function resolveRemoteHost(cwd: string): Promise<string | null> {
 
   let host: string | null;
   try {
-    const { stdout } = await execFileAsync('git', ['remote', 'get-url', 'origin'], {
-      cwd,
-      windowsHide: true,
-      timeout: 10_000,
-    });
+    // MUST pass `env: process.env` (bypass the default buildGitSyncEnv() path): buildGitSyncEnv()
+    // calls resolveRemoteHost() itself (FLUX-987) to decide whether to inject gh's credential
+    // helper, so routing this probe through the normal env-building path recurses infinitely
+    // (buildGitSyncEnv → resolveRemoteHost → runGit → buildGitSyncEnv → …, RangeError: Maximum
+    // call stack size exceeded). Mirrors branch-manager.checkGhAuth()'s identical FLUX-998 guard.
+    const { stdout } = await runGit(['remote', 'get-url', 'origin'], { cwd, env: process.env, timeoutMs: 10_000 });
     host = extractHost(stdout);
   } catch {
     host = null;

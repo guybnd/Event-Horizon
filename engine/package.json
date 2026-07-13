@@ -1,6 +1,6 @@
 {
   "name": "engine",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "Event Horizon engine — Express + TypeScript API, MCP server, and agent orchestration for the local-first ticket board.",
   "main": "dist/index.js",
   "bin": "dist/index.js",
@@ -14,6 +14,7 @@
     "init-group": "tsx src/init-group.ts",
     "install-skill": "tsx src/skill-installer.ts",
     "flux:release": "tsx src/release.ts",
+    "flux:reset-remote": "tsx src/reset-remote.ts",
     "patch-ticket": "tsx src/patch-ticket.ts",
     "package": "npm run build && node scripts/package-release.js",
     "package:win": "npm run build && node scripts/package-release.js --platform win",

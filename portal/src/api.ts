@@ -610,7 +610,10 @@ export interface SkillStatus {
 
 export async function fetchSkillStatus(framework: string = 'auto'): Promise<SkillStatus> {
   const res = await fetch(`${API_URL}/skill/status?framework=${framework}`);
-  if (!res.ok) throw new Error('Failed to fetch skill status');
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to fetch skill status');
+  }
   return res.json();
 }
 
@@ -620,7 +623,10 @@ export async function installWorkspaceSkill(framework: string = 'auto'): Promise
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ framework }),
   });
-  if (!res.ok) throw new Error('Failed to install skill');
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to install skill');
+  }
   return res.json();
 }
 
@@ -1451,9 +1457,12 @@ export interface SyncRemediation {
 }
 
 export interface SyncStatus {
-  state: 'idle' | 'syncing' | 'synced' | 'conflict' | 'error';
+  state: 'idle' | 'syncing' | 'synced' | 'conflict' | 'diverged' | 'error';
   lastSyncTime?: string;
   conflicts?: ConflictInfo[];
+  // FLUX-1232: commit counts vs origin/flux-data, present when state === 'diverged'.
+  ahead?: number;
+  behind?: number;
   error?: string;
   errorType?: 'network' | 'auth' | 'conflict' | 'unknown';
   remediation?: SyncRemediation;
@@ -1527,6 +1536,43 @@ export async function resolveConflicts(
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
       throw new Error('Conflict resolution timed out. The sync may still be finishing — check the sync status and retry if it persists.', { cause: err });
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// FLUX-1232: force-reset-to-remote escape hatch result — mirrors the engine's ForceResetResult.
+export interface ResetToRemoteResult {
+  ok: boolean;
+  backupRef: string;
+  oldHead: string;
+  newHead: string;
+  changedFiles: string[];
+}
+
+// Matches the engine's RESET_REMOTE_TIMEOUT_MS budget with a small margin, same reasoning as
+// RESOLVE_CONFLICTS_TIMEOUT_MS above.
+const RESET_TO_REMOTE_TIMEOUT_MS = 260_000;
+
+/**
+ * FLUX-1232: discard local flux-data board state and hard-reset to origin/flux-data. Destructive
+ * — callers MUST confirm with the user first (naming the consequence); this function does not.
+ */
+export async function resetToRemote(): Promise<ResetToRemoteResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RESET_TO_REMOTE_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${API_URL}/storage/reset-remote`, { method: 'POST', signal: controller.signal });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(payload.error || 'Failed to reset to remote');
+    }
+    return payload;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('Reset to remote timed out. Check the sync status and retry if it persists.', { cause: err });
     }
     throw err;
   } finally {

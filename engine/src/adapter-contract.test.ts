@@ -591,6 +591,11 @@ describe('FLUX-931: session.model reaches the real spawn --model arg', () => {
   beforeAll(async () => {
     const shared = await import('./agents/shared.js');
     vi.spyOn(shared, 'checkBinaryInstalled').mockResolvedValue(undefined);
+    // FLUX-1375: the claude test below doesn't go through loadAdapter's copilot/gemini binary
+    // resolution — stub claude-code.ts's own real binary probe too, so this stays hermetic on a
+    // machine without claude.exe on PATH (this test only cares about session.model, not the spawn's
+    // real binary path).
+    vi.spyOn(shared, 'resolveClaudeExePath').mockResolvedValue('C:\\fake\\claude.exe');
   });
   afterAll(() => {
     vi.restoreAllMocks();
@@ -608,6 +613,27 @@ describe('FLUX-931: session.model reaches the real spawn --model arg', () => {
     if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
 
     expect(modelArgFromLastSpawnCall()).toBe('flash');
+  });
+
+  // FLUX-1375 bug 1: the resolved model was previously only a local var (`selectedModel`) inside
+  // startCliSession — never written back to `session.model` — so the fallback cost estimator (and a
+  // resumed turn's own --model resolution) had nothing real to key on. Locks that the resolved model
+  // now durably lands on the session record, not just the spawn args, for a session with NO override
+  // (the common case — most sessions don't come from a delegate call).
+  it('gemini: the resolved (no-override) configured model is persisted onto session.model too', async () => {
+    const { startCliSession } = await loadAdapter('gemini');
+    const taskId = 'FLUX-TEST-gemini-no-override-model';
+    const task = { id: taskId, status: 'Todo' };
+    const session = fakeChatSession(taskId, 'gemini');
+    expect(session.model).toBeUndefined();
+
+    mockSpawn.mockClear();
+    await startCliSession(session, task, '', '', '/tmp/test-repo');
+    if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
+
+    const spawnedModel = modelArgFromLastSpawnCall();
+    expect(spawnedModel).toBeTruthy();
+    expect(session.model).toBe(spawnedModel);
   });
 
   it('gemini: an unrecognized session.model is nulled out (same guard as the configured model)', async () => {
@@ -636,5 +662,43 @@ describe('FLUX-931: session.model reaches the real spawn --model arg', () => {
     if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
 
     expect(modelArgFromLastSpawnCall()).toBe('gpt-5-mini');
+  });
+
+  // FLUX-1375 bug 1: see the gemini "no-override" test above for the rationale — same fix, same gap,
+  // Copilot's own adapter.
+  it('copilot: the resolved (no-override) configured model is persisted onto session.model too', async () => {
+    const { startCliSession } = await loadAdapter('copilot');
+    const taskId = 'FLUX-TEST-copilot-no-override-model';
+    const task = { id: taskId, status: 'Todo' };
+    const session = fakeChatSession(taskId, 'copilot');
+    expect(session.model).toBeUndefined();
+
+    mockSpawn.mockClear();
+    await startCliSession(session, task, '', '', '/tmp/test-repo');
+    if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
+
+    const spawnedModel = modelArgFromLastSpawnCall();
+    expect(spawnedModel).toBeTruthy();
+    expect(session.model).toBe(spawnedModel);
+  });
+
+  // FLUX-1375 bug 1: claude-code.ts had the identical gap — `modelToUse` was a local var in
+  // startCliSession, never written back to `session.model`. Unlike gemini/copilot, claude-code.ts's
+  // startCliSession isn't reachable via `loadAdapter` above (that helper only covers copilot/gemini),
+  // so this imports it directly.
+  it('claude: the resolved model is persisted onto session.model too', async () => {
+    const { startCliSession } = await import('./agents/claude-code.js');
+    const taskId = 'FLUX-TEST-claude-no-override-model';
+    const task = { id: taskId, status: 'Todo' };
+    const session = fakeChatSession(taskId, 'claude');
+    expect(session.model).toBeUndefined();
+
+    mockSpawn.mockClear();
+    await startCliSession(session, task, '', '', '/tmp/test-repo');
+    if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
+
+    const spawnedModel = modelArgFromLastSpawnCall();
+    expect(spawnedModel).toBeTruthy();
+    expect(session.model).toBe(spawnedModel);
   });
 });

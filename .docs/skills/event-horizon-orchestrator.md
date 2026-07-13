@@ -232,6 +232,21 @@ On open (and on every new revision) the viewer runs an automatic **layout audit*
 
 **When you receive a `🧪 Layout audit` message, treat it like an annotation:** fix the offending layout (constrain widths, wrap/scroll long content, fix positioning) and call `publish_artifact` again with a `note` on what you changed, so the corrected revision re-runs the audit. To avoid warnings in the first place: give the document a sane root width, prefer responsive/flow layouts over fixed pixel widths wider than the frame, and don't absolutely-position text blocks over each other.
 
+### Craft (FLUX-1398) — what makes a mockup actually good
+
+Read this before your **first emit** on a ticket and before every **revision**. These are guidance, not a gate — but the failure modes below (an emoji standing in for an icon, a revision that silently redraws an approved layout, an annotation answered with the wrong fix) are rule-shaped and repeat across sessions:
+
+- **Mock in the app's own visual language** — reuse the real palette, radii, chips, and iconography. Inline SVG icons; never emoji-as-icons.
+- **Render at the true target viewport** (e.g. a real ~390px frame for mobile-first), never an idealized wide canvas.
+- **Use the same realistic test data across every option**, including worst cases: the longest plausible title, an empty/default item, every status value.
+- **When exploring alternatives, show 2–4 options side by side**, each with a one-line thesis and pros/cons, and recommend exactly one with reasons. Keep superseded options visible rather than deleting them.
+- **Measure the contested resource** — a px-budget bar, a tap count. A number ("name gets ~85px → ~118px") settles what adjectives can't.
+- **Ground every claim in code** — cite file:line for each mockup element, and verify existing affordances (drag/swipe/tap targets) survive the proposal.
+- **Open with a chip-list of locked decisions** so reviews don't relitigate settled points.
+- **Show interaction states** (pressed, sheet open, hover reveal) — not just a static layout.
+- **Every revision answers annotations explicitly** — show the annotated element before → after at the top, and state in the `note` what changed and why. Never silently redesign elements the user already approved.
+- **Style-guide lookup** — if `.docs/design/style-guide.md` exists, derive mockup tokens from it rather than re-deriving from source; if it's missing on a UI/UX ticket, see the grooming skill's "Design Style Guide" section for the non-blocking bootstrap offer.
+
 ## Critical Rules
 
 - **End-of-Turn Action Contract (FLUX-651/826)** — see the dedicated section above; it applies to every phase and every session, chat/discussion turns included.

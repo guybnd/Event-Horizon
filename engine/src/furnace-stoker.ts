@@ -213,7 +213,12 @@ export type TicketAction =
   // session because the ticket's work already landed, not a failure to report. Settle it the same way
   // `decideReconcile`'s board-success reflection treats a ticket a human took to Ready/Done/merged,
   // rather than parking a ticket that already succeeded.
-  | { type: 'yield'; reason: string };
+  | { type: 'yield'; reason: string }
+  // FLUX-1397: the ticket's session died on an expired/invalid credential — every OTHER ticket sharing
+  // this CLI's auth would fail identically, so this is a whole-BATCH problem, not a per-ticket one. Halt
+  // the batch immediately (one notification naming re-auth as the fix) instead of letting N tickets each
+  // independently park `hard-fail` and trip the generic circuit breaker.
+  | { type: 'halt-auth-expired'; reason: string };
 
 /**
  * Decide what to do next for a single active ticket, given its session status + the ticket's review
@@ -223,7 +228,7 @@ export type TicketAction =
 export function decideTicketAction(input: {
   ticket: BatchTicket;
   sessionStatus?: CliSessionStatus;
-  terminalReason?: 'context-exhausted' | 'rate-limited';
+  terminalReason?: 'context-exhausted' | 'rate-limited' | 'auth-expired';
   // FLUX-1156: the failed/cancelled session's own recorded outcome (its agent_session entry's
   // `outcome`, e.g. "Claude Code session failed to start: refusing to run the agent on master") — when
   // present, folded into the park reason instead of the opaque generic "session ended failed" so a
@@ -275,6 +280,16 @@ export function decideTicketAction(input: {
   // The agent parked itself waiting for input — an unattended run can't answer, so it needs a human.
   if (sessionStatus === 'waiting-input') {
     return { type: 'park', reason: `the ${currentPhase} session is waiting for input (an unattended run can't answer)`, failureClass: 'needs-input' };
+  }
+
+  // FLUX-1397: an expired/invalid credential is a whole-BATCH problem (every ticket sharing this CLI's
+  // auth fails identically) — halt the batch immediately with a single re-auth-needed signal instead of
+  // parking this ticket alone and letting N siblings each independently trip the circuit breaker.
+  if (sessionStatus === 'failed' && terminalReason === 'auth-expired') {
+    return {
+      type: 'halt-auth-expired',
+      reason: `the ${currentPhase} session hit an expired or invalid auth credential — run 'claude login' (or refresh the API key), then resume the batch`,
+    };
   }
 
   // FLUX-1047: context-window exhaustion is RECOVERABLE — a fresh session very likely continues fine.
@@ -1304,6 +1319,14 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
 
     case 'park': {
       await parkTicket(batchId, ticketId, action.reason, action.failureClass);
+      break;
+    }
+
+    case 'halt-auth-expired': {
+      // FLUX-1397: don't park just this ticket — halt the whole batch (parks every other active ticket
+      // with the SAME reason and fires one burn-report notification) so a shared expired credential
+      // surfaces as one actionable "re-auth needed" signal instead of N opaque hard-fails.
+      await haltBatch(batchId, action.reason);
       break;
     }
 

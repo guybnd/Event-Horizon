@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Cloud, CloudOff, RefreshCw, AlertCircle, WifiOff, Lock, Copy, Check, X } from 'lucide-react';
+import { Cloud, CloudOff, RefreshCw, AlertCircle, AlertTriangle, WifiOff, Lock, Copy, Check, X } from 'lucide-react';
 import { ConflictResolutionModal } from './ConflictResolutionModal';
 import * as api from '../api';
 import type { ConflictInfo, ResolutionStrategy, SyncRemediation } from '../api';
@@ -10,6 +10,8 @@ export type SyncStatus =
   | { state: 'syncing' }
   | { state: 'synced'; lastSyncTime: string }
   | { state: 'conflict'; conflicts: ConflictInfo[] }
+  // FLUX-1232: local and remote flux-data have both moved since their common ancestor.
+  | { state: 'diverged'; ahead: number; behind: number }
   // FLUX-895: `remediation` (auth case) carries the exact fix commands so this
   // indicator can render an actionable "sign-in needed" panel.
   | { state: 'error'; error: string; errorType: 'network' | 'auth' | 'conflict' | 'unknown'; remediation?: SyncRemediation };
@@ -38,6 +40,11 @@ export function SyncStatusIndicator() {
   const [isOffline, setIsOffline] = useState(false);
   const [showConflictModal, setShowConflictModal] = useState(false);
   const [showErrorToast, setShowErrorToast] = useState(false);
+  // FLUX-1232: the diverged-state panel and its confirm-gated reset-to-remote action.
+  const [showDivergedPanel, setShowDivergedPanel] = useState(false);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const [resetInFlight, setResetInFlight] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
   // FLUX-895: which remediation command was just copied (for transient ✓ feedback).
   const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(Date.now());
@@ -203,6 +210,8 @@ export function SyncStatusIndicator() {
         return <Cloud className="h-3.5 w-3.5" />;
       case 'conflict':
         return <AlertCircle className="h-3.5 w-3.5" />;
+      case 'diverged':
+        return <AlertTriangle className="h-3.5 w-3.5" />;
       case 'error':
         switch (status.errorType) {
           case 'network':
@@ -244,6 +253,8 @@ export function SyncStatusIndicator() {
         return `Synced ${formatTimeAgo(status.lastSyncTime)}`;
       case 'conflict':
         return status.conflicts.length === 1 ? '1 Conflict' : `${status.conflicts.length} Conflicts`;
+      case 'diverged':
+        return 'Diverged';
       case 'error':
         switch (status.errorType) {
           case 'network':
@@ -269,6 +280,8 @@ export function SyncStatusIndicator() {
         return `Last synced ${formatTimeAgo(status.lastSyncTime)}`;
       case 'conflict':
         return `Merge conflict: ${status.conflicts.length} ticket${status.conflicts.length === 1 ? '' : 's'} need manual resolution`;
+      case 'diverged':
+        return `Local board diverged from remote (${status.ahead} ahead, ${status.behind} behind). Click for options.`;
       case 'error':
         return status.errorType === 'auth'
           ? 'GitHub sign-in needed — sync is paused. Click for the fix.'
@@ -294,6 +307,8 @@ export function SyncStatusIndicator() {
         return 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300';
       case 'conflict':
         return 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300';
+      case 'diverged':
+        return 'border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-500/30 dark:bg-orange-500/10 dark:text-orange-300';
       case 'error':
         return 'border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300';
       default:
@@ -312,6 +327,8 @@ export function SyncStatusIndicator() {
         return `Sync status: Synced ${formatTimeAgo(status.lastSyncTime)}`;
       case 'conflict':
         return `Sync status: ${status.conflicts.length} conflict${status.conflicts.length === 1 ? '' : 's'} detected. ${status.conflicts.map(c => c.ticketId).join(', ')} need${status.conflicts.length === 1 ? 's' : ''} manual resolution. Click to resolve.`;
+      case 'diverged':
+        return `Sync status: local board diverged from remote, ${status.ahead} ahead and ${status.behind} behind. Click for options.`;
       case 'error':
         return status.errorType === 'auth'
           ? 'Sync status: GitHub sign-in needed — sync is paused. Click for the fix steps.'
@@ -324,10 +341,31 @@ export function SyncStatusIndicator() {
   const handleClick = () => {
     if (status.state === 'conflict') {
       setShowConflictModal(true);
+    } else if (status.state === 'diverged') {
+      setResetError(null);
+      setConfirmingReset(false);
+      setShowDivergedPanel(true);
     } else if (status.state === 'error') {
       setShowErrorToast(true);
     } else if (status.state !== 'syncing') {
       void api.triggerSync();
+    }
+  };
+
+  // FLUX-1232: the confirm-gated "Reset board to remote" action — destructive, so it only ever
+  // runs after the user has seen the consequence spelled out and clicked a second, explicit
+  // confirm button (never a one-click accident).
+  const handleResetToRemote = async () => {
+    setResetInFlight(true);
+    setResetError(null);
+    try {
+      await api.resetToRemote();
+      setShowDivergedPanel(false);
+      setConfirmingReset(false);
+    } catch (err) {
+      setResetError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setResetInFlight(false);
     }
   };
 
@@ -470,6 +508,96 @@ export function SyncStatusIndicator() {
           onResolve={handleResolve}
           onClose={() => setShowConflictModal(false)}
         />,
+        document.body
+      )}
+
+      {status.state === 'diverged' && showDivergedPanel && createPortal(
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 overflow-auto"
+          onClick={() => !resetInFlight && setShowDivergedPanel(false)}
+        >
+          <div
+            className="bg-white dark:bg-gray-800 border border-orange-300 dark:border-orange-500/40 rounded-lg shadow-xl p-6 space-y-4 w-full"
+            style={{ maxWidth: '32rem', margin: 'auto' }}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Local board diverged from remote"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3 flex-1 min-w-0">
+                <AlertTriangle className="h-6 w-6 text-orange-600 dark:text-orange-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Board diverged from remote</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5">
+                    Local is {status.ahead} commit{status.ahead === 1 ? '' : 's'} ahead and {status.behind} commit{status.behind === 1 ? '' : 's'} behind origin/flux-data.
+                  </p>
+                </div>
+              </div>
+              {!resetInFlight && (
+                <button
+                  onClick={() => setShowDivergedPanel(false)}
+                  className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 shrink-0 transition-colors"
+                  aria-label="Close"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              )}
+            </div>
+
+            <p className="text-sm text-gray-700 dark:text-gray-300">
+              Sync will keep trying to merge automatically. If it's wedged (e.g. after switching dev
+              machines), you can force the local board to match the remote instead — a backup of the
+              current local state is tagged first, so this is recoverable.
+            </p>
+
+            {resetError && (
+              <p className="text-sm text-red-600 dark:text-red-400 break-words">{resetError}</p>
+            )}
+
+            {!confirmingReset ? (
+              <div className="flex items-center gap-2 pt-2">
+                <button
+                  onClick={() => void api.triggerSync()}
+                  className="flex items-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  Try syncing again
+                </button>
+                <button
+                  onClick={() => setConfirmingReset(true)}
+                  className="ml-auto rounded-md bg-orange-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-orange-700"
+                >
+                  Reset board to remote…
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3 rounded-md border border-orange-300 bg-orange-50 p-3 dark:border-orange-500/30 dark:bg-orange-500/10">
+                <p className="text-sm font-medium text-orange-800 dark:text-orange-200">
+                  This discards {status.ahead} un-pushed local board commit{status.ahead === 1 ? '' : 's'} and
+                  replaces the board with the remote's version. A backup ref is kept, but this cannot be
+                  undone from the portal.
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => void handleResetToRemote()}
+                    disabled={resetInFlight}
+                    className="flex items-center gap-2 rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-700 disabled:opacity-60"
+                  >
+                    {resetInFlight ? (<><RefreshCw className="h-4 w-4 animate-spin" />Resetting…</>) : 'Yes, discard local & reset to remote'}
+                  </button>
+                  <button
+                    onClick={() => setConfirmingReset(false)}
+                    disabled={resetInFlight}
+                    className="rounded-md bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600 disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>,
         document.body
       )}
 

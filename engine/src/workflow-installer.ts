@@ -13,8 +13,24 @@ export type ResolvedFramework = Exclude<Framework, 'auto'>;
 export const EVENT_HORIZON_INSTRUCTIONS_START = '<!-- EVENT_HORIZON_MANAGED_INSTRUCTIONS:START -->';
 export const EVENT_HORIZON_INSTRUCTIONS_END = '<!-- EVENT_HORIZON_MANAGED_INSTRUCTIONS:END -->';
 
-/** Frameworks that receive one file per skill module (Option B). */
-const MODULAR_FRAMEWORKS: ResolvedFramework[] = ['copilot', 'cline'];
+/**
+ * Skill-layout strategy per framework — an installer-side skill-layout axis, not runtime
+ * adapter coupling (`ResolvedFramework` is wider than the runtime `CliFramework`, so it
+ * can't index `CLI_CAPABILITIES`). FLUX-1377: Claude alone gets the trimmed always-on
+ * 'core' doc (phase guidance is engine-injected at spawn instead); 'modular' frameworks
+ * get one file per skill module (Option B); everything else gets the Option A
+ * concatenation (no engine-driven agent-spawn injection path for those).
+ */
+const SKILL_INSTALL_STRATEGY: Record<ResolvedFramework, 'modular' | 'core' | 'concatenated'> = {
+  copilot: 'modular',
+  cline: 'modular',
+  claude: 'core',
+  gemini: 'concatenated',
+  antigravity: 'concatenated',
+  cursor: 'concatenated',
+  windsurf: 'concatenated',
+  generic: 'concatenated',
+};
 
 /** Ordered skill module names sourced from .docs/skills/. */
 const SKILL_MODULES = ['orchestrator', 'grooming', 'implementation', 'review', 'release', 'mapping'] as const;
@@ -154,7 +170,7 @@ const ALL_RESOLVED_FRAMEWORKS: readonly ResolvedFramework[] = [
 
 /** True when EH has ALREADY installed its skill file(s) for `framework` in `targetDir`. */
 function frameworkHasInstall(targetDir: string, framework: ResolvedFramework): boolean {
-  const probe = MODULAR_FRAMEWORKS.includes(framework)
+  const probe = SKILL_INSTALL_STRATEGY[framework] === 'modular'
     ? skillModuleDestinationFor(targetDir, framework, 'orchestrator')
     : skillDestinationFor(targetDir, framework);
   return existsSync(probe);
@@ -202,7 +218,7 @@ export function detectWorkspaceFrameworks(targetDir: string, preferred: Framewor
 export async function cleanOrphanedSkillFiles(targetDir: string, framework: ResolvedFramework): Promise<string[]> {
   // The skill file(s) THIS framework installs, resolved — the only files that legitimately belong in
   // its install dir. The dir(s) to sweep are their dirnames, so we never reach another framework's dir.
-  const skillFiles = (MODULAR_FRAMEWORKS.includes(framework)
+  const skillFiles = (SKILL_INSTALL_STRATEGY[framework] === 'modular'
     ? SKILL_MODULES.map((module) => skillModuleDestinationFor(targetDir, framework, module))
     : [skillDestinationFor(targetDir, framework)]
   ).map((f) => path.resolve(f));
@@ -385,33 +401,40 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
     throw new Error(`Skill source file not found: ${skillSourcePath}`);
   }
 
-  if (MODULAR_FRAMEWORKS.includes(resolvedFramework)) {
-    // Option B: install one file per skill module
-    log.info(`[installer] Installing modular skill...`);
-    for (const [index, module] of SKILL_MODULES.entries()) {
-      const src = skillSourcePaths[index]!;
-      const dest = skillModuleDestinationFor(targetDir, resolvedFramework, module);
-      await fs.mkdir(path.dirname(dest), { recursive: true });
-      await fs.copyFile(src, dest);
+  switch (SKILL_INSTALL_STRATEGY[resolvedFramework]) {
+    case 'modular': {
+      // Option B: install one file per skill module
+      log.info(`[installer] Installing modular skill...`);
+      for (const [index, module] of SKILL_MODULES.entries()) {
+        const src = skillSourcePaths[index]!;
+        const dest = skillModuleDestinationFor(targetDir, resolvedFramework, module);
+        await fs.mkdir(path.dirname(dest), { recursive: true });
+        await fs.copyFile(src, dest);
+      }
+      break;
     }
-  } else if (resolvedFramework === 'claude') {
-    // FLUX-1377: Claude gets the trimmed always-on core (invariants + phase routing table),
-    // not the full 6-module concatenation — phase guidance is engine-injected at spawn for
-    // agent sessions instead (buildInitialPrompt, agents/shared.ts) or Read on demand by
-    // humans. Only Claude gets this: buildInitialPrompt's injection is gated to the claude
-    // framework (copilot/gemini share the same call but don't receive the injection), so
-    // trimming their static install here would lose phase guidance with nothing to replace it.
-    log.info(`[installer] Installing core skill (FLUX-1377)...`);
-    await fs.mkdir(path.dirname(skillInstalledPath), { recursive: true });
-    await fs.writeFile(skillInstalledPath, buildCoreSkillDocument(), 'utf-8');
-  } else {
-    // Option A: concatenate all modules wrapped in XML tags (gemini, cursor, windsurf,
-    // generic — no engine-driven agent-spawn injection path for these, so they still need
-    // everything statically installed).
-    log.info(`[installer] Installing concatenated skill...`);
-    await fs.mkdir(path.dirname(skillInstalledPath), { recursive: true });
-    const concatenated = await buildConcatenatedSkill(skillSourcePaths);
-    await fs.writeFile(skillInstalledPath, concatenated, 'utf-8');
+    case 'core': {
+      // FLUX-1377: Claude gets the trimmed always-on core (invariants + phase routing table),
+      // not the full 6-module concatenation — phase guidance is engine-injected at spawn for
+      // agent sessions instead (buildInitialPrompt, agents/shared.ts) or Read on demand by
+      // humans. Only Claude gets this: buildInitialPrompt's injection is gated to the claude
+      // framework (copilot/gemini share the same call but don't receive the injection), so
+      // trimming their static install here would lose phase guidance with nothing to replace it.
+      log.info(`[installer] Installing core skill (FLUX-1377)...`);
+      await fs.mkdir(path.dirname(skillInstalledPath), { recursive: true });
+      await fs.writeFile(skillInstalledPath, buildCoreSkillDocument(), 'utf-8');
+      break;
+    }
+    case 'concatenated': {
+      // Option A: concatenate all modules wrapped in XML tags (gemini, cursor, windsurf,
+      // generic — no engine-driven agent-spawn injection path for these, so they still need
+      // everything statically installed).
+      log.info(`[installer] Installing concatenated skill...`);
+      await fs.mkdir(path.dirname(skillInstalledPath), { recursive: true });
+      const concatenated = await buildConcatenatedSkill(skillSourcePaths);
+      await fs.writeFile(skillInstalledPath, concatenated, 'utf-8');
+      break;
+    }
   }
 
   if (instructionsInstalledPath) {

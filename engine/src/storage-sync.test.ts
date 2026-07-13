@@ -5,7 +5,7 @@ import path from 'path';
 import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { excludeLocalConfigFromSync, ensureUnionMergeAttributes } from './storage-sync.js';
+import { excludeLocalConfigFromSync, ensureUnionMergeAttributes, migrateToOrphan } from './storage-sync.js';
 
 const execFileAsync = promisify(execFile);
 const git = (cwd: string, args: string[]) => execFileAsync('git', args, { cwd, windowsHide: true });
@@ -155,5 +155,94 @@ describe('storage-sync — union-merge attribute for transcripts (FLUX-1076)', (
     const ga = await fs.readFile(path.join(storeDir, '.gitattributes'), 'utf8');
     expect(ga).toContain('*.png binary');
     expect(ga).toContain('transcripts/*.jsonl merge=union');
+  });
+});
+
+describe('migrateToOrphan — idempotent retry after a partial failure (FLUX-297)', () => {
+  let repo: string;
+  let storeDir: string;
+  let fluxDir: string;
+
+  beforeEach(async () => {
+    repo = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-migrate-'));
+    await git(repo, ['init', '-b', 'master']);
+    await git(repo, ['config', 'user.email', 'test@test.com']);
+    await git(repo, ['config', 'user.name', 'Test']);
+    fluxDir = path.join(repo, '.flux');
+    await fs.mkdir(fluxDir, { recursive: true });
+    await fs.writeFile(path.join(fluxDir, 'FLUX-1.md'), '# ticket\n', 'utf8');
+    await fs.writeFile(path.join(repo, 'README.md'), '# test\n', 'utf8');
+    await git(repo, ['add', 'README.md']);
+    await git(repo, ['commit', '-m', 'init']);
+    storeDir = path.join(repo, '.flux-store');
+  });
+
+  afterEach(async () => {
+    await git(repo, ['worktree', 'remove', '--force', storeDir]).catch(() => {});
+    await fs.rm(repo, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('converges when .flux-store is a stray leftover (not a real worktree) instead of erroring', async () => {
+    await fs.mkdir(storeDir, { recursive: true });
+    await fs.writeFile(path.join(storeDir, 'stray.txt'), 'leftover from a previous crash', 'utf8');
+
+    await migrateToOrphan(repo);
+
+    expect(existsSync(path.join(storeDir, '.git'))).toBe(true);
+    expect(await trackedFiles(storeDir)).toContain('FLUX-1.md');
+    expect(existsSync(path.join(fluxDir, 'FLUX-1.md'))).toBe(false);
+  });
+
+  it('resumes when .flux-store is attached but unborn (crashed before the first commit)', async () => {
+    // Simulate a crash right after `worktree add --orphan` succeeded, before any files were
+    // moved in or committed.
+    await git(repo, ['worktree', 'add', '--orphan', '-b', 'flux-data', storeDir]);
+
+    await migrateToOrphan(repo);
+
+    const { stdout } = await git(storeDir, ['log', '--oneline']);
+    expect(stdout.trim()).not.toBe('');
+    expect(existsSync(path.join(storeDir, 'FLUX-1.md'))).toBe(true);
+    expect(existsSync(path.join(fluxDir, 'FLUX-1.md'))).toBe(false);
+  });
+
+  it('converges (does not silently no-op) when .flux-store is on the fallback path with only the init commit (FLUX-1410)', async () => {
+    // Simulate the pre-2.42 plumbing fallback (`addOrphanWorktree`'s fallback branch in
+    // git-worktree.ts): it commits a root commit immediately when creating the branch, unlike
+    // the modern `--orphan` path which leaves HEAD unborn until the caller's own first commit.
+    // A crash right after that fallback returns — before any ticket files have moved — leaves
+    // exactly this state: an attached worktree on `flux-data` with a resolvable HEAD, but no
+    // migrated content.
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-empty-tree-'));
+    const emptyFile = path.join(tmpDir, 'empty');
+    await fs.writeFile(emptyFile, '');
+    const { stdout: treeSha } = await git(repo, ['hash-object', '-t', 'tree', '-w', emptyFile]);
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    const { stdout: commitSha } = await git(repo, ['commit-tree', treeSha.trim(), '-m', 'flux: init flux-data']);
+    await git(repo, ['branch', 'flux-data', commitSha.trim()]);
+    await git(repo, ['worktree', 'add', storeDir, 'flux-data']);
+
+    // Sanity-check the simulated pre-condition: worktree on-branch with a resolvable HEAD, but
+    // the ticket file is still sitting un-migrated in .flux/.
+    expect(existsSync(path.join(fluxDir, 'FLUX-1.md'))).toBe(true);
+    const { stdout: preHead } = await git(storeDir, ['rev-parse', 'HEAD']);
+    expect(preHead.trim()).not.toBe('');
+
+    await migrateToOrphan(repo);
+
+    expect(existsSync(path.join(storeDir, 'FLUX-1.md'))).toBe(true);
+    expect(existsSync(path.join(fluxDir, 'FLUX-1.md'))).toBe(false);
+    const { stdout: log } = await git(storeDir, ['log', '--format=%s']);
+    expect(log).toContain('flux: migrate tickets to orphan branch');
+  });
+
+  it('is a no-op when .flux-store is already fully migrated', async () => {
+    await migrateToOrphan(repo);
+    const { stdout: firstHead } = await git(storeDir, ['rev-parse', 'HEAD']);
+
+    await migrateToOrphan(repo);
+    const { stdout: secondHead } = await git(storeDir, ['rev-parse', 'HEAD']);
+
+    expect(secondHead.trim()).toBe(firstHead.trim());
   });
 });

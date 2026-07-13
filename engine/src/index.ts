@@ -19,7 +19,7 @@ if (process.argv.includes('--mcp')) {
 }
 
 import { getWorkspace } from './workspace-context.js';
-import { log } from './log.js';
+import { log, configureFileSink } from './log.js';
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs/promises';
@@ -35,6 +35,7 @@ import { startEventLoopMonitor, stopEventLoopMonitor } from './perf/event-loop-m
 import { startGitTiming } from './perf/git-timing.js';
 import { loadAppSettings, getCliWorkspace, resolvePortalDist, autoRegisterWorkspace, getWorkspaceRoot } from './workspace.js';
 import { isPkg, isSea, isPackaged, ensureSeaAssetsExtracted, getSeaAsset, setEnginePort } from './packaged-mode.js';
+import { resolveShellPathAtStartup } from './shell-path.js';
 import { migrateFromLegacy } from './global-settings.js';
 import { activateWorkspace } from './task-store.js';
 // FLUX-705: statically imported so the in-process HTTP MCP mount runs on THIS engine's
@@ -597,6 +598,12 @@ async function initTray(port: number): Promise<void> {
 // ─── Server startup ───────────────────────────────────────────────────────────
 
 async function startServer() {
+  // FLUX-1408: resolve the user's real shell PATH before any workspace activation or
+  // git/gh spawn — a packaged macOS GUI launch otherwise inherits launchd's minimal
+  // PATH and silently hides Homebrew git/gh, the claude CLI, serena, and anything
+  // npm-global. Darwin-only and a no-op when PATH already looks real.
+  await resolveShellPathAtStartup();
+
   // In SEA mode, extract embedded assets to tmpdir before serving anything.
   if (isSea) {
     const extractDir = await ensureSeaAssetsExtracted();
@@ -826,6 +833,12 @@ function crashLogPath(): string {
     return path.join(os.tmpdir(), 'event-horizon-crash.log');
   }
 }
+
+// FLUX-1407: in packaged mode, also mirror log.error() calls (e.g. a failed onboarding
+// skill install) into the same findable file — a GUI launch has no visible stderr, so
+// without this, non-crash failures like "Failed to install skill" left no trace anywhere
+// the reporter could find. Dev builds keep stderr-only logging.
+if (isPackaged) configureFileSink(crashLogPath());
 
 // Append synchronously — this runs inside an uncaughtException handler moments
 // before exit, where async writes may never flush.

@@ -19,6 +19,7 @@ import { getConfig } from '../config.js';
 import { INTEGRATION_TIER_DEFAULTS, MODEL_POLICY_PRESETS } from '../config.js';
 import { getModulePromptFragments } from '../modules.js';
 import { updateAgentSession, updateTaskWithHistory } from '../task-store.js';
+import { getWorkspace } from '../workspace-context.js';
 import { buildActivityEntry } from '../history.js';
 import { raiseNeedsAction } from '../parked-ticket.js';
 import type { CliSessionRecord, CliFramework, TaskKey, Tier, PatternPosition } from './types.js';
@@ -623,6 +624,39 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
 // (the tool names differ per CLI) but the lookup-with-'Working'-fallback was duplicated everywhere.
 export function activityFor(map: Record<string, string>, toolName: string): string {
   return map[toolName] ?? 'Working';
+}
+
+// ---- FLUX-1378 (absorbing FLUX-1375 step 6): shared token-flush delta computation ----
+// Compute the ticket-level `tokenMetadata` delta to persist for this session, and advance the
+// session's flushed baselines so a LATER flush (e.g. a resumed turn's exit handler) only adds what
+// accumulated SINCE this flush — session.inputTokens/etc. keep accumulating for the session's whole
+// lifetime (they also drive the live per-session cost badge), so flushing the raw cumulative value a
+// second time would double-count everything the first flush already persisted. Returns null when
+// nothing new accumulated (nothing to write). Originally claude-code.ts-only; moved here (FLUX-1375)
+// so gemini.ts/copilot.ts's resume/reply exit handlers can flush too instead of dropping every
+// resumed turn's tokens (each previously used its own non-delta tokenUpdate computation that only
+// ran on the INITIAL spawn's exit handler).
+export function buildTokenMetadataUpdate(taskId: string, session: CliSessionRecord) {
+  const deltaInput = (session.inputTokens ?? 0) - (session.flushedInputTokens ?? 0);
+  const deltaOutput = (session.outputTokens ?? 0) - (session.flushedOutputTokens ?? 0);
+  if (deltaInput <= 0 && deltaOutput <= 0) return null;
+  const deltaCost = (session.costUSD ?? 0) - (session.flushedCostUSD ?? 0);
+  const deltaCacheRead = (session.cacheReadTokens ?? 0) - (session.flushedCacheReadTokens ?? 0);
+  const deltaCacheCreation = (session.cacheCreationTokens ?? 0) - (session.flushedCacheCreationTokens ?? 0);
+  const prev = getWorkspace().tasks[taskId]?.tokenMetadata || { inputTokens: 0, outputTokens: 0, costUSD: 0 };
+  session.flushedInputTokens = session.inputTokens ?? 0;
+  session.flushedOutputTokens = session.outputTokens ?? 0;
+  session.flushedCostUSD = session.costUSD ?? 0;
+  session.flushedCacheReadTokens = session.cacheReadTokens ?? 0;
+  session.flushedCacheCreationTokens = session.cacheCreationTokens ?? 0;
+  return {
+    inputTokens: (prev.inputTokens ?? 0) + deltaInput,
+    outputTokens: (prev.outputTokens ?? 0) + deltaOutput,
+    costUSD: parseFloat(((prev.costUSD ?? 0) + deltaCost).toFixed(6)),
+    costIsEstimated: prev.costIsEstimated || session.costIsEstimated || false,
+    cacheReadTokens: (prev.cacheReadTokens ?? 0) + deltaCacheRead,
+    cacheCreationTokens: (prev.cacheCreationTokens ?? 0) + deltaCacheCreation,
+  };
 }
 
 // ---- FLUX-921: shared stop-terminalization for a resumed/reply turn ----

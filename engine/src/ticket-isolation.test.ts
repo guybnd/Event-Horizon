@@ -11,7 +11,7 @@ vi.mock('./task-worktree.js', () => ({ createTaskWorktree: vi.fn(), reclaimWorkt
 // FLUX-1031: ticket-isolation now sources its reclaimability predicate from pr-cleanup. Stub it so
 // this unit test doesn't pull in pr-cleanup's whole graph; the under-pressure test mocks
 // reclaimWorktrees anyway, so the predicate body is never exercised here.
-vi.mock('./pr-cleanup.js', () => ({ isWorktreeReclaimable: vi.fn(() => true) }));
+vi.mock('./pr-cleanup.js', () => ({ isWorktreeReclaimable: vi.fn(() => true), isTicketTerminal: vi.fn(() => false) }));
 vi.mock('./task-store.js', () => ({ updateTaskWithHistory: vi.fn(async () => {}) }));
 vi.mock('./events.js', () => ({ broadcastEvent: vi.fn() }));
 vi.mock('./history.js', () => ({

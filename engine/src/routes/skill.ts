@@ -11,8 +11,9 @@ router.get('/status', async (req, res) => {
     const status = await getWorkflowInstallStatus({ sourceRoot: resolveSkillSourceRoot(), targetDir: getWorkspaceRoot()!, framework });
     res.json(status);
   } catch (error) {
-    console.error('Failed to load skill status:', error);
-    res.status(500).json({ error: 'Failed to load skill status' });
+    const message = error instanceof Error ? error.message : String(error);
+    log.error('[skill] Failed to load skill status:', error);
+    res.status(500).json({ error: message });
   }
 });
 
@@ -24,8 +25,9 @@ router.post('/install', async (req, res) => {
     log.info(`[skill] Installation successful:`, result);
     res.json({ success: true, ...result });
   } catch (error) {
-    console.error('[skill] Failed to install skill:', error);
-    res.status(500).json({ error: 'Failed to install skill' });
+    const message = error instanceof Error ? error.message : String(error);
+    log.error('[skill] Failed to install skill:', error);
+    res.status(500).json({ error: message });
   }
 });
 

@@ -1065,21 +1065,50 @@ export async function reconcileOrphanedSessions() {
   }
 }
 
-let MODEL_PRICING: Array<{ match: RegExp; inputPer1M: number; outputPer1M: number; modelName: string }> = [];
+interface PricingRow {
+  match: RegExp;
+  inputPer1M: number;
+  outputPer1M: number;
+  /** Optional — falls back to `inputPer1M * CACHE_READ_DEFAULT_RATIO` when the doc omits the column. */
+  cacheReadPer1M?: number;
+  /** Optional — falls back to `inputPer1M * CACHE_WRITE_DEFAULT_RATIO` when the doc omits the column. */
+  cacheWritePer1M?: number;
+  modelName: string;
+}
+
+let MODEL_PRICING: PricingRow[] = [];
 const DEFAULT_INPUT_PER_1M = 3;
 const DEFAULT_OUTPUT_PER_1M = 15;
+// FLUX-1375: Anthropic's published prompt-caching multipliers off the base input rate — a cache
+// read is far cheaper than a fresh input token, a cache write (creation) costs more. Used whenever
+// model-pricing.md doesn't carry explicit cache_read_per_1m/cache_write_per_1m columns for a model
+// (e.g. Gemini/Copilot rows, or a Claude row nobody has updated yet). Approximate, not a promise of
+// exact billing — real cache-write pricing varies by TTL tier, not modeled here.
+const CACHE_READ_DEFAULT_RATIO = 0.1;
+const CACHE_WRITE_DEFAULT_RATIO = 1.25;
 
-function parsePricingDoc(markdown: string) {
-  const rows: Array<{ match: RegExp; inputPer1M: number; outputPer1M: number; modelName: string }> = [];
+/** Exported for direct unit testing (task-store-pricing.test.ts) — pure parse, no module state. */
+export function parsePricingDoc(markdown: string): PricingRow[] {
+  const rows: PricingRow[] = [];
   for (const line of markdown.split('\n')) {
     const cells = line.split('|').map(s => s.trim()).filter(Boolean);
     if (cells.length < 3) continue;
-    const [model, inputStr, outputStr] = cells;
+    const [model, inputStr, outputStr, cacheReadStr, cacheWriteStr] = cells;
     if (!model || model.startsWith('-') || model.toLowerCase() === 'model') continue;
     const inputPer1M = parseFloat(inputStr!);
     const outputPer1M = parseFloat(outputStr!);
     if (isNaN(inputPer1M) || isNaN(outputPer1M)) continue;
-    rows.push({ match: new RegExp(model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), inputPer1M, outputPer1M, modelName: model });
+    const cacheReadParsed = cacheReadStr !== undefined ? parseFloat(cacheReadStr) : NaN;
+    const cacheWriteParsed = cacheWriteStr !== undefined ? parseFloat(cacheWriteStr) : NaN;
+    const row: PricingRow = {
+      match: new RegExp(model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'),
+      inputPer1M,
+      outputPer1M,
+      modelName: model,
+    };
+    if (!isNaN(cacheReadParsed)) row.cacheReadPer1M = cacheReadParsed;
+    if (!isNaN(cacheWriteParsed)) row.cacheWritePer1M = cacheWriteParsed;
+    rows.push(row);
   }
   rows.sort((a, b) => b.modelName.length - a.modelName.length);
   return rows;
@@ -1100,11 +1129,28 @@ export async function loadPricingDoc() {
   }
 }
 
-export function estimateCostUSD(modelHint: string | undefined, inputTokens: number, outputTokens: number): number {
+/** Token counts broken out by billing class — cache-read/-creation tokens price far differently
+ *  from fresh input tokens, so blending them into one `inputTokens` figure (the pre-FLUX-1375
+ *  behavior) overstated cost by pricing everything at the full input rate. */
+export interface CostTokenBreakdown {
+  freshInputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  outputTokens: number;
+}
+
+export function estimateCostUSD(modelHint: string | undefined, tokens: CostTokenBreakdown): number {
   const pricing = modelHint ? MODEL_PRICING.find((p) => p.match.test(modelHint)) : null;
   const inputRate = pricing ? pricing.inputPer1M : DEFAULT_INPUT_PER_1M;
   const outputRate = pricing ? pricing.outputPer1M : DEFAULT_OUTPUT_PER_1M;
-  return (inputTokens * inputRate + outputTokens * outputRate) / 1_000_000;
+  const cacheReadRate = pricing?.cacheReadPer1M ?? inputRate * CACHE_READ_DEFAULT_RATIO;
+  const cacheWriteRate = pricing?.cacheWritePer1M ?? inputRate * CACHE_WRITE_DEFAULT_RATIO;
+  return (
+    tokens.freshInputTokens * inputRate
+    + (tokens.cacheReadTokens ?? 0) * cacheReadRate
+    + (tokens.cacheCreationTokens ?? 0) * cacheWriteRate
+    + tokens.outputTokens * outputRate
+  ) / 1_000_000;
 }
 
 async function seedStarterDocs(docsDir: string): Promise<void> {

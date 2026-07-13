@@ -154,17 +154,21 @@ export interface CliSessionSummary {
   lastInputAt?: string;
   blockedReason?: string;
   /**
-   * FLUX-1047 / FLUX-1063: structured classification of WHY a terminal session ended, when the raw exit
-   * is otherwise an opaque nonzero-exit `failed`. Both variants are *recoverable* conditions the Furnace
-   * stoker reads to retry rather than immediately park:
+   * FLUX-1047 / FLUX-1063 / FLUX-1397: structured classification of WHY a terminal session ended, when
+   * the raw exit is otherwise an opaque nonzero-exit `failed`:
    *   - `'context-exhausted'` — the single session ran out of context ("prompt is too long" /
-   *     context_length_exceeded). Recovered by re-driving with a FRESH session (no `--resume`).
+   *     context_length_exceeded). Recoverable — re-driven with a FRESH session (no `--resume`).
    *   - `'rate-limited'` — a usage/quota/rate limit (5-hour session limit, HTTP 429, `rate_limit_event`).
    *     Transient: it clears at the provider's reset window, so the stoker cools the ticket down and
    *     auto-retries on a cadence instead of parking it. A fresh session at retry time (no `--resume`).
+   *   - `'auth-expired'` — a revoked/expired API key or OAuth token (401/403, "OAuth token has expired").
+   *     Transient in the sense that a human re-auth (`claude login` / refreshed key) fixes it, but NOT
+   *     something the Furnace can recover from on its own — every ticket sharing the CLI's credential
+   *     would fail identically, so the stoker halts the whole batch and asks for re-auth instead of
+   *     parking each ticket independently (see furnace-stoker.decideTicketAction).
    * An extensible enum — the durable seam FLUX-996's hardened runner can build on.
    */
-  terminalReason?: 'context-exhausted' | 'rate-limited';
+  terminalReason?: 'context-exhausted' | 'rate-limited' | 'auth-expired';
   liveOutput?: string;
   currentActivity?: string | undefined;
   skipPermissions?: boolean;

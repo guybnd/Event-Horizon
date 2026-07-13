@@ -9,6 +9,7 @@ import { refreshMemberWorktrees } from './group-member-worktree.js';
 // could hang the whole doc-save request forever (the per-member try/catch below never runs
 // against a call that never settles). Route through the S1 runner.
 import { runGit } from './git-exec.js';
+import { addOrphanWorktree, isWorktreeOnBranch } from './git-worktree.js';
 
 /**
  * Group fan-out sync (FLUX-396).
@@ -47,17 +48,6 @@ async function gitWithRetry(runner: GitRunner, cwd: string, args: string[], maxR
 }
 
 // ─── Canonical branch on the parent ──────────────────────────────────────────
-
-/** True when `dir` is a git work tree checked out on `branch`. */
-async function isWorktreeOnBranch(runner: GitRunner, dir: string, branch: string): Promise<boolean> {
-  if (!existsSync(path.join(dir, '.git'))) return false;
-  try {
-    const { stdout } = await runner(dir, ['rev-parse', '--abbrev-ref', 'HEAD']);
-    return stdout.trim() === branch;
-  } catch {
-    return false;
-  }
-}
 
 /** Move every entry out of `dir` into a fresh temp dir; returns the temp path. */
 async function evacuateDir(dir: string): Promise<string | null> {
@@ -112,7 +102,8 @@ export async function ensureCanonicalBranch(
   if (branchExists) {
     await runner(parentRoot, ['worktree', 'add', storeDir, GROUP_DOCS_BRANCH]);
   } else {
-    await runner(parentRoot, ['worktree', 'add', '--orphan', '-b', GROUP_DOCS_BRANCH, storeDir]);
+    // Version-agnostic: falls back to plumbing when `--orphan` predates the engine's git (FLUX-297).
+    await addOrphanWorktree(parentRoot, GROUP_DOCS_BRANCH, storeDir, runner);
   }
 
   if (backup) {

@@ -248,6 +248,18 @@ describe('decideTicketAction (pure decision core)', () => {
     const a = decideTicketAction({ ticket: mkTicket({ state: 'implementing' }), sessionStatus: 'failed', terminalReason: 'rate-limited', retryCap: 2 });
     expect(a).toEqual({ type: 'cooldown-rate-limited' });
   });
+
+  // FLUX-1397: an expired/invalid credential is a whole-batch problem — halt immediately (one
+  // re-auth-needed signal) rather than parking this ticket alone as an opaque hard-fail.
+  it('an auth-expired failed session halts the batch instead of parking the ticket, naming re-auth as the fix', () => {
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'implementing' }), sessionStatus: 'failed', terminalReason: 'auth-expired', retryCap: 2 });
+    expect(a.type).toBe('halt-auth-expired');
+    expect((a as { reason: string }).reason).toMatch(/claude login|refresh the api key/i);
+  });
+  it('an auth-expired failure while REVIEWING also halts (not just implementing)', () => {
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'failed', terminalReason: 'auth-expired', retryCap: 2 });
+    expect(a.type).toBe('halt-auth-expired');
+  });
   it('a cooling-down ticket waits until its next retry time', () => {
     const now = 1_000_000;
     const ticket = mkTicket({ state: 'cooling-down', rateLimitFirstSeenAt: new Date(now).toISOString(), nextRetryAt: new Date(now + 20 * 60_000).toISOString(), preCooldownState: 'implementing' });
@@ -931,6 +943,49 @@ describe('FLUX-1396 (Group E) — watchdog / stoker integration', () => {
     expect(cliSessionsById.get('stuck-sess')?.status).toBe('cancelled');
     expect(getFurnaceBatch(batch.id)!.consecutiveFailures).toBe(1);
     stopSpy.mockRestore();
+  });
+
+  // FLUX-1397: an expired/invalid auth credential is a whole-BATCH problem — every ticket sharing the
+  // CLI's credential fails identically, so the stoker halts the batch immediately (one re-auth-needed
+  // signal) instead of letting each ticket independently park `hard-fail` and trip the generic breaker.
+  it('an auth-expired session halts the WHOLE batch — every active sibling is parked with a re-auth reason, not just the ticket that hit it', async () => {
+    const { id: authId } = await createTask({ title: 'Auth failed', status: 'In Progress' });
+    const { id: siblingId } = await createTask({ title: 'Sibling still working', status: 'In Progress' });
+    const batch = await createFurnaceBatch({
+      title: 'shared-token', kind: 'parallel', burnRate: 2,
+      tickets: [newBatchTicket(authId, 0), newBatchTicket(siblingId, 1)],
+    });
+    await mutateFurnaceBatch(batch.id, (b) => {
+      b.status = 'burning';
+      const a = b.tickets.find((t) => t.ticketId === authId)!;
+      a.state = 'implementing';
+      a.currentSessionId = 'auth-sess';
+      a.sessionIds = ['auth-sess'];
+      const s = b.tickets.find((t) => t.ticketId === siblingId)!;
+      s.state = 'implementing';
+      s.currentSessionId = 'sibling-sess';
+      s.sessionIds = ['sibling-sess'];
+    });
+    cliSessionsById.set('auth-sess', { id: 'auth-sess', taskId: authId, status: 'failed', phase: 'implementation', terminalReason: 'auth-expired' } as CliSessionRecord);
+    registerSession(authId, 'auth-sess');
+    cliSessionsById.set('sibling-sess', { id: 'sibling-sess', taskId: siblingId, status: 'running', phase: 'implementation' } as CliSessionRecord);
+    registerSession(siblingId, 'sibling-sess');
+
+    await stokerTick(batch.id);
+
+    const after = getFurnaceBatch(batch.id)!;
+    expect(after.status).toBe('parked');
+    expect(after.stopReason).toMatch(/claude login|refresh the api key/i);
+    const authTicket = after.tickets.find((t) => t.ticketId === authId)!;
+    const siblingTicket = after.tickets.find((t) => t.ticketId === siblingId)!;
+    expect(authTicket.state).toBe('failed');
+    expect(authTicket.failureClass).toBe('hard-fail');
+    expect(authTicket.note).toMatch(/batch halted/);
+    // The sibling never itself hit an auth error — it's parked by the HALT, not by an independent failure.
+    expect(siblingTicket.state).toBe('failed');
+    expect(siblingTicket.note).toMatch(/batch halted/);
+    // A single failure, not N — the breaker counts each park, but the batch is ALREADY parked (short-circuited).
+    expect(after.consecutiveFailures).toBeGreaterThan(0);
   });
 
   // Item 15: park-is-terminal — a ticket already `failed` must never be picked back up by a later tick.

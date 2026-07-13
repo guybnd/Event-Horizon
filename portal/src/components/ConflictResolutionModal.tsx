@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { X, AlertTriangle, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
+import { resetToRemote } from '../api';
 import type { ConflictInfo, ResolutionStrategy } from '../api';
 
 interface ConflictResolutionModalProps {
@@ -96,6 +97,11 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [expandedPreview, setExpandedPreview] = useState<Record<string, boolean>>({});
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // FLUX-1232: "discard everything, take remote" escape hatch — confirm-gated, separate from
+  // the per-ticket resolution flow above (this bypasses it entirely).
+  const [confirmingDiscardAll, setConfirmingDiscardAll] = useState(false);
+  const [discardAllInFlight, setDiscardAllInFlight] = useState(false);
+  const [discardAllError, setDiscardAllError] = useState<string | null>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousActiveElement = useRef<HTMLElement | null>(null);
@@ -172,6 +178,19 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
     }));
   };
 
+  const handleDiscardAll = async () => {
+    setDiscardAllInFlight(true);
+    setDiscardAllError(null);
+    try {
+      await resetToRemote();
+      onClose();
+    } catch (err) {
+      setDiscardAllError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDiscardAllInFlight(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={onClose}>
       <div
@@ -215,6 +234,53 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
             Local and remote branches have diverged with conflicting changes to {conflicts.length} ticket{conflicts.length > 1 ? 's' : ''}.
             Choose a resolution strategy for each:
           </p>
+
+          {/* FLUX-1232: escape hatch — bypass per-ticket resolution entirely and match remote. */}
+          <div className="rounded-lg border border-orange-200 dark:border-orange-500/30 bg-orange-50 dark:bg-orange-500/10 p-3 space-y-2">
+            {discardAllError && (
+              <p className="text-sm text-red-600 dark:text-red-400 break-words">{discardAllError}</p>
+            )}
+            {!confirmingDiscardAll ? (
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-orange-800 dark:text-orange-200">
+                  Too many conflicts to resolve one at a time? Discard all local changes and match remote instead.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDiscardAll(true)}
+                  disabled={isSubmitting}
+                  className="shrink-0 whitespace-nowrap rounded-md bg-orange-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-orange-700 disabled:opacity-50"
+                >
+                  Discard all local & take remote…
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-orange-900 dark:text-orange-100">
+                  This discards ALL local board changes not yet pushed and replaces the entire board with
+                  the remote's version. A backup ref is kept, but this cannot be undone from the portal.
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleDiscardAll()}
+                    disabled={discardAllInFlight}
+                    className="flex items-center gap-2 rounded-md bg-red-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-red-700 disabled:opacity-60"
+                  >
+                    {discardAllInFlight ? (<><Loader2 className="h-3.5 w-3.5 animate-spin" />Resetting…</>) : 'Yes, discard everything'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDiscardAll(false)}
+                    disabled={discardAllInFlight}
+                    className="rounded-md bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600 disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
 
           {conflicts.map((conflict) => {
             const isExpanded = expandedConflict === conflict.ticketId;

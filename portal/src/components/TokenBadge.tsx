@@ -61,6 +61,18 @@ export function TokenBadge({ data, config, onToggle, variant = 'card', label }: 
   const colorClass = !showTokens && costUSD > 0 ? getThresholdColor(costUSD, thresholds) : '';
 
   if (variant === 'modal') {
+    // FLUX-1375: the fresh/cache-read/cache-creation split was already computed for the tooltip
+    // above but only ever surfaced on hover — show it inline here so it doesn't require a mouseover
+    // to discover (a modal is already an intentional "tell me more" click, unlike the card pill).
+    const hasCacheSplit = cacheRead > 0 || cacheCreation > 0;
+    const breakdownLabel = hasCacheSplit
+      ? [
+          freshInput > 0 ? `${(freshInput / 1000).toFixed(1)}k fresh` : null,
+          cacheRead > 0 ? `${(cacheRead / 1000).toFixed(1)}k cached` : null,
+          cacheCreation > 0 ? `${(cacheCreation / 1000).toFixed(1)}k new-cache` : null,
+        ].filter(Boolean).join(' · ')
+      : null;
+
     return (
       <button
         type="button"
@@ -74,6 +86,9 @@ export function TokenBadge({ data, config, onToggle, variant = 'card', label }: 
         <span className={`text-sm font-semibold ${colorClass || 'text-gray-700 dark:text-gray-200'}`}>
           {displayLabel}
         </span>
+        {breakdownLabel && (
+          <span className="text-[10px] text-gray-400 dark:text-gray-500">{breakdownLabel}</span>
+        )}
       </button>
     );
   }

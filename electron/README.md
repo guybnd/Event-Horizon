@@ -71,7 +71,11 @@ icon are committed — regenerate them from the brand source with `node electron
 code-signing is the durable fix.
 
 Tagged releases build these for you: pushing a `vX.Y.Z` tag produces the macOS `.dmg` and Windows
-`.exe` on the GitHub Release (`.github/workflows/release.yml`).
+`.exe` on the GitHub Release (`.github/workflows/release.yml`). The Electron build steps stay
+`continue-on-error: true` — a desktop-build hiccup doesn't sink the release — but since FLUX-835 the
+release is created as a **draft** and a `finalize` job only publishes it (`--latest`) once the core
+source/SEA artifacts are verified attached; a missing `.dmg`/`.exe` still publishes, just with a
+"partial release" note appended, so a desktop-build failure is never silently invisible.
 
 **Advanced:** `EH_URL` overrides the loaded URL; `EH_ENGINE_CMD` overrides how the engine is launched
 (e.g. `EH_ENGINE_CMD="node /path/to/engine/dist/index.js"`).

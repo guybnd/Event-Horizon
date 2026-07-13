@@ -17,6 +17,7 @@ import {
 } from './git-sync-env.js';
 import { generateSyncAuthNotification, clearSyncAuthNotification, generateSyncConflictNotification, clearSyncConflictNotification } from './notifications.js';
 import { getHistoryTimestamp } from './history.js';
+import { runGit } from './git-exec.js';
 
 const execFileAsyncRaw = promisify(execFile);
 // All sync git calls go through here so they share the non-interactive +
@@ -65,6 +66,12 @@ export type SyncStatus =
   | { state: 'syncing' }
   | { state: 'synced'; lastSyncTime: string }
   | { state: 'conflict'; conflicts: ConflictInfo[] }
+  // FLUX-1232: local and remote flux-data have both moved since their common ancestor — the
+  // dev-machine-swap wedge this ticket hardens against. Surfaced BEFORE any auto-merge is
+  // attempted (see storage-sync.ts's background `pull --ff-only` failure handling) so the
+  // portal can offer the force-reset-to-remote escape hatch instead of letting the periodic
+  // sync risk a many-file conflict. `ahead`/`behind` are commit counts vs origin/flux-data.
+  | { state: 'diverged'; ahead: number; behind: number }
   // FLUX-895: `remediation` carries engine-owned, copy-paste fix steps for the
   // `auth` case so the portal renders an actionable "sign-in needed" panel
   // instead of a raw error string.
@@ -178,7 +185,40 @@ export function getSyncStatus(): SyncStatus {
 // add/add conflict on the next successful pull). Existing-ticket updates aren't gated by this —
 // only net-new creation needs to wait for sync to be healthy again.
 export function isSyncUnhealthy(): boolean {
-  return currentStatus.state === 'conflict' || currentStatus.state === 'error';
+  return currentStatus.state === 'conflict' || currentStatus.state === 'error' || currentStatus.state === 'diverged';
+}
+
+// FLUX-1232: called by storage-sync.ts's background startup pull when `git pull --ff-only`
+// fails for a reason other than network/auth — the only remaining reason that fails is a true
+// divergence (neither side is an ancestor of the other). Doesn't touch pendingConflicts/error
+// state if one is already showing — a real conflict or error is more actionable/urgent than an
+// early divergence heads-up, and the periodic sync (triggerSync(), run right after this during
+// workspace activation) will re-derive the real status moments later regardless.
+export function reportDivergedStatus(ahead: number, behind: number): void {
+  if (currentStatus.state === 'conflict' || currentStatus.state === 'error') return;
+  updateStatus({ state: 'diverged', ahead, behind });
+}
+
+// FLUX-1232: called after forceResetToRemote() completes — the worktree now exactly matches
+// origin/flux-data, so any stale conflict/diverged/error state must not keep showing.
+export function clearSyncStateAfterForceReset(): void {
+  pendingConflicts = null;
+  markSynced();
+}
+
+// FLUX-1232: acquire the same in-flight mutex runSync()/resolveConflicts() use, so
+// forceResetToRemote() can't race a background sync on the same worktree (FLUX-989). Throws the
+// same "retry in a moment" error resolveConflicts() does when the lock is already held.
+export async function withSyncLock<T>(fn: () => Promise<T>): Promise<T> {
+  if (syncInFlight) {
+    throw new Error('A sync is currently in progress; please retry in a moment.');
+  }
+  syncInFlight = true;
+  try {
+    return await fn();
+  } finally {
+    syncInFlight = false;
+  }
 }
 
 // FLUX-989: `pendingConflicts` is trusted as ground truth once set, but the worktree can
@@ -367,7 +407,7 @@ export function mergeAppendOnlyHistory(baseContent: string, oursContent: string,
 async function autoResolveHistoryConflicts(storeDir: string, conflicts: ConflictInfo[]): Promise<ConflictInfo[]> {
   let mergeBase: string;
   try {
-    const { stdout } = await execFileAsync('git', ['-C', storeDir, 'merge-base', 'HEAD', 'MERGE_HEAD']);
+    const { stdout } = await runGit(['merge-base', 'HEAD', 'MERGE_HEAD'], { cwd: storeDir });
     mergeBase = stdout.trim();
   } catch {
     return conflicts; // no usable merge-base — leave everything for manual resolution
@@ -376,7 +416,7 @@ async function autoResolveHistoryConflicts(storeDir: string, conflicts: Conflict
   const remaining: ConflictInfo[] = [];
   for (const conflict of conflicts) {
     try {
-      const { stdout: baseContent } = await execFileAsync('git', ['-C', storeDir, 'show', `${mergeBase}:${conflict.ticketId}.md`]);
+      const { stdout: baseContent } = await runGit(['show', `${mergeBase}:${conflict.ticketId}.md`], { cwd: storeDir });
       const merged = mergeAppendOnlyHistory(baseContent, conflict.localContent, conflict.remoteContent);
       if (merged == null) {
         remaining.push(conflict);
@@ -384,7 +424,7 @@ async function autoResolveHistoryConflicts(storeDir: string, conflicts: Conflict
       }
       const filePath = path.join(storeDir, `${conflict.ticketId}.md`);
       await fs.writeFile(filePath, merged, 'utf-8');
-      await execFileAsync('git', ['-C', storeDir, 'add', `${conflict.ticketId}.md`]);
+      await runGit(['add', `${conflict.ticketId}.md`], { cwd: storeDir });
       log.info(`[sync-watcher] Auto-merged append-only history for ${conflict.ticketId} (FLUX-1076)`);
     } catch {
       remaining.push(conflict);
@@ -528,7 +568,7 @@ async function hasUnmergedState(storeDir: string): Promise<boolean> {
 // Fails closed (treats a probe error as still-unresolved) — never risk committing on a lie.
 async function hasUnresolvedConflictedPaths(storeDir: string): Promise<boolean> {
   try {
-    const { stdout } = await execFileAsync('git', ['-C', storeDir, 'diff', '--name-only', '--diff-filter=U']);
+    const { stdout } = await runGit(['diff', '--name-only', '--diff-filter=U'], { cwd: storeDir });
     return stdout.trim().length > 0;
   } catch {
     return true;
@@ -706,8 +746,8 @@ export async function runSync(storeDir: string, onFail?: (retryDelayMs?: number)
           if (!(await hasUnresolvedConflictedPaths(storeDir))) {
             // FLUX-1076: every conflict auto-resolved — complete the merge commit ourselves
             // (the initial `git merge --no-edit` failed before creating one).
-            await execFileAsync('git', ['-C', storeDir, 'add', '-A']);
-            await execFileAsync('git', ['-C', storeDir, 'commit', '-m', 'flux: sync (auto-merged history)']);
+            await runGit(['add', '-A'], { cwd: storeDir });
+            await runGit(['commit', '-m', 'flux: sync (auto-merged history)'], { cwd: storeDir });
             log.info('[sync-watcher] Auto-merged remote changes via append-only history union');
           } else {
             // No conflict markers we could resolve — abort and continue with local state

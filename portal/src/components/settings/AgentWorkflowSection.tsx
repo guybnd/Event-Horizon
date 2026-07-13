@@ -27,7 +27,7 @@ export function AgentWorkflowSection({ targetFramework, workspacePath, setView, 
       alert(`Installed Event Horizon workflow to ${result.skillInstalledPath}${result.instructionsInstalledPath ? `\nPatched instructions at ${result.instructionsInstalledPath}` : ''}`);
     } catch (error) {
       console.error(error);
-      alert('Failed to install Event Horizon workflow');
+      alert(error instanceof Error ? error.message : 'Failed to install Event Horizon workflow');
     } finally {
       setSkillInstalling(false);
     }

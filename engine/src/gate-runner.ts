@@ -119,7 +119,8 @@ export function planReviewFocus(depth: PlanReviewDepth, hasArtifact: boolean, wa
 /** The focus for a "revise the plan" pass after a plan-review pass requested changes. */
 export const PLAN_REVISE_FOCUS =
   "A plan-review pass just requested changes on this ticket's plan (see the latest review comment in its history) — revise the ticket body via `update_ticket` to address every point raised, then STOP. " +
-  'Do not call `change_status` yourself and do not start implementing; the plan-review gate automatically re-reviews your revision.';
+  'Do not call `change_status` yourself and do not start implementing; the plan-review gate automatically re-reviews your revision. ' +
+  'When revising an artifact: revise minimally — answer every annotation explicitly, show the annotated element before→after, and never silently redesign elements the user already approved.';
 
 /** Mirrors Temper's `REVIEW_NUDGE_FOCUS`, keyed to `planReviewState` instead of `reviewState`. */
 export const PLAN_REVIEW_NUDGE_FOCUS =

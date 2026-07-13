@@ -133,6 +133,17 @@ export function isWorktreeReclaimable(ticketId: string, opts: { honorReadyGrace?
 }
 
 /**
+ * Whether `ticketId`'s CURRENT status is terminal (Done/Released/Archived) — FLUX-1405. Feeds
+ * `reclaimWorktrees`' `isTerminal` gate, which decides whether a DIRTY reclaimable worktree gets
+ * detached (nobody is coming back to finish it) rather than skipped (e.g. a ticket resting at
+ * Ready, where a dirty tree may still be actively reviewed/amended).
+ */
+export function isTicketTerminal(ticketId: string): boolean {
+  const t = (getWorkspace().tasks as Record<string, CachedTicket>)[ticketId];
+  return !!t && TERMINAL_TICKET_STATUSES.has(t.status);
+}
+
+/**
  * FLUX-1214 backstop: on top of the ordinary {@link worktreeUnreclaimableReason} gate, ALSO reclaim
  * a worktree whose ticket is refused solely for `'status'` (not Ready/terminal) when its branch
  * carries zero commits ahead of its base. The `'status'` gate assumes a resting ticket's worktree
@@ -235,13 +246,15 @@ function hasLiveSessionOnBranch(branch: string | undefined, ownerId: string): bo
 
 /**
  * Proactive board-wide sweep (FLUX-1031): reclaim every task worktree whose owning
- * ticket is reclaimable (Ready or terminal) and idle (no live session, clean tree) —
- * OR (FLUX-1214) whose branch never picked up a single commit, regardless of status
- * (see {@link isWorktreeReclaimableForSweep}). Runs on the engine's reconcile interval
- * so a Ready ticket's slot is freed shortly after its session ends — well before the
- * pool can exhaust — without a per-adapter exit hook. `reclaimWorktrees` never
- * discards real work (it removes only genuinely clean trees). Returns the reclaimed
- * ticket ids. Best-effort; never throws.
+ * ticket is reclaimable (Ready or terminal) and idle (no live session) — clean trees are
+ * removed outright, and a DIRTY tree on a TERMINAL ticket is detached instead of skipped
+ * (FLUX-1405: stash + best-effort apply onto master + remove, so a leftover like a stray
+ * `package-lock.json` from an `npm install` can never hog a slot forever again) — OR
+ * (FLUX-1214) whose branch never picked up a single commit, regardless of status (see
+ * {@link isWorktreeReclaimableForSweep}). Runs on the engine's reconcile interval so a Ready
+ * ticket's slot is freed shortly after its session ends — well before the pool can exhaust —
+ * without a per-adapter exit hook. `reclaimWorktrees` never discards real work. Returns the
+ * reclaimed ticket ids. Best-effort; never throws.
  */
 export async function reclaimReadyWorktrees(workspaceRoot: string): Promise<string[]> {
   // FLUX-1305: capture the rule string `isWorktreeReclaimableForSweep` resolved for each ticket so
@@ -253,7 +266,31 @@ export async function reclaimReadyWorktrees(workspaceRoot: string): Promise<stri
     if (rule) rules.set(ticketId, typeof rule === 'string' ? rule : 'reclaimable');
     return rule;
   };
-  const reclaimed = await reclaimWorktrees(workspaceRoot, predicate).catch(() => [] as string[]);
+  const reclaimed = await reclaimWorktrees(workspaceRoot, predicate, {
+    isTerminal: isTicketTerminal,
+    // FLUX-1405: a dirty terminal worktree that fails to detach must not just log a `console.warn`
+    // and vanish from view — raise a board-visible notification so it gets cleaned up by hand.
+    onStuck: (ticketId, worktreePath) => {
+      addNotification({
+        type: 'error',
+        title: 'Worktree stuck holding a slot',
+        message:
+          `${ticketId}'s worktree still has uncommitted changes and could not be automatically ` +
+          `detached — it is still holding one of the limited worktree slots. Clean it up manually ` +
+          `(\`${worktreePath}\`) or free the slot with the worktree chip's Clean up action.`,
+        ticketId,
+        actions: [{ label: 'Dismiss', actionId: 'dismiss' }],
+      });
+      updateTaskWithHistory(ticketId, {
+        updatedBy: 'Agent',
+        entries: [buildActivityEntry(
+          '⚠️ Task worktree still holds uncommitted changes and could not be automatically detached — it is still occupying a worktree slot. Clean it up manually.',
+          'Agent',
+          new Date().toISOString(),
+        )],
+      }).catch(() => {});
+    },
+  }).catch(() => [] as string[]);
   for (const id of reclaimed) {
     const rule = rules.get(id) ?? 'idle-worktree-cleanup';
     await updateTaskWithHistory(id, {

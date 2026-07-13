@@ -18,7 +18,7 @@ import { appendTranscriptLine } from '../transcript.js';
 import { buildMcpServerEntry } from '../workflow-installer.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote, resolveModel, type CliTask } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, type CliTask } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   powershell: 'Running command',
@@ -208,7 +208,15 @@ export function attachStdoutProcessing(
             if (typeof usage.total_cost_usd === 'number') {
               session.costUSD = (session.costUSD ?? 0) + usage.total_cost_usd;
             } else {
-              session.costUSD = (session.costUSD ?? 0) + estimateCostUSD('copilot', inputTok, outputTok);
+              // FLUX-1375: session.model (not the hardcoded literal 'copilot') — and price
+              // fresh/cache-read/cache-creation tokens at their own rates instead of blending them
+              // all into the full input rate.
+              session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.model, {
+                freshInputTokens: usage.input_tokens ?? 0,
+                cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+                cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
+                outputTokens: outputTok,
+              });
               session.costIsEstimated = true;
             }
           }
@@ -430,6 +438,11 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
   // fields. session.taskKey is stamped by createPendingSession at spawn time; a missing value (a
   // pre-migration in-flight session) falls back to implementation.lead.
   const selectedModel = session.model || resolveModel(session.taskKey ?? 'implementation.lead', 'copilot', getConfig());
+  // FLUX-1375: persist the resolved model onto the session — previously only a local var, so the
+  // fallback cost estimator was passed the literal string 'copilot' instead (never matched any
+  // pricing row; harmless today since model-pricing.md has no Copilot rows, but kept consistent
+  // with the other two adapters).
+  if (selectedModel) session.model = selectedModel;
 
   // FLUX-1193: prefer the session's own launch phase — set by the caller (routes/cli-session.ts
   // passes 'chat' for ticket chat, per useChatSession.ts) — over a status-derived guess, mirroring
@@ -602,19 +615,9 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
       ? `${label} session stopped by user.`
       : `${label} session ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
 
-    const tokenUpdate = (session.inputTokens ?? 0) > 0 || (session.outputTokens ?? 0) > 0
-      ? (() => {
-          const prev = getWorkspace().tasks[id]?.tokenMetadata || { inputTokens: 0, outputTokens: 0, costUSD: 0 };
-          return {
-            inputTokens: (prev.inputTokens ?? 0) + (session.inputTokens ?? 0),
-            outputTokens: (prev.outputTokens ?? 0) + (session.outputTokens ?? 0),
-            costUSD: parseFloat(((prev.costUSD ?? 0) + (session.costUSD ?? 0)).toFixed(6)),
-            costIsEstimated: prev.costIsEstimated || session.costIsEstimated || false,
-            cacheReadTokens: (prev.cacheReadTokens ?? 0) + (session.cacheReadTokens ?? 0),
-            cacheCreationTokens: (prev.cacheCreationTokens ?? 0) + (session.cacheCreationTokens ?? 0),
-          };
-        })()
-      : null;
+    // FLUX-1375: delta-based (buildTokenMetadataUpdate advances session.flushed*Tokens), so the
+    // reply exit handler below can flush again without double-counting what this flush persists.
+    const tokenUpdate = buildTokenMetadataUpdate(id, session);
 
     // FLUX-985: paused for user input — flush tokens + mark the session entry waiting-input, but do
     // NOT go terminal: no completion comment (the last text is the agent's Require-Input message, not
@@ -825,6 +828,15 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     // (which counted the killed session as active forever). Otherwise the resumable conversation
     // stays waiting-input.
     terminalizeResumedExit(session);
+    // FLUX-1375: the resume/reply exit path previously never flushed tokenMetadata at all — only the
+    // INITIAL spawn's exit handler did — so every resumed chat turn's cost was silently dropped from
+    // the ticket's cost meter. Mirror the initial-spawn flush here, unconditionally (regardless of why
+    // this turn ended): buildTokenMetadataUpdate diffs against the session's own flushed baseline, so
+    // this is correct however many resumed turns have run.
+    const resumeTokenUpdate = buildTokenMetadataUpdate(id, session);
+    if (resumeTokenUpdate) {
+      await updateTaskWithHistory(id, { updatedBy: 'Agent', entries: [], tokenMetadata: resumeTokenUpdate });
+    }
     // FLUX-651: resumed turn ended — flag if the agent parked without acting. Skip a stopped turn.
     if (!session.pausedForInput && !session.requestedStop) await flagIfParked(session, id);
     broadcastEvent('taskUpdated', { id });

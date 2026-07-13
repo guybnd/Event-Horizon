@@ -80,7 +80,13 @@ export async function createTerminalSession(
 ): Promise<TerminalSession> {
   const nodePty = await getPty();
   const id = crypto.randomUUID();
-  const shell = process.env.SHELL || os.userInfo().shell || '/bin/bash';
+  // FLUX-1404: platform-gate the shell choice. On win32, SHELL is unset (or worse, a POSIX
+  // path like /usr/bin/bash when launched from Git Bash) and os.userInfo().shell is null, so
+  // the Unix fallback chain used to hand ConPTY '/bin/bash' → "File not found" on every spawn.
+  const shell =
+    process.platform === 'win32'
+      ? process.env.ComSpec || 'powershell.exe'
+      : process.env.SHELL || os.userInfo().shell || '/bin/bash';
   const cwd = getWorkspaceRoot() || process.cwd();
 
   const ptyProcess = nodePty.spawn(shell, [], {

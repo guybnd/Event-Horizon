@@ -1,6 +1,6 @@
 import express from 'express';
-import { isOrphanMode, getWorkspaceRoot } from '../workspace.js';
-import { migrateToOrphan, restoreToInRepo } from '../storage-sync.js';
+import { isOrphanMode, getWorkspaceRoot, getFluxStoreDir } from '../workspace.js';
+import { migrateToOrphan, restoreToInRepo, forceResetToRemote } from '../storage-sync.js';
 import { activateWorkspace } from '../task-store.js';
 import { startSyncWatcher, stopSyncWatcher, resolveConflicts, getSyncStatus, revalidateConflictState } from '../sync-watcher.js';
 import { GIT_SYNC_TIMEOUT_MS } from '../git-sync-env.js';
@@ -15,6 +15,11 @@ const router = express.Router();
 // resolveConflicts() kept running and later succeeded server-side. Budget for all three
 // running back-to-back near their own timeout, plus slack for the index.lock retry sleeps.
 const RESOLVE_CONFLICTS_TIMEOUT_MS = GIT_SYNC_TIMEOUT_MS * 3 + 15_000;
+
+// FLUX-1232: forceResetToRemote runs ~8 sequential git subprocesses under the lock (rev-parse,
+// tag, fetch, merge --abort, reset --hard, clean, rev-parse, diff) plus the post-attach steps'
+// own handful of calls — budget generously, mirroring RESOLVE_CONFLICTS_TIMEOUT_MS's reasoning.
+const RESET_REMOTE_TIMEOUT_MS = GIT_SYNC_TIMEOUT_MS * 4 + 15_000;
 
 router.get('/mode', (_req, res) => {
   res.json({ mode: isOrphanMode() ? 'orphan' : 'in-repo' });
@@ -114,6 +119,42 @@ router.post('/resolve-conflicts', async (req, res) => {
     // On any failure/timeout, re-derive the real conflict state from the worktree so the
     // banner reflects reality rather than the stale in-memory conflict (FLUX-989). No-ops
     // while a resolution still holds the lock; the next status poll re-validates then.
+    await revalidateConflictState().catch(() => {});
+    const message = err instanceof Error ? err.message : String(err);
+    const timedOut = /timed out/i.test(message);
+    res.status(timedOut ? 504 : 500).json({ error: message });
+  }
+});
+
+// FLUX-1232: force-reset-to-remote escape hatch — discards local flux-data board state and
+// hard-resets to origin/flux-data (tagging a backup ref first). Deliberately destructive; the
+// portal gates this behind an explicit confirmation naming the consequence before ever calling
+// it (never a one-click accident).
+router.post('/reset-remote', async (_req, res) => {
+  const workspaceRoot = getWorkspaceRoot();
+  if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
+  if (!isOrphanMode()) return res.status(400).json({ error: 'Not in orphan mode' });
+
+  try {
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`Reset to remote timed out after ${RESET_REMOTE_TIMEOUT_MS / 1000}s`)),
+        RESET_REMOTE_TIMEOUT_MS,
+      );
+    });
+    let result;
+    try {
+      result = await Promise.race([forceResetToRemote(getFluxStoreDir()), timeout]);
+    } finally {
+      clearTimeout(timer!);
+    }
+    // Reload the board from the now-reset worktree — mirrors /migrate and /restore above.
+    await activateWorkspace(workspaceRoot);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    // On any failure/timeout, re-derive the real conflict state from the worktree so the
+    // banner reflects reality rather than a stale in-memory status (mirrors /resolve-conflicts).
     await revalidateConflictState().catch(() => {});
     const message = err instanceof Error ? err.message : String(err);
     const timedOut = /timed out/i.test(message);

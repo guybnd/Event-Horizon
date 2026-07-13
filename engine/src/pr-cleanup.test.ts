@@ -266,6 +266,39 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
       expect(reclaimed).toEqual([]);
       expect(existsSync(wt)).toBe(true);
     });
+
+    // FLUX-1405: a dirty worktree on a TERMINAL ticket must never hog its slot forever (the
+    // incident: a Done ticket's worktree left dirty by a stray `package-lock.json` npm-install
+    // leftover — not gitignorable, not pathspec-excludable — was skipped by the sweep all day
+    // until a spawn hard-failed on "Task worktree limit reached (4/4)"). It gets DETACHED
+    // (stashed + best-effort applied onto master + removed) instead of skipped.
+    it('detaches (does not skip) a DIRTY worktree on a TERMINAL ticket — frees the slot instead of hogging it forever', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+      await commitInWorktree(wt, 'a.txt'); // real committed work, like a merged Done ticket
+      // Leftover uncommitted change on a TRACKED file present since the base commit.
+      await fs.writeFile(path.join(wt, 'feat.txt'), 'leftover-dirty-edit\n', 'utf8');
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Done' };
+
+      const reclaimed = await reclaimReadyWorktrees(repo);
+
+      expect(reclaimed).toEqual(['FLUX-1']);
+      expect(existsSync(wt)).toBe(false);
+      // Nothing was discarded — the leftover surfaces on the main tree instead of silently vanishing.
+      expect(await fs.readFile(path.join(repo, 'feat.txt'), 'utf8')).toContain('leftover-dirty-edit');
+    });
+
+    it('still skips a DIRTY worktree on a NON-terminal reclaimable ticket (e.g. resting at Ready) — only terminal tickets detach', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+      await commitInWorktree(wt, 'a.txt');
+      await fs.writeFile(path.join(wt, 'feat.txt'), 'leftover-dirty-edit\n', 'utf8');
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready' };
+
+      const reclaimed = await reclaimReadyWorktrees(repo);
+
+      expect(reclaimed).toEqual([]);
+      expect(existsSync(wt)).toBe(true);
+      expect(await fs.readFile(path.join(wt, 'feat.txt'), 'utf8')).toContain('leftover-dirty-edit');
+    });
   });
 
   // ───────────────────────────────────────────────────────────────────────────

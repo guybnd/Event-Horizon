@@ -1087,18 +1087,35 @@ export function ticketIdFromWorktreePath(workspaceRoot: string, worktreePath: st
 
 /**
  * Reclaim task worktrees whose owning ticket is reclaimable (e.g. in a terminal
- * status) AND which hold no uncommitted work. This is how a full concurrency cap
- * self-heals (FLUX-1018): stale Done/Released/Archived worktrees that post-merge
- * cleanup left behind otherwise occupy slots forever, forcing a genuinely new
- * task to fail isolation and fall back onto master. Never discards real work —
- * the node_modules junctions are unlinked first (they aren't "work"), then a
- * worktree is removed ONLY when its tree is genuinely clean; a dirty reclaimable
- * worktree is skipped for explicit detach. Returns the ticket ids reclaimed.
+ * status). This is how a full concurrency cap self-heals (FLUX-1018): stale
+ * Done/Released/Archived worktrees that post-merge cleanup left behind
+ * otherwise occupy slots forever, forcing a genuinely new task to fail
+ * isolation and fall back onto master. Never discards real work — the
+ * node_modules junctions are unlinked first (they aren't "work"), then:
+ *  - a clean worktree is simply removed;
+ *  - a DIRTY worktree whose ticket is terminal (per `opts.isTerminal`) is
+ *    DETACHED instead (FLUX-1405): stash + best-effort apply onto master +
+ *    remove, via {@link detachTaskWorktree}. A terminal ticket's branch already
+ *    merged or was abandoned, so nobody is coming back to finish leftovers in
+ *    that worktree (a stray `package-lock.json` from an `npm install`, editor
+ *    droppings, ...) — only the SLOT matters, and detach keeps the work visible
+ *    (applied onto master) rather than silently discarding it. Without
+ *    `opts.isTerminal` (or for a dirty NON-terminal reclaimable ticket, e.g. one
+ *    resting at Ready awaiting review) a dirty worktree is still skipped —
+ *    that work may still be actively reviewed/amended.
+ * Returns the ticket ids reclaimed.
  */
 export async function reclaimWorktrees(
   workspaceRoot: string,
   isReclaimable: (ticketId: string) => boolean | string | Promise<boolean | string>,
-  opts: { gitRunner?: GitRunner } = {},
+  opts: {
+    gitRunner?: GitRunner;
+    /** FLUX-1405: whether `ticketId`'s ticket status is terminal — gates dirty-worktree detach (see above). */
+    isTerminal?: (ticketId: string) => boolean | Promise<boolean>;
+    /** FLUX-1405: called when a reclaimable worktree fails to be removed/detached, so a stuck slot
+     *  can be surfaced instead of only logged (previously a silent `console.warn`). */
+    onStuck?: (ticketId: string, worktreePath: string, error: unknown) => void;
+  } = {},
 ): Promise<string[]> {
   const runner = opts.gitRunner ?? defaultGitRunner;
   const reclaimed: string[] = [];
@@ -1111,22 +1128,37 @@ export async function reclaimWorktrees(
     // then only remove when the tree is genuinely clean — never lose real work.
     await unlinkWorktreeDependencies(wt.path).catch(() => {});
     const { stdout } = await runner(wt.path, ['status', '--porcelain']).catch(() => ({ stdout: '' }));
-    if (stdout.trim().length > 0) continue; // real uncommitted work — leave it
-    // TOCTOU re-check (FLUX-1031): the awaits above (dependency unlink + git status) open a
-    // window in which a session can register on this worktree's branch — e.g. a fresh spawn
+    const dirty = stdout.trim().length > 0;
+    const detachDirty = dirty && (opts.isTerminal ? await opts.isTerminal(id) : false);
+    if (dirty && !detachDirty) continue; // real uncommitted work on a non-terminal ticket — leave it
+    // TOCTOU re-check (FLUX-1031): the awaits above (dependency unlink + git status [+ isTerminal])
+    // open a window in which a session can register on this worktree's branch — e.g. a fresh spawn
     // between worktree resolution and `registerSession`, or a joined sibling starting work.
     // Re-evaluate reclaimability immediately before removal so the sweep never yanks a slot
     // from work that started mid-iteration.
     rule = await isReclaimable(id);
     if (!rule) continue;
+    const ruleLabel = typeof rule === 'string' ? rule : 'reclaimable';
     try {
-      await removeTaskWorktree(workspaceRoot, wt.path, opts);
-      reclaimed.push(id);
-      // FLUX-1305: name the rule that fired — previously silent, so a worktree vanishing left no
-      // trace anywhere (engine log or ticket history) for the next debugger to find.
-      log.info(`[worktree-reclaim] removed ${id} at ${wt.path} (rule: ${typeof rule === 'string' ? rule : 'reclaimable'})`);
-    } catch {
-      // Best-effort — a lock/leftover reconciles on the next prune.
+      if (detachDirty) {
+        const detached = await detachTaskWorktree(workspaceRoot, wt.path, { gitRunner: runner, ticketId: id });
+        reclaimed.push(id);
+        // FLUX-1305/1405: name the rule that fired AND the detach outcome — previously silent, so a
+        // worktree vanishing left no trace anywhere (engine log or ticket history) for the next
+        // debugger to find.
+        log.info(`[worktree-reclaim] detached dirty terminal worktree ${id} at ${wt.path} (rule: ${ruleLabel}; ${detached.outcome})`);
+      } else {
+        await removeTaskWorktree(workspaceRoot, wt.path, opts);
+        reclaimed.push(id);
+        log.info(`[worktree-reclaim] removed ${id} at ${wt.path} (rule: ${ruleLabel})`);
+      }
+    } catch (err) {
+      // FLUX-1405: surface a stuck slot instead of swallowing it — a dirty terminal worktree whose
+      // detach itself fails must not go back to hogging its slot in total silence.
+      log.warn(
+        `[worktree-reclaim] failed to ${detachDirty ? 'detach' : 'remove'} ${id} at ${wt.path}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      opts.onStuck?.(id, wt.path, err);
     }
   }
   return reclaimed;

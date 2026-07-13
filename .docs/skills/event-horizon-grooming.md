@@ -11,7 +11,7 @@ Scope: Interpret requirements, update frontmatter, and handle `.flux` metadata d
 
 # Event Horizon Agent — Grooming Skill
 
-Version: 2.15.0
+Version: 2.16.0
 
 ## When This Skill Applies
 
@@ -89,6 +89,19 @@ This is a **default-ON** rule, not the old "exception, not the norm" — **almos
 When in doubt on a plan proposal, emit one.
 
 This judgment call is workflow step 5, not just a section to remember on your own (FLUX-1313) — see the ownership note there for Dynamic Delegation. The plan-review gate also checks for this: a UI/UX-shaped plan with no artifact gets flagged in the review comment as a gap rather than silently approved, so a missed decision here surfaces there too — but that's a backstop, not a substitute for making the call at grooming time.
+
+## Design Style Guide (`.docs/design/style-guide.md`) — convention + bootstrap mission (FLUX-1399)
+
+**The convention.** A project's de-facto visual language belongs in one checkable doc instead of being re-derived from source on every artifact: `.docs/design/style-guide.md` per repo (or a `group_doc` for a multi-repo group, so every member reads the same guide). When it exists, mockup and prototype work should pull tokens from it — palette + semantic colors, type scale, spacing/radius scale, iconography rules, the component vocabulary in active use, interaction conventions (e.g. swipe/hold/hover-reveal on `pointer: fine`), theming constraints, and the primary target viewport — instead of re-reading component source on every revision. Re-deriving the same visual language from scratch each time is exactly the drift this convention removes.
+
+**The bootstrap mission — when the guide is missing.** Any normal grooming session can run this; no engine change or new persona is required:
+1. Read the real design system from code — theme/tailwind config (or equivalent), shared/primitive components, a few representative screens — never a prose description of it.
+2. Extract the de-facto system from what you read: palette + semantic color roles, type scale, spacing/radius scale, the component vocabulary actually in use, interaction conventions, theming constraints, primary viewport.
+3. Publish it as a visual artifact via `publish_artifact` — color swatches, a type ramp, and a small component zoo (buttons, cards, inputs, chips — whatever the project actually uses) — so the user reasons against a rendering, not prose.
+4. Iterate through the normal annotation round-trip (see "Rich Artifacts" above) until the user is satisfied.
+5. Once approved, write the doc to the conventional path (or submit it via `group_doc` for a multi-repo group) in the same ticket that ran the bootstrap.
+
+**When to offer it.** Non-blocking: a UI/UX ticket with no style guide present is a natural moment to flag the gap and offer to bootstrap one — never block a ticket on it. Small or single-screen projects may never need one; that's fine.
 
 ## Epic → Subtask Splitting — Affordance Coverage Check (FLUX-1274)
 

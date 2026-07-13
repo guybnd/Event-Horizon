@@ -460,6 +460,8 @@ These are features that exist for claude but not for the other adapters. They ar
 
 Option 3 is the closest fit to user expectation. **FLUX-907 picked it** (see the resolution banner above).
 
+> **🔵 FLUX-1412** — The skill-layout branch (`resolvedFramework === 'claude'`, a leftover per-CLI literal from FLUX-1377) is now `SKILL_INSTALL_STRATEGY[resolvedFramework]`, a `Record<ResolvedFramework, 'modular' | 'core' | 'concatenated'>` table in `workflow-installer.ts`. Still installer-internal (this is a skill-layout axis on the 8-framework `ResolvedFramework`, not the 3-CLI runtime `CliFramework` — it cannot be expressed via `CLI_CAPABILITIES`), just data-driven instead of a literal, so `check-adapter-boundary.mjs` no longer flags it. The 3 `framework: 'claude'` test-fixture leaks it also caught (`build-initial-prompt.test.ts`, `resume-or-dispatch.test.ts`, `workflow-installer-core.test.ts`) are sanctioned exceptions — a test of the claude adapter must name `'claude'` — allowlisted per the existing `mcp-phase-profiles.test.ts` precedent.
+
 ---
 
 ## G. Defaults + config

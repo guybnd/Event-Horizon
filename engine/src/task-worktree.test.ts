@@ -1376,6 +1376,87 @@ describe('task-worktree', () => {
         expect(existsSync(path.join(repo, sub, 'node_modules', 'm.txt'))).toBe(true);
       }
     });
+
+    // FLUX-1405: a dirty worktree on a TERMINAL ticket must never hog its slot forever — it gets
+    // detached (stash + best-effort apply onto master + remove) instead of skipped.
+    describe('detach-instead-of-skip for dirty terminal worktrees (FLUX-1405)', () => {
+      it('detaches (not skips) a dirty worktree when isTerminal says the ticket is terminal', async () => {
+        const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+        // A leftover modified TRACKED file — e.g. a stray package-lock.json from an npm install.
+        await fs.writeFile(path.join(wt, 'README.md'), '# leftover edit\n', 'utf8');
+
+        const reclaimed = await reclaimWorktrees(repo, () => true, { isTerminal: () => true });
+
+        expect(reclaimed).toEqual(['FLUX-1']);
+        expect(existsSync(wt)).toBe(false);
+        // The leftover work is not discarded — it surfaces on the main tree (detachTaskWorktree's
+        // stash+apply), so nothing silently vanishes even though the worktree is gone.
+        expect(await fs.readFile(path.join(repo, 'README.md'), 'utf8')).toContain('leftover edit');
+      });
+
+      it('still skips a dirty worktree when isTerminal says the ticket is NOT terminal (e.g. resting at Ready)', async () => {
+        const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+        await fs.writeFile(path.join(wt, 'precious.txt'), 'do not lose me\n', 'utf8');
+
+        const reclaimed = await reclaimWorktrees(repo, () => true, { isTerminal: () => false });
+
+        expect(reclaimed).toEqual([]);
+        expect(existsSync(wt)).toBe(true);
+        expect(existsSync(path.join(wt, 'precious.txt'))).toBe(true);
+      });
+
+      it('still skips a dirty worktree when no isTerminal callback is provided (default, backward-compatible)', async () => {
+        const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+        await fs.writeFile(path.join(wt, 'precious.txt'), 'do not lose me\n', 'utf8');
+
+        const reclaimed = await reclaimWorktrees(repo, () => true);
+
+        expect(reclaimed).toEqual([]);
+        expect(existsSync(path.join(wt, 'precious.txt'))).toBe(true);
+      });
+
+      it('re-checks isReclaimable before detaching (TOCTOU, FLUX-1031) and leaves it alone if it flips false', async () => {
+        const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+        await fs.writeFile(path.join(wt, 'precious.txt'), 'do not lose me\n', 'utf8');
+
+        let calls = 0;
+        const isReclaimable = () => {
+          calls += 1;
+          return calls === 1; // reclaimable on the first check, not on the TOCTOU re-check
+        };
+        const reclaimed = await reclaimWorktrees(repo, isReclaimable, { isTerminal: () => true });
+
+        expect(reclaimed).toEqual([]);
+        expect(existsSync(wt)).toBe(true);
+        expect(existsSync(path.join(wt, 'precious.txt'))).toBe(true);
+      });
+
+      it('calls onStuck (instead of only console.warn) when a dirty terminal worktree fails to detach', async () => {
+        const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+        await fs.writeFile(path.join(wt, 'precious.txt'), 'do not lose me\n', 'utf8');
+
+        // Force the detach itself to fail (e.g. a lock held on the worktree) by wrapping the real
+        // runner and rejecting only the `stash push` call detachTaskWorktree issues.
+        const realRunner = (cwd: string, args: string[]) =>
+          execFileAsync('git', ['-C', cwd, ...args], { windowsHide: true }).then((r) => ({ stdout: r.stdout, stderr: r.stderr }));
+        const gitRunner = async (cwd: string, args: string[]) => {
+          if (args[0] === 'stash' && args[1] === 'push') throw new Error('simulated lock');
+          return realRunner(cwd, args);
+        };
+
+        const onStuck = vi.fn();
+        const reclaimed = await reclaimWorktrees(repo, () => true, { isTerminal: () => true, gitRunner, onStuck });
+
+        expect(reclaimed).toEqual([]);
+        expect(onStuck).toHaveBeenCalledTimes(1);
+        const [stuckId, stuckPath, stuckErr] = onStuck.mock.calls[0]!;
+        expect(stuckId).toBe('FLUX-1');
+        expect(path.basename(stuckPath)).toBe(path.basename(wt));
+        expect((stuckErr as Error).message).toBe('simulated lock');
+        // Nothing was discarded — the worktree and its uncommitted file survive the failed attempt.
+        expect(existsSync(path.join(wt, 'precious.txt'))).toBe(true);
+      });
+    });
   });
 
   // FLUX-741 AC1: the dirty-root backstop the post-merge cleanup uses before switching/resetting

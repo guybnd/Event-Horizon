@@ -25,7 +25,7 @@ import { ensureSharedServer, getSharedServerUrl, isSharedHttpPlatformProven } fr
 import { buildResumePreamble } from '../resume-preamble.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest, SendInputOptions } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote, resolveModel } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote, resolveModel, buildTokenMetadataUpdate } from './shared.js';
 import { BOARD_CONVERSATION_ID } from './board.js';
 
 /**
@@ -374,6 +374,40 @@ export function isRateLimitError(message: string | undefined | null): boolean {
   );
 }
 
+/**
+ * FLUX-1397: does a CLI terminal-error message describe an AUTH/credential failure — a revoked or
+ * expired API key, an expired OAuth token, or a 401/403 from the provider — as opposed to a rate limit,
+ * a context overflow, or a real crash? This is TRANSIENT in the sense that it clears the moment a human
+ * re-authenticates (`claude login` / a refreshed key), but it is NOT recoverable by the Furnace on its
+ * own (unlike a rate limit's cooldown or a context overflow's fresh session) — it needs a human action,
+ * so the stoker halts the batch and asks for re-auth instead of parking every ticket independently (see
+ * furnace-stoker.decideTicketAction).
+ *
+ * CONSERVATIVE by design, and deliberately DISJOINT from `isRateLimitError`/`isContextExhaustionError` —
+ * matches only well-known auth-failure PHRASINGS (`authentication_error`, `invalid x-api-key`, an expired
+ * OAuth token / credentials). Anything else stays a hard `failed` → park.
+ *
+ * FLUX-1406: deliberately does NOT match a bare `401`/`403`/`unauthorized`/`forbidden` in free text. Those
+ * tokens are ambiguous — a mid-task tool call (e.g. a WebFetch to a site that forbids it, or a `gh`/`curl`
+ * against a permission-scoped endpoint) can die with an HTTP 403/401 that bubbles up as the session's
+ * terminal error, which is NOT a credential problem and must not halt the whole batch for re-auth. The
+ * unambiguous numeric signal is the provider's structured `api_error_status === 401/403` field, which
+ * `attachStdoutProcessing` checks directly — so a genuine provider auth failure is still classified there
+ * without this free-text regex having to guess from a loose "403".
+ */
+export function isAuthError(message: string | undefined | null): boolean {
+  if (!message) return false;
+  const m = String(message).toLowerCase();
+  return (
+    /authentication_error/.test(m) ||                     // Anthropic API error code
+    /invalid[- ]x-api-key/.test(m) ||                     // Anthropic: "invalid x-api-key"
+    /invalid api key/.test(m) ||                          // "invalid API key provided"
+    /oauth token has expired/.test(m) ||                  // Claude Code: expired OAuth session
+    /(token|credentials?) (?:has |have )?expired/.test(m) ||
+    /invalid[_ ]?credentials?/.test(m)
+  );
+}
+
 /** Claude Code `--output-format stream-json` content block (`assistant`/`user` message content[]). */
 export interface ClaudeContentBlock {
   type?: string;
@@ -418,36 +452,10 @@ interface ClaudeCliEvent {
   modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; contextWindow?: number }>;
 }
 
-/**
- * FLUX-1378 (absorbing FLUX-1375 step 6): compute the ticket-level `tokenMetadata` delta to persist
- * for this session, and advance the session's flushed baselines so a LATER flush (e.g. a resumed
- * turn's exit handler) only adds what accumulated SINCE this flush — session.inputTokens/etc. keep
- * accumulating for the session's whole lifetime (they also drive the live per-session cost badge),
- * so flushing the raw cumulative value a second time would double-count everything the first flush
- * already persisted. Returns null when nothing new accumulated (nothing to write).
- */
-export function buildTokenMetadataUpdate(taskId: string, session: CliSessionRecord) {
-  const deltaInput = (session.inputTokens ?? 0) - (session.flushedInputTokens ?? 0);
-  const deltaOutput = (session.outputTokens ?? 0) - (session.flushedOutputTokens ?? 0);
-  if (deltaInput <= 0 && deltaOutput <= 0) return null;
-  const deltaCost = (session.costUSD ?? 0) - (session.flushedCostUSD ?? 0);
-  const deltaCacheRead = (session.cacheReadTokens ?? 0) - (session.flushedCacheReadTokens ?? 0);
-  const deltaCacheCreation = (session.cacheCreationTokens ?? 0) - (session.flushedCacheCreationTokens ?? 0);
-  const prev = getWorkspace().tasks[taskId]?.tokenMetadata || { inputTokens: 0, outputTokens: 0, costUSD: 0 };
-  session.flushedInputTokens = session.inputTokens ?? 0;
-  session.flushedOutputTokens = session.outputTokens ?? 0;
-  session.flushedCostUSD = session.costUSD ?? 0;
-  session.flushedCacheReadTokens = session.cacheReadTokens ?? 0;
-  session.flushedCacheCreationTokens = session.cacheCreationTokens ?? 0;
-  return {
-    inputTokens: (prev.inputTokens ?? 0) + deltaInput,
-    outputTokens: (prev.outputTokens ?? 0) + deltaOutput,
-    costUSD: parseFloat(((prev.costUSD ?? 0) + deltaCost).toFixed(6)),
-    costIsEstimated: prev.costIsEstimated || session.costIsEstimated || false,
-    cacheReadTokens: (prev.cacheReadTokens ?? 0) + deltaCacheRead,
-    cacheCreationTokens: (prev.cacheCreationTokens ?? 0) + deltaCacheCreation,
-  };
-}
+// FLUX-1375: moved to shared.ts so gemini.ts/copilot.ts's resume/reply exit handlers can reuse it
+// too (each was dropping every resumed turn's tokenMetadata). Re-exported here for the existing
+// `./claude-code.js` import path (claude-code-token-flush.test.ts and friends).
+export { buildTokenMetadataUpdate };
 
 export function attachStdoutProcessing(
   proc: ReturnType<typeof spawn>,
@@ -641,7 +649,15 @@ export function attachStdoutProcessing(
           if (typeof evt.total_cost_usd === 'number') {
             session.costUSD = (session.costUSD ?? 0) + evt.total_cost_usd;
           } else {
-            session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.resumeSessionId, inputTok, outputTok);
+            // FLUX-1375: session.model (not session.resumeSessionId, a UUID that never matched any
+            // pricing row) — and price fresh/cache-read/cache-creation tokens at their own rates
+            // instead of blending them all into the full input rate.
+            session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.model, {
+              freshInputTokens: freshInput,
+              cacheReadTokens: cacheRead,
+              cacheCreationTokens: cacheCreation,
+              outputTokens: outputTok,
+            });
             session.costIsEstimated = true;
           }
           // FLUX-1378: live (non-cumulative) context-headroom gauge — overwritten every `result`
@@ -692,6 +708,10 @@ export function attachStdoutProcessing(
             session.terminalReason = 'context-exhausted';
           } else if (evt.api_error_status === 429 || isRateLimitError(combined)) {
             session.terminalReason = 'rate-limited';
+          } else if (evt.api_error_status === 401 || evt.api_error_status === 403 || isAuthError(combined)) {
+            // FLUX-1397: an expired/invalid credential is a HUMAN action, not a per-ticket retry — see
+            // decideTicketAction's 'auth-expired' branch, which halts the whole batch instead of parking.
+            session.terminalReason = 'auth-expired';
           }
         }
     },
@@ -975,6 +995,10 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
   if (framework === 'claude') await ensureSharedServersForRoot(executionRoot, session.phase, sessionTags);
 
   const modelToUse = session.model || selectedModel;
+  // FLUX-1375: persist the resolved model onto the session — previously only a local var, so the
+  // fallback cost estimator had no real model to key on (it was passed session.resumeSessionId, a
+  // UUID, instead) and a resumed turn's `--model` arg silently fell back to the CLI's own default.
+  if (modelToUse) session.model = modelToUse;
   const claudeArgs = [
     ...(modelToUse ? ['--model', modelToUse] : []),
     '-p', initialPrompt,
