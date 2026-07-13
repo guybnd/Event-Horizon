@@ -894,6 +894,153 @@
     .vig-caption, .demo-caption { font-size: 0.72rem; }
   }
 
+  /* ---------- plan-gate section (scoped) ---------- */
+#plangate { position: relative; padding: 64px 0 90px; overflow: hidden; }#plangate::before {
+    content: ""; position: absolute; left: 50%; top: 45%;
+    width: 140%; height: 900px; transform: translate(-50%, -50%);
+    background:
+      radial-gradient(ellipse 45% 42% at 30% 50%, rgba(129,140,248,0.09), transparent 65%),
+      radial-gradient(ellipse 45% 42% at 72% 55%, rgba(224,90,0,0.09), transparent 65%);
+    pointer-events: none;
+  }#plangate .head { position: relative; max-width: 1400px; margin: 0 auto 36px; padding: 0 28px; text-align: center; }#plangate .eyebrow { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ember-bright); }#plangate h2 { font-size: clamp(1.9rem, 4vw, 3rem); letter-spacing: -0.03em; line-height: 1.08; margin: 14px auto 14px; max-width: 24ch; text-wrap: balance; font-weight: 750; }#plangate .head p { color: var(--text-dim); max-width: 68ch; margin: 0 auto; font-size: 1.02rem; text-wrap: pretty; }#plangate .head p strong { color: var(--text); }#plangate .head .ex { display: block; margin-top: 10px; font-family: var(--mono); font-size: 0.68rem; color: var(--text-faint); }#plangate .head .ex b { color: var(--sky); font-weight: 500; }#plangate .panel { position: relative; max-width: 1400px; margin: 0 auto; padding: 0 28px; }#plangate .win {
+    position: relative;
+    background: linear-gradient(180deg, var(--surface-raised), var(--surface));
+    border: 1px solid var(--border-strong); border-radius: 18px;
+    box-shadow: 0 40px 110px rgba(0,0,0,0.6), 0 0 90px rgba(129,140,248,0.07), 0 0 90px var(--ember-glow);
+    overflow: hidden;
+  }#plangate .topbar {
+    display: flex; align-items: center; gap: 14px; padding: 12px 20px;
+    border-bottom: 1px solid var(--border); background: rgba(13,11,9,0.5); flex-wrap: wrap;
+  }#plangate .topbar .tkt { font-family: var(--mono); font-size: 0.72rem; color: var(--text-faint); }#plangate .topbar .tkt b { color: var(--text); font-weight: 600; }#plangate .st { font-family: var(--mono); font-size: 0.6rem; border-radius: 5px; padding: 1px 8px; }#plangate .st.grooming { background: rgba(129,140,248,0.16); color: var(--indigo); }#plangate .st.todo { background: rgba(56,189,248,0.14); color: var(--sky); }#plangate .replaybtn {
+    all: unset; cursor: pointer; margin-left: auto; font-family: var(--mono); font-size: 0.64rem;
+    color: var(--text-faint); border: 1px solid var(--border); border-radius: 7px; padding: 4px 12px;
+  }#plangate .replaybtn:hover { color: var(--text); }#plangate /* ============ stage: chat 40 | artifact 60 ============ */
+  .stage { position: relative; display: grid; grid-template-columns: 40fr 60fr; height: 660px; }#plangate /* ---- chat side ---- */
+  .chatside { display: flex; flex-direction: column; border-right: 1px solid var(--border); min-width: 0; }#plangate .persist {
+    display: flex; gap: 14px; padding: 7px 16px; border-bottom: 1px solid var(--border);
+    font-family: var(--mono); font-size: 0.6rem; color: var(--text-faint);
+    background: rgba(13,11,9,0.4); flex-wrap: wrap;
+  }#plangate .persist b { color: var(--ember-bright); font-weight: 500; }#plangate .chatlog { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }#plangate .msg { max-width: 96%; }#plangate .msg .who {
+    font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase;
+    margin-bottom: 5px; color: var(--text-faint); display: flex; align-items: center; gap: 6px;
+  }#plangate .msg .who .pd { width: 6px; height: 6px; border-radius: 50%; }#plangate .msg.agent .who { color: var(--bolt); }#plangate .msg.agent .who .pd { background: var(--bolt); }#plangate .msg.user { align-self: flex-end; }#plangate .msg.user .who { justify-content: flex-end; color: var(--ember-bright); }#plangate .msg.user .who .pd { background: var(--ember-bright); }#plangate .bubble {
+    background: var(--surface-raised); border: 1px solid var(--border);
+    border-radius: 12px; padding: 10px 13px; font-size: 0.82rem; line-height: 1.5; color: var(--text-dim);
+  }#plangate .msg.user .bubble { border-color: rgba(224,90,0,0.3); background: rgba(224,90,0,0.06); color: var(--text); }#plangate .bubble strong { color: var(--text); }#plangate .histpill {
+    font-family: var(--mono); font-size: 0.6rem; color: var(--text-faint);
+    border: 1px dashed var(--border-strong); border-radius: 8px; padding: 6px 11px; line-height: 1.7;
+  }#plangate .histpill b { color: var(--bolt); font-weight: 500; }#plangate .tdots { display: inline-flex; gap: 3px; align-items: center; padding: 3px 2px; }#plangate .tdots i { width: 5px; height: 5px; border-radius: 50%; background: var(--bolt); animation: blink 1.2s infinite; }#plangate .tdots i:nth-child(2) { animation-delay: 0.2s; }#plangate .tdots i:nth-child(3) { animation-delay: 0.4s; }#plangate .fadein { animation: fadein 0.45s ease; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(8px); } }#plangate .attach {
+    margin-top: 9px; border: 1px solid rgba(134,59,255,0.4); border-radius: 10px;
+    padding: 10px 12px; display: flex; align-items: center; gap: 10px;
+    background: rgba(134,59,255,0.07); cursor: pointer; transition: border-color 0.25s, box-shadow 0.25s;
+    font-size: 0.78rem; color: var(--text);
+  }#plangate .attach:hover, #plangate .attach.hot { border-color: var(--bolt); box-shadow: 0 0 22px rgba(134,59,255,0.18); }#plangate .attach .kind { font-family: var(--mono); font-size: 0.58rem; color: var(--bolt); letter-spacing: 0.08em; text-transform: uppercase; flex: none; }#plangate .attach .rev { margin-left: auto; font-family: var(--mono); font-size: 0.62rem; color: var(--text-faint); flex: none; }#plangate .attach .open { font-family: var(--mono); font-size: 0.58rem; color: var(--text-faint); flex: none; }#plangate .plancard {
+    margin-top: 9px; border: 1px solid rgba(129,140,248,0.4); border-radius: 12px;
+    background: rgba(129,140,248,0.06); overflow: hidden;
+  }#plangate .plancard .ph {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    font-size: 0.76rem; font-weight: 600; color: var(--indigo);
+    border-bottom: 1px solid rgba(129,140,248,0.2);
+  }#plangate .plancard ul { margin: 7px 0; padding: 0 12px 0 28px; font-size: 0.72rem; color: var(--text-dim); }#plangate .plancard li { margin-bottom: 3px; }#plangate .plancard .pbtns { display: flex; gap: 8px; padding: 3px 12px 11px; }#plangate .pbtn {
+    font-size: 0.72rem; font-weight: 600; border-radius: 7px; padding: 6px 13px;
+    border: 1px solid var(--border-strong); background: transparent; color: var(--text-dim); cursor: pointer;
+  }#plangate .pbtn.primary { background: var(--indigo); border-color: var(--indigo); color: #14123a; }#plangate .pbtn.primary:hover { filter: brightness(1.1); }#plangate .chatinput {
+    border-top: 1px solid var(--border); padding: 11px 16px; display: flex; align-items: center; gap: 8px;
+    color: var(--text-faint); font-size: 0.8rem;
+  }#plangate .chatinput .caret { width: 1.5px; height: 15px; background: var(--ember-bright); animation: caret 1.1s step-end infinite; }
+  @keyframes caret { 0%,100% { opacity: 0.2; } 50% { opacity: 1; } }#plangate /* ---- artifact side ---- */
+  .artside { position: relative; min-width: 0; display: flex; flex-direction: column; background: var(--void-deep); }#plangate .art-empty {
+    flex: 1; display: grid; place-items: center; text-align: center;
+    font-family: var(--mono); font-size: 0.7rem; color: var(--text-faint); line-height: 2;
+  }#plangate .art-empty .big { font-size: 1.6rem; opacity: 0.5; }#plangate .artpanel { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--void-deep);
+    transform: translateX(24px); opacity: 0; pointer-events: none; transition: transform 0.5s cubic-bezier(0.22,1,0.36,1), opacity 0.5s; }#plangate .artpanel.open { transform: none; opacity: 1; pointer-events: auto; }#plangate .art-top {
+    display: flex; align-items: center; gap: 10px; padding: 10px 18px;
+    border-bottom: 1px solid var(--border); flex-wrap: wrap;
+  }#plangate .art-top .t { font-family: var(--mono); font-size: 0.66rem; color: var(--text-dim); }#plangate .revchip { font-family: var(--mono); font-size: 0.62rem; color: var(--bolt); border: 1px solid rgba(134,59,255,0.35); border-radius: 6px; padding: 1px 9px; transition: all 0.3s; }#plangate .atabs { display: flex; gap: 2px; margin-left: auto; }#plangate .atab {
+    all: unset; cursor: pointer; font-family: var(--mono); font-size: 0.64rem;
+    color: var(--text-faint); padding: 5px 12px; border-radius: 7px;
+  }#plangate .atab:hover { color: var(--text); }#plangate .atab.on { color: var(--ember-bright); background: rgba(224,90,0,0.1); }#plangate .atab .n {
+    font-size: 0.56rem; border-radius: 99px; padding: 0 5px; margin-left: 5px;
+    background: rgba(129,140,248,0.18); color: var(--indigo); transition: all 0.3s;
+  }#plangate .atab .n.bump { background: var(--indigo); color: #14123a; }#plangate .apane { flex: 1; overflow: auto; padding: 18px; display: none; }#plangate .apane.on { display: block; }#plangate /* ---- the banking-app mockup ---- */
+  .canvas {
+    position: relative; border: 1px solid var(--border-strong); border-radius: 14px;
+    background:
+      radial-gradient(rgba(168,148,130,0.1) 1px, transparent 1px),
+      linear-gradient(160deg, rgba(56,189,248,0.06), rgba(23,19,15,0.4) 45%, rgba(224,90,0,0.05));
+    background-size: 22px 22px, 100% 100%;
+    padding: 22px; min-height: 430px;
+  }#plangate .cv-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }#plangate .cv-head b { font-size: 1rem; letter-spacing: -0.01em; }#plangate .cv-head span { font-family: var(--mono); font-size: 0.6rem; color: var(--text-faint); }#plangate .balrow { display: flex; align-items: baseline; gap: 14px; margin-bottom: 14px; flex-wrap: wrap; }#plangate .balrow .lbl { font-family: var(--mono); font-size: 0.62rem; color: var(--text-faint); letter-spacing: 0.1em; text-transform: uppercase; }#plangate .balrow b { font-size: 1.9rem; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }#plangate .delta {
+    font-family: var(--mono); font-size: 0.64rem; color: var(--warn);
+    border: 1px solid rgba(251,191,36,0.35); border-radius: 6px; padding: 2px 9px;
+    opacity: 0; transition: opacity 0.4s;
+  }#plangate .delta.show { opacity: 1; }#plangate .catrow { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }#plangate .catc {
+    font-family: var(--mono); font-size: 0.64rem; border-radius: 99px; padding: 5px 13px;
+    display: inline-flex; align-items: center; gap: 7px; border: 1px solid transparent;
+    transition: all 0.35s;
+  }#plangate .catc i { width: 7px; height: 7px; border-radius: 50%; }#plangate .catc.f { background: rgba(224,90,0,0.14); color: var(--ember-bright); }#plangate .catc.f i { background: var(--ember-bright); }#plangate .catc.t { background: rgba(56,189,248,0.12); color: var(--sky); }#plangate .catc.t i { background: var(--sky); }#plangate .catc.r { background: rgba(134,59,255,0.13); color: var(--bolt); }#plangate .catc.r i { background: var(--bolt); }#plangate .catc.n { background: rgba(244,114,182,0.12); color: var(--pink); }#plangate .catc.n i { background: var(--pink); }#plangate .canvas.r2 .catc { border-color: currentColor; cursor: pointer; }#plangate .canvas.r2 .catc.active { background: var(--ember); color: #fff; box-shadow: 0 0 18px rgba(224,90,0,0.35); }#plangate .canvas.r2 .catc.active i { background: #fff; }#plangate .chart { display: flex; align-items: flex-end; gap: 10px; height: 110px; margin-bottom: 6px; max-width: 460px; }#plangate .cbar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 0; height: 100%; }#plangate .cbar i { display: block; border-radius: 4px 4px 0 0; }#plangate .cbar .s1 { background: linear-gradient(180deg, var(--ember-bright), var(--ember)); }#plangate .cbar .s2 { background: rgba(56,189,248,0.7); }#plangate .cbar .s3 { background: rgba(134,59,255,0.65); border-radius: 0; }#plangate .cbar .s4 { background: rgba(244,114,182,0.6); border-radius: 0 0 0 0; }#plangate .cbar .m { font-family: var(--mono); font-size: 0.54rem; color: var(--text-faint); text-align: center; margin-top: 5px; }#plangate .chartnote { font-family: var(--mono); font-size: 0.6rem; color: var(--text-faint); margin-bottom: 14px; transition: color 0.4s; }#plangate .txlist { border: 1px solid var(--border); border-radius: 10px; background: rgba(13,11,9,0.55); overflow: hidden; max-width: 460px; }#plangate .txrow {
+    display: flex; align-items: center; gap: 10px; padding: 8px 13px;
+    border-bottom: 1px solid var(--border); font-size: 0.74rem; color: var(--text-dim);
+    transition: opacity 0.4s;
+  }#plangate .txrow:last-child { border-bottom: none; }#plangate .txrow i { width: 8px; height: 8px; border-radius: 50%; flex: none; }#plangate .txrow .amt { margin-left: auto; font-family: var(--mono); font-size: 0.7rem; color: var(--text); font-variant-numeric: tabular-nums; }#plangate .txrow.food i { background: var(--ember-bright); }#plangate .txrow.transport i { background: var(--sky); }#plangate .canvas.r2.filtered .txrow:not(.food) { opacity: 0.25; }#plangate .cv-note { font-family: var(--mono); font-size: 0.6rem; color: var(--text-faint); margin-top: 12px; }#plangate /* pins */
+  .pin {
+    position: absolute; width: 23px; height: 23px; border-radius: 50% 50% 50% 4px;
+    display: grid; place-items: center; z-index: 4;
+    font: 700 0.62rem var(--mono); color: #fff;
+    transform: rotate(-45deg) scale(0); transition: transform 0.35s cubic-bezier(0.2, 1.4, 0.4, 1);
+  }#plangate .pin.show { transform: rotate(-45deg) scale(1); }#plangate .pin > span { transform: rotate(45deg); }#plangate .pin.p1 { background: var(--ember); box-shadow: 0 0 0 5px rgba(224,90,0,0.18), 0 4px 14px rgba(0,0,0,0.5); }#plangate .pin.p2 { background: var(--pink); box-shadow: 0 0 0 5px rgba(244,114,182,0.16), 0 4px 14px rgba(0,0,0,0.5); }#plangate .pin .pk {
+    position: absolute; right: -4px; top: -4px; width: 12px; height: 12px; border-radius: 50%;
+    background: var(--good); color: #052; font: 700 0.5rem/12px var(--mono); text-align: center;
+    transform: rotate(45deg); opacity: 0; transition: opacity 0.3s;
+  }#plangate .pin.resolved .pk { opacity: 1; }#plangate .pinnote {
+    position: absolute; z-index: 4; width: 190px;
+    background: var(--surface-raised); border: 1px solid rgba(224,90,0,0.4); border-radius: 10px;
+    padding: 7px 10px; font-size: 0.68rem; line-height: 1.45; color: var(--text);
+    box-shadow: 0 12px 34px rgba(0,0,0,0.55);
+    opacity: 0; transform: translateY(5px); transition: opacity 0.35s, transform 0.35s;
+  }#plangate .pinnote.show { opacity: 1; transform: none; }#plangate .pinnote .pw { font-family: var(--mono); font-size: 0.54rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ember-bright); display: block; margin-bottom: 2px; }#plangate .pinnote.n2 { border-color: rgba(244,114,182,0.4); }#plangate .pinnote.n2 .pw { color: var(--pink); }#plangate /* criteria + tests */
+  .req {
+    position: relative; border: 1px solid var(--border); border-radius: 12px;
+    background: var(--surface); padding: 11px 13px 11px 38px; margin-bottom: 10px;
+    font-size: 0.78rem; color: var(--text-dim); line-height: 1.5;
+  }#plangate .req strong { color: var(--text); font-weight: 600; }#plangate .req .ck {
+    position: absolute; left: 12px; top: 13px; width: 16px; height: 16px; border-radius: 5px;
+    border: 1px solid var(--indigo); color: var(--indigo); display: grid; place-items: center; font-size: 0.6rem;
+  }#plangate .req .srcchip { font-family: var(--mono); font-size: 0.56rem; border-radius: 4px; padding: 1px 7px; margin-left: 6px; }#plangate .req.from1 .srcchip { background: rgba(224,90,0,0.13); color: var(--ember-bright); }#plangate .req.from2 .srcchip { background: rgba(244,114,182,0.12); color: var(--pink); }#plangate .req.newreq { border-color: rgba(52,211,153,0.45); animation: fadein 0.5s ease; }#plangate .req.newreq::after {
+    content: "new in rev 2"; position: absolute; right: 10px; top: -8px;
+    font: 500 0.54rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+    background: var(--good); color: #052e1f; border-radius: 4px; padding: 1px 7px;
+  }#plangate .test-item { font-family: var(--mono); font-size: 0.72rem; color: var(--text-dim); padding: 9px 0; border-bottom: 1px solid var(--border); display: flex; gap: 12px; align-items: baseline; }#plangate .test-item:last-child { border-bottom: none; }#plangate .test-item .tk { color: var(--bolt); flex: none; width: 38px; }#plangate .test-item .pinref { margin-left: auto; font-size: 0.56rem; color: var(--text-faint); border: 1px dashed var(--border-strong); border-radius: 4px; padding: 0 7px; white-space: nowrap; }#plangate .test-item.newreq { color: var(--text); animation: fadein 0.5s ease; }#plangate .test-item.newreq .pinref { border-color: rgba(52,211,153,0.5); color: var(--good); }#plangate /* cursor */
+  .pgcursor {
+    position: absolute; z-index: 30; left: 0; top: 0; opacity: 0; pointer-events: none;
+    transition: opacity 0.3s; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.6)); will-change: transform;
+  }#plangate .ripple {
+    position: absolute; z-index: 29; width: 30px; height: 30px; margin: -15px 0 0 -15px;
+    border: 2px solid var(--ember-bright); border-radius: 50%; pointer-events: none;
+    animation: rip 0.55s ease-out forwards;
+  }
+  @keyframes rip { from { transform: scale(0.3); opacity: 1; } to { transform: scale(1.6); opacity: 0; } }#plangate /* finale */
+  .finale {
+    position: absolute; inset: 0; z-index: 20; display: none; place-items: center;
+    background: rgba(8,6,5,0.72); backdrop-filter: blur(3px);
+  }#plangate .finale.on { display: grid; }#plangate .fin-card {
+    width: 330px; background: var(--surface-raised); border: 1px solid rgba(52,211,153,0.5);
+    border-radius: 14px; overflow: hidden; box-shadow: 0 30px 90px rgba(0,0,0,0.7), 0 0 60px rgba(52,211,153,0.12);
+    animation: finpop 0.6s cubic-bezier(0.2, 1.3, 0.4, 1);
+  }
+  @keyframes finpop { from { transform: scale(0.6) translateY(30px); opacity: 0; } }#plangate .fin-card .inner { padding: 12px 14px; }#plangate .fin-card .top { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 0.66rem; color: var(--text-faint); margin-bottom: 6px; }#plangate .fin-card .title { font-weight: 600; font-size: 0.9rem; margin-bottom: 8px; }#plangate .fin-card .chips { display: flex; gap: 5px; flex-wrap: wrap; }#plangate .fin-card .chip { font-family: var(--mono); font-size: 0.58rem; border-radius: 4px; padding: 1px 7px; background: rgba(168,148,130,0.1); color: var(--text-dim); }#plangate .fin-card .sess {
+    display: flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 0.6rem;
+    color: var(--good); background: rgba(52,211,153,0.08); border-top: 1px solid rgba(52,211,153,0.25); padding: 7px 14px;
+  }#plangate .fin-card .sess .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); animation: pulse 1.6s infinite; }#plangate .fin-note { text-align: center; font-family: var(--mono); font-size: 0.66rem; color: var(--text-dim); margin-top: 16px; line-height: 1.9; }#plangate .fin-note b { color: var(--good); font-weight: 500; }#plangate .capbar {
+    display: flex; align-items: center; gap: 14px; padding: 11px 20px;
+    border-top: 1px solid var(--border); font-family: var(--mono); font-size: 0.68rem; color: var(--text-dim);
+  }#plangate .capbar em { color: var(--ember-bright); font-style: normal; }#plangate .capbar em.b { color: var(--bolt); }#plangate .dots { margin-left: auto; display: flex; gap: 5px; }#plangate .dot2 { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); transition: all 0.3s; }#plangate .dot2.on { background: var(--ember-bright); transform: scale(1.25); }#plangate .dot2.past { background: rgba(224,90,0,0.45); }#plangate .cap { text-align: center; margin-top: 22px; font-family: var(--mono); font-size: 0.8rem; color: var(--text-faint); }#plangate .cap em { color: var(--ember-bright); font-style: normal; }#plangate .cap em.b { color: var(--indigo); }
+
+  @media (max-width: 900px) {#plangate .stage { grid-template-columns: 1fr; grid-template-rows: 300px 1fr; height: 780px; }#plangate .chatside { border-right: none; border-bottom: 1px solid var(--border); }#plangate .canvas { min-height: 340px; }
+  }
+
+
   /* ---------- lower sections ---------- */
   section { padding: 72px 0; }
   .section-head { max-width: 62ch; margin-bottom: 36px; }
@@ -1060,7 +1207,7 @@
     <div class="window">
       <div class="titlebar">
         <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-        <span class="title" id="demoTitle">event-horizon — FLUX board · 3 agents running</span>
+        <span class="title" id="demoTitle">lumen-app — LUM board · 2 agents running</span>
         <span class="spacer"></span>
       </div>
       <div class="demo-body">
@@ -1085,8 +1232,8 @@
               <div style="font-family: var(--mono); font-size: 0.6rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-faint);">done since v1.6.0 — <span style="color: var(--ember-bright);">click to include</span></div>
             </div>
             <div class="rel-doc">
-              <div class="verbadge"><b>v1.7.0</b> · 2026-07-13</div>
-              <div class="rel-name">“Accretion” — release notes draft themselves from the completion summaries of the tickets you pick</div>
+              <div class="verbadge"><b>v2.4.0</b> · 2026-07-13</div>
+              <div class="rel-name">“July drop” — Lumen’s release notes draft themselves from the completion summaries of the tickets you pick</div>
               <div class="rel-empty" id="relEmpty">select Done tickets on the left — each one becomes an annotated changelog entry</div>
               <div class="chsec feat on" id="chFeat" style="display: none;">
                 <div class="chh">✨ Features <span class="chb" id="chFeatN"></span></div>
@@ -1102,7 +1249,7 @@
               </div>
               <div class="rel-foot">
                 <button class="btn primary" type="button" id="pubBtn" onclick="releaseScene.publish()" disabled>Publish release</button>
-                <span class="rel-note" id="relNote">✓ tag v1.7.0 pushed · notes committed to docs/releases · tickets → Released</span>
+                <span class="rel-note" id="relNote">✓ tag v2.4.0 pushed · notes committed to docs/releases · tickets → Released</span>
               </div>
             </div>
           </div>
@@ -1118,65 +1265,65 @@
           </div>
           <div class="batch">
             <div class="batch-head">
-              <span class="bname">release-prep</span>
+              <span class="bname">polish-sprint</span>
               <span class="kindchip par">⇉ parallel</span>
               <span class="bstate burning"><span class="flame">🔥</span> burning</span>
               <span class="knobs"><span>burn rate <b>2</b>/4</span><span>retry cap <b>2</b></span><span>breaker <b style="color: var(--good);">armed</b></span></span>
             </div>
             <div class="f-row">
-              <span class="f-id">FLUX-834</span>
-              <div class="f-title">Furnace burn report export
+              <span class="f-id">LUM-236</span>
+              <div class="f-title">Merchant logo fallbacks
                 <div class="burnbar"><i></i></div>
               </div>
               <span class="f-stage"><b>implement</b> → review → ready</span>
               <span class="f-state burning">● burning · attempt 1</span>
             </div>
             <div class="f-row">
-              <span class="f-id">FLUX-835</span>
-              <div class="f-title">Docs: realtime channel reference
+              <span class="f-id">LUM-237</span>
+              <div class="f-title">Empty-state illustrations
                 <div class="burnbar"><i style="animation-delay: -3.4s;"></i></div>
               </div>
               <span class="f-stage">implement → <b>review</b> → ready</span>
               <span class="f-state burning">● review pass</span>
             </div>
             <div class="f-row">
-              <span class="f-id">FLUX-838</span>
-              <span class="f-title">Ticket templates for common work</span>
+              <span class="f-id">LUM-239</span>
+              <span class="f-title">Settings copy pass</span>
               <span class="f-stage">waiting for a worktree slot</span>
               <span class="f-state queued">○ queued</span>
             </div>
             <div class="f-row">
-              <span class="f-id">FLUX-761</span>
-              <span class="f-title">Retire legacy lint config</span>
+              <span class="f-id">LUM-233</span>
+              <span class="f-title">Retire legacy chart library</span>
               <span class="f-stage">implement → review → <b>ready</b></span>
               <span class="f-state ready">✓ Ready · PR #241 open</span>
             </div>
           </div>
           <div class="batch seqchain">
             <div class="batch-head">
-              <span class="bname">schema-migrations</span>
+              <span class="bname">kyc-migrations</span>
               <span class="kindchip seq">⇢ sequential</span>
               <span class="bstate burning"><span class="flame">🔥</span> burning</span>
-              <span class="knobs"><span>shared <b>⎇ furnace/schema-migrations</b></span><span>one PR <b>#244</b></span></span>
+              <span class="knobs"><span>shared <b>⎇ furnace/kyc-migrations</b></span><span>one PR <b>#244</b></span></span>
             </div>
             <div class="f-row chain-done">
-              <span class="f-id">FLUX-771</span>
-              <span class="f-title">Add version field to ticket frontmatter</span>
+              <span class="f-id">LUM-240</span>
+              <span class="f-title">Add KYC status field to accounts</span>
               <span class="f-stage">stacked onto shared branch</span>
               <span class="f-state ready">✓ committed · 1/3</span>
             </div>
             <div class="f-row chain-live">
-              <span class="f-id">FLUX-773</span>
-              <div class="f-title">Migrate history entries to v2 shape
+              <span class="f-id">LUM-241</span>
+              <div class="f-title">Migrate users to v2 statuses
                 <div class="burnbar"><i style="animation-delay: -1.8s;"></i></div>
               </div>
-              <span class="f-stage"><b>implement</b> — depends on 771</span>
+              <span class="f-stage"><b>implement</b> — depends on 240</span>
               <span class="f-state burning">● burning · 2/3</span>
             </div>
             <div class="f-row">
-              <span class="f-id">FLUX-774</span>
-              <span class="f-title">Backfill migration for existing boards</span>
-              <span class="f-stage">runs after 773 lands</span>
+              <span class="f-id">LUM-246</span>
+              <span class="f-title">Backfill for closed accounts</span>
+              <span class="f-stage">runs after 241 lands</span>
               <span class="f-state queued">○ queued · 3/3</span>
             </div>
           </div>
@@ -1203,24 +1350,24 @@
           <div class="docs-duo">
             <div class="doctree">
               <div class="row dir">▾ docs/</div>
-              <div class="row dir indent1">▾ reference/</div>
-              <div class="row indent2">ticket-schema</div>
-              <div class="row indent2">mcp-tools</div>
-              <div class="row active indent2"><span class="glow"></span> realtime-channels</div>
-              <div class="row indent2">agent-adapter</div>
+              <div class="row dir indent1">▾ api/</div>
+              <div class="row indent2">payments</div>
+              <div class="row indent2">statements</div>
+              <div class="row active indent2"><span class="glow"></span> push-notifications</div>
+              <div class="row indent2">webhooks</div>
               <div class="row dir indent1">▸ guides/</div>
-              <div class="row dir indent1">▸ personas/</div>
+              <div class="row dir indent1">▸ internal/</div>
             </div>
             <div class="docpage">
-              <div class="doc-session"><span class="pulse-dot" style="color: var(--bolt);"></span> ◈ implementer session FLUX-812 — writing the doc for the contract it just changed</div>
-              <div class="crumb">docs / reference / realtime-channels.md</div>
-              <h4>Realtime channels</h4>
-              <p>The engine publishes board and session events over per-workspace channels. Clients subscribe with a workspace token.</p>
+              <div class="doc-session"><span class="pulse-dot" style="color: var(--bolt);"></span> ◈ implementer session LUM-229 — writing the doc for the contract it just changed</div>
+              <div class="crumb">docs / api / push-notifications.md</div>
+              <h4>Push notifications</h4>
+              <p>Lumen fans transaction events into per-user push digests. Clients register one device token per install.</p>
               <div class="docdiff" id="docdiff">
-                <p>Session progress now streams over <code>session:&lt;id&gt;:log</code> — one event per progress entry, batched at 250&nbsp;ms. Consumers should prefer this over polling <code>get_session_log</code>.</p>
-                <span class="by"><span class="pulse-dot"></span> inserted by implementer · same PR as FLUX-812 · docs can't drift from code</span>
+                <p>Card transactions now batch into a <code>30s</code> digest window — one push per burst of spending, not one per swipe. Consumers should prefer digest webhooks over per-event pushes.</p>
+                <span class="by"><span class="pulse-dot"></span> inserted by implementer · same PR as LUM-229 · docs can't drift from code</span>
               </div>
-              <div class="codeline"><span class="k">channel:</span> <span class="v">session:{id}:log</span>&nbsp;&nbsp;<span class="k">event:</span> <span class="v">progress</span>&nbsp;&nbsp;<span class="k">batch:</span> <span class="v">250ms</span></div>
+              <div class="codeline"><span class="k">channel:</span> <span class="v">push:{userId}:digest</span>&nbsp;&nbsp;<span class="k">window:</span> <span class="v">30s</span>&nbsp;&nbsp;<span class="k">max:</span> <span class="v">20 events</span></div>
             </div>
           </div>
         </div>
@@ -1231,6 +1378,117 @@
   </div>
 </div>
 <div id="cardtip" role="tooltip"></div>
+
+<section id="plangate">
+  <div class="head">
+    <div class="eyebrow">the plan gate</div>
+    <h2>Grooming is a conversation. The plan is what it leaves behind.</h2>
+    <p>A grooming ticket is a chat with the groomer. It thinks, proposes a <strong>living HTML artifact</strong>, you annotate it directly — and every pin comes back as a <strong>new revision with new acceptance criteria</strong>. Approve, and it's a Todo ticket.</p>
+    <span class="ex">the example below: <b>Lumen</b>, a fictional banking app, grooming a spending-insights feature — Event Horizon is just the surface it's planned on</span>
+  </div>
+
+  <div class="panel">
+    <div class="win" id="win">
+      <div class="topbar">
+        <span class="tkt"><b>LUM-231</b> · Spending insights on the dashboard</span>
+        <span class="st grooming" id="stPill">Grooming</span>
+        <span style="font-family: var(--mono); font-size: 0.62rem; color: var(--text-faint);">◈ groomer session · live</span>
+        <button class="replaybtn" type="button" onclick="pg.replay()">↺ replay</button>
+      </div>
+
+      <div class="stage" id="stage">
+        <!-- chat 40% -->
+        <div class="chatside">
+          <div class="persist"><span>file <b>.flux/tickets/LUM-231.md</b></span><span>1 session</span><span>6 history entries</span></div>
+          <div class="chatlog" id="log"></div>
+          <div class="chatinput"><span id="typed" style="color: var(--text);"></span><span class="caret"></span><span style="margin-left:auto; font-family: var(--mono); font-size: 0.58rem;">↵ send</span></div>
+        </div>
+
+        <!-- artifact 60% -->
+        <div class="artside">
+          <div class="art-empty" id="artEmpty">
+            <div><div class="big">⬡</div>artifact panel<br><span style="opacity:0.7">the groomer hasn't proposed anything yet</span></div>
+          </div>
+          <div class="artpanel" id="artPanel">
+            <div class="art-top">
+              <span class="t">Spending insights — interactive mockup</span>
+              <span class="revchip" id="revChip">rev 1</span>
+              <div class="atabs">
+                <button class="atab on" data-a="mock" type="button" onclick="pg.tab('mock')">Mockup</button>
+                <button class="atab" data-a="ac" type="button" onclick="pg.tab('ac')">Acceptance criteria <span class="n" id="acN">2</span></button>
+                <button class="atab" data-a="tests" type="button" onclick="pg.tab('tests')">Test steps <span class="n" id="tN">4</span></button>
+              </div>
+            </div>
+            <div class="apane on" data-p="mock">
+              <div class="canvas" id="canvas">
+                <div class="cv-head"><b>Lumen · July insights — concept A</b><span id="cvSub">rev 1 · totals only</span></div>
+                <div class="balrow">
+                  <span class="lbl">spent this month</span>
+                  <b>$2,418</b>
+                  <span class="delta" id="delta">▲ 12% vs June</span>
+                </div>
+                <div class="catrow" id="catrow">
+                  <span class="catc f" id="cat1"><i></i>Food · $872</span>
+                  <span class="catc t"><i></i>Transport · $391</span>
+                  <span class="catc r"><i></i>Rent · $950</span>
+                  <span class="catc n"><i></i>Fun · $205</span>
+                </div>
+                <div class="chart">
+                  <div class="cbar"><i class="s1" style="height:22%"></i><i class="s2" style="height:10%"></i><i class="s3" style="height:24%"></i><i class="s4" style="height:5%"></i><span class="m">Mar</span></div>
+                  <div class="cbar"><i class="s1" style="height:26%"></i><i class="s2" style="height:12%"></i><i class="s3" style="height:24%"></i><i class="s4" style="height:7%"></i><span class="m">Apr</span></div>
+                  <div class="cbar"><i class="s1" style="height:20%"></i><i class="s2" style="height:9%"></i><i class="s3" style="height:24%"></i><i class="s4" style="height:4%"></i><span class="m">May</span></div>
+                  <div class="cbar"><i class="s1" style="height:24%"></i><i class="s2" style="height:11%"></i><i class="s3" style="height:24%"></i><i class="s4" style="height:6%"></i><span class="m">Jun</span></div>
+                  <div class="cbar"><i class="s1" style="height:31%"></i><i class="s2" style="height:13%"></i><i class="s3" style="height:24%"></i><i class="s4" style="height:8%"></i><span class="m">Jul</span></div>
+                </div>
+                <div class="chartnote" id="chartnote">stacked by category · totals only</div>
+                <div class="txlist" id="txlist">
+                  <div class="txrow food"><i></i>Blue Bottle Coffee<span class="amt">−$6.40</span></div>
+                  <div class="txrow transport"><i></i>Metro card reload<span class="amt">−$33.00</span></div>
+                  <div class="txrow food"><i></i>Kura Sushi<span class="amt">−$58.20</span></div>
+                </div>
+                <div class="cv-note">annotate anywhere — pins land on the artifact itself</div>
+                <button class="pin p1" id="pin1" type="button" style="top: 128px; right: 60px;"><span>1</span><span class="pk">✓</span></button>
+                <button class="pin p2" id="pin2" type="button" style="top: 62px; left: 300px;"><span>2</span><span class="pk">✓</span></button>
+                <div class="pinnote" id="note1" style="top: 158px; right: 40px;">
+                  <span class="pw">you · pin 1</span>
+                  these should be <b>tappable filters</b>, not just labels
+                </div>
+                <div class="pinnote n2" id="note2" style="top: 92px; left: 280px;">
+                  <span class="pw">you · pin 2</span>
+                  show it <b>vs last month</b>, not just the total
+                </div>
+              </div>
+            </div>
+            <div class="apane" data-p="ac" id="acPane"></div>
+            <div class="apane" data-p="tests" id="tPane"></div>
+          </div>
+        </div>
+
+        <div class="pgcursor" id="cursor">
+          <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 2.2 L19.5 9.6 L12.6 11.3 L9.4 20.8 Z" fill="#f4f0ec" stroke="#0d0b09" stroke-width="1.4"/></svg>
+        </div>
+
+        <div class="finale" id="finale">
+          <div>
+            <div class="fin-card">
+              <div class="inner">
+                <div class="top">LUM-231 <span class="st todo">Todo</span><span style="margin-left:auto;">M</span></div>
+                <div class="title">Spending insights on the dashboard</div>
+                <div class="chips"><span class="chip">#mobile</span><span class="chip">#dashboard</span><span class="chip" style="color: var(--indigo);">plan · rev 2</span><span class="chip" style="color: var(--indigo);">4 criteria · 6 tests</span></div>
+              </div>
+              <div class="sess"><span class="dot"></span> ◈ implementer · dispatched</div>
+            </div>
+            <div class="fin-note">grooming collapsed into a <b>Todo card</b> — plan, criteria,<br>tests, and your pins all ride along in the markdown</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="capbar"><span id="cap"></span><span class="dots" id="dots"></span></div>
+    </div>
+    <p class="cap">chat on the left, <em class="b">the plan takes shape on the right</em> — your pins become <em>rev 2's acceptance criteria</em></p>
+  </div>
+</section>
+
 
 <div class="wrap">
   <section id="lifecycle" style="padding-bottom: 0;">
@@ -1245,7 +1503,7 @@
       <div class="window" id="fxWin">
         <div class="titlebar">
           <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          <span class="title" id="fxTitle">event-horizon — FLUX board</span>
+          <span class="title" id="fxTitle">lumen-app — LUM board</span>
           <span class="spacer"></span>
         </div>
         <div class="fx-toolbar">
@@ -1342,14 +1600,14 @@
     <div class="window quiet topo">
       <div class="titlebar">
         <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-        <span class="title">scatter-gather — review of FLUX-807, composed live by the orchestrator</span>
+        <span class="title">scatter-gather — review of LUM-225, composed live by the orchestrator</span>
         <span class="spacer"></span>
       </div>
       <div class="topo-flow">
         <div class="topo-node" id="tpTicket">
           <div class="tn-k">ticket event</div>
-          <div class="tn-t">FLUX-807 → Ready</div>
-          <div class="tn-s">PR #219 opened</div>
+          <div class="tn-t">LUM-225 → Ready</div>
+          <div class="tn-s">PR #247 opened</div>
         </div>
         <div class="topo-arrow" id="tpA1">→</div>
         <div class="topo-node" id="tpOrch">
@@ -1359,9 +1617,9 @@
         </div>
         <div class="topo-arrow" id="tpA2">→</div>
         <div class="workers">
-          <div class="worker" id="w0"><span class="wdot"></span> security-reviewer · git surface <span class="verdict">approve</span></div>
-          <div class="worker" id="w1"><span class="wdot"></span> perf-reviewer · worktree churn <span class="verdict">approve</span></div>
-          <div class="worker" id="w2"><span class="wdot"></span> api-reviewer · adapter contract <span class="verdict chg">1 nit</span></div>
+          <div class="worker" id="w0"><span class="wdot"></span> security-reviewer · export surface <span class="verdict">approve</span></div>
+          <div class="worker" id="w1"><span class="wdot"></span> perf-reviewer · big-account streams <span class="verdict">approve</span></div>
+          <div class="worker" id="w2"><span class="wdot"></span> api-reviewer · response contract <span class="verdict chg">1 nit</span></div>
         </div>
       </div>
       <div class="topo-verdict" id="tpVerdict"><b>synthesis:</b> 2 approve · 1 nit folded into the diff — supervisor posts one review → <b>approved to Ready</b></div>
@@ -1382,23 +1640,23 @@
         </ul>
       </div>
       <div class="filecard">
-        <div class="path">.flux/tickets/FLUX-812.md</div>
+        <div class="path">.flux/tickets/LUM-229.md</div>
         <pre><span class="fm">---</span>
-<span class="k">id:</span> <span class="v">FLUX-812</span>
+<span class="k">id:</span> <span class="v">LUM-229</span>
 <span class="k">status:</span> <span class="v">In Progress</span>
-<span class="k">branch:</span> <span class="v">flux-812-stream-agent-logs</span>
+<span class="k">branch:</span> <span class="v">lum-229-push-digests</span>
 <span class="k">effort:</span> <span class="v">M</span>
-<span class="k">tags:</span> <span class="v">[engine, realtime]</span>
+<span class="k">tags:</span> <span class="v">[mobile, notifications]</span>
 <span class="fm">---</span>
 
-<span class="md-h"># Stream agent logs to the board</span>
+<span class="md-h"># Push notifications for card transactions</span>
 
-<span class="md-q">&gt; TL;DR: live session output should</span>
-<span class="md-q">&gt; render on the ticket card in real time.</span>
+<span class="md-q">&gt; TL;DR: batch card transactions into</span>
+<span class="md-q">&gt; per-user push digests (30s window).</span>
 
-Wire the session event bus into the
-board channel so progress entries
-stream without a refresh…</pre>
+Wire the transaction stream into the
+push service so bursts of spending
+arrive as one digest, not five…</pre>
       </div>
     </div>
   </section>
@@ -1422,12 +1680,12 @@ stream without a refresh…</pre>
       </div>
       <div class="spane" data-sp="0">
         <div class="sync-left">
-          <div class="spath">your-repo/.flux/tickets/FLUX-842.md</div>
+          <div class="spath">lumen-app/.flux/tickets/LUM-242.md</div>
           <div class="sgraph"><svg viewBox="0 0 420 80">
             <line x1="20" y1="40" x2="400" y2="40" stroke="rgba(168,148,130,0.35)" stroke-width="2"/>
             <circle cx="70" cy="40" r="5" fill="#7d7268"/><circle cx="150" cy="40" r="5" fill="#ff7a1a"/>
             <circle cx="230" cy="40" r="5" fill="#7d7268"/><circle cx="310" cy="40" r="5" fill="#ff7a1a"/>
-            <text x="120" y="24" fill="#ff7a1a" font-size="10" font-family="monospace">board: 842 → Done</text>
+            <text x="120" y="24" fill="#ff7a1a" font-size="10" font-family="monospace">board: LUM-242 → Done</text>
             <text x="285" y="64" fill="#ff7a1a" font-size="10" font-family="monospace">board: new ticket</text>
             <text x="368" y="30" fill="#7d7268" font-size="11" font-family="monospace">master</text>
           </svg></div>
@@ -1440,7 +1698,7 @@ stream without a refresh…</pre>
       </div>
       <div class="spane on" data-sp="1">
         <div class="sync-left">
-          <div class="spath">your-repo · branch <b style="color: var(--bolt);">flux-data</b> (orphan) · .flux-store/tickets/FLUX-842.md</div>
+          <div class="spath">your-repo · branch <b style="color: var(--bolt);">flux-data</b> (orphan) · .flux-store/tickets/LUM-242.md</div>
           <div class="sgraph"><svg viewBox="0 0 420 96">
             <line x1="20" y1="28" x2="400" y2="28" stroke="rgba(168,148,130,0.35)" stroke-width="2"/>
             <circle cx="80" cy="28" r="5" fill="#7d7268"/><circle cx="180" cy="28" r="5" fill="#7d7268"/><circle cx="290" cy="28" r="5" fill="#7d7268"/>
@@ -1459,7 +1717,7 @@ stream without a refresh…</pre>
       </div>
       <div class="spane" data-sp="2">
         <div class="sync-left">
-          <div class="spath">~/.flux-store/&lt;workspace&gt;/tickets/FLUX-842.md</div>
+          <div class="spath">~/.flux-store/lumen-app/tickets/LUM-242.md</div>
           <div class="sgraph"><svg viewBox="0 0 420 80">
             <rect x="30" y="18" width="360" height="44" rx="8" fill="none" stroke="rgba(168,148,130,0.35)"/>
             <text x="50" y="45" fill="#b5a99e" font-size="11" font-family="monospace">local markdown · no git · still greppable</text>
@@ -1517,7 +1775,7 @@ stream without a refresh…</pre>
     const chips = (tk.tags || []).map(t => `<span class="tagchip">#${t}</span>`).join('');
     const stpill = tk.stpill ? ` <span class="st ${tk.stpill[0]}">${tk.stpill[1]}</span>` : '';
     const bglyph = tk.wt ? '<span class="wtglow">⎇</span>' : '⎇';
-    const branch = tk.branch ? `<div class="branchrow">${bglyph} ${tk.branch}${tk.wt ? ' · worktree' : ''}${tk.pr ? ` <span class="prchip">${tk.pr}</span>` : ''}${tk.fold ? ` <span class="foldchip on">+folded FLUX-829</span>` : ''}</div>` : '';
+    const branch = tk.branch ? `<div class="branchrow">${bglyph} ${tk.branch}${tk.wt ? ' · worktree' : ''}${tk.pr ? ` <span class="prchip">${tk.pr}</span>` : ''}${tk.fold ? ` <span class="foldchip on">+folded LUM-226</span>` : ''}</div>` : '';
     const desc = tk.desc ? `<div class="ehc-desc">${tk.desc}</div>` : '';
     const foot = tk.nofoot ? '' : `<div class="ehc-foot"><span class="avatar${tk.assignee === '◈' ? ' b' : ''}">${tk.assignee || 'GB'}</span><span>💬 ${tk.comments ?? 0}</span><span style="margin-left:auto;">${tk.effort || ''}</span></div>`;
     const session = tk.session ? `<div class="sessionrow"><span class="pulse-dot"></span> ◈ ${tk.session}</div>` : '';
@@ -1525,7 +1783,7 @@ stream without a refresh…</pre>
     const needs = tk.needsinput ? `<div class="rejectrow on" style="cursor: pointer;"><span class="pulse-dot"></span> ⚠ waiting for your input — open me</div>` : '';
     const review = tk.review ? `<div class="reviewrow"><span class="pulse-dot"></span> ⊙ waiting for review — open me</div>` : '';
     const approved = tk.approved ? `<div class="sessionrow">✓ review approved · ${tk.pr || 'PR open'}</div>` : '';
-    const furn = tk.furnace ? '<span class="tagchip" style="color: var(--ember-bright);">🔥 queued · release-prep</span>' : '';
+    const furn = tk.furnace ? '<span class="tagchip" style="color: var(--ember-bright);">🔥 queued · polish-sprint</span>' : '';
     return `<div class="inner">
       <div class="ehc-top">${tk.id}${stpill} ${prioGlyph(tk.prio)}<span class="effort">${tk.effort || '·'}</span></div>
       <div class="ehc-title">${tk.title}</div>
@@ -1569,11 +1827,11 @@ stream without a refresh…</pre>
     docs: 'change the contract, <em class="b">ship the doc in the same PR</em> — enforced by the workflow, not by memory',
   };
   const TITLES = {
-    board: 'event-horizon — FLUX board · 2 agents running · every card opens',
-    release: 'release — v1.7.0 from the Done column',
+    board: 'lumen-app — LUM board · 2 agents running · every card opens',
+    release: 'release — v2.4.0 from Lumen\u2019s Done column',
     furnace: 'Furnace — 2 batches burning unattended',
     orc: 'board orchestrator — one-click rebase',
-    docs: 'Docs — reference/realtime-channels',
+    docs: 'Docs — api/push-notifications',
   };
   let activeScene = 'board';
   const sceneHooks = {};
@@ -1594,13 +1852,13 @@ stream without a refresh…</pre>
     ['In Progress', 'inprogress'], ['Ready', 'ready'], ['Done', 'done'],
   ];
   const TICKETS = [
-    { id: 'FLUX-830', title: 'Redesign board filters', desc: 'Persistent filter bar with saved views. The groomed plan is waiting for your approval — open to review the artifact and approve.', col: 0, prio: 'high', effort: 'M', tags: ['portal', 'ux'], comments: 4, planready: true, chat: '830' },
-    { id: 'FLUX-833', title: 'Session replay on ticket cards', desc: 'Groomed and ready to build. Open to dispatch an implementer — pick worktree isolation and watch it start.', col: 1, prio: 'high', effort: 'M', tags: ['portal', 'realtime'], comments: 2, chat: '833' },
-    { id: 'FLUX-838', title: 'Ticket templates for common work', desc: 'Small, independent, groomed — perfect furnace fuel. Open to queue it into an unattended batch.', col: 1, prio: 'med', effort: 'S', tags: ['engine'], comments: 0, chat: '838' },
-    { id: 'FLUX-812', title: 'Stream agent logs to the board', desc: 'A live implementer session with 14 persisted history entries. Open the chat, say something, minimize — it keeps working.', col: 2, prio: 'high', effort: 'M', tags: ['engine', 'realtime'], comments: 3, assignee: '◈', session: 'implementer · running', branch: 'flux-812', wt: true, chat: '812' },
-    { id: 'FLUX-815', title: 'Scatter-gather review synthesis', desc: 'This session pauses on a decision it can\u2019t make alone — answer the structured prompt and it resumes.', col: 2, prio: 'med', effort: 'L', tags: ['orchestration'], comments: 1, assignee: '◈', session: 'implementer · running', branch: 'flux-815', wt: true, chat: '815' },
-    { id: 'FLUX-807', title: 'Worktree cleanup after merge', desc: 'Implementation finished — waiting for review. Open to see the diff, then approve or send it back with the reason attached.', col: 3, prio: 'med', effort: 'M', tags: ['engine', 'git'], comments: 2, branch: 'flux-807', review: true, chat: '807' },
-    { id: 'FLUX-799', title: 'Multi-repo group knowledge base', desc: 'Done and squash-merged. Open to see the completion summary every finished ticket carries — files, validation, decisions.', col: 4, prio: 'med', effort: 'L', tags: ['engine'], comments: 5, merged: true, chat: '799' },
+    { id: 'LUM-231', title: 'Spending insights on the dashboard', desc: 'Category breakdown, deltas, tappable chips. The groomed plan is waiting for your approval — open to review the artifact and approve.', col: 0, prio: 'high', effort: 'M', tags: ['mobile', 'dashboard'], comments: 4, planready: true, chat: '830' },
+    { id: 'LUM-234', title: 'Recurring transfers — schedule & skip', desc: 'Groomed and ready to build. Open to dispatch an implementer — pick worktree isolation and watch it start.', col: 1, prio: 'high', effort: 'M', tags: ['payments'], comments: 2, chat: '833' },
+    { id: 'LUM-238', title: 'Currency formatting cleanup', desc: 'Small, mechanical, groomed — perfect furnace fuel. Open to queue it into an unattended batch.', col: 1, prio: 'med', effort: 'S', tags: ['polish'], comments: 0, chat: '838' },
+    { id: 'LUM-229', title: 'Push notifications for card transactions', desc: 'A live implementer session with 14 persisted history entries. Open the chat, say something, minimize — it keeps working.', col: 2, prio: 'high', effort: 'M', tags: ['mobile', 'notifications'], comments: 3, assignee: '◈', session: 'implementer · running', branch: 'lum-229', wt: true, chat: '812' },
+    { id: 'LUM-227', title: 'Fraud alerts on unusual spend', desc: 'This session pauses on a decision it can\u2019t make alone — answer the structured prompt and it resumes.', col: 2, prio: 'med', effort: 'L', tags: ['risk'], comments: 1, assignee: '◈', session: 'implementer · running', branch: 'lum-227', wt: true, chat: '815' },
+    { id: 'LUM-225', title: 'CSV export for statements', desc: 'Implementation finished — waiting for review. Open to see the diff, then approve or send it back with the reason attached.', col: 3, prio: 'med', effort: 'M', tags: ['api', 'statements'], comments: 2, branch: 'lum-225', review: true, chat: '807' },
+    { id: 'LUM-218', title: 'Joint accounts — shared visibility', desc: 'Done and squash-merged. Open to see the completion summary every finished ticket carries — files, validation, decisions.', col: 4, prio: 'med', effort: 'L', tags: ['accounts'], comments: 5, merged: true, chat: '799' },
   ];
   const boardEl = $('#board');
   const colEls = COLS.map(([n, c]) => { const col = makeCol(n, c); boardEl.appendChild(col); return col; });
@@ -1608,12 +1866,12 @@ stream without a refresh…</pre>
   const prEl = document.createElement('div');
   prEl.className = 'ehcard prcard';
   prEl.dataset.desc = 'A PR is a first-class card. Open it to rebase onto master and squash-merge — the ticket advances to Done with it.';
-  prEl.dataset.tid = 'PR #219 · flux-820'; prEl.dataset.tt = 'Release notes from Done tickets';
+  prEl.dataset.tid = 'PR #219 · lum-220'; prEl.dataset.tt = 'Savings goals v1';
   prEl.dataset.chat = 'pr'; prEl.style.cursor = 'pointer';
   prEl.innerHTML = `<div class="inner">
-      <div class="ehc-top">PR #219 <span class="prchip">OPEN</span><span class="effort">+214 −96</span></div>
-      <div class="ehc-title">Release notes from Done tickets</div>
-      <div class="ehc-chips"><span class="tagchip">1 member · FLUX-820</span></div>
+      <div class="ehc-top">PR #219 <span class="prchip">OPEN</span><span class="effort">+386 −41</span></div>
+      <div class="ehc-title">Savings goals v1</div>
+      <div class="ehc-chips"><span class="tagchip">1 member · LUM-220</span></div>
     </div>
     <div class="prchecks"><span class="ok">✓ checks · ✓ review — approved</span></div>
     <div class="reviewrow" style="color: #c4b5fd; background: rgba(139,92,246,0.08); border-color: rgba(139,92,246,0.3);"><span class="pulse-dot"></span> ⇡ rebase &amp; merge — open me</div>`;
@@ -1661,54 +1919,46 @@ stream without a refresh…</pre>
 
     const ART = `
       <div class="art-canvas">
-        <div class="art-title"><b>Board filters — rev 3</b><span>pins folded in</span></div>
+        <div class="art-title"><b>Lumen · July insights — rev 3</b><span>pins folded in</span></div>
         <div class="art-views">
-          <span class="avw a1"><i></i>All active</span><span class="avw a2"><i></i>My tickets</span>
-          <span class="avw a3"><i></i>Agents running</span><span class="avw a4"><i></i>Open PRs</span>
+          <span class="avw a1"><i></i>Food · $872</span><span class="avw a2"><i></i>Transport · $391</span>
+          <span class="avw a3"><i></i>Rent · $950</span><span class="avw a4"><i></i>Fun · $205</span>
         </div>
-        <div class="art-kanban">
-          <div class="art-col c1"><div class="ach"><i></i>Todo</div>
-            <div class="art-card b1"><div class="l1"></div><div class="l2"></div></div>
-            <div class="art-card b1"><div class="l1" style="width:80%"></div><div class="l2"></div></div>
-          </div>
-          <div class="art-col c2"><div class="ach"><i></i>In Progress</div>
-            <div class="art-card b2"><div class="l1"></div><div class="l2" style="width:55%"></div></div>
-            <div class="art-card b4"><div class="l1" style="width:70%"></div><div class="l2"></div></div>
-          </div>
-          <div class="art-col c3"><div class="ach"><i></i>Ready</div>
-            <div class="art-card b3"><div class="l1" style="width:85%"></div><div class="l2"></div></div>
-          </div>
+        <div style="display:flex; align-items:baseline; gap:12px; margin: 4px 0 12px;">
+          <span style="font-family: var(--mono); font-size: 0.58rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-faint);">spent this month</span>
+          <b style="font-size: 1.5rem; letter-spacing: -0.02em;">$2,418</b>
+          <span style="font-family: var(--mono); font-size: 0.6rem; color: var(--warn); border: 1px solid rgba(251,191,36,0.35); border-radius: 6px; padding: 1px 8px;">▲ 12% vs June</span>
         </div>
         <div class="art-usage">
-          <div class="u u1"><span style="width:74px;">All active</span><span class="bar"></span><span>62%</span></div>
-          <div class="u u2"><span style="width:74px;">My tickets</span><span class="bar"></span><span>38%</span></div>
-          <div class="u u3"><span style="width:74px;">Agents</span><span class="bar"></span><span>26%</span></div>
+          <div class="u u1"><span style="width:74px;">Food</span><span class="bar"></span><span>36%</span></div>
+          <div class="u u2"><span style="width:74px;">Transport</span><span class="bar"></span><span>16%</span></div>
+          <div class="u u3"><span style="width:74px;">Fun</span><span class="bar"></span><span>8%</span></div>
         </div>
         <span class="pin" style="top: 42px; left: 6px;">1</span>
-        <span class="pin p2" style="top: 42px; right: 8px;">2</span>
-        <div class="pinnote" style="top: 66px; right: 6px;">
+        <span class="pin p2" style="top: 96px; right: 8px;">2</span>
+        <div class="pinnote" style="top: 122px; right: 6px;">
           <span class="pinwho">requirement · from pin 2</span>
-          tag chips persist in the collapsed state
+          every total shows a month-over-month delta
         </div>
       </div>`;
 
     const DEMOS = {
       '830': {
-        title: 'FLUX-830 · Redesign board filters — Grooming · ◈ groomer',
+        title: 'LUM-231 · Spending insights on the dashboard — Grooming · ◈ groomer',
         html: `<div class="ov-grid">
           <div class="ov-left" style="padding: 0; gap: 0;">
-            <div class="persist-strip"><span>file <b class="fp">.flux/tickets/FLUX-830.md</b></span><span><b>2</b> sessions</span><span><b>11</b> history entries</span></div>
+            <div class="persist-strip"><span>file <b class="fp">.flux/tickets/LUM-231.md</b></span><span><b>2</b> sessions</span><span><b>11</b> history entries</span></div>
             <div class="tk-log" style="padding: 16px 18px;">
-              <div class="histpill">▸ <b>agent_session — groomer</b> · 9 entries · summarized · "read Board.tsx + filter code"</div>
+              <div class="histpill">▸ <b>agent_session — groomer</b> · 9 entries · summarized · "read Dashboard.tsx + transactions API"</div>
               <div class="msg agent"><div class="who"><span class="pd"></span> groomer ◈</div>
-                <div class="bubble">Mockup rev 3 on the right — <strong>saved views, colored by status</strong>, chips persist when collapsed. Your two pins are folded in as requirements.</div></div>
+                <div class="bubble">Mockup rev 3 on the right — <strong>tappable category chips, month-over-month deltas</strong>. Your two pins are folded in as requirements.</div></div>
               <div class="msg user"><div class="who">you <span class="pd"></span></div>
                 <div class="bubble">that's it. <span class="ref">📍 2 annotations resolved</span></div></div>
               <div class="msg agent"><div class="who"><span class="pd"></span> groomer ◈</div><div class="bubble">
                 <div class="plancard" id="bdPlanCard" style="margin: 0;">
                   <div class="ph" id="bdPlanPh">◇ Plan ready for approval</div>
                   <ul>
-                    <li>Scope: filter bar + saved views, portal only</li>
+                    <li>Scope: insights card on the dashboard, mobile only</li>
                     <li>4 acceptance criteria · 6 suggested tests · Effort M</li>
                   </ul>
                   <div class="pbtns" id="bdPlanBtns">
@@ -1724,12 +1974,12 @@ stream without a refresh…</pre>
         </div>`,
       },
       '833': {
-        title: 'FLUX-833 · Session replay on ticket cards — Todo · ◈ implementer',
+        title: 'LUM-234 · Recurring transfers — Todo · ◈ implementer',
         html: null,
         wire() {
           $('#tkBody').innerHTML = chatShell(
-            `<span>file <b class="fp">.flux/tickets/FLUX-833.md</b></span><span><b>1</b> session</span><span><b>7</b> history entries</span>`,
-            `<div class="histpill">▸ <b>agent_session — groomer</b> · summarized · "plan: timeline scrubber over persisted progress entries"</div>
+            `<span>file <b class="fp">.flux/tickets/LUM-234.md</b></span><span><b>1</b> session</span><span><b>7</b> history entries</span>`,
+            `<div class="histpill">▸ <b>agent_session — groomer</b> · summarized · "plan: schedule, skip-next, pause — reuses the transfer engine"</div>
              <div class="msg agent"><div class="who"><span class="pd"></span> implementer ◈ · briefed with the plan</div>
                <div class="bubble">Plan's approved and in my context. How should I run?
                  <div class="launcher" style="margin-top: 10px;">
@@ -1749,17 +1999,17 @@ stream without a refresh…</pre>
         },
       },
       '838': {
-        title: 'FLUX-838 · Ticket templates — Todo · hand-off to the Furnace',
+        title: 'LUM-238 · Currency formatting cleanup — Todo · hand-off to the Furnace',
         html: null,
         wire() {
           $('#tkBody').innerHTML = chatShell(
-            `<span>file <b class="fp">.flux/tickets/FLUX-838.md</b></span><span><b>1</b> session</span><span><b>5</b> history entries</span>`,
-            `<div class="histpill">▸ <b>agent_session — groomer</b> · summarized · "small, independent, no schema changes"</div>
+            `<span>file <b class="fp">.flux/tickets/LUM-238.md</b></span><span><b>1</b> session</span><span><b>5</b> history entries</span>`,
+            `<div class="histpill">▸ <b>agent_session — groomer</b> · summarized · "mechanical: one formatter, 14 call sites, no logic changes"</div>
              <div class="msg agent"><div class="who"><span class="pd"></span> orchestrator ◈</div>
                <div class="bubble">This one's small and groomed — you don't need to babysit it. Hand it to the <strong>Furnace</strong>? It gets implemented, reviewed by a second agent, and left as an open PR at Ready.
                  <div class="launcher" style="margin-top: 10px;">
                    <div class="lh">🔥 Queue in a batch</div>
-                   <div class="lopt sel"><span class="radio"></span><span><b>release-prep</b> · ⇉ parallel · burning <span class="why">2 burning · 1 queued · burn rate 2/4 — see the Furnace tab</span></span></div>
+                   <div class="lopt sel"><span class="radio"></span><span><b>polish-sprint</b> · ⇉ parallel · burning <span class="why">2 burning · 1 queued · burn rate 2/4 — see the Furnace tab</span></span></div>
                    <div class="lfoot">
                      <button class="btn primary" type="button" onclick="boardDemo.queueFurnace(this)">Queue it →</button>
                      <span class="lnote" id="bdQueueNote"></span>
@@ -1769,20 +2019,20 @@ stream without a refresh…</pre>
         },
       },
       '812': {
-        title: 'FLUX-812 · Stream agent logs to the board — In Progress · ◈ implementer',
+        title: 'LUM-229 · Push notifications for card transactions — In Progress · ◈ implementer',
         html: null,
         wire() {
           $('#tkBody').innerHTML = chatShell(
-            `<span>file <b class="fp">.flux/tickets/FLUX-812.md</b></span><span><b>3</b> sessions</span><span><b>14</b> history entries</span><span>everything below survives restarts — it's markdown in your repo</span>`,
-            `<div class="histpill">▸ <b>agent_session — groomer</b> · 12 entries · summarized · 3d ago · "plan approved: event bus → board channel"</div>
+            `<span>file <b class="fp">.flux/tickets/LUM-229.md</b></span><span><b>3</b> sessions</span><span><b>14</b> history entries</span><span>everything below survives restarts — it's markdown in your repo</span>`,
+            `<div class="histpill">▸ <b>agent_session — groomer</b> · 12 entries · summarized · 3d ago · "plan approved: digest pipeline for transaction pushes"</div>
              <div class="histpill">▸ <b>comment — you</b> · 2d ago · "prefer batching over per-event pushes"</div>
              <div class="msg agent"><div class="who"><span class="pd"></span> implementer ◈ · resumed with full context</div>
-               <div class="bubble">Picking up from the groomed plan and your batching comment — no re-explaining needed. Wiring the session bus into the board channel now.</div></div>
+               <div class="bubble">Picking up from the groomed plan and your batching comment — no re-explaining needed. Wiring the transaction stream into per-user digests now.</div></div>
              <div class="slog" style="padding: 0 4px;">
-               <span class="ln on act">◈ engine/src/realtime.ts +48 −12</span>
-               <span class="ln on ok">✓ typecheck clean · 214 tests passed</span>
+               <span class="ln on act">◈ api/src/notifications.ts +48 −12</span>
+               <span class="ln on ok">✓ typecheck clean · 312 tests passed</span>
              </div>`);
-          const text = 'also stream tool calls, not just progress entries';
+          const text = 'also batch merchant refunds into the same digest';
           if (reduced) { appendUser(text); appendAck(); return; }
           let i = 0;
           t(function type() {
@@ -1792,42 +2042,42 @@ stream without a refresh…</pre>
         },
       },
       '815': {
-        title: 'FLUX-815 · Scatter-gather review synthesis — ⚠ waiting on you',
+        title: 'LUM-227 · Fraud alerts on unusual spend — ⚠ waiting on you',
         html: null,
         wire() {
           $('#tkBody').innerHTML = chatShell(
-            `<span>file <b class="fp">.flux/tickets/FLUX-815.md</b></span><span><b>2</b> sessions</span><span><b>9</b> history entries</span><span>the question below is parked in history until you answer</span>`,
-            `<div class="histpill">▸ <b>agent_session — groomer</b> · 7 entries · summarized · 1d ago · "plan: supervisor + 3 workers"</div>
+            `<span>file <b class="fp">.flux/tickets/LUM-227.md</b></span><span><b>2</b> sessions</span><span><b>9</b> history entries</span><span>the question below is parked in history until you answer</span>`,
+            `<div class="histpill">▸ <b>agent_session — groomer</b> · 7 entries · summarized · 1d ago · "plan: alert on spend outside the user's pattern"</div>
              <div class="msg agent"><div class="who"><span class="pd"></span> implementer ◈ · paused, needs a decision</div>
-               <div class="bubble">Two ways to merge worker verdicts — this changes the review contract, so it's your call:
+               <div class="bubble">Two ways to set alert thresholds — this changes what users get woken up for, so it's your call:
                  <div class="qcard">
-                   <div class="qh"><span class="pulse-dot"></span> Which synthesis strategy?</div>
-                   <button class="qopt" type="button" onclick="boardDemo.answer(this, 'Majority vote')">Majority vote — fast, can lose nuance</button>
-                   <button class="qopt" type="button" onclick="boardDemo.answer(this, 'Supervisor synthesis')">Supervisor reads all three and writes one review <span class="rec">recommended</span></button>
+                   <div class="qh"><span class="pulse-dot"></span> Which threshold model?</div>
+                   <button class="qopt" type="button" onclick="boardDemo.answer(this, 'Fixed per tier')">Fixed per account tier — simple, blunt</button>
+                   <button class="qopt" type="button" onclick="boardDemo.answer(this, 'Adaptive profile')">Adaptive to each user's spending profile <span class="rec">recommended</span></button>
                    <button class="qopt" type="button" onclick="boardDemo.answer(this, 'Other…')">Other…</button>
                  </div>
                </div></div>`);
         },
       },
       '807': {
-        title: 'FLUX-807 · Worktree cleanup after merge — Ready · ⊙ review',
+        title: 'LUM-225 · CSV export for statements — Ready · ⊙ review',
         html: null,
         wire() {
           $('#tkBody').innerHTML = chatShell(
-            `<span>file <b class="fp">.flux/tickets/FLUX-807.md</b></span><span><b>2</b> sessions</span><span><b>12</b> history entries</span>`,
-            `<div class="histpill">▸ <b>agent_session — implementer</b> · 9 entries · summarized · "pushed ⎇ flux-807 · 12 files · +214 −96"</div>
+            `<span>file <b class="fp">.flux/tickets/LUM-225.md</b></span><span><b>2</b> sessions</span><span><b>12</b> history entries</span>`,
+            `<div class="histpill">▸ <b>agent_session — implementer</b> · 9 entries · summarized · "pushed ⎇ lum-225 · 9 files · +214 −96"</div>
              <div class="msg agent"><div class="who"><span class="pd"></span> reviewer ◈ · reviewed the diff</div>
-               <div class="bubble">Went through it — the worktree prune now parks dirty trees instead of force-deleting (the FLUX-739 pattern, nice). Checks are green. Your verdict:
+               <div class="bubble">Went through it — the export now streams in 500-row pages instead of loading everything, so big accounts won't OOM. Checks are green. Your verdict:
                  <div class="panel" style="margin-top: 10px; background: var(--void-deep);">
                    <div class="diff">
-                     <div class="dl ctx">  engine/src/task-worktree.ts</div>
-                     <div class="dl del hl">- await rm(worktreePath, { recursive: true, force: true })</div>
-                     <div class="dl add">+ if (await isDirty(worktreePath)) return park('dirty worktree')</div>
-                     <div class="dl add">+ await rm(worktreePath, { recursive: true })</div>
+                     <div class="dl ctx">  api/src/statements/export.ts</div>
+                     <div class="dl del hl">- const rows = await loadAllTransactions(accountId)</div>
+                     <div class="dl add">+ for await (const page of pageTransactions(accountId, 500))</div>
+                     <div class="dl add">+   csv.write(page)</div>
                    </div>
                  </div>
                  <div class="checks" style="margin: 10px 0;">
-                   <div class="ck"><span class="tick">✓</span> typecheck + lint · engine tests 214 passed · matches plan</div>
+                   <div class="ck"><span class="tick">✓</span> typecheck + lint · api tests 312 passed · matches plan</div>
                  </div>
                  <div class="pr-actions" style="margin: 0;">
                    <button class="btn primary" type="button" onclick="boardDemo.verdict(true)">✓ Approve — open PR</button>
@@ -1837,11 +2087,11 @@ stream without a refresh…</pre>
         },
       },
       'pr': {
-        title: 'PR #219 · flux-820 → master — rebase & merge',
+        title: 'PR #219 · lum-220 → master — rebase & merge',
         html: null,
         wire() {
           $('#tkBody').innerHTML = chatShell(
-            `<span>PR <b class="fp">#219</b> · ⎇ flux-820 → master</span><span><b>+214 −96</b></span><span>merging advances FLUX-820 to Done, atomically</span>`,
+            `<span>PR <b class="fp">#219</b> · ⎇ lum-220 → master</span><span><b>+386 −41</b></span><span>merging advances LUM-220 to Done, atomically</span>`,
             `<div class="msg agent"><div class="who"><span class="pd"></span> event horizon · Ready → PR</div>
                <div class="bubble">Branch pushed, PR #219 opened, review approved. Two PRs merged to master while you were reviewing:
                  <div class="graph" style="margin-top: 10px;"><svg viewBox="0 0 420 96">
@@ -1852,7 +2102,7 @@ stream without a refresh…</pre>
                    <circle cx="230" cy="30" r="5" fill="#f4f0ec"/><circle cx="300" cy="30" r="5" fill="#f4f0ec"/>
                    <circle cx="240" cy="68" r="5" fill="#ff7a1a"/><circle cx="330" cy="68" r="5" fill="#ff7a1a"/>
                    <text x="368" y="34" fill="#7d7268" font-size="11" font-family="monospace">master</text>
-                   <text x="322" y="84" fill="#ff7a1a" font-size="11" font-family="monospace">⎇ flux-820</text>
+                   <text x="322" y="84" fill="#ff7a1a" font-size="11" font-family="monospace">⎇ lum-220</text>
                  </svg></div>
                  <div class="pr-note" id="bdRebaseNote" style="margin-top: 8px;">△ behind master by 2 — rebase available</div>
                  <div class="checks" style="margin: 10px 0;">
@@ -1867,12 +2117,12 @@ stream without a refresh…</pre>
         },
       },
       '799': {
-        title: 'FLUX-799 · Multi-repo group knowledge base — Done',
+        title: 'LUM-218 · Joint accounts — Done · completion summary',
         html: null,
         wire() {
           $('#tkBody').innerHTML = chatShell(
-            `<span>file <b class="fp">.flux/tickets/FLUX-799.md</b></span><span><b>3</b> sessions</span><span><b>21</b> history entries</span><span>closed tickets keep their whole story</span>`,
-            `<div class="histpill">▸ <b>agent_session — groomer</b> · summarized · "plan: group docs fan out on submit"</div>
+            `<span>file <b class="fp">.flux/tickets/LUM-218.md</b></span><span><b>3</b> sessions</span><span><b>21</b> history entries</span><span>closed tickets keep their whole story</span>`,
+            `<div class="histpill">▸ <b>agent_session — groomer</b> · summarized · "plan: owner invites + shared visibility, no shared limits in v1"</div>
              <div class="histpill">▸ <b>agent_session — implementer</b> · summarized · "9 files · PR #240"</div>
              <div class="msg agent"><div class="who"><span class="pd"></span> implementer ◈ · finished</div>
                <div class="bubble">Squash-merged. The completion summary, as structured data on the ticket:
@@ -1880,24 +2130,25 @@ stream without a refresh…</pre>
                    <div class="csec" style="border-top: none;">
                      <div class="ch">▤ Changed files (4 of 9)</div>
                      <div class="files">
-                       <span class="file">engine/src/group-docs.ts</span>
-                       <span class="file">engine/src/shared-mcp-server.ts</span>
-                       <span class="file">portal/src/components/DocsScreen.tsx</span>
-                       <span class="file">docs/reference/mcp-tools.md</span>
+                       <span class="file">api/src/accounts/sharing.ts</span>
+                       <span class="file">api/src/permissions.ts</span>
+                       <span class="file">mobile/src/screens/JointAccounts.tsx</span>
+                       <span class="file">docs/api/joint-accounts.md</span>
                      </div>
                    </div>
                    <div class="csec">
                      <div class="ch">✓ Validation</div>
                      <div class="val"><span class="vk">✓</span> npm run check</div>
-                     <div class="val"><span class="vk">✓</span> npm run test -w engine — 214 passed</div>
+                     <div class="val"><span class="vk">✓</span> api tests — 312 passed</div>
                    </div>
                    <div class="csec">
                      <div class="ch">◆ Decisions</div>
-                     <p>Group docs fan out on submit, not on read — member repos stay offline-complete.</p>
+                     <p>Invites expire after 72h — standing silent access felt wrong for money.</p>
                    </div>
-                   <div class="ehc-foot"><span class="avatar b">◈</span> docs updated · commit 4290d6a · PR #240</div>
+                   <div class="ehc-foot"><span class="avatar b">◈</span> docs updated · commit 8c41f2a · PR #240</div>
                  </div>
-               </div></div>`);
+               </div></div>
+             <p style="font-family: var(--mono); font-size: 0.64rem; color: var(--text-faint); text-align: center;">the Release tab folds these summaries into v2.4.0's changelog</p>`);
         },
       },
     };
@@ -1978,7 +2229,7 @@ stream without a refresh…</pre>
       btn.disabled = true; btn.style.opacity = 0.6;
       $('#bdDispatchNote').textContent = '✓ worktree created · session starting';
       const tk = tkById('833');
-      Object.assign(tk, { session: 'implementer · running', branch: 'flux-833', wt: true, assignee: '◈' });
+      Object.assign(tk, { session: 'implementer · running', branch: 'lum-234', wt: true, assignee: '◈' });
       t(() => minimize(() => {
         const card = findCard('833');
         flip(card, () => { colOf('inprogress').appendChild(card); updateCounts(); });
@@ -2012,7 +2263,7 @@ stream without a refresh…</pre>
     function mergePr() {
       prEl.querySelector('.prchip').textContent = 'MERGED';
       prEl.querySelector('.prchip').classList.add('merged');
-      prEl.querySelector('.reviewrow').outerHTML = '<div class="sessionrow">✓ squash-merged · FLUX-820 → Done</div>';
+      prEl.querySelector('.reviewrow').outerHTML = '<div class="sessionrow">✓ squash-merged · LUM-220 → Done</div>';
       prEl.style.borderColor = 'rgba(52,211,153,0.55)';
       minimize(() => flip(prEl, () => { colOf('done').appendChild(prEl); updateCounts(); }));
     }
@@ -2038,7 +2289,7 @@ stream without a refresh…</pre>
       if (card && !overlay.classList.contains('on')) open(card.dataset.chat);
     });
 
-    // once per visit: FLUX-815 raises its hand
+    // once per visit: LUM-227 raises its hand
     let asked = false;
     function armRequireInput() {
       if (asked) return; asked = true;
@@ -2051,7 +2302,7 @@ stream without a refresh…</pre>
           card.innerHTML = cardHTML(tk);
           card.className = 'ehcard amberring';
         }
-        $('#demoTitle').textContent = 'event-horizon — FLUX board · 2 agents running · 1 waiting on you';
+        $('#demoTitle').textContent = 'lumen-app — LUM board · 2 agents running · 1 waiting on you';
       }, 5000);
     }
     armRequireInput();
@@ -2064,10 +2315,10 @@ stream without a refresh…</pre>
   const releaseScene = (() => {
     const doneWrap = $('#relDone');
     const DATA = [
-      { id: 'FLUX-833', title: 'Session replay on ticket cards', effort: 'M', group: 'feat', pr: 'PR #245', entry: 'Session replay on ticket cards — scrub any finished session’s timeline' },
-      { id: 'FLUX-834', title: 'Furnace burn report export', effort: 'S', group: 'feat', pr: 'PR #246', entry: 'Furnace burn report export for release threads' },
-      { id: 'FLUX-807', title: 'Worktree cleanup after merge', effort: 'M', group: 'fix', pr: 'PR #219', entry: 'Worktree cleanup — dirty trees park instead of force-delete' },
-      { id: 'FLUX-835', title: 'Docs: realtime channel reference', effort: 'S', group: 'docs', pr: 'PR #247', entry: 'Realtime channel reference — session log streams' },
+      { id: 'LUM-231', title: 'Spending insights on the dashboard', effort: 'M', group: 'feat', pr: 'PR #245', entry: 'Spending insights — category breakdown, deltas, tappable chips' },
+      { id: 'LUM-220', title: 'Savings goals v1', effort: 'M', group: 'feat', pr: 'PR #219', entry: 'Savings goals — targets, progress, auto-transfers' },
+      { id: 'LUM-225', title: 'CSV export for statements', effort: 'M', group: 'fix', pr: 'PR #247', entry: 'Statement CSV export streams in pages — no more OOM on large accounts' },
+      { id: 'LUM-228', title: 'Docs: statement export limits', effort: 'S', group: 'docs', pr: 'PR #248', entry: 'Statement export limits — page sizes, date ranges, rate caps' },
     ];
     let published = false;
     const cards = DATA.map((d) => {
@@ -2128,10 +2379,10 @@ stream without a refresh…</pre>
   const orcScene = (() => {
     const board = $('#orcBoard');
     const cols = [['Todo', 'todo'], ['In Progress', 'inprogress']].map(([n, c]) => { const col = makeCol(n, c); board.appendChild(col); return col; });
-    const t812 = { id: 'FLUX-812', title: 'Stream agent logs to the board', effort: 'M', prio: 'high', tags: ['engine'], branch: 'flux-812', assignee: '◈', session: 'implementer · running' };
-    const t829 = { id: 'FLUX-829', title: 'Realtime: card progress ticker', effort: 'S', prio: 'med', tags: ['portal'] };
-    const t781 = { id: 'FLUX-781', title: 'Filter dropdown v1 (old design)', effort: 'M', prio: 'low', tags: ['portal'] };
-    const t802 = { id: 'FLUX-802', title: 'Session token usage panel', effort: 'S', prio: 'med', tags: ['portal'] };
+    const t812 = { id: 'LUM-229', title: 'Push notifications for card transactions', effort: 'M', prio: 'high', tags: ['mobile'], branch: 'lum-229', assignee: '◈', session: 'implementer · running' };
+    const t829 = { id: 'LUM-226', title: 'Transaction alert banners', effort: 'S', prio: 'med', tags: ['mobile'] };
+    const t781 = { id: 'LUM-210', title: 'Insights spike (old dashboard)', effort: 'M', prio: 'low', tags: ['mobile'] };
+    const t802 = { id: 'LUM-215', title: 'Card art picker', effort: 'S', prio: 'med', tags: ['mobile'] };
     const cards = {};
     function buildBoard() {
       [0, 1].forEach(i => { cols[i].innerHTML = `<div class="col-head"><span class="st ${i ? 'inprogress' : 'todo'}">${i ? 'In Progress' : 'Todo'}</span><span class="count"></span></div>`; });
@@ -2153,10 +2404,10 @@ stream without a refresh…</pre>
       <div class="who"><span class="pd"></span> orchestrator ◈ · board rebase proposal</div>
       <div class="bubble">Swept everything. 4 proposals — nothing applies until you approve:
         <div class="proposal">
-          <div class="tri-row"><span class="tri-kind fold">fold</span><span class="tri-sum">Merge duplicate <b>FLUX-829</b> into <b>FLUX-812</b></span><span class="tri-check">☑</span></div>
-          <div class="tri-row"><span class="tri-kind archive">archive</span><span class="tri-sum">Retire <b>FLUX-781</b> — superseded by new filter design</span><span class="tri-check">☑</span></div>
-          <div class="tri-row"><span class="tri-kind status">status</span><span class="tri-sum">Move stale <b>FLUX-802</b> In Progress → Todo</span><span class="tri-check">☑</span></div>
-          <div class="tri-row"><span class="tri-kind promote">promote</span><span class="tri-sum">Carve <b>flaky-test discussion</b> into a new ticket</span><span class="tri-check">☑</span></div>
+          <div class="tri-row"><span class="tri-kind fold">fold</span><span class="tri-sum">Merge duplicate <b>LUM-226</b> into <b>LUM-229</b></span><span class="tri-check">☑</span></div>
+          <div class="tri-row"><span class="tri-kind archive">archive</span><span class="tri-sum">Retire <b>LUM-210</b> — superseded by the insights plan</span><span class="tri-check">☑</span></div>
+          <div class="tri-row"><span class="tri-kind status">status</span><span class="tri-sum">Move stale <b>LUM-215</b> In Progress → Todo</span><span class="tri-check">☑</span></div>
+          <div class="tri-row"><span class="tri-kind promote">promote</span><span class="tri-sum">Carve the <b>fee-refund discussion</b> into a new ticket</span><span class="tri-check">☑</span></div>
         </div>
         <button class="applybtn" type="button" id="applyBtn" onclick="orcScene.apply()">Apply approved (4)</button>
         <div class="actionline" id="orcDone" style="display: none;">✓ applied · 1 fold · 1 archive · 1 move · 1 new ticket — watch the board →</div>
@@ -2205,7 +2456,7 @@ stream without a refresh…</pre>
       }, 1100);
       t(() => { flip(cards.t802, () => cols[0].appendChild(cards.t802)); }, 1700);
       t(() => {
-        newCard = makeCard({ id: 'FLUX-836', title: 'De-flake session lifecycle test', effort: 'S', prio: 'med', tags: ['engine'], stpill: ['todo', 'new'] });
+        newCard = makeCard({ id: 'LUM-243', title: 'Fee-refund policy banner', effort: 'S', prio: 'med', tags: ['payments'], stpill: ['todo', 'new'] });
         newCard.classList.add('fx-fade');
         cols[0].appendChild(newCard);
       }, 2300);
@@ -2248,7 +2499,7 @@ stream without a refresh…</pre>
       'squash-merged → <em style="color:var(--good)">Done</em>. that’s the loop.',
     ];
     const cols = COLS.map(([n, c]) => { const col = makeCol(n, c); board.appendChild(col); return col; });
-    const ctxTk = { id: 'FLUX-799', title: 'Multi-repo group knowledge base', effort: 'L', prio: 'med', tags: ['engine'], comments: 5, merged: true };
+    const ctxTk = { id: 'LUM-218', title: 'Joint accounts — shared visibility', effort: 'L', prio: 'med', tags: ['accounts'], comments: 5, merged: true };
     const ctx = makeCard(ctxTk); ctx.style.opacity = 0.45; cols[4].appendChild(ctx);
     const dots = $('#fxDots');
     for (let i = 0; i < N; i++) { const d = document.createElement('span'); d.className = 'fx-dot'; dots.appendChild(d); }
@@ -2282,7 +2533,7 @@ stream without a refresh…</pre>
       <div class="ov-left" style="display: flex; flex-direction: column;">
         <div id="fxChat" style="display: flex; flex-direction: column; gap: 11px; flex: 1;">
           <div class="msg agent"><div class="who"><span class="pd"></span> groomer ◈</div>
-            <div class="bubble">Real problem: filters reset on every workspace switch, tags hide two clicks deep. Proposal: <strong>persistent filter bar + saved views</strong>. Wireframe → rough on purpose.</div></div>
+            <div class="bubble">Read Dashboard.tsx and the transactions API — category data is already clean. Proposal: <strong>a spending-insights card</strong>: breakdown, deltas, trend. Wireframe → rough on purpose.</div></div>
           <div class="plancard" id="fxPlan" style="display: none;">
             <div class="ph" id="fxPlanPh">◇ Plan ready for approval — rev 2</div>
             <ul><li>4 acceptance criteria · 6 tests · Effort M</li><li>Your message + pin folded in as requirements</li></ul>
@@ -2295,65 +2546,66 @@ stream without a refresh…</pre>
         <div style="font-family: var(--mono); font-size: 0.62rem; color: var(--text-faint); margin-bottom: 10px; display: flex; justify-content: space-between;"><span>ticket artifact</span><span id="fxRev">rev 1 · wireframe</span></div>
         <div class="wf" id="fxWf" style="position: relative;">
           <div class="wfrow">
-            <div class="wfb" style="width: 90px;"><div class="wfl">views</div></div>
-            <div class="wfb" style="flex: 1;"><div class="wfl">search…</div></div>
-            <div class="wfb" style="width: 56px;"><div class="wfl">sort</div></div>
+            <div class="wfb" style="width: 100px;"><div class="wfl">balance</div></div>
+            <div class="wfb" style="flex: 1;"><div class="wfl">trend chart</div></div>
+            <div class="wfb" style="width: 64px;"><div class="wfl">month</div></div>
           </div>
           <div class="wfrow">
-            <div class="wfb" style="width: 64px;"><div class="wfl">#tag</div></div>
-            <div class="wfb" style="width: 64px;"><div class="wfl">#tag</div></div>
+            <div class="wfb" style="width: 74px;"><div class="wfl">food</div></div>
+            <div class="wfb" style="width: 74px;"><div class="wfl">transport</div></div>
           </div>
-          <div class="wfrow" style="margin: 12px 0 0;"><div class="wfb" style="flex: 1; height: 90px;"><div class="wfl">board columns</div></div></div>
+          <div class="wfrow" style="margin: 12px 0 0;"><div class="wfb" style="flex: 1; height: 90px;"><div class="wfl">transactions</div></div></div>
         </div>
       </div>
     </div>`;
-    const USERMSG = `<div class="msg user fx-fade"><div class="who">you <span class="pd"></span></div><div class="bubble">keep tag chips visible when the bar collapses — pinned it 📍</div></div>`;
+    const USERMSG = `<div class="msg user fx-fade"><div class="who">you <span class="pd"></span></div><div class="bubble">make the categories tappable filters — pinned it 📍</div></div>`;
     const GROOMACK = `<div class="msg agent fx-fade"><div class="who"><span class="pd"></span> groomer ◈</div><div class="bubble">Folded in as a requirement — rev 2 coming up.</div></div>`;
     const REV2ART = `
       <div style="font-family: var(--mono); font-size: 0.62rem; color: var(--text-faint); margin-bottom: 10px; display: flex; justify-content: space-between;"><span>ticket artifact</span><span style="color: var(--bolt);">rev 2 · pins folded in</span></div>
       <div class="art-canvas fx-fade">
-        <div class="art-title"><b>Board filters — rev 2</b></div>
+        <div class="art-title"><b>Spending insights — rev 2</b></div>
         <div class="art-views">
-          <span class="avw a1"><i></i>All active</span><span class="avw a2"><i></i>My tickets</span>
-          <span class="avw a3"><i></i>Agents</span><span class="avw a4"><i></i>PRs</span>
+          <span class="avw a1"><i></i>Food</span><span class="avw a2"><i></i>Transport</span>
+          <span class="avw a3"><i></i>Rent</span><span class="avw a4"><i></i>Fun</span>
         </div>
-        <div class="art-kanban">
-          <div class="art-col c1"><div class="ach"><i></i>Todo</div>
-            <div class="art-card b1"><div class="l1"></div><div class="l2"></div></div></div>
-          <div class="art-col c2"><div class="ach"><i></i>In Progress</div>
-            <div class="art-card b2"><div class="l1"></div><div class="l2" style="width:55%"></div></div></div>
-          <div class="art-col c3"><div class="ach"><i></i>Ready</div>
-            <div class="art-card b3"><div class="l1" style="width:85%"></div><div class="l2"></div></div></div>
+        <div style="display:flex; align-items:baseline; gap:10px; margin: 2px 0 10px;">
+          <b style="font-size: 1.3rem; letter-spacing: -0.02em;">$2,418</b>
+          <span style="font-family: var(--mono); font-size: 0.58rem; color: var(--warn); border: 1px solid rgba(251,191,36,0.35); border-radius: 5px; padding: 0 7px;">▲ 12% vs June</span>
+        </div>
+        <div class="art-usage">
+          <div class="u u1"><span style="width:74px;">Food</span><span class="bar"></span><span>36%</span></div>
+          <div class="u u2"><span style="width:74px;">Transport</span><span class="bar"></span><span>16%</span></div>
+          <div class="u u3"><span style="width:74px;">Fun</span><span class="bar"></span><span>8%</span></div>
         </div>
         <span class="pin p2" style="top: 40px; right: 8px;">1</span>
-        <div class="pinnote" style="top: 64px; right: 6px;"><span class="pinwho">requirement · pin 1</span> tag chips stay visible when collapsed</div>
+        <div class="pinnote" style="top: 64px; right: 6px;"><span class="pinwho">requirement · pin 1</span> category chips filter the transaction list</div>
       </div>`;
-    const QIN = `<div class="persist-strip"><span>file <b class="fp">.flux/tickets/FLUX-842.md</b></span><span><b>3</b> sessions</span><span>the question is parked in history until you answer</span></div>
+    const QIN = `<div class="persist-strip"><span>file <b class="fp">.flux/tickets/LUM-242.md</b></span><span><b>3</b> sessions</span><span>the question is parked in history until you answer</span></div>
       <div class="tk-log" id="fxQLog">
-        <div class="histpill">▸ <b>agent_session — groomer</b> · summarized · "plan approved rev 2"</div>
+        <div class="histpill">▸ <b>agent_session — groomer</b> · summarized · "plan approved: insights card rev 2"</div>
         <div class="msg agent"><div class="who"><span class="pd"></span> implementer ◈ · paused, needs a decision</div>
-          <div class="bubble">Saved views can sync two ways — this touches the config contract, so it's your call:
+          <div class="bubble">Category budgets can live two places — this touches the privacy posture, so it's your call:
             <div class="qcard">
-              <div class="qh"><span class="pulse-dot"></span> Where do saved views live?</div>
-              <button class="qopt" type="button" id="fxOptA">Board files — shared with the whole team</button>
-              <button class="qopt" type="button" id="fxOptB">Per-user config — personal, no board noise <span class="rec">recommended</span></button>
+              <div class="qh"><span class="pulse-dot"></span> Where do category budgets live?</div>
+              <button class="qopt" type="button" id="fxOptA">Server-side — syncs across devices</button>
+              <button class="qopt" type="button" id="fxOptB">On-device — private by default <span class="rec">recommended</span></button>
             </div>
           </div></div>
       </div>`;
     const FAN = `<div class="ov-single" style="max-width: 560px;">
-      <div style="font-family: var(--mono); font-size: 0.64rem; color: var(--text-faint); margin-bottom: 6px;">orchestrator ⛬ · composing review for FLUX-842</div>
+      <div style="font-family: var(--mono); font-size: 0.64rem; color: var(--text-faint); margin-bottom: 6px;">orchestrator ⛬ · composing review for LUM-242</div>
       <div class="msg agent" style="max-width: 100%; margin-bottom: 14px;"><div class="who"><span class="pd"></span> orchestrator ◈</div>
-        <div class="bubble">Ready with a diff touching portal state + config — fanning out <strong>three reviewers in parallel</strong>, one synthesized verdict.</div></div>
+        <div class="bubble">Ready with a diff touching the dashboard + budgets store — fanning out <strong>three reviewers in parallel</strong>, one synthesized verdict.</div></div>
       <div class="workers" style="margin-bottom: 14px;">
-        <div class="worker" id="fxW0"><span class="wdot"></span> ui-reviewer · filter bar + collapse <span class="verdict">approve</span></div>
-        <div class="worker" id="fxW1"><span class="wdot"></span> state-reviewer · view store + URL sync <span class="verdict">approve</span></div>
-        <div class="worker" id="fxW2"><span class="wdot"></span> a11y-reviewer · keyboard + focus <span class="verdict chg">1 nit</span></div>
+        <div class="worker" id="fxW0"><span class="wdot"></span> ui-reviewer · chips + chart <span class="verdict">approve</span></div>
+        <div class="worker" id="fxW1"><span class="wdot"></span> state-reviewer · rollups + cache <span class="verdict">approve</span></div>
+        <div class="worker" id="fxW2"><span class="wdot"></span> a11y-reviewer · chart labels + contrast <span class="verdict chg">1 nit</span></div>
       </div>
       <div class="topo-verdict" id="fxVerdict" style="margin: 0;"><b>synthesis:</b> 2 approve · 1 nit folded into the diff — one review posted → <b>approved · PR #256 opened</b></div>
     </div>`;
     const PRV = `<div class="ov-grid">
       <div class="ov-left">
-        <div class="pr-title">Redesign board filters <span class="prnum">FLUX-842 · +386 −41</span></div>
+        <div class="pr-title">Spending insights on dashboard <span class="prnum">LUM-242 · +386 −41</span></div>
         <div class="graph"><svg viewBox="0 0 420 96">
           <line x1="20" y1="30" x2="400" y2="30" stroke="rgba(168,148,130,0.3)" stroke-width="2"/>
           <line x1="140" y1="30" x2="185" y2="68" stroke="#e05a00" stroke-width="2"/>
@@ -2362,7 +2614,7 @@ stream without a refresh…</pre>
           <circle cx="230" cy="30" r="5" fill="#f4f0ec"/><circle cx="300" cy="30" r="5" fill="#f4f0ec"/>
           <circle cx="240" cy="68" r="5" fill="#ff7a1a"/><circle cx="330" cy="68" r="5" fill="#ff7a1a"/>
           <text x="368" y="34" fill="#7d7268" font-size="11" font-family="monospace">master</text>
-          <text x="322" y="84" fill="#ff7a1a" font-size="11" font-family="monospace">⎇ flux-842</text>
+          <text x="322" y="84" fill="#ff7a1a" font-size="11" font-family="monospace">⎇ lum-242</text>
         </svg></div>
         <div class="pr-note" id="fxRebNote">△ behind master by 2 — rebase available</div>
         <div class="pr-actions"><button class="btn" type="button" id="fxRebase">Rebase onto master</button></div>
@@ -2379,15 +2631,15 @@ stream without a refresh…</pre>
 
     /* ---------- canonical end-states ---------- */
     function setTk(n) {
-      Object.assign(tk, { id: 'FLUX-842', title: 'make the board filters suck less 🙃', effort: '?', prio: null, tags: [], comments: 0 });
+      Object.assign(tk, { id: 'LUM-242', title: 'add spending insights 🙏', effort: '?', prio: null, tags: [], comments: 0 });
       delete tk.session; delete tk.planready; delete tk.branch; delete tk.wt; delete tk.pr; delete tk.merged; delete tk.approved; delete tk.needsinput; delete tk.review;
-      if (n >= 2) { tk.title = 'Redesign board filters'; tk.effort = 'M'; tk.tags = ['portal', 'ux']; tk.prio = 'high'; }
+      if (n >= 2) { tk.title = 'Spending insights on dashboard'; tk.effort = 'M'; tk.tags = ['mobile', 'dashboard']; tk.prio = 'high'; }
       if (n >= 2 && n <= 5) tk.planready = true;
       if (n === 6) { tk.session = 'implementer · dispatched'; tk.assignee = '◈'; }
       if (n >= 7) tk.assignee = '◈';
-      if (n === 7) { tk.session = 'implementer · running'; tk.branch = 'flux-842'; tk.wt = true; }
-      if (n === 8) { tk.session = 'implementer · resumed'; tk.branch = 'flux-842'; tk.wt = true; }
-      if (n === 9 || n === 10) { tk.branch = 'flux-842'; tk.approved = true; tk.pr = 'PR #256'; }
+      if (n === 7) { tk.session = 'implementer · running'; tk.branch = 'lum-242'; tk.wt = true; }
+      if (n === 8) { tk.session = 'implementer · resumed'; tk.branch = 'lum-242'; tk.wt = true; }
+      if (n === 9 || n === 10) { tk.branch = 'lum-242'; tk.approved = true; tk.pr = 'PR #256'; }
       if (n === 11) { tk.merged = true; tk.approved = true; tk.pr = 'PR #256'; }
     }
     function colFor(n) { return n <= 5 ? 0 : n === 6 ? 1 : n <= 8 ? 2 : n <= 10 ? 3 : 4; }
@@ -2409,7 +2661,7 @@ stream without a refresh…</pre>
       } else if (bscroll) bscroll.scrollTo({ left: 0 });
       if (n >= 3 && n <= 5) {
         overlay.classList.add('on');
-        $('#fxOvTitle').textContent = 'FLUX-842 · Redesign board filters — Grooming · ◈ groomer';
+        $('#fxOvTitle').textContent = 'LUM-242 · Spending insights — Grooming · ◈ groomer';
         $('#fxOvBody').innerHTML = REV1;
         if (card) card.style.visibility = 'hidden';
         if (n >= 4) { $('#fxChat').insertAdjacentHTML('beforeend', USERMSG); dropPin(false); }
@@ -2417,7 +2669,7 @@ stream without a refresh…</pre>
       }
       if (n === 10) {
         overlay.classList.add('on');
-        $('#fxOvTitle').textContent = 'PR #256 · flux-842 → master';
+        $('#fxOvTitle').textContent = 'PR #256 · lum-242 → master';
         $('#fxOvBody').innerHTML = PRV;
         if (card) card.style.visibility = 'hidden';
       }
@@ -2428,7 +2680,7 @@ stream without a refresh…</pre>
       const wf = $('#fxWf');
       if (!wf || $('.pin', wf)) return;
       wf.insertAdjacentHTML('beforeend', `<span class="pin p2 ${animated ? 'fx-pop' : ''}" style="top: 44px; right: 10px;">1</span>
-        <div class="pinnote ${animated ? 'fx-fade' : ''}" style="top: 68px; right: 8px;"><span class="pinwho">you · pin 1</span> keep tag chips visible when the bar collapses</div>`);
+        <div class="pinnote ${animated ? 'fx-fade' : ''}" style="top: 68px; right: 8px;"><span class="pinwho">you · pin 1</span> categories should be tappable filters</div>`);
     }
     function growOverlay() {
       const from = card.getBoundingClientRect();
@@ -2484,7 +2736,7 @@ stream without a refresh…</pre>
           cols[0].appendChild(q);
           ensureVisible(q);
           curTo(q, 400 * k, 0.2, 0.5);
-          typeInto($('.typed', q), 'make the board filters suck less 🙃', k, () => {
+          typeInto($('.typed', q), 'people keep asking where their money goes — add insights?? 🙏', k, () => {
             q.remove();
             setTk(1);
             card = makeCard(tk);
@@ -2493,7 +2745,7 @@ stream without a refresh…</pre>
             curHide();
           });
         }, 1000);
-        tt(done, 2100 + 35 * Math.max(8, 24 * k) / k * k + 800);
+        tt(done, 2100 + 60 * Math.max(8, 24 * k) / k * k + 800);
       },
       2(k, done) { const tt = (fn, ms) => timers.push(setTimeout(fn, ms * k));
         tk.session = 'groomer · reading the code'; tk.assignee = '◈';
@@ -2505,7 +2757,7 @@ stream without a refresh…</pre>
         curShow(); curTo(card, 650 * k);
         tt(curClick, 700);
         tt(() => {
-          $('#fxOvTitle').textContent = 'FLUX-842 · Redesign board filters — Grooming · ◈ groomer';
+          $('#fxOvTitle').textContent = 'LUM-242 · Spending insights — Grooming · ◈ groomer';
           $('#fxOvBody').innerHTML = REV1;
           growOverlay();
         }, 900);
@@ -2515,7 +2767,7 @@ stream without a refresh…</pre>
         // chat with the ticket, then pin the artifact
         curShow(); curTo($('#fxOvBody .tk-input'), 550 * k, 0.25, 0.5);
         tt(() => {
-          typeInto($('#fxTyped'), 'keep tag chips visible when the bar collapses — pinning it', k, () => {
+          typeInto($('#fxTyped'), 'make the categories tappable filters — pinning it', k, () => {
             $('#fxTyped').textContent = '';
             $('#fxChat').insertAdjacentHTML('beforeend', USERMSG);
           });
@@ -2553,7 +2805,7 @@ stream without a refresh…</pre>
           const r = card.getBoundingClientRect(), c = body.getBoundingClientRect();
           const toast = document.createElement('div');
           toast.className = 'fx-toast';
-          toast.textContent = '✓ worktree created · ⎇ flux-842';
+          toast.textContent = '✓ worktree created · ⎇ lum-242';
           toast.style.left = (r.left - c.left) + 'px';
           toast.style.top = (r.bottom - c.top + 8) + 'px';
           body.appendChild(toast);
@@ -2565,11 +2817,11 @@ stream without a refresh…</pre>
         // require input: pause → open → answer → resume
         tk.needsinput = true; delete tk.session;
         card.innerHTML = cardHTML(tk); card.className = 'ehcard amberring';
-        $('#fxTitle').textContent = 'event-horizon — FLUX board · 1 waiting on you';
+        $('#fxTitle').textContent = 'lumen-app — LUM board · 1 waiting on you';
         tt(() => { curShow(); curTo(card, 600 * k); }, 900);
         tt(curClick, 1600);
         tt(() => {
-          $('#fxOvTitle').textContent = 'FLUX-842 — ⚠ waiting on you';
+          $('#fxOvTitle').textContent = 'LUM-242 — ⚠ waiting on you';
           $('#fxOvBody').innerHTML = QIN;
           growOverlay();
         }, 1850);
@@ -2578,13 +2830,13 @@ stream without a refresh…</pre>
         tt(() => {
           $('#fxOptB').style.color = 'var(--good)';
           $('#fxQLog').insertAdjacentHTML('beforeend',
-            '<div class="msg user fx-fade"><div class="who">you <span class="pd"></span></div><div class="bubble">Per-user config</div></div>' +
+            '<div class="msg user fx-fade"><div class="who">you <span class="pd"></span></div><div class="bubble">On-device</div></div>' +
             '<div class="msg agent fx-fade"><div class="who"><span class="pd"></span> implementer ◈ · resumed</div><div class="bubble">✓ Recorded to ticket history — back to work.</div></div>');
         }, 3500);
         tt(() => {
           setTk(8);
           card.innerHTML = cardHTML(tk); card.className = cardCls();
-          $('#fxTitle').textContent = 'event-horizon — FLUX board';
+          $('#fxTitle').textContent = 'lumen-app — LUM board';
           shrinkOverlay(() => curHide());
         }, 4700);
         tt(done, 5800);
@@ -2614,7 +2866,7 @@ stream without a refresh…</pre>
         curShow(); curTo(card, 600 * k);
         tt(curClick, 650);
         tt(() => {
-          $('#fxOvTitle').textContent = 'PR #256 · flux-842 → master';
+          $('#fxOvTitle').textContent = 'PR #256 · lum-242 → master';
           $('#fxOvBody').innerHTML = PRV;
           growOverlay();
           curHide();
@@ -2734,6 +2986,205 @@ stream without a refresh…</pre>
     $('#tpVerdict').classList.add('on');
     $('#tpOrchS').textContent = 'picked: security · perf · api';
   }
+</script>
+<script>
+(() => {
+
+  const $ = (s, r) => (r || document).querySelector(s);
+  const $$ = (s, r) => [...(r || document).querySelectorAll(s)];
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const pg = (() => {
+    const stage = $('#stage'), log = $('#log'), cursor = $('#cursor');
+    let timers = [];
+    const t = (fn, ms) => timers.push(setTimeout(fn, reduced ? 1 : ms));
+    const clearT = () => { timers.forEach(clearTimeout); timers = []; };
+
+    const CAPS = [
+      'a grooming ticket <em class="b">is a chat</em> — the groomer already has Lumen’s codebase in context',
+      'it thinks, then proposes: <em>a plan and a living artifact</em>, right in the thread',
+      '<em>click the artifact</em> — it opens beside the chat',
+      'annotate the artifact <em>directly</em> — two pins',
+      'the groomer folds your pins into <em class="b">rev 2</em> — and adds <em>2 new acceptance criteria</em>',
+      '<em>approve</em> — grooming collapses into a Todo ticket, implementer dispatched',
+    ];
+    const dots = $('#dots');
+    CAPS.forEach(() => { const d = document.createElement('span'); d.className = 'dot2'; dots.appendChild(d); });
+    function beat(n) {
+      $('#cap').innerHTML = CAPS[n];
+      $$('.dot2', dots).forEach((d, i) => { d.classList.toggle('on', i === n); d.classList.toggle('past', i < n); });
+    }
+
+    function curShow() { cursor.style.opacity = 1; }
+    function curHide() { cursor.style.opacity = 0; }
+    function curTo(el, ms, ox, oy) {
+      if (!el) return;
+      const c = stage.getBoundingClientRect(), r = el.getBoundingClientRect();
+      const x = r.left - c.left + r.width * (ox ?? 0.5), y = r.top - c.top + r.height * (oy ?? 0.5);
+      cursor.style.transition = `transform ${ms ?? 600}ms cubic-bezier(0.4,0,0.2,1), opacity 0.3s`;
+      cursor.style.transform = `translate(${x}px, ${y}px)`;
+    }
+    function click() {
+      const m = /translate\(([-\d.]+)px, ([-\d.]+)px\)/.exec(cursor.style.transform);
+      if (!m) return;
+      const rip = document.createElement('span');
+      rip.className = 'ripple';
+      rip.style.left = m[1] + 'px'; rip.style.top = m[2] + 'px';
+      stage.appendChild(rip);
+      setTimeout(() => rip.remove(), 600);
+    }
+
+    function add(html) { log.insertAdjacentHTML('beforeend', html); log.scrollTop = 1e6; return log.lastElementChild; }
+    const think = () => add(`<div class="msg agent fadein" data-think><div class="who"><span class="pd"></span> groomer ◈ · thinking</div><div class="bubble"><span class="tdots"><i></i><i></i><i></i></span></div></div>`);
+    const unthink = () => { const el = $('[data-think]', log); if (el) el.remove(); };
+
+    const AC1 = `
+      <div class="req"><span class="ck">✓</span><strong>Breakdown matches the statement total</strong> to the cent, every month.</div>
+      <div class="req"><span class="ck">✓</span><strong>Insights update live</strong> as new transactions post — no refresh.</div>`;
+    const AC2_EXTRA = `
+      <div class="req from1 newreq"><span class="ck">✓</span><strong>Category chips filter the transaction list</strong> — tap to isolate a category.<span class="srcchip">📍 from pin 1</span></div>
+      <div class="req from2 newreq"><span class="ck">✓</span><strong>Every total shows a month-over-month delta</strong>, signed and colored.<span class="srcchip">📍 from pin 2</span></div>`;
+    const T1 = `
+      <div class="test-item"><span class="tk">unit</span> category rollup sums to the statement total</div>
+      <div class="test-item"><span class="tk">unit</span> uncategorized transactions fall into “Other”</div>
+      <div class="test-item"><span class="tk">ui</span> insights render &lt; 200ms with 5k transactions</div>
+      <div class="test-item"><span class="tk">e2e</span> a new transaction updates insights without refresh</div>`;
+    const T2_EXTRA = `
+      <div class="test-item newreq"><span class="tk">ui</span> tapping a category chip filters the list <span class="pinref">regression · pin 1</span></div>
+      <div class="test-item newreq"><span class="tk">ui</span> delta badge shows signed % vs prior month <span class="pinref">regression · pin 2</span></div>`;
+
+    function tab(a) {
+      $$('.atab').forEach(b => b.classList.toggle('on', b.dataset.a === a));
+      $$('.apane').forEach(p => p.classList.toggle('on', p.dataset.p === a));
+    }
+
+    function toRev2() {
+      const cv = $('#canvas');
+      cv.classList.add('r2', 'filtered');
+      $('#cat1').classList.add('active');
+      $('#delta').classList.add('show');
+      $('#cvSub').textContent = 'rev 2 · tappable categories · deltas';
+      $('#chartnote').textContent = 'Food isolated — chips filter everything ✓';
+      $('#chartnote').style.color = 'var(--good)';
+      $('#pin1').classList.add('resolved');
+      $('#pin2').classList.add('resolved');
+      $('#note1').classList.remove('show');
+      $('#note2').classList.remove('show');
+      $('#revChip').textContent = 'rev 2';
+      $('#acPane').innerHTML = AC1 + AC2_EXTRA;
+      $('#tPane').innerHTML = T1 + T2_EXTRA;
+      $('#acN').textContent = '4'; $('#acN').classList.add('bump');
+      $('#tN').textContent = '6'; $('#tN').classList.add('bump');
+    }
+
+    let played = false;
+    function reset() {
+      clearT();
+      curHide();
+      log.innerHTML = '';
+      $('#typed').textContent = '';
+      $('#artPanel').classList.remove('open');
+      $('#artEmpty').style.display = '';
+      $('#finale').classList.remove('on');
+      $('#stPill').textContent = 'Grooming'; $('#stPill').className = 'st grooming';
+      $('#revChip').textContent = 'rev 1';
+      $('#acN').textContent = '2'; $('#acN').classList.remove('bump');
+      $('#tN').textContent = '4'; $('#tN').classList.remove('bump');
+      $('#acPane').innerHTML = AC1;
+      $('#tPane').innerHTML = T1;
+      const cv = $('#canvas');
+      cv.classList.remove('r2', 'filtered');
+      $('#cat1').classList.remove('active');
+      $('#delta').classList.remove('show');
+      $('#cvSub').textContent = 'rev 1 · totals only';
+      $('#chartnote').textContent = 'stacked by category · totals only';
+      $('#chartnote').style.color = '';
+      ['pin1', 'pin2'].forEach(id => $('#' + id).classList.remove('show', 'resolved'));
+      ['note1', 'note2'].forEach(id => $('#' + id).classList.remove('show'));
+      tab('mock');
+      add(`<div class="histpill">▸ <b>created — you</b> · "our dashboard is just a big number. people keep asking where their money goes — add some kind of insights? 🙏"</div>`);
+      beat(0);
+    }
+
+    function play() {
+      reset();
+      /* beat 1: thinking → proposal */
+      t(() => { beat(1); think(); }, 900);
+      t(() => {
+        unthink();
+        add(`<div class="msg agent fadein"><div class="who"><span class="pd"></span> groomer ◈</div>
+          <div class="bubble">Read <strong>Dashboard.tsx</strong> and the transactions API — category data is already clean. Proposal: a <strong>spending-insights card</strong>: monthly breakdown, category chips, five-month trend.
+            <div class="attach" id="attach1" onclick="pg.openArt()">
+              <span class="kind">artifact</span><span>Spending insights — interactive mockup</span><span class="rev">rev 1</span><span class="open">click to open ⧉</span>
+            </div>
+            <div class="plancard">
+              <div class="ph">◇ Plan · rev 1</div>
+              <ul><li>Insights card: breakdown + trend chart</li><li>2 acceptance criteria · 4 test steps · Effort M</li></ul>
+            </div>
+          </div></div>`);
+      }, 3100);
+      /* beat 2: click the artifact */
+      t(() => { beat(2); curShow(); curTo($('#attach1'), 700, 0.3, 0.5); }, 4300);
+      t(() => { click(); $('#attach1').classList.add('hot'); }, 5100);
+      t(() => { openArt(); }, 5350);
+      /* beat 3: annotate ×2 */
+      t(() => { beat(3); curTo($('#catrow'), 700, 0.92, 0.5); }, 6600);
+      t(() => { click(); $('#pin1').classList.add('show'); }, 7400);
+      t(() => { $('#note1').classList.add('show'); }, 7700);
+      t(() => { curTo($('#delta'), 650, 1.4, 0.5); }, 8800);
+      t(() => { click(); $('#pin2').classList.add('show'); }, 9500);
+      t(() => { $('#note2').classList.add('show'); curHide(); }, 9800);
+      t(() => {
+        add(`<div class="msg user fadein"><div class="who">you <span class="pd"></span></div><div class="bubble">two pins on rev 1 — tappable categories + month-over-month delta. 📍📍</div></div>`);
+      }, 10600);
+      /* beat 4: thinking → rev 2 */
+      t(() => { beat(4); think(); }, 11600);
+      t(() => {
+        unthink();
+        add(`<div class="msg agent fadein"><div class="who"><span class="pd"></span> groomer ◈</div>
+          <div class="bubble"><strong>Rev 2 up.</strong> Chips are filters now — Food is isolated in the mockup — and the delta badge is in. Added <strong>2 acceptance criteria</strong> and 2 pin-regression tests.
+            <div class="plancard" id="plan2">
+              <div class="ph">◇ Plan ready for approval — rev 2</div>
+              <ul><li><b style="color:var(--text)">4</b> acceptance criteria (2 from your pins) · <b style="color:var(--text)">6</b> tests</li><li>Effort M · no API changes</li></ul>
+              <div class="pbtns"><button class="pbtn" type="button">Request changes</button><button class="pbtn primary" id="approveBtn" type="button" onclick="pg.approve()">Approve → Todo</button></div>
+            </div>
+          </div></div>`);
+        toRev2();
+      }, 13900);
+      t(() => tab('ac'), 15400);
+      t(() => tab('mock'), 18200);
+      /* beat 5: approve */
+      t(() => { beat(5); curShow(); curTo($('#approveBtn'), 750, 0.5, 0.5); }, 18800);
+      t(() => { click(); }, 19650);
+      t(() => { approve(); }, 19900);
+    }
+
+    function openArt() {
+      $('#artEmpty').style.display = 'none';
+      $('#artPanel').classList.add('open');
+    }
+    function approve() {
+      curHide();
+      const ph = $('#plan2 .ph');
+      if (ph) { ph.textContent = '✓ Plan approved'; ph.style.color = 'var(--good)'; }
+      const btns = $('#plan2 .pbtns');
+      if (btns) btns.innerHTML = '<span style="font-family: var(--mono); font-size: 0.64rem; color: var(--good); padding: 2px 0 8px;">→ moved to Todo · implementer dispatched with plan, pins &amp; tests</span>';
+      $('#stPill').textContent = 'Todo'; $('#stPill').className = 'st todo';
+      t(() => $('#finale').classList.add('on'), 900);
+    }
+
+    if ('IntersectionObserver' in window) {
+      new IntersectionObserver((es, ob) => es.forEach(e => {
+        if (e.isIntersecting && !played) { played = true; play(); ob.disconnect(); }
+      }), { threshold: 0.35 }).observe($('#win'));
+    } else { played = true; play(); }
+
+    reset();
+    return { replay: play, tab, openArt, approve };
+  })();
+
+window.pg = pg;
+})();
 </script>
 
 </body>
