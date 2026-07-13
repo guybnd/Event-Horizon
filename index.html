@@ -866,6 +866,34 @@
   .tdots i:nth-child(3) { animation-delay: 0.4s; }
   @media (max-width: 880px) { .roster { grid-template-columns: 1fr 1fr; } .spane { grid-template-columns: 1fr; } .sync-left { border-right: none; border-bottom: 1px solid var(--border); } }
 
+  .fx-bscroll { height: 100%; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+  .board-scroll { scroll-snap-type: x proximity; }
+  .board-scroll .col { scroll-snap-align: start; }
+  @media (max-width: 880px) {
+    .fx-board { grid-template-columns: repeat(5, minmax(160px, 1fr)); min-width: 820px; height: 100%; }
+  }
+  @media (max-width: 620px) {
+    .nav-links a:not(.gh-btn) { display: none; }
+    .clone { flex-wrap: wrap; font-size: 0.74rem; max-width: 100%; }
+    .clone span:nth-child(2) { word-break: break-all; white-space: normal; text-align: left; }
+    .hero { padding-top: 44px; }
+    .sub { font-size: 0.98rem; }
+    .tab { font-size: 0.66rem; padding: 6px 11px; }
+    .demo-body { height: 700px; }
+    .fx-body { height: 470px; }
+    .fx-capbar { font-size: 0.62rem; gap: 8px; }
+    .fx-dots { flex-wrap: wrap; justify-content: flex-end; max-width: 34%; }
+    .fx-hint { font-size: 0.62rem; }
+    .fx-sticky { top: 12px; }
+    .roster { grid-template-columns: 1fr; }
+    .verbadge b { font-size: 1.2rem; }
+    .ov-left, .ov-right, .sync-left, .sync-right { padding: 14px; }
+    .tk-log { padding: 12px 14px; }
+    .install { padding: 44px 18px; }
+    section { padding: 52px 0; }
+    .vig-caption, .demo-caption { font-size: 0.72rem; }
+  }
+
   /* ---------- lower sections ---------- */
   section { padding: 72px 0; }
   .section-head { max-width: 62ch; margin-bottom: 36px; }
@@ -969,7 +997,8 @@
   @media (max-width: 880px) {
     .loop, .personas, .rev-strip { grid-template-columns: 1fr; }
     .split { grid-template-columns: 1fr; }
-    .plan-overlay.on, .orc-grid, .rel-grid, .rev-grid, .pr-grid { grid-template-columns: 1fr; }
+    .plan-overlay.on, .orc-grid, .rel-grid, .rev-grid, .pr-grid, .ov-grid { grid-template-columns: 1fr; }
+    .ov-left { border-right: none; border-bottom: 1px solid var(--border); }
     .iso-grid { grid-template-columns: 1fr; }
     .iso-side, .orc-chat, .plan-chat, .rel-done { border-right: none; border-bottom: 1px solid var(--border); }
     .docs-duo { grid-template-columns: 1fr; }
@@ -1224,7 +1253,7 @@
           <span class="fx-search">search tickets…</span>
         </div>
         <div class="fx-body" id="fxBody">
-          <div class="board fx-board" id="fxBoard"></div>
+          <div class="fx-bscroll" id="fxBscroll"><div class="board fx-board" id="fxBoard"></div></div>
           <div class="tk-overlay" id="fxOverlay">
             <div class="tk-head"><span class="t" id="fxOvTitle"></span></div>
             <div class="tk-body" id="fxOvBody"></div>
@@ -2376,7 +2405,8 @@ stream without a refresh…</pre>
         card = makeCard(tk);
         card.className = cardCls();
         cols[colFor(n)].appendChild(card);
-      }
+        ensureVisible(card);
+      } else if (bscroll) bscroll.scrollTo({ left: 0 });
       if (n >= 3 && n <= 5) {
         overlay.classList.add('on');
         $('#fxOvTitle').textContent = 'FLUX-842 · Redesign board filters — Grooming · ◈ groomer';
@@ -2422,8 +2452,16 @@ stream without a refresh…</pre>
       ], { duration: 460, easing: 'cubic-bezier(0.5, 0, 0.75, 0.4)' }).onfinish = done;
       setTimeout(done, 620);
     }
+    const bscroll = $('#fxBscroll');
+    function ensureVisible(el) {
+      if (!el || !bscroll || bscroll.scrollWidth <= bscroll.clientWidth + 8) return;
+      const r = el.getBoundingClientRect(), rs = bscroll.getBoundingClientRect();
+      const delta = (r.left + r.width / 2) - (rs.left + rs.width / 2);
+      bscroll.scrollTo({ left: bscroll.scrollLeft + delta, behavior: reduced ? 'auto' : 'smooth' });
+    }
     function moveCard(colIdx) {
       flip(card, () => { cols[colIdx].appendChild(card); card.innerHTML = cardHTML(tk); card.className = cardCls(); });
+      ensureVisible(card);
     }
     function typeInto(el, text, k, cb) {
       let i = 0;
@@ -2436,6 +2474,7 @@ stream without a refresh…</pre>
     /* ---------- animated beats ---------- */
     const PLAY = {
       1(k, done) { const tt = (fn, ms) => timers.push(setTimeout(fn, ms * k));
+        if (bscroll) bscroll.scrollTo({ left: 0, behavior: reduced ? 'auto' : 'smooth' });
         curShow(); curTo($('#fxNew'), 700 * k);
         tt(curClick, 750);
         tt(() => {
@@ -2443,6 +2482,7 @@ stream without a refresh…</pre>
           q.className = 'fx-qinput fx-pop';
           q.innerHTML = '<span class="typed"></span><span class="cursor"></span>';
           cols[0].appendChild(q);
+          ensureVisible(q);
           curTo(q, 400 * k, 0.2, 0.5);
           typeInto($('.typed', q), 'make the board filters suck less 🙃', k, () => {
             q.remove();
