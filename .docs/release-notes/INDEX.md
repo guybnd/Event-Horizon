@@ -417,3 +417,11 @@
 - **PR-548**: PR #548: Chat window open/minimize animation jank — heavy mount/unmount eats the spring's first frames
 - **PR-549**: PR #549: Chat-dock: pause SSE-driven re-renders during window open/minimize animation
 
+## Release v1.6.3 — 2026-07-14T08:55:26.515Z
+
+- **FLUX-1424**: flux:release: also bump electron/package.json + package-lock.json root version (kill the every-cut manual bump) — **APPROVED** — the sole Blocker from the prior review (CRLF anchors) is fixed and empirically verified. ## What was wro…
+- **FLUX-1425**: Packaged builds ship no node-pty native binary — terminal fails with "Failed to load native module: conpty.node" — **APPROVED** — no Blockers or Majors. Reviewed the full merge-base diff (2e95804...HEAD): a single, focused 22-line cha…
+- **PR-550**: PR #550: flux:release: also bump electron/package.json + package-lock.json root version (kill the every-cut manual bump)
+- **PR-551**: PR #551: Packaged builds ship no node-pty native binary — terminal fails with "Failed to load native module: conpty.node"
+- **PR-552**: PR #552: FLUX-1425 follow-up: node-pty external (fix terminal crashing packaged engine)
+

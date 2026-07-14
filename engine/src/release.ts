@@ -120,16 +120,17 @@ export function normalizeReleaseVersion(input: string): NormalizedVersion {
 }
 
 /**
- * Bump the `version` field to `bareVersion` in the root, engine, and portal package.json files,
- * in lockstep (FLUX-1317). Edits only the version string in place (no re-serialization) so the diff
- * stays to one line per file and formatting is preserved. A file that is missing, unparseable, or
- * already at the target version is a silent no-op for that file.
+ * Bump the `version` field to `bareVersion` in the root, engine, portal, and electron package.json
+ * files, in lockstep (FLUX-1317, FLUX-1424). Edits only the version string in place (no
+ * re-serialization) so the diff stays to one line per file and formatting is preserved. A file that
+ * is missing, unparseable, or already at the target version is a silent no-op for that file.
  */
 export async function bumpPackageJsonVersions(repoRoot: string, bareVersion: string): Promise<void> {
   const pkgPaths = [
     path.join(repoRoot, 'package.json'),
     path.join(repoRoot, 'engine', 'package.json'),
     path.join(repoRoot, 'portal', 'package.json'),
+    path.join(repoRoot, 'electron', 'package.json'),
   ];
   for (const pkgPath of pkgPaths) {
     let content: string;
@@ -158,6 +159,46 @@ export async function bumpPackageJsonVersions(repoRoot: string, bareVersion: str
     await fs.writeFile(pkgPath, updated, 'utf-8');
     log.info(`Bumped ${path.relative(repoRoot, pkgPath)} → ${bareVersion}`);
   }
+}
+
+/**
+ * Bump only the root `event-horizon` package's two `"version"` entries in `package-lock.json` —
+ * the top-level one and `packages[""]` — to `bareVersion` (FLUX-1424). `package-lock.json` also
+ * carries a `"version"` for every dependency, so this deliberately does NOT do a blanket
+ * `"version": "<cur>"` replace; each anchor pins on the preceding `"name": "event-horizon",` line
+ * so only the root package's own entries move. Missing file, unparseable JSON, an already-current
+ * version, or anchors that can't be located are all silent no-ops (mirrors `bumpPackageJsonVersions`).
+ */
+export async function bumpLockfileVersion(repoRoot: string, bareVersion: string): Promise<void> {
+  const lockPath = path.join(repoRoot, 'package-lock.json');
+  let content: string;
+  try {
+    content = await fs.readFile(lockPath, 'utf-8');
+  } catch {
+    log.warn(`package-lock.json not found at ${lockPath} — skipping lockfile version bump.`);
+    return;
+  }
+  let current: unknown;
+  try {
+    current = (JSON.parse(content) as { version?: unknown }).version;
+  } catch {
+    log.warn(`Could not parse ${lockPath} — skipping lockfile version bump.`);
+    return;
+  }
+  if (current === bareVersion) return;
+  if (typeof current !== 'string') {
+    log.warn(`Could not locate the root "event-horizon" version in ${lockPath} — left unchanged.`);
+    return;
+  }
+  const escapedCurrent = current.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const anchorPattern = new RegExp(`("name": "event-horizon",\\r?\\n\\s+"version": ")${escapedCurrent}(")`, 'g');
+  const updated = content.replace(anchorPattern, `$1${bareVersion}$2`);
+  if (updated === content) {
+    log.warn(`Could not locate the root "event-horizon" version fields to bump in ${lockPath} — left unchanged.`);
+    return;
+  }
+  await fs.writeFile(lockPath, updated, 'utf-8');
+  log.info(`Bumped ${path.relative(repoRoot, lockPath)} → ${bareVersion} (root entries only)`);
 }
 
 /** Resolve release settings with per-field defaults (a raw config may only set one field). */
@@ -232,9 +273,11 @@ async function run() {
 
   log.info(`Found ${tasksToRelease.length} tickets to release.`);
 
-  // Bump package.json versions to the bare semver (FLUX-1317) — only when the arg is valid semver.
+  // Bump package.json versions and the lockfile's root entries to the bare semver (FLUX-1317,
+  // FLUX-1424) — only when the arg is valid semver.
   if (normVersion.valid) {
     await bumpPackageJsonVersions(REPO_ROOT, normVersion.bare);
+    await bumpLockfileVersion(REPO_ROOT, normVersion.bare);
   } else {
     log.warn(
       `"${rawVersion}" is not valid semver — skipping package.json version bump (release notes and ticket release still proceed).`,

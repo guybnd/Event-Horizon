@@ -9,6 +9,7 @@ import {
   hasExistingVersionBlock,
   normalizeReleaseVersion,
   bumpPackageJsonVersions,
+  bumpLockfileVersion,
   type ReleaseTask,
 } from './release.js';
 
@@ -172,16 +173,19 @@ describe('bumpPackageJsonVersions', () => {
     await fs.writeFile(path.join(dir, 'engine', 'package.json'), '{\n  "name": "engine",\n  "version": "1.4.1"\n}\n');
     await fs.mkdir(path.join(dir, 'portal'));
     await fs.writeFile(path.join(dir, 'portal', 'package.json'), '{\n  "name": "portal",\n  "version": "1.4.1"\n}\n');
+    await fs.mkdir(path.join(dir, 'electron'));
+    await fs.writeFile(path.join(dir, 'electron', 'package.json'), '{\n  "name": "electron",\n  "version": "1.4.1"\n}\n');
     return dir;
   }
   const readVersion = async (p: string) => JSON.parse(await fs.readFile(p, 'utf-8')).version as string;
 
-  it('bumps all three package.json files in lockstep, preserving formatting', async () => {
+  it('bumps all four package.json files in lockstep, preserving formatting', async () => {
     const dir = await makeRepo();
     await bumpPackageJsonVersions(dir, '1.5.0');
     expect(await readVersion(path.join(dir, 'package.json'))).toBe('1.5.0');
     expect(await readVersion(path.join(dir, 'engine', 'package.json'))).toBe('1.5.0');
     expect(await readVersion(path.join(dir, 'portal', 'package.json'))).toBe('1.5.0');
+    expect(await readVersion(path.join(dir, 'electron', 'package.json'))).toBe('1.5.0');
     // Only the version line changed — the file is still valid JSON with its other keys intact.
     const root = await fs.readFile(path.join(dir, 'package.json'), 'utf-8');
     expect(root).toContain('"name": "root"');
@@ -191,8 +195,65 @@ describe('bumpPackageJsonVersions', () => {
   it('is a no-op for a missing package.json without throwing', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-release-'));
     await fs.writeFile(path.join(dir, 'package.json'), '{\n  "version": "1.4.1"\n}\n');
-    // engine/ and portal/ deliberately absent.
+    // engine/, portal/, and electron/ deliberately absent.
     await expect(bumpPackageJsonVersions(dir, '1.5.0')).resolves.toBeUndefined();
     expect(await readVersion(path.join(dir, 'package.json'))).toBe('1.5.0');
+  });
+});
+
+describe('bumpLockfileVersion', () => {
+  function lockfileFixture(version: string, depVersion: string): string {
+    return JSON.stringify(
+      {
+        name: 'event-horizon',
+        version,
+        lockfileVersion: 3,
+        requires: true,
+        packages: {
+          '': { name: 'event-horizon', version, license: 'PolyForm-Noncommercial-1.0.0' },
+          'node_modules/some-dep': { version: depVersion, license: 'MIT' },
+        },
+      },
+      null,
+      2,
+    ) + '\n';
+  }
+
+  it('bumps both root event-horizon entries but leaves a dependency version untouched', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-release-'));
+    const lockPath = path.join(dir, 'package-lock.json');
+    await fs.writeFile(lockPath, lockfileFixture('1.4.1', '3.2.1'));
+    await bumpLockfileVersion(dir, '1.5.0');
+    const parsed = JSON.parse(await fs.readFile(lockPath, 'utf-8'));
+    expect(parsed.version).toBe('1.5.0');
+    expect(parsed.packages[''].version).toBe('1.5.0');
+    expect(parsed.packages['node_modules/some-dep'].version).toBe('3.2.1');
+  });
+
+  it('bumps both root event-horizon entries in a CRLF lockfile but leaves a dependency version untouched', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-release-'));
+    const lockPath = path.join(dir, 'package-lock.json');
+    await fs.writeFile(lockPath, lockfileFixture('1.4.1', '3.2.1').replace(/\n/g, '\r\n'));
+    await bumpLockfileVersion(dir, '1.5.0');
+    const raw = await fs.readFile(lockPath, 'utf-8');
+    expect(raw).toContain('\r\n');
+    const parsed = JSON.parse(raw);
+    expect(parsed.version).toBe('1.5.0');
+    expect(parsed.packages[''].version).toBe('1.5.0');
+    expect(parsed.packages['node_modules/some-dep'].version).toBe('3.2.1');
+  });
+
+  it('is a no-op for a missing package-lock.json without throwing', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-release-'));
+    await expect(bumpLockfileVersion(dir, '1.5.0')).resolves.toBeUndefined();
+  });
+
+  it('is a no-op when already at the target version', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-release-'));
+    const lockPath = path.join(dir, 'package-lock.json');
+    const fixture = lockfileFixture('1.5.0', '3.2.1');
+    await fs.writeFile(lockPath, fixture);
+    await bumpLockfileVersion(dir, '1.5.0');
+    expect(await fs.readFile(lockPath, 'utf-8')).toBe(fixture);
   });
 });

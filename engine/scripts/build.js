@@ -44,15 +44,15 @@ fs.mkdirSync(outDir, { recursive: true });
 // Override parent "type": "module" so Node treats dist/*.js as CJS
 fs.writeFileSync(path.join(outDir, 'package.json'), '{"type":"commonjs"}\n');
 
-async function copyDir(src, dest) {
+async function copyDir(src, dest, fileFilter) {
   await fsp.mkdir(dest, { recursive: true });
   const entries = await fsp.readdir(src, { withFileTypes: true });
   for (const entry of entries) {
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
     if (entry.isDirectory()) {
-      await copyDir(srcPath, destPath);
-    } else {
+      await copyDir(srcPath, destPath, fileFilter);
+    } else if (!fileFilter || fileFilter(entry.name)) {
       await fsp.copyFile(srcPath, destPath);
     }
   }
@@ -70,6 +70,14 @@ const sharedConfig = {
     'fsevents',
     // node:sea is only available at runtime inside a SEA binary — never bundle it
     'node:sea',
+    // FLUX-1425: node-pty is a native module that, at runtime, spawns a Worker
+    // (lib/worker/conoutSocketWorker.js) and forks an agent (conpty_console_list_agent.js)
+    // by resolving paths relative to its own __dirname. Inlining it into the bundle makes
+    // __dirname point at the bundle dir, where those helper .js files don't exist → the
+    // Worker spawn crashes the engine on the first terminal open. Keep it external and ship
+    // the whole node-pty package under dist/node_modules/ (below) so require('node-pty')
+    // resolves to a real package with lib/worker/, the agent, and prebuilds/ all intact.
+    'node-pty',
   ],
   // Inline the version so getLocalVersion() works regardless of packaging mode.
   define: {
@@ -165,6 +173,29 @@ async function build() {
     console.log('Tray binaries staged.');
   } catch {
     console.warn('systray traybin/ not found — skipping. Run npm install first.');
+  }
+
+  // FLUX-1425: ship the WHOLE node-pty package under dist/node_modules/ so require('node-pty')
+  // resolves to a real on-disk package at runtime (it's marked external above, so the bundle no
+  // longer inlines it). node-pty's ConPTY path resolves helper files relative to its own lib/
+  // __dirname — the conout Worker (lib/worker/conoutSocketWorker.js), the console-list agent
+  // (lib/conpty_console_list_agent.js), and the native prebuilds. Shipping only the .node binaries
+  // (the earlier approach) left those .js helpers missing, so the first terminal open spawned a
+  // Worker on a nonexistent script and crashed the engine. Copying the package intact fixes that.
+  // Exclude .pdb (Windows debug symbols, ~6 MB each) and *.map / test files — none are needed at
+  // runtime; lib/ (incl. worker/ + agent), package.json, and prebuilds/ (incl. conpty/) are kept.
+  const nodePtySrc = path.join(repoRoot, 'node_modules', 'node-pty');
+  const nodePtyDest = path.join(outDir, 'node_modules', 'node-pty');
+  const skipNodePtyFile = (name) =>
+    !name.endsWith('.pdb') && !name.endsWith('.map') && !/\.test\.js$/.test(name);
+  try {
+    await fsp.access(path.join(nodePtySrc, 'package.json'));
+    console.log('Staging node-pty package → engine/dist/node_modules/node-pty/ …');
+    await fsp.rm(nodePtyDest, { recursive: true, force: true });
+    await copyDir(nodePtySrc, nodePtyDest, skipNodePtyFile);
+    console.log('node-pty package staged.');
+  } catch {
+    console.warn('node-pty package not found — packaged terminal will fail. Run npm install first.');
   }
 
   console.log('Build complete → engine/dist/');
