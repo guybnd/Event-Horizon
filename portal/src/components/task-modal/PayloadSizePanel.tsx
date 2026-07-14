@@ -44,6 +44,7 @@ export function PayloadSizePanel({ taskId }: { taskId: string }) {
   const [budget, setBudget] = useState<ContextBudget | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ehToolsOpen, setEhToolsOpen] = useState(false);
   const [mcp, setMcp] = useState<McpSchemaReport | null>(null);
   const [mcpLoading, setMcpLoading] = useState(false);
   const [mcpError, setMcpError] = useState<string | null>(null);
@@ -146,6 +147,30 @@ export function PayloadSizePanel({ taskId }: { taskId: string }) {
                   <span>~{fmtTokens(m.tokensEst)} tok</span>
                 </div>
               ))}
+
+              <button
+                type="button"
+                onClick={() => setEhToolsOpen((v) => !v)}
+                className="flex w-full items-center justify-between pt-2 font-medium text-gray-500"
+              >
+                <span className="flex items-center gap-1 uppercase tracking-wide">
+                  {budget.ehToolSchemas.ok && budget.ehToolSchemas.tools.length > 0 && (
+                    ehToolsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />
+                  )}
+                  EH's own MCP tool schemas{budget.ehToolSchemas.ok ? ` (${budget.ehToolSchemas.toolCount} tools)` : ''}
+                </span>
+                <span>{budget.ehToolSchemas.ok ? `~${fmtTokens(budget.ehToolSchemas.totalTokensEst)} tok` : (budget.ehToolSchemas.error ?? 'failed')}</span>
+              </button>
+              {ehToolsOpen && budget.ehToolSchemas.ok && (
+                <div className="space-y-0.5 pl-2">
+                  {budget.ehToolSchemas.tools.map((t) => (
+                    <div key={t.name} className="flex items-center justify-between text-gray-600 dark:text-gray-300">
+                      <span>· {t.name}</span>
+                      <span>~{fmtTokens(t.tokensEst)} tok</span>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {phasesCfg && (
                 <>

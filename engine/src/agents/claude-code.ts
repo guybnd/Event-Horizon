@@ -787,6 +787,13 @@ export { isChatEditGated };
 // `--resume` at wakeAt. Off by default, so FLUX-1389's block stays byte-identical until opted in.
 // `undefined` phase (ad-hoc API launches, no explicit phase) is treated as an unattended dispatch too —
 // same rationale as isDispatchedSession's `session.phase !== 'chat'` check.
+// FLUX-1376: empirically verified (2026-07-14, two back-to-back `claude -p` spawns, otherwise
+// identical) that `--disallowed-tools` genuinely drops the listed tools' SCHEMAS from what the
+// CLI sends the model, not just their call permission — the `system:init` event's own `tools`
+// array shrank to exactly the allowed set, and `cache_creation_input_tokens` fell 55,541 ->
+// 40,406 disallowing 28 of 29 `mcp__event-horizon__*` tools. So this flag is a real lever for
+// FLUX-1385's per-role toolsets, not merely a call-blocking permission layer requiring a
+// separate conditional-registration mechanism in buildMcpServer().
 export function disallowedToolsArgs(session: { phase?: CliSessionRecord['phase'] | undefined }, task: { status?: string | undefined } | undefined): string[] {
   const tools = ['AskUserQuestion'];
   if (session.phase !== 'chat' && !honorScheduledWakeupsEnabled()) tools.push('ScheduleWakeup');

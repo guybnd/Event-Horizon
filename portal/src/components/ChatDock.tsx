@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { AnimatePresence, motion, useIsPresent, useReducedMotion } from 'framer-motion';
 import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Save, ChevronDown, Check, CircleHelp, TriangleAlert, Circle, CircleDashed, Archive, Eye, Ellipsis, NotebookPen, Play, Flame, Activity, Bot } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
@@ -251,6 +251,10 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
     if (creatingScratch) return;
     setCreatingScratch(true);
     try {
+      // FLUX-1417: the engine now names scratch chats `Scratch <n>` itself (off the same
+      // `SCRATCH-n` counter it just minted from) when it sees this placeholder title, so
+      // there's no follow-up rename to await before opening — open the window as soon as
+      // the mint resolves.
       const task = await createTask({
         kind: 'scratch',
         title: 'Scratch',
@@ -258,20 +262,17 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
         projectKey: currentProject,
         author: currentUser,
       });
-      // FLUX-1241: the engine mints the id off its own `SCRATCH-n` counter — reuse that same n as
-      // a human-readable title ("Scratch 7") so multiple open scratch chats are distinguishable by
-      // title (tabs/history), not just by the raw id that's only visible once it's uncompacted.
-      // FLUX-1255: the rename is cosmetic, so its failure shouldn't abort the flow — the task is
-      // already persisted server-side at this point, and failing the whole handler here would leave
-      // it orphaned (never opened) while looking to the user like the click did nothing.
-      const n = task.id.replace(/^SCRATCH-/, '');
-      try {
-        await updateTask(task.id, { title: `Scratch ${n}` });
-      } catch (err) {
-        console.error('Failed to set scratch chat title, opening with default title:', err);
-      }
       openChat(task.id);
       triggerRefresh();
+      // FLUX-1241/1255: belt-and-suspenders — if the engine default wasn't taken for some
+      // reason (older engine, unexpected title), fire the rename after the window is
+      // already open rather than gating on it. Cosmetic only, so failure is non-fatal.
+      if (task.title === 'Scratch') {
+        const n = task.id.replace(/^SCRATCH-/, '');
+        updateTask(task.id, { title: `Scratch ${n}` }).catch((err) => {
+          console.error('Failed to set scratch chat title:', err);
+        });
+      }
     } catch (err) {
       console.error('Failed to create scratch chat:', err);
     } finally {
@@ -2084,6 +2085,16 @@ function ChatWindowHeader({
   );
 }
 
+/** FLUX-1418: cheap placeholder shown in place of the heavy transcript/sideview content while
+ *  `ChatWindow` defers mounting it past the open spring (or before the shrink-close exit). */
+function ChatWindowLoadingShell() {
+  return (
+    <div className="flex h-full min-h-0 flex-1 items-center justify-center">
+      <Loader2 className="h-5 w-5 animate-spin text-[var(--eh-text-muted)]" />
+    </div>
+  );
+}
+
 const ChatWindow = memo(function ChatWindow({
   id,
   orchestrator,
@@ -2182,11 +2193,47 @@ const ChatWindow = memo(function ChatWindow({
   // background windows.
   useEscapeKey(() => onMinimize(id), { enabled: isTopmost });
 
-  // FLUX-748: pass `working` (live running session) so the hook's message queue auto-dispatches
-  // on the turn-completion edge.
-  const chat = useChatSession(id, true, working);
-  const allTasks = useAppSelector((s) => s.tasks) as Task[];
   const config = useAppSelector((s) => s.config);
+  // FLUX-801: pop-open / shrink-close animation. Gated on `animationsEnabled` (default true) AND
+  // prefers-reduced-motion, matching the TaskCard/TaskModal precedent. When off, the window renders
+  // statically (no initial/animate/exit) — zero behavior change from before.
+  const animationsEnabled = config?.animationsEnabled ?? true;
+  const reduceMotion = useReducedMotion();
+  const animateWindow = animationsEnabled && !reduceMotion;
+  const speedMap = { fast: 0.2, normal: 0.4, slow: 0.7 };
+  const duration = speedMap[config?.animationSpeed || 'normal'];
+  // FLUX-1418: defer mounting the heavy content (ChatView transcript, TicketSideView,
+  // ChatDiffPanel) until the open spring settles, so the synchronous mount cost doesn't land on
+  // the animation's first frames — and swap back to the cheap shell the instant a minimize starts
+  // exiting, so unmount cost doesn't compete with the shrink-close transform either. `settled`
+  // starts true when animations are off (nothing to defer past). `useIsPresent` (not
+  // `usePresence`) is read-only — it never registers as a removal blocker, so it can't strand
+  // this window mounted after an exit finishes.
+  const isPresent = useIsPresent();
+  const [settled, setSettled] = useState(() => !animateWindow);
+  // `useLayoutEffect` (not `useEffect`): the heavy-subtree teardown this drives must land in the
+  // SAME commit that removes this window from `open`, one tick ahead of framer-motion's own
+  // (rAF-driven) exit start — a passive effect would let at least one exit frame paint with the
+  // heavy content still mounted before swapping to the cheap shell.
+  useLayoutEffect(() => {
+    if (!isPresent) setSettled(false);
+  }, [isPresent]);
+  useEffect(() => {
+    if (settled || !animateWindow) return;
+    // Belt-and-suspenders: `onAnimationComplete` below normally flips this; this guards against a
+    // dropped/interrupted animation event stranding the window on the empty shell forever.
+    const timer = setTimeout(() => setSettled(true), duration * 1000);
+    return () => clearTimeout(timer);
+  }, [settled, animateWindow, duration]);
+  const handleAnimationComplete = useCallback(() => {
+    if (isPresent) setSettled(true);
+  }, [isPresent]);
+
+  // FLUX-748: pass `working` (live running session) so the hook's message queue auto-dispatches
+  // on the turn-completion edge. FLUX-1420: also pass the animating flag (the open/minimize spring
+  // is in flight while `!settled`) so the hook can buffer SSE-driven commits until it settles.
+  const chat = useChatSession(id, true, working, !settled);
+  const allTasks = useAppSelector((s) => s.tasks) as Task[];
 
   // FLUX-1339/1362: chat-scoped plan-review panel state. The panel opens as an own full-screen
   // surface (a maximizable FloatingPanel, default-maximized — FLUX-1362 deliberately reversed the
@@ -2327,14 +2374,6 @@ const ChatWindow = memo(function ChatWindow({
   const rawBottom = pos ? pos.bottom : 84;
   const bottom = Math.max(8, Math.min(rawBottom, maxBottom));
 
-  // FLUX-801: pop-open / shrink-close animation. Gated on `animationsEnabled` (default true) AND
-  // prefers-reduced-motion, matching the TaskCard/TaskModal precedent. When off, the window renders
-  // statically (no initial/animate/exit) — zero behavior change from before.
-  const animationsEnabled = config?.animationsEnabled ?? true;
-  const reduceMotion = useReducedMotion();
-  const animateWindow = animationsEnabled && !reduceMotion;
-  const speedMap = { fast: 0.2, normal: 0.4, slow: 0.7 };
-  const duration = speedMap[config?.animationSpeed || 'normal'];
   // Transform that visually places the (full-size) window at the clicked card: shrink to ~card width
   // and translate so the scaled window centers on the card. Pure transforms (x/y/scale) layered over
   // the fixed left/bottom positioning, so they never fight Rnd-style left/top math or the drag/resize
@@ -2358,6 +2397,20 @@ const ChatWindow = memo(function ChatWindow({
         exit: { ...(originTransform ?? restState), transition: { duration: duration * 0.7, ease: 'easeIn' as const } },
       }
     : {};
+
+  // FLUX-821: Cmd/Ctrl+F must never silently no-op while content is deferred — force immediate
+  // hydration so ChatView's own find-shortcut handler (mounted only once `settled`) takes over.
+  useEffect(() => {
+    if (settled || !isTopmost) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        setSettled(true);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [settled, isTopmost]);
 
   // Drag the title bar to move the window. Tracked as `{left, bottom}` (bottom-pinned) so it
   // composes with the bottom-pinned resize. Clamped to keep the window on screen.
@@ -2670,8 +2723,19 @@ const ChatWindow = memo(function ChatWindow({
       // FLUX-801: bring this window above its siblings when the user interacts with it.
       onMouseDown={() => onRaise?.(id)}
       {...motionProps}
+      // FLUX-1418: flips `settled` once the open spring finishes, revealing the deferred heavy
+      // content (see the effects above `startDrag`).
+      onAnimationComplete={handleAnimationComplete}
       className="eh-surface eh-border fixed z-50 flex flex-col overflow-hidden rounded-2xl border shadow-2xl"
-      style={{ bottom, left, width: outerW, height: size.h }}
+      style={{
+        bottom,
+        left,
+        width: outerW,
+        height: size.h,
+        // FLUX-1418: promote the layer up front instead of leaving Blink to decide mid-spring
+        // (FLUX-1266 precedent) — only while an animation could actually run on this window.
+        ...(animateWindow ? { willChange: 'transform' } : {}),
+      }}
     >
       {/* Resize grip — top-right corner; subtle bracket, grabs to grow up + right. */}
       <div
@@ -2719,8 +2783,10 @@ const ChatWindow = memo(function ChatWindow({
               <div className="relative flex min-h-0 flex-1 overflow-hidden">
                 <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                   <ChatMetadataBar c={c} />
-                  <ChatDiffPanel task={task} />
-                  <div className="flex min-h-0 flex-1 flex-col px-3 py-3">{chatViewEl}</div>
+                  {settled && <ChatDiffPanel task={task} />}
+                  <div className="flex min-h-0 flex-1 flex-col px-3 py-3">
+                    {settled ? chatViewEl : <ChatWindowLoadingShell />}
+                  </div>
                 </div>
                 {/* FLUX-740/744: the ticket sideview + the draggable divider that rebalances it vs the
                     chat. The wrapper is a flex item that STRETCHES to the body row's (definite) height,
@@ -2739,13 +2805,17 @@ const ChatWindow = memo(function ChatWindow({
                     >
                       {/* FLUX-874: route an artifact-region annotation into THIS chat — enqueue if a
                           turn is live (FIFO), otherwise send straight away (starts/resumes a session). */}
-                      <TicketSideView
-                        c={c}
-                        onSendToChat={(text) => {
-                          if (working || chat.busy) chat.enqueue(text);
-                          else void chat.send(text);
-                        }}
-                      />
+                      {settled ? (
+                        <TicketSideView
+                          c={c}
+                          onSendToChat={(text) => {
+                            if (working || chat.busy) chat.enqueue(text);
+                            else void chat.send(text);
+                          }}
+                        />
+                      ) : (
+                        <ChatWindowLoadingShell />
+                      )}
                     </div>
                   </>
                 )}
@@ -2843,7 +2913,9 @@ const ChatWindow = memo(function ChatWindow({
           />
           <div className="flex min-h-0 flex-1 overflow-hidden">
             <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-              <div className="flex min-h-0 flex-1 flex-col px-3 py-3">{chatViewEl}</div>
+              <div className="flex min-h-0 flex-1 flex-col px-3 py-3">
+                {settled ? chatViewEl : <ChatWindowLoadingShell />}
+              </div>
             </div>
           </div>
         </>

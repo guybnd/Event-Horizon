@@ -102,8 +102,18 @@ export interface UseChatSession {
  * path exists. Either way the data is the durable transcript (the source of truth,
  * polled while `enabled`); the dumb <ChatView/> renders whatever this returns, so
  * one core serves the modal pane, the board popup, and the orchestrator dock.
+ *
+ * `isAnimating` (FLUX-1420): true while the caller's chat window is mid open/minimize spring.
+ * SSE-driven `setMessages`/`setLiveText` commits are buffered (never dropped/coalesced — just
+ * delayed) while true, and flushed the moment it flips back to false, so the recurring React
+ * commits those events drive don't stack on top of the animation.
  */
-export function useChatSession(conversationId: string, enabled = true, working = false): UseChatSession {
+export function useChatSession(
+  conversationId: string,
+  enabled = true,
+  working = false,
+  isAnimating = false,
+): UseChatSession {
   const { subscribeToEvent } = useAppActions();
   // FLUX-750: lazy-hydrate from the module-level transcript cache so a reopened (previously
   // minimized) chat renders its history synchronously on mount — no blank flash, no cold re-fetch
@@ -143,6 +153,41 @@ export function useChatSession(conversationId: string, enabled = true, working =
   // committed) from a no-op refetch (mid-turn activity/progress tick) without a stale closure.
   const messagesRef = useRef<TranscriptMessage[]>(getTranscript(conversationId) ?? []);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
+  // FLUX-1420: mirror of `liveText`, same purpose as `messagesRef` above — lets the buffering
+  // logic below compute the next accrued string without a stale closure.
+  const liveTextRef = useRef(liveText);
+  useEffect(() => { liveTextRef.current = liveText; }, [liveText]);
+
+  // FLUX-1420: buffer SSE-driven `setMessages`/`setLiveText` commits while the chat window's
+  // open/minimize spring is in flight (`isAnimating`), flushing on settle. `isAnimatingRef` mirrors
+  // the prop for the event-driven effect's closures below, which subscribe once per
+  // conversationId/enabled change — not re-subscribed on every animation-state flip. Buffering
+  // delays the COMMIT only; `onDelta` still accrues every token into `pendingLiveTextRef` (or
+  // `liveTextRef` once nothing is pending) so no streamed text is ever dropped or coalesced.
+  const isAnimatingRef = useRef(isAnimating);
+  useEffect(() => { isAnimatingRef.current = isAnimating; }, [isAnimating]);
+  const pendingMsgsRef = useRef<TranscriptMessage[] | null>(null);
+  const pendingLiveTextRef = useRef<string | null>(null);
+  const hasPendingRef = useRef(false);
+  // Flush whatever buffered while animating the instant it settles.
+  useEffect(() => {
+    if (isAnimating || !hasPendingRef.current) return;
+    hasPendingRef.current = false;
+    if (pendingMsgsRef.current !== null) {
+      const msgs = pendingMsgsRef.current;
+      pendingMsgsRef.current = null;
+      pendingLiveTextRef.current = null; // a landed transcript always supersedes a buffered delta
+      messagesRef.current = msgs;
+      setMessages(msgs);
+      setLiveText('');
+      liveTextRef.current = '';
+    } else if (pendingLiveTextRef.current !== null) {
+      const text = pendingLiveTextRef.current;
+      pendingLiveTextRef.current = null;
+      liveTextRef.current = text;
+      setLiveText(text);
+    }
+  }, [isAnimating]);
 
   // FLUX-750: re-seed on a conversationId switch within a reused hook instance. The lazy `useState`
   // initializers above run only once, so without this a hook reused for a different id would keep
@@ -182,8 +227,18 @@ export function useChatSession(conversationId: string, enabled = true, working =
         setLoading(false);
         setTranscript(conversationId, msgs);
         // Keep the same array reference when nothing changed — avoids needless re-renders
-        // (and the scroll-jank they caused).
-        if (sameMessages(messagesRef.current, msgs)) return;
+        // (and the scroll-jank they caused). Compare against a buffered-but-not-yet-flushed
+        // value first (FLUX-1420) so a second event mid-animation isn't misread as "changed"
+        // against the stale, still-committed `messagesRef`.
+        const baseline = pendingMsgsRef.current ?? messagesRef.current;
+        if (sameMessages(baseline, msgs)) return;
+        if (isAnimatingRef.current) {
+          // FLUX-1420: the open/minimize spring is in flight — delay the commit (not the fetch)
+          // so this doesn't stack a React re-render on top of the animation. Flushed on settle.
+          pendingMsgsRef.current = msgs;
+          hasPendingRef.current = true;
+          return;
+        }
         messagesRef.current = msgs;
         setMessages(msgs);
         // FLUX-691: the committed turn just landed in the durable transcript — drop the live
@@ -191,6 +246,7 @@ export function useChatSession(conversationId: string, enabled = true, working =
         // duplicate. Gated on a *real* change: mid-turn activity/progress refetches return the
         // same transcript while text is still streaming, so they never clear/flicker the node.
         setLiveText('');
+        liveTextRef.current = '';
       } catch {
         // Transient — keep last good. Clear the spinner so a failed cold fetch falls back to the
         // empty hint rather than hanging on a spinner until the next event.
@@ -204,10 +260,22 @@ export function useChatSession(conversationId: string, enabled = true, working =
     };
     const onEvent = (d: unknown) => { if (matches(d)) void load(); };
     // FLUX-691: accrue token-by-token deltas for THIS conversation into the live node.
+    // FLUX-1420: every token is always accrued — while animating, only the React commit is
+    // delayed (into `pendingLiveTextRef`, flushed on settle above), never the token itself.
     const onDelta = (d: unknown) => {
       const o = d as { taskId?: string; text?: string } | null;
       if (o && o.taskId === conversationId && typeof o.text === 'string' && o.text) {
-        setLiveText((prev) => prev + o.text);
+        if (isAnimatingRef.current) {
+          const base = pendingLiveTextRef.current ?? liveTextRef.current;
+          pendingLiveTextRef.current = base + o.text;
+          hasPendingRef.current = true;
+        } else {
+          setLiveText((prev) => {
+            const next = prev + o.text;
+            liveTextRef.current = next;
+            return next;
+          });
+        }
       }
     };
     const unsubs = [

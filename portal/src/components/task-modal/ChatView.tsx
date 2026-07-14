@@ -889,8 +889,11 @@ export function ChatView({
       {awaitingInputBanner && <div className="px-0.5">{awaitingInputBanner}</div>}
 
       {/* FLUX-662: inline ask_user_question picker — sits right above the working strip so a
-          parked question is impossible to miss, attached to the chat that asked it. */}
-      {questionPicker}
+          parked question is impossible to miss, attached to the chat that asked it.
+          FLUX-1413: wrapped in a shrinkable flex child (min-h-0 + overflow-hidden) so a tall
+          picker is bounded by the pane's remaining height instead of overflowing it — the
+          transcript above may shrink toward 0 while a question is pending, which is fine. */}
+      {questionPicker && <div className="flex min-h-0 shrink flex-col overflow-hidden">{questionPicker}</div>}
 
       {/* FLUX-639/640: consolidated working strip + activity timeline, pinned above the
           composer so liveness sits where the user's eyes already are. */}

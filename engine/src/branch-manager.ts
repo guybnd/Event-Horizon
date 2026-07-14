@@ -164,7 +164,16 @@ export async function deleteTicketBranch(name: string, force = false): Promise<v
   }
 }
 
-export async function checkGhAuth(): Promise<boolean> {
+export type GhAvailability = { ok: true } | { ok: false; reason: 'not-found' | 'not-authenticated' };
+
+/**
+ * FLUX-1402: distinguishes "gh binary not on PATH" (spawn ENOENT) from "gh present but not signed
+ * in" (`gh auth status` non-zero exit) — the two have different remedies and were previously
+ * conflated into a single "not authenticated" message. `runHardened`'s spawn-`'error'` path
+ * (git-exec.ts) preserves the Node system error's *string* `code === 'ENOENT'`, whereas a
+ * non-zero exit produces a *numeric* `.code` — that type distinction is what separates the two.
+ */
+export async function getGhAvailability(): Promise<GhAvailability> {
   try {
     // FLUX-989: bound `gh auth status` — a hung gh (e.g. mid-prompt) would otherwise
     // block buildGitSyncEnv() and every sync git call behind it forever. A timeout kills
@@ -178,10 +187,25 @@ export async function checkGhAuth(): Promise<boolean> {
     // non-interactive/askpass env either, since `gh auth status` reads gh's own stored auth state
     // rather than prompting for git credentials the way push/fetch can.
     await runGh(['auth', 'status'], { env: process.env });
-    return true;
-  } catch {
-    return false;
+    return { ok: true };
+  } catch (err: unknown) {
+    const code = (err as { code?: string | number } | undefined)?.code;
+    return { ok: false, reason: code === 'ENOENT' ? 'not-found' : 'not-authenticated' };
   }
+}
+
+/** Thin boolean wrapper over {@link getGhAvailability} — kept for the ~7 existing consumers that
+ *  only need a yes/no answer (index.ts's startup probe, buildGitSyncEnv, tests). */
+export async function checkGhAuth(): Promise<boolean> {
+  return (await getGhAvailability()).ok;
+}
+
+/** Human-facing message for a `{ ok: false }` {@link GhAvailability} — shared by every user-facing
+ *  call site so the two remedies (install/PATH vs `gh auth login`) stay consistently worded. */
+export function ghUnavailableMessage(reason: 'not-found' | 'not-authenticated'): string {
+  return reason === 'not-found'
+    ? 'GitHub CLI (gh) not found on PATH. Install it (e.g. `brew install gh`) and ensure it is on PATH.'
+    : 'gh is not authenticated. Run `gh auth login`.';
 }
 
 /** Marker embedded in a PR body per ticket so a re-raised/retried call doesn't double-append. */

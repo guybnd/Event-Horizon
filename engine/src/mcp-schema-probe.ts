@@ -2,9 +2,11 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { getModuleMcpServers, getWorkspaceMcpServers } from './modules.js';
 import { getWorkspaceRoot } from './workspace.js';
+import { buildMcpServer } from './mcp-server.js';
 
 // Server config as sourced from either the module system (`{command,args,env}`) or a workspace
 // `.mcp.json` entry (arbitrary JSON — may also carry `type`/`url` for http/sse transports). This
@@ -27,6 +29,27 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
     p,
     new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
   ]);
+}
+
+/** Measures the serialized (name + description + inputSchema) cost of each tool from a
+ *  `tools/list` result — the shared sizing logic for both the subprocess probe below and
+ *  the in-process self-probe (FLUX-1376). */
+function measureTools(tools: Array<{ name: string; description?: string | undefined; inputSchema?: unknown }>): {
+  tools: Array<{ name: string; bytes: number; tokensEst: number }>;
+  toolsBytes: number;
+  toolsTokensEst: number;
+} {
+  const measured = tools
+    .map((t) => {
+      const m = measure({ name: t.name, description: t.description, inputSchema: t.inputSchema });
+      return { name: t.name, bytes: m.bytes, tokensEst: m.tokensEst };
+    })
+    .sort((a, b) => b.bytes - a.bytes);
+  return {
+    tools: measured,
+    toolsBytes: measured.reduce((s, t) => s + t.bytes, 0),
+    toolsTokensEst: measured.reduce((s, t) => s + t.tokensEst, 0),
+  };
 }
 
 export interface McpServerSchemaMetrics {
@@ -104,14 +127,7 @@ export async function probeMcpServer(
     // (same pattern as mcp-server.ts's StreamableHTTPServerTransport cast).
     await withTimeout(client.connect(transport as Transport), timeoutMs, `connect(${id})`);
     const res = await withTimeout(client.listTools(), timeoutMs, `listTools(${id})`);
-    const tools = (res.tools ?? [])
-      .map((t) => {
-        const m = measure({ name: t.name, description: t.description, inputSchema: t.inputSchema });
-        return { name: t.name, bytes: m.bytes, tokensEst: m.tokensEst };
-      })
-      .sort((a, b) => b.bytes - a.bytes);
-    const toolsBytes = tools.reduce((s, t) => s + t.bytes, 0);
-    const toolsTokensEst = tools.reduce((s, t) => s + t.tokensEst, 0);
+    const { tools, toolsBytes, toolsTokensEst } = measureTools(res.tools ?? []);
 
     const instr = measure(client.getInstructions());
 
@@ -172,4 +188,51 @@ export async function probeModuleMcpSchemas(phase?: string, tags?: string[], tim
     totalTokensEst: results.reduce((s, r) => s + r.totalTokensEst, 0),
     note: ids.length === 0 ? 'No module MCP servers are active for this workspace/phase.' : 'Module MCP servers only.',
   };
+}
+
+/**
+ * Measures EH's OWN MCP tool schemas — no subprocess, no network hop. `probeMcpServer`
+ * above can technically reach `event-horizon` too (it's listed in `.mcp.json` as an
+ * http server pointing at the engine's own loopback port, `getWorkspaceMcpServers`
+ * picks it up, and `StreamableHTTPClientTransport` connects fine) — but that makes the
+ * result depend on the live HTTP server being up on a known port, which doesn't hold in
+ * tests or if the port is reconfigured. `buildMcpServer()` (mcp-server.ts) only
+ * *registers* tool schemas synchronously (no I/O); connecting an SDK `Client` over an
+ * `InMemoryTransport` pair drives the same handshake + `tools/list` round-trip
+ * `probeMcpServer` does for other servers, in-process, deterministically. Tool
+ * *handlers* are never invoked here (only their schemas via listTools()), so this is
+ * safe to call with no active workspace/session-store, e.g. from a test.
+ */
+export async function probeSelfMcpSchema(): Promise<McpServerSchemaMetrics> {
+  const empty: McpServerSchemaMetrics = {
+    id: 'event-horizon', source: 'self', ok: false, toolCount: 0,
+    toolsBytes: 0, toolsTokensEst: 0, instructionsBytes: 0, instructionsTokensEst: 0,
+    totalBytes: 0, totalTokensEst: 0, tools: [],
+  };
+
+  const server = buildMcpServer();
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'eh-self-schema-probe', version: '1.0.0' }, { capabilities: {} });
+
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const res = await client.listTools();
+    const { tools, toolsBytes, toolsTokensEst } = measureTools(res.tools ?? []);
+    const instr = measure(client.getInstructions());
+
+    return {
+      id: 'event-horizon', source: 'self', ok: true, toolCount: tools.length,
+      toolsBytes, toolsTokensEst,
+      instructionsBytes: instr.bytes, instructionsTokensEst: instr.tokensEst,
+      totalBytes: toolsBytes + instr.bytes,
+      totalTokensEst: toolsTokensEst + instr.tokensEst,
+      tools,
+    };
+  } catch (err) {
+    return { ...empty, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    try { await client.close(); } catch { /* ignore */ }
+    try { await server.close(); } catch { /* ignore */ }
+  }
 }

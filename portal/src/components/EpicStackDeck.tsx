@@ -1,5 +1,5 @@
 import { useState, type MouseEvent } from 'react';
-import { Layers, ArrowUpRight, Maximize2, ChevronUp } from 'lucide-react';
+import { Layers, ArrowUpRight, Maximize2, ChevronUp, Bot } from 'lucide-react';
 import { motion } from 'framer-motion';
 import type { Task, Config } from '../types';
 import { TaskCard } from './TaskCard';
@@ -45,7 +45,10 @@ export function EpicStackDeck({
   if (items.length === 0) return null;
 
   const count = items.length;
-  const allOpen = open.size === count;
+  // FLUX-1422: a subtask an agent is actively working can be in ANY status (Grooming, In Progress, …)
+  // — it must never sit hidden behind a collapsed peek regardless of manual open/collapse state.
+  const isOpen = (t: Task) => open.has(t.id) || hasActiveSession(t);
+  const allOpen = items.every(isOpen);
 
   const toggleOne = (id: string) =>
     setOpen((prev) => {
@@ -84,9 +87,10 @@ export function EpicStackDeck({
         </button>
       </div>
 
-      <div className={`flex flex-col px-1.5 transition-all duration-200 ${open.size > 0 ? 'max-h-[2000px] opacity-100' : 'max-h-0 overflow-hidden opacity-0 group-hover/deck:max-h-[2000px] group-hover/deck:opacity-100'}`}>
+      <div className={`flex flex-col px-1.5 transition-all duration-200 ${items.some(isOpen) ? 'max-h-[2000px] opacity-100' : 'max-h-0 overflow-hidden opacity-0 group-hover/deck:max-h-[2000px] group-hover/deck:opacity-100'}`}>
         {items.map((t, i) => {
-          if (open.has(t.id)) {
+          if (isOpen(t)) {
+            const active = hasActiveSession(t);
             return (
               <motion.div
                 key={t.id}
@@ -96,21 +100,28 @@ export function EpicStackDeck({
                 className="mb-1"
               >
                 {/* Slim collapse handle above the full card (avoids colliding with the card's own
-                    top-right chat button). */}
-                <button
-                  type="button"
-                  onClick={() => toggleOne(t.id)}
-                  className="mb-0.5 flex w-full items-center justify-center gap-1 rounded-md py-0.5 text-[9px] font-semibold uppercase tracking-wide text-indigo-400 transition-colors hover:bg-indigo-100/50 dark:hover:bg-indigo-500/10"
-                  title="Collapse back to peek"
-                >
-                  <ChevronUp className="h-2.5 w-2.5" /> collapse
-                </button>
+                    top-right chat button). Forced open while an agent is active — no collapse
+                    affordance (FLUX-1422), just a small "agent active" indicator instead. */}
+                {active ? (
+                  <div className="mb-0.5 flex w-full items-center justify-center gap-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-500 dark:text-emerald-300/80">
+                    <Bot className="h-2.5 w-2.5 animate-pulse" /> agent active
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => toggleOne(t.id)}
+                    className="mb-0.5 flex w-full items-center justify-center gap-1 rounded-md py-0.5 text-[9px] font-semibold uppercase tracking-wide text-indigo-400 transition-colors hover:bg-indigo-100/50 dark:hover:bg-indigo-500/10"
+                    title="Collapse back to peek"
+                  >
+                    <ChevronUp className="h-2.5 w-2.5" /> collapse
+                  </button>
+                )}
                 <TaskCard task={t} />
               </motion.div>
             );
           }
           // Collapsed peek — a title sliver that LIFTS on hover and reveals the expand affordance.
-          const prevCollapsed = i > 0 && !open.has(items[i - 1].id);
+          const prevCollapsed = i > 0 && !isOpen(items[i - 1]);
           const marginTop = i === 0 ? (epic ? 4 : 0) : prevCollapsed ? -3 : 6;
           return (
             <div key={t.id} className="group/peek relative" style={{ marginTop, zIndex: count - i }}>
@@ -218,6 +229,12 @@ function EpicGhostCard({
       )}
     </div>
   );
+}
+
+/** FLUX-1422: whether an agent is actively working this subtask right now, independent of its
+ *  board status — mirrors the `hasActiveCliSession` check in useTaskCardController. */
+function hasActiveSession(t: Task): boolean {
+  return Boolean(t.cliSession && ['pending', 'running', 'waiting-input'].includes(t.cliSession.status));
 }
 
 /** Pull just the background colour out of a status colour class so a dot can tint by status. */

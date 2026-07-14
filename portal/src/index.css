@@ -387,27 +387,14 @@ body::before {
 
 /* #6 Glow hierarchy — bright green (#00ff41) ONLY for live agent states.
    Interactive hovers use the teal accent. This creates visual priority. */
+/* FLUX-1419: the glows breathe a static peak shadow via opacity (see .bot-border-breathe /
+   .bot-assignee-glow), so the matrix theme now recolors that static shadow instead of swapping
+   in its own box-shadow keyframes. */
 :root[data-theme="matrix"] .bot-border-breathe {
-  animation-name: matrix-bot-breathe;
+  box-shadow: 0 0 0 2px rgba(0, 255, 65, 0.3), 0 0 20px 3px rgba(0, 255, 65, 0.15);
 }
-@keyframes matrix-bot-breathe {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(0, 255, 65, 0), 0 0 4px 0 rgba(0, 255, 65, 0);
-  }
-  50% {
-    box-shadow: 0 0 0 2px rgba(0, 255, 65, 0.3), 0 0 20px 3px rgba(0, 255, 65, 0.15);
-  }
-}
-:root[data-theme="matrix"] .bot-assignee-glow {
-  animation-name: matrix-bot-assignee;
-}
-@keyframes matrix-bot-assignee {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(0, 255, 65, 0);
-  }
-  50% {
-    box-shadow: 0 0 0 3px rgba(0, 255, 65, 0.45), 0 0 12px 2px rgba(0, 255, 65, 0.25);
-  }
+:root[data-theme="matrix"] .bot-assignee-glow::after {
+  box-shadow: 0 0 0 3px rgba(0, 255, 65, 0.45), 0 0 12px 2px rgba(0, 255, 65, 0.25);
 }
 
 /* Live event accents in matrix use the bright green, not the teal */
@@ -599,19 +586,21 @@ body::before {
   position: relative;
 }
 
-/* Matrix activity badges — green-family gradient shimmer */
+/* Matrix activity badges — green-family gradient shimmer.
+   FLUX-1419: the gradient now paints on the badge's ::before via --eh-activity-grad (see
+   .activity-badge), so the theme overrides the custom property, not background-image. */
 :root[data-theme="matrix"] .activity-badge {
-  background-image: linear-gradient(90deg, #064e3b, #047857, #064e3b, #022c22, #064e3b) !important;
+  --eh-activity-grad: linear-gradient(90deg, #064e3b, #047857, #064e3b, #022c22, #064e3b);
   color: #00ff41 !important;
 }
 :root[data-theme="matrix"] .activity-badge--thinking {
-  background-image: linear-gradient(90deg, #022c22, #065f46, #022c22, #064e3b, #022c22) !important;
+  --eh-activity-grad: linear-gradient(90deg, #022c22, #065f46, #022c22, #064e3b, #022c22);
 }
 :root[data-theme="matrix"] .activity-badge--running-command {
-  background-image: linear-gradient(90deg, #052e16, #166534, #052e16, #14532d, #052e16) !important;
+  --eh-activity-grad: linear-gradient(90deg, #052e16, #166534, #052e16, #14532d, #052e16);
 }
 :root[data-theme="matrix"] .activity-badge--editing {
-  background-image: linear-gradient(90deg, #064e3b, #059669, #064e3b, #047857, #064e3b) !important;
+  --eh-activity-grad: linear-gradient(90deg, #064e3b, #059669, #064e3b, #047857, #064e3b);
 }
 
 /* ─── Bulk Override for Textured Themes ───────────────────────────── */
@@ -809,6 +798,10 @@ button:not(:disabled):active {
   70% { transform: scale(0.98); }
 }
 
+/* FLUX-1419: deliberately NOT converted to the pseudo-element recipe — the host
+   (BoardStatusCluster's sessions button) is overflow-hidden, which would clip an ::after's
+   outward ripple, while the element's OWN box-shadow is never self-clipped. It's a single
+   instance in the header, so the per-frame paint cost is negligible. */
 @keyframes agent-session-pulse {
   0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.35); }
   70% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
@@ -839,38 +832,49 @@ button:not(:disabled):active {
   animation: column-arrival-glow 1100ms ease-out;
 }
 
-@keyframes bot-border-breathe {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0), 0 0 6px 0 rgba(52, 211, 153, 0);
-  }
-  50% {
-    box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.2), 0 0 12px 1px rgba(52, 211, 153, 0.1);
-  }
-}
-
-@keyframes bot-assignee-glow {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0);
-  }
-  50% {
-    box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.35), 0 0 8px 1px rgba(52, 211, 153, 0.2);
-  }
-}
-
+/* FLUX-1419: both card glows converted to the FLUX-1266 compositor-only recipe — the peak
+   box-shadow is static and only opacity breathes (shared eh-glow-breathe keyframes, defined
+   with the taskcard glows below). `bot-border-breathe` is applied to TaskCard's dedicated
+   pointer-events-none overlay div, so the shadow + fade live directly on that element (no
+   pseudo needed). `bot-assignee-glow` sits on inline chips (PR deck badges, card footer
+   assignee, session row), so it uses an ::after. */
 .bot-border-breathe {
-  animation: bot-border-breathe 3s ease-in-out infinite;
+  box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.2), 0 0 12px 1px rgba(52, 211, 153, 0.1);
+  opacity: 0;
+  will-change: opacity;
+  animation: eh-glow-breathe 3s ease-in-out infinite;
 }
 
 /* (FLUX-558's `pr-card-glow` on normal tickets was retired in FLUX-569 — the PR's surface is
    now its own PR-<n> deck card, so the open-PR glow keyframes were removed.) */
 
 .bot-assignee-glow {
-  animation: bot-assignee-glow 2s ease-in-out infinite;
+  position: relative;
+}
+.bot-assignee-glow::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.35), 0 0 8px 1px rgba(52, 211, 153, 0.2);
+  opacity: 0;
+  will-change: opacity;
+  animation: eh-glow-breathe 2s ease-in-out infinite;
 }
 
+/* FLUX-1419: the shimmer used to slide `background-position` on the badge itself — a paint
+   per frame. The gradient now lives on a ::before sized to two gradient periods (each tile =
+   200% of the badge, tiled via background-repeat) and slides by exactly one period via
+   `transform` (compositor-only). translateX(-50%) of the 400%-wide pseudo = one 200% tile, and
+   the gradients start/end on the same color, so the loop is seamless. One period per iteration
+   (the old sweep covered two per 2.5s), so 1.25s keeps the on-screen speed identical. The
+   per-variant gradient rides a custom property so the theme/variant overrides only set
+   `--eh-activity-grad`. Reduced motion (global block): the pseudo freezes at translate 0 — a
+   static gradient badge, same as before. */
 @keyframes activity-shimmer {
-  0% { background-position: 200% center; }
-  100% { background-position: -200% center; }
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
 }
 
 .activity-badge {
@@ -882,14 +886,31 @@ button:not(:disabled):active {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.02em;
-  background-size: 200% auto;
-  background-image: linear-gradient(90deg, #334155, #475569, #334155, #1e293b, #334155);
-  animation: activity-shimmer 2.5s linear infinite;
+  --eh-activity-grad: linear-gradient(90deg, #334155, #475569, #334155, #1e293b, #334155);
   color: white;
   white-space: nowrap;
   flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
   /* Dedicated, fixed-width slot so the changing activity text never reflows the card. */
   width: 7rem;
+}
+.activity-badge::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 400%;
+  background-image: var(--eh-activity-grad);
+  background-size: 50% 100%;
+  background-repeat: repeat-x;
+  will-change: transform;
+  animation: activity-shimmer 1.25s linear infinite;
+}
+/* Keep the label (and any future inline glyphs) above the gradient layer. */
+.activity-badge > * {
+  position: relative;
 }
 
 .activity-badge__label {
@@ -901,25 +922,25 @@ button:not(:disabled):active {
 }
 
 .activity-badge--thinking {
-  background-image: linear-gradient(90deg, #6d28d9, #9333ea, #6d28d9, #581c87, #6d28d9);
+  --eh-activity-grad: linear-gradient(90deg, #6d28d9, #9333ea, #6d28d9, #581c87, #6d28d9);
 }
 .activity-badge--running-command {
-  background-image: linear-gradient(90deg, #92400e, #b45309, #92400e, #78350f, #92400e);
+  --eh-activity-grad: linear-gradient(90deg, #92400e, #b45309, #92400e, #78350f, #92400e);
 }
 .activity-badge--editing {
-  background-image: linear-gradient(90deg, #7c3aed, #8b5cf6, #7c3aed, #6d28d9, #7c3aed);
+  --eh-activity-grad: linear-gradient(90deg, #7c3aed, #8b5cf6, #7c3aed, #6d28d9, #7c3aed);
 }
 .activity-badge--reading {
-  background-image: linear-gradient(90deg, #0369a1, #0284c7, #0369a1, #075985, #0369a1);
+  --eh-activity-grad: linear-gradient(90deg, #0369a1, #0284c7, #0369a1, #075985, #0369a1);
 }
 .activity-badge--researching {
-  background-image: linear-gradient(90deg, #0f766e, #0d9488, #0f766e, #115e59, #0f766e);
+  --eh-activity-grad: linear-gradient(90deg, #0f766e, #0d9488, #0f766e, #115e59, #0f766e);
 }
 .activity-badge--delegating {
-  background-image: linear-gradient(90deg, #4338ca, #4f46e5, #4338ca, #3730a3, #4338ca);
+  --eh-activity-grad: linear-gradient(90deg, #4338ca, #4f46e5, #4338ca, #3730a3, #4338ca);
 }
 .activity-badge--planning {
-  background-image: linear-gradient(90deg, #047857, #059669, #047857, #064e3b, #047857);
+  --eh-activity-grad: linear-gradient(90deg, #047857, #059669, #047857, #064e3b, #047857);
 }
 
 .column-live-badge,
@@ -967,50 +988,92 @@ button:not(:disabled):active {
   color: #e3ffdd !important;
 }
 
-/* Unread-comment badge: a soft attention ring so it reads at a glance. */
+/* Unread-comment badge: a soft attention ring so it reads at a glance.
+   FLUX-1419: dozens of these pulse at once on a busy board and animated box-shadow repaints
+   every frame. The ring now lives statically on an ::after and only opacity/transform animate
+   (compositor-only) — the FLUX-1266 recipe. Base opacity 0 so reduced-motion (animation: none)
+   shows no ring, matching the old 0%-frame (0-spread = invisible). */
 @keyframes eh-unread-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.5); }
-  50% { box-shadow: 0 0 0 5px rgba(245, 158, 11, 0); }
+  0%, 100% { opacity: 0.55; transform: scale(0.9); }
+  50% { opacity: 0; transform: scale(1.15); }
 }
 
-.eh-unread-badge {
+.eh-unread-badge::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.5);
+  opacity: 0;
+  will-change: opacity, transform;
   animation: eh-unread-pulse 2.2s ease-in-out infinite;
 }
 
 /* ─── Chat taskbar cards (FLUX-607) ──────────────────────────────────
    Per-chat state glow for the bottom dock. Working = accent breathe;
    attention states (needs-input / finished / failed) each get a distinct
-   colored border glow so the user can tell them apart at a glance. */
-@keyframes eh-taskcard-working {
-  0%, 100% { box-shadow: 0 0 0 0 var(--eh-accent-glow); }
-  50% { box-shadow: 0 0 0 3px var(--eh-accent-glow), 0 0 14px 2px var(--eh-accent-glow); }
+   colored border glow so the user can tell them apart at a glance.
+   FLUX-1419: the glow's PEAK box-shadow sits statically on an ::after and only its opacity
+   breathes 0→1→0 (compositor-only; the FLUX-1266 recipe). Fading a static shadow pair scales
+   both alphas together — identical to the old keyframe interpolation, without the per-frame
+   repaint. Shared breathe keyframes; per-state shadow + duration below. Hosts (dock tabs,
+   AttentionDock button) are already `relative` and never overflow-hidden — an overflow-hidden
+   host would clip its descendants' shadows (see .eh-panel-attention-pulse). */
+@keyframes eh-glow-breathe {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
 }
-.eh-taskcard-working {
-  animation: eh-taskcard-working 1.8s ease-in-out infinite;
+/* Variant for glows whose resting frame is a FAINT ring rather than none (attention glow). */
+@keyframes eh-glow-breathe-half {
+  0%, 100% { opacity: 0.52; }
+  50% { opacity: 1; }
+}
+.eh-taskcard-working,
+.eh-taskcard-needs-input,
+.eh-taskcard-finished,
+.eh-taskcard-error {
+  position: relative;
+}
+.eh-taskcard-working::after,
+.eh-taskcard-needs-input::after,
+.eh-taskcard-finished::after,
+.eh-taskcard-error::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  will-change: opacity;
+  animation: eh-glow-breathe 2s ease-in-out infinite;
+}
+.eh-taskcard-working::after {
+  box-shadow: 0 0 0 3px var(--eh-accent-glow), 0 0 14px 2px var(--eh-accent-glow);
+  animation-duration: 1.8s;
+}
+.eh-taskcard-needs-input::after {
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.55), 0 0 14px 2px rgba(245, 158, 11, 0.3);
+}
+.eh-taskcard-finished::after {
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.5), 0 0 14px 2px rgba(16, 185, 129, 0.28);
+  animation-duration: 2.4s;
+}
+.eh-taskcard-error::after {
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.55), 0 0 14px 2px rgba(239, 68, 68, 0.3);
 }
 
-@keyframes eh-taskcard-needs-input {
+/* FLUX-1419: FloatingPanel's attention pulse (FLUX-809) used to reuse eh-taskcard-needs-input,
+   but the panel root is overflow-hidden (rounded-corner content clip), which would clip an
+   ::after's shadow — an element's own box-shadow is never self-clipped, so this ONE bounded
+   instance (a single attention panel, only while prompts wait) keeps the legacy animated
+   box-shadow on the host. */
+@keyframes eh-panel-attention-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
   50% { box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.55), 0 0 14px 2px rgba(245, 158, 11, 0.3); }
 }
-.eh-taskcard-needs-input {
-  animation: eh-taskcard-needs-input 2s ease-in-out infinite;
-}
-
-@keyframes eh-taskcard-finished {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-  50% { box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.5), 0 0 14px 2px rgba(16, 185, 129, 0.28); }
-}
-.eh-taskcard-finished {
-  animation: eh-taskcard-finished 2.4s ease-in-out infinite;
-}
-
-@keyframes eh-taskcard-error {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
-  50% { box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.55), 0 0 14px 2px rgba(239, 68, 68, 0.3); }
-}
-.eh-taskcard-error {
-  animation: eh-taskcard-error 2s ease-in-out infinite;
+.eh-panel-attention-pulse {
+  animation: eh-panel-attention-pulse 2s ease-in-out infinite;
 }
 
 /* Parked & resumable: a calm, steady ring — present but not clamoring for attention.
@@ -1020,13 +1083,22 @@ button:not(:disabled):active {
 }
 
 /* FLUX-898: a new / unacknowledged attention item glows its border until acknowledged (read ≠
-   resolved). Used on needs-you cards + the peek. The companion dot pulses opacity. */
-@keyframes eh-attention-glow {
-  0%, 100% { box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.45), 0 0 10px 0 rgba(245, 158, 11, 0.2); }
-  50% { box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.85), 0 0 18px 2px rgba(245, 158, 11, 0.42); }
-}
+   resolved). Used on needs-you cards + the peek. The companion dot pulses opacity.
+   FLUX-1419: peak shadow static on ::after, opacity breathes 0.52⇄1 (the old 0% frame was a
+   faint ring at ~half the peak alphas, not none — eh-glow-breathe-half preserves that). */
 .eh-attention-glow {
-  animation: eh-attention-glow 1.9s ease-in-out infinite;
+  position: relative;
+}
+.eh-attention-glow::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.85), 0 0 18px 2px rgba(245, 158, 11, 0.42);
+  opacity: 0;
+  will-change: opacity;
+  animation: eh-glow-breathe-half 1.9s ease-in-out infinite;
 }
 /* FLUX-923: a freshly-mounted inline prompt (ask_user_question picker / require-input banner) pulses
    its border a few times on arrival, then settles to a quiet ring — so a question raised while the
@@ -1094,13 +1166,16 @@ button:not(:disabled):active {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  /* FLUX-1419: the glow loops moved onto ::after pseudo-elements — target those (a pseudo with
+     animation: none rests at its base opacity: 0, i.e. no ring, matching the old 0% frames). */
   .eh-logo-button::after,
-  .eh-unread-badge,
-  .eh-taskcard-working,
-  .eh-taskcard-needs-input,
-  .eh-taskcard-finished,
-  .eh-taskcard-error,
-  .eh-attention-glow,
+  .eh-unread-badge::after,
+  .eh-taskcard-working::after,
+  .eh-taskcard-needs-input::after,
+  .eh-taskcard-finished::after,
+  .eh-taskcard-error::after,
+  .eh-panel-attention-pulse,
+  .eh-attention-glow::after,
   .eh-attention-dot,
   .eh-eye-scan circle,
   .eh-thinking-dot,

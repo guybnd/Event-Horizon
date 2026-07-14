@@ -61,6 +61,7 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
   let server: http.Server;
   let baseUrl: string;
   let startMock: ReturnType<typeof vi.fn<(session: CliSessionRecord) => Promise<void>>>;
+  let sendInputMock: ReturnType<typeof vi.fn<AgentAdapter['sendInput']>>;
 
   beforeEach(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-cli-session-'));
@@ -92,10 +93,11 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
       costModel: { inputPerMToken: 0, outputPerMToken: 0, currency: 'usd' },
       capabilities: { compacting: false, effortLevels: [], memoryFiles: false },
     };
+    sendInputMock = vi.fn().mockResolvedValue(undefined);
     const adapterMock: AgentAdapter = {
       labelForFramework: () => 'Claude',
       start: startMock,
-      sendInput: vi.fn(),
+      sendInput: sendInputMock,
       stop: vi.fn(),
       manifest,
     };
@@ -342,6 +344,37 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
       const res = await startRoleless({});
       expect(res.status).toBe(201);
       expect(cliSessionsById.get('pre')?.status).toBe('cancelled');
+    });
+  });
+
+  // FLUX-1392: a stuck 'running' session (sendCliSessionInput sets status='running' before a later
+  // awaited step throws, leaving it never reset) must 409 rather than accept a follow-up turn — a
+  // blind retry against the real route (unlike resume-or-dispatch.test.ts's mocked-fetch suite) would
+  // otherwise spawn a second concurrent `claude --resume`, mirroring the FLUX-714 board guard.
+  describe('mid-turn guard on the ticket-session branch (FLUX-1392)', () => {
+    async function sendInput(body: Record<string, unknown> = {}) {
+      return fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/input`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'go', user: 'Guy', ...body }),
+      });
+    }
+
+    it('409s a follow-up turn against a running session instead of double-dispatching', async () => {
+      seedBlockingSession({ status: 'running', resumeSessionId: 'resume-me' });
+      const res = await sendInput();
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/mid-turn/);
+      expect(cliSessionsById.get('pre')?.status).toBe('running'); // untouched
+      expect(sendInputMock).not.toHaveBeenCalled();
+    });
+
+    it('still accepts a follow-up turn against a waiting-input session', async () => {
+      seedBlockingSession({ status: 'waiting-input', resumeSessionId: 'resume-me' });
+      const res = await sendInput();
+      expect(res.status).toBe(200);
+      expect(sendInputMock).toHaveBeenCalledTimes(1);
     });
   });
 

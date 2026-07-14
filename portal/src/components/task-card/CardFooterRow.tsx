@@ -40,6 +40,7 @@ export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: 
     assigneeMenuRef,
     rattleControls,
     hasActiveCliSession,
+    isSessionRunning,
     visibleAssignee,
     assigneeMenuOpen,
     allUsers,
@@ -186,7 +187,7 @@ export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: 
               setTagMenuOpen(false);
             }
           }}
-          className={`${CARD_CHIP_BASE} transition-colors ${hasActiveCliSession ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300 bot-assignee-glow cursor-default' : 'bg-gray-100 text-gray-500 dark:bg-black/20 dark:text-gray-400'}`}
+          className={`${CARD_CHIP_BASE} transition-colors ${hasActiveCliSession ? `${isSessionRunning ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300 bot-assignee-glow' : 'bg-gray-100 text-gray-500 dark:bg-black/20 dark:text-gray-400'} cursor-default` : 'bg-gray-100 text-gray-500 dark:bg-black/20 dark:text-gray-400'}`}
         >
           {hasActiveCliSession ? <Bot className="w-3 h-3 shrink-0" /> : <User className="w-3 h-3 shrink-0" />}
           <span className={`${CARD_CHIP_TEXT} max-w-[88px]`}>{hasActiveCliSession && task.cliSession ? task.cliSession.label : visibleAssignee === 'unassigned' ? 'Unassigned' : visibleAssignee}</span>

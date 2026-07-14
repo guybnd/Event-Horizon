@@ -258,6 +258,11 @@ export function useTaskCardController({
   // `currentActivity` above), and keep `hasActiveCliSession` unchanged — other call sites depend on
   // it covering all three active statuses.
   const sessionState = classifyCardSessionState(task, liveSession?.status, config);
+  // FLUX-1414: the calm parked sub-states (`idle` — clean turn-end waiting for the user;
+  // `needs-input` — genuinely blocked on the user) are still `hasActiveCliSession` (the session
+  // record itself is live), but they must NOT drive the card's "agent is actively working" chrome
+  // (border glow, breathing overlay, footer bot-glow) — only `running`/`starting` should.
+  const isSessionRunning = sessionState === 'running' || sessionState === 'starting';
   // S10 (epic FLUX-996): the SSE-fed failure detail (kind/reason), scoped to the task's CURRENT
   // session — a stale failure from a superseded session (a retry that has since started a new
   // one) must never outlive it and read as if the fresh attempt failed.
@@ -854,6 +859,7 @@ export function useTaskCardController({
     snippet,
     readCommentIds,
     hasActiveCliSession,
+    isSessionRunning,
     currentActivity,
     sessionState,
     operationFailure,

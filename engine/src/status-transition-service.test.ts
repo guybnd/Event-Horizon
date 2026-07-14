@@ -28,7 +28,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 // worktree/PR. Everything else passes through via importActual.
 vi.mock('./branch-manager.js', async () => {
   const actual = await vi.importActual<typeof import('./branch-manager.js')>('./branch-manager.js');
-  return { ...actual, getTicketBranchStatus: vi.fn(), createPullRequest: vi.fn(), checkGhAuth: vi.fn() };
+  return { ...actual, getTicketBranchStatus: vi.fn(), createPullRequest: vi.fn(), checkGhAuth: vi.fn(), getGhAvailability: vi.fn() };
 });
 vi.mock('./task-worktree.js', async () => {
   const actual = await vi.importActual<typeof import('./task-worktree.js')>('./task-worktree.js');
@@ -51,7 +51,7 @@ import { buildMcpServer } from './mcp-server.js';
 import { setWorkspaceRoot } from './workspace.js';
 import { requireWorkspace } from './middleware.js';
 import { getConfig } from './config.js';
-import { getTicketBranchStatus, createPullRequest, checkGhAuth } from './branch-manager.js';
+import { getTicketBranchStatus, createPullRequest, checkGhAuth, getGhAvailability } from './branch-manager.js';
 import { findWorktreeForBranch, worktreeUncommittedCount } from './task-worktree.js';
 import { startPlanGateNow } from './gate-runner.js';
 
@@ -300,6 +300,7 @@ describe('REST PUT ↔ MCP parity (FLUX-1044 shared status-transition rules)', (
     vi.mocked(getTicketBranchStatus).mockReset();
     vi.mocked(createPullRequest).mockReset();
     vi.mocked(checkGhAuth).mockReset().mockResolvedValue(true);
+    vi.mocked(getGhAvailability).mockReset().mockResolvedValue({ ok: true });
     vi.mocked(findWorktreeForBranch).mockReset();
     vi.mocked(worktreeUncommittedCount).mockReset();
     vi.mocked(startPlanGateNow).mockReset().mockResolvedValue({ ok: true, message: 'plan gate started (test stub)' });

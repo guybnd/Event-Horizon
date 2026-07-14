@@ -15,7 +15,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 // FLUX-1031 reclaim sweep) keeps working normally.
 vi.mock('./branch-manager.js', async () => {
   const actual = await vi.importActual<typeof import('./branch-manager.js')>('./branch-manager.js');
-  return { ...actual, getTicketBranchStatus: vi.fn(), createPullRequest: vi.fn(), checkGhAuth: vi.fn() };
+  return { ...actual, getTicketBranchStatus: vi.fn(), createPullRequest: vi.fn(), checkGhAuth: vi.fn(), getGhAvailability: vi.fn() };
 });
 vi.mock('./task-worktree.js', async () => {
   const actual = await vi.importActual<typeof import('./task-worktree.js')>('./task-worktree.js');
@@ -25,7 +25,7 @@ vi.mock('./task-worktree.js', async () => {
 import { buildMcpServer } from './mcp-server.js';
 
 import { setWorkspaceRoot } from './workspace.js';
-import { getTicketBranchStatus, createPullRequest, checkGhAuth } from './branch-manager.js';
+import { getTicketBranchStatus, createPullRequest, checkGhAuth, getGhAvailability } from './branch-manager.js';
 import { findWorktreeForBranch, worktreeUncommittedCount } from './task-worktree.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -67,6 +67,7 @@ describe('change_status noDiffExpected handler path (FLUX-1268)', () => {
     vi.mocked(getTicketBranchStatus).mockReset();
     vi.mocked(createPullRequest).mockReset();
     vi.mocked(checkGhAuth).mockReset().mockResolvedValue(true);
+    vi.mocked(getGhAvailability).mockReset().mockResolvedValue({ ok: true });
     vi.mocked(findWorktreeForBranch).mockReset();
     vi.mocked(worktreeUncommittedCount).mockReset();
   });

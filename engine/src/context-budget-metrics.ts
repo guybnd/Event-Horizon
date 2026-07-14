@@ -4,6 +4,7 @@ import { computeAgentPayloadMetrics, type AgentPayloadMetrics } from './agent-pa
 import { getCliSessionSummaryForTask } from './session-store.js';
 import { buildCoreSkillDocument } from './skill-core.js';
 import { isInjectablePhaseModule, loadSkillModuleBodySync, skillModuleFallback } from './skill-modules.js';
+import { probeSelfMcpSchema, type McpServerSchemaMetrics } from './mcp-schema-probe.js';
 
 /**
  * Ticket/frontmatter-shaped input. There is no single canonical Task type in
@@ -152,6 +153,13 @@ export interface ContextBudget {
   agentPayload: AgentPayloadMetrics;
   launchPrompt: LaunchPromptMetrics;
   skillModules: SkillModuleMetrics;
+  /** FLUX-1376: EH's own MCP tool schemas (name + description + inputSchema per
+   * `server.tool()`/`registerTool()` registration), measured in-process via
+   * `probeSelfMcpSchema` — the actually-registered set for this build of
+   * `buildMcpServer()`, not a hardcoded/stale snapshot. Per-tool breakdown lives
+   * in `.tools`, sorted heaviest-first, to target future description/schema diet
+   * work (FLUX-1386). `ok:false` (with `.error`) if the in-process probe fails. */
+  ehToolSchemas: McpServerSchemaMetrics;
   ehMeasurableTotalTokensEst: number;
   /** Actual token totals from this ticket's most recent agent session (from the
    * host, via the adapter) — the real number to compare the measured static
@@ -168,13 +176,16 @@ export async function computeContextBudget(task: MetricsTask): Promise<ContextBu
   const payload = computeAgentPayloadMetrics(task);
   const launchPrompt = computeLaunchPromptMetrics(task);
   const skillModules = await computeSkillModuleMetrics(launchPrompt.phase ?? undefined);
+  const ehToolSchemas = await probeSelfMcpSchema();
 
   // FLUX-1377: launchPrompt already includes the injected phase skill module (buildInitialPrompt
   // appends it for Claude spawns) — add only skillModules.coreTokensEst (the static installed
   // rules file) here, not skillModules.totalTokensEst (core + module), or the module would be
   // double-counted.
+  // FLUX-1376: ehToolSchemas reports the FULL currently-registered toolset — there is no
+  // per-role scoping yet (FLUX-1385), so this is also the real per-session number today.
   const ehMeasurableTotalTokensEst =
-    payload.totalTokensEst + launchPrompt.totalTokensEst + skillModules.coreTokensEst;
+    payload.totalTokensEst + launchPrompt.totalTokensEst + skillModules.coreTokensEst + ehToolSchemas.totalTokensEst;
 
   const s = getCliSessionSummaryForTask(task.id);
   // Spread conditionally rather than assigning `undefined` fields directly —
@@ -195,13 +206,23 @@ export async function computeContextBudget(task: MetricsTask): Promise<ContextBu
     agentPayload: payload,
     launchPrompt,
     skillModules,
+    ehToolSchemas,
     ehMeasurableTotalTokensEst,
     ...(session ? { session } : {}),
     caveats: [
       "Excludes Claude Code's own system prompt (not engine-controlled).",
-      'Excludes external MCP server tool schemas (serena, context7, etc.) — measured by the host, not the engine.',
+      'Excludes external MCP server tool schemas (serena, context7, etc.) — measured by the host, not the engine (see /debug/mcp-schemas for those, on-demand).',
       'Excludes conversation + tool-result accumulation that grows during a session.',
-      "EH's own MCP tool schemas are not measured here yet — pending the registerMcpTools extraction (FLUX-491/FLUX-481).",
+      // FLUX-1376: FLUX-491/FLUX-481 (the tickets the old caveat cited as blockers) are both
+      // Archived — 491 folded into the Released FLUX-882 tool consolidation, 481 was
+      // deprioritized. Neither ever did the registerMcpTools extraction; ehToolSchemas above
+      // measures the live buildMcpServer() registration directly instead, so no extraction was
+      // needed. Verified empirically (2026-07-14) that `--disallowed-tools` genuinely removes
+      // the listed tools from the CLI's own advertised tool set and measurably cuts
+      // cache_creation_input_tokens for an otherwise-identical spawn (55,541 -> 40,406 tokens
+      // disallowing 28/29 EH tools) — i.e. it is NOT merely a call-blocking permission layer, it
+      // is real schema-weight savings. FLUX-1385 (per-role toolsets) can lean on this CLI flag.
+      ...(!ehToolSchemas.ok ? [`Could not measure EH's own MCP tool schemas: ${ehToolSchemas.error ?? 'unknown error'}.`] : []),
       'Token counts are a chars/4 estimate for relative ranking, not an exact tokenizer count.',
     ],
   };

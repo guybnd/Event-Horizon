@@ -1449,12 +1449,49 @@ describe('task-worktree', () => {
 
         expect(reclaimed).toEqual([]);
         expect(onStuck).toHaveBeenCalledTimes(1);
-        const [stuckId, stuckPath, stuckErr] = onStuck.mock.calls[0]!;
+        const [stuckId, stuckPath, stuckErr, stuckKind] = onStuck.mock.calls[0]!;
         expect(stuckId).toBe('FLUX-1');
         expect(path.basename(stuckPath)).toBe(path.basename(wt));
         expect((stuckErr as Error).message).toBe('simulated lock');
+        // FLUX-1411: the failure kind lets the caller word its message correctly ('detach' vs 'remove').
+        expect(stuckKind).toBe('detach');
         // Nothing was discarded — the worktree and its uncommitted file survive the failed attempt.
         expect(existsSync(path.join(wt, 'precious.txt'))).toBe(true);
+      });
+
+      // FLUX-1411: a CLEAN worktree's plain removal can still fail (e.g. a transient Windows file
+      // lock) — previously a silent `catch {}` in reclaimWorktrees. onStuck must report this as a
+      // 'remove' failure (not 'detach'), since the worktree has no uncommitted changes to blame.
+      it("calls onStuck with kind 'remove' (not 'detach') when a CLEAN worktree fails to be removed", async () => {
+        const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+
+        const realRunner = (cwd: string, args: string[]) =>
+          execFileAsync('git', ['-C', cwd, ...args], { windowsHide: true }).then((r) => ({ stdout: r.stdout, stderr: r.stderr }));
+        let statusCalls = 0;
+        const gitRunner = async (cwd: string, args: string[]) => {
+          if (args[0] === 'worktree' && args[1] === 'remove' && !args.includes('--force')) {
+            throw new Error('simulated lock');
+          }
+          if (args[0] === 'status' && args[1] === '--porcelain') {
+            statusCalls += 1;
+            // 1st call: reclaimWorktrees' own dirty check (must read clean so this hits the
+            // remove path, not the detach path). 2nd call: removeTaskWorktree's own re-check
+            // after the plain remove fails — force it to see (fake) uncommitted changes so
+            // removeTaskWorktree's dirty-refusal throws instead of silently force-removing.
+            return { stdout: statusCalls === 1 ? '' : ' M fake\n', stderr: '' };
+          }
+          return realRunner(cwd, args);
+        };
+
+        const onStuck = vi.fn();
+        const reclaimed = await reclaimWorktrees(repo, () => true, { gitRunner, onStuck });
+
+        expect(reclaimed).toEqual([]);
+        expect(onStuck).toHaveBeenCalledTimes(1);
+        const [stuckId, , , stuckKind] = onStuck.mock.calls[0]!;
+        expect(stuckId).toBe('FLUX-1');
+        expect(stuckKind).toBe('remove');
+        expect(existsSync(wt)).toBe(true);
       });
     });
   });

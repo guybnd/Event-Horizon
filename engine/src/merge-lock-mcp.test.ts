@@ -7,10 +7,15 @@
 // cannot forge a "human touch" anymore — mcp-server.ts stamps its own comment entries
 // `selfAttested`, and hasHumanGateTouch ignores those regardless of the claimed `user`.
 //
-// checkGhAuth is mocked to `false` so the "past the merge-lock" case is deterministic without a
-// real `gh` — it lets finish_ticket reach (and fail at) the next, differently-worded gh-auth check,
-// which is enough to prove the merge-lock itself did not block the call.
-vi.mock('./branch-manager.js', () => ({ checkGhAuth: vi.fn().mockResolvedValue(false) }));
+// getGhAvailability is mocked to unavailable so the "past the merge-lock" case is deterministic
+// without a real `gh` — it lets finish_ticket reach (and fail at) the next, differently-worded
+// gh-auth check, which is enough to prove the merge-lock itself did not block the call.
+vi.mock('./branch-manager.js', () => ({
+  checkGhAuth: vi.fn().mockResolvedValue(false),
+  getGhAvailability: vi.fn().mockResolvedValue({ ok: false, reason: 'not-authenticated' }),
+  ghUnavailableMessage: (reason: 'not-found' | 'not-authenticated') =>
+    reason === 'not-found' ? 'GitHub CLI (gh) not found on PATH.' : 'gh is not authenticated. Run `gh auth login`.',
+}));
 
 import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
@@ -164,7 +169,7 @@ describe('finish_ticket merge-lock — MCP handler integration (FLUX-1271)', () 
       // differently-worded refusal that proves the lock itself did not block this call.
       expect(res.isError).toBe(true);
       expect(textOf(res)).not.toContain('merge-lock');
-      expect(textOf(res)).toContain('gh not configured');
+      expect(textOf(res)).toContain('not authenticated');
       expect(getWorkspace().tasks[TICKET].status).toBe('In Progress');
     } finally {
       dropTask(TICKET);
@@ -247,7 +252,7 @@ describe('finish_ticket merge-lock — blockAgentPrMerges gate (FLUX-1290)', () 
       // Past the merge-lock, finish_ticket hits the (mocked-false) gh-auth check next — proving the
       // lock itself did not block this call despite zero human touch in history.
       expect(textOf(res)).not.toContain('merge-lock');
-      expect(textOf(res)).toContain('gh not configured');
+      expect(textOf(res)).toContain('not authenticated');
     } finally {
       dropTask(TICKET);
     }
@@ -263,7 +268,7 @@ describe('finish_ticket merge-lock — blockAgentPrMerges gate (FLUX-1290)', () 
         arguments: { ticketId: TICKET, implementationLink: 'abc1234', completionComment: 'Done.' },
       });
       expect(textOf(res)).not.toContain('merge-lock');
-      expect(textOf(res)).toContain('gh not configured');
+      expect(textOf(res)).toContain('not authenticated');
     } finally {
       dropTask(TICKET);
     }

@@ -30,7 +30,7 @@ export function CardCommentBadge({ task, c, compact = false, inline = false }: {
   // comments (neutral count) > none (muted "add a comment" affordance).
   const stateCls = hasUnread
     ? inline
-      ? 'eh-unread-badge bg-amber-400 px-2 py-0.5 text-[10px] font-bold text-amber-950 ring-1 ring-amber-300 hover:bg-amber-300 active:scale-95 dark:ring-amber-500/30'
+      ? 'relative eh-unread-badge bg-amber-400 px-2 py-0.5 text-[10px] font-bold text-amber-950 ring-1 ring-amber-300 hover:bg-amber-300 active:scale-95 dark:ring-amber-500/30'
       : `${compact ? 'top-2 right-2' : isPromptStatus ? '-top-3.5 right-7' : '-top-3.5 right-3'} eh-unread-badge px-2.5 py-1 text-[11px] font-bold bg-amber-400 text-amber-950 ring-2 ring-white shadow-md hover:bg-amber-300 hover:scale-110 active:scale-95 dark:ring-[#1f2028]`
     : totalCommentCount > 0
       ? inline

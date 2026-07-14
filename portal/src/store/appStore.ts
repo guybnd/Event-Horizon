@@ -149,7 +149,7 @@ export interface AppActions {
   clearOpenModalScrollToComments: () => void;
   refreshWorktrees: () => void;
   setChangesFocus: (v: string | null) => void;
-  triggerRefresh: () => void;
+  triggerRefresh: () => Promise<void>;
   subscribeToEvent: (eventType: string, handler: (data: unknown) => void) => () => void;
   notifyWorkspaceSet: () => void;
   switchWorkspace: (path: string) => Promise<void>;

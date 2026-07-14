@@ -58,6 +58,15 @@ interface CachedTicket {
 
 // ─── Worktree reclamation at Ready (FLUX-1031) ───────────────────────────────
 
+/**
+ * FLUX-1411: which `(ticketId, worktreePath, failureKind)` stuck slots have already been surfaced
+ * (board notification + ticket-history entry) by {@link reclaimReadyWorktrees}'s `onStuck` handler,
+ * so a persistently-stuck slot notifies ONCE per episode instead of on every reconcile tick.
+ * Module-level and process-lifetime: entries are pruned once a slot stops appearing as stuck, so a
+ * later re-occurrence (or a different failure kind on the same slot) notifies again.
+ */
+const stuckWorktreeSlotsNotified = new Set<string>();
+
 /** Why {@link worktreeUnreclaimableReason} refused — surfaced by the Furnace's slot-holder naming (FLUX-1157). */
 export type UnreclaimableReason = 'unknown-ticket' | 'live-session' | 'recent-activity' | 'status';
 
@@ -266,31 +275,49 @@ export async function reclaimReadyWorktrees(workspaceRoot: string): Promise<stri
     if (rule) rules.set(ticketId, typeof rule === 'string' ? rule : 'reclaimable');
     return rule;
   };
+  // FLUX-1411: a worktree stuck on the same (ticketId, worktreePath) slot fires `onStuck` on EVERY
+  // reconcile tick until it's cleaned up by hand — without this, that steady state spams a fresh
+  // board notification + ticket-history entry indefinitely. Surface it once per stuck slot, then
+  // stay quiet until the slot either clears (pruned below) or its failure kind changes.
+  const stillStuck = new Set<string>();
   const reclaimed = await reclaimWorktrees(workspaceRoot, predicate, {
     isTerminal: isTicketTerminal,
-    // FLUX-1405: a dirty terminal worktree that fails to detach must not just log a `console.warn`
+    // FLUX-1405: a stuck worktree that fails to detach/remove must not just log a `console.warn`
     // and vanish from view — raise a board-visible notification so it gets cleaned up by hand.
-    onStuck: (ticketId, worktreePath) => {
+    onStuck: (ticketId, worktreePath, _error, kind) => {
+      const slotKey = `${ticketId}::${worktreePath}::${kind}`;
+      stillStuck.add(slotKey);
+      if (stuckWorktreeSlotsNotified.has(slotKey)) return; // already surfaced this episode — stay quiet
+      stuckWorktreeSlotsNotified.add(slotKey);
+      const message = kind === 'detach'
+        ? `${ticketId}'s worktree still has uncommitted changes and could not be automatically ` +
+          `detached — it is still holding one of the limited worktree slots. Clean it up manually ` +
+          `(\`${worktreePath}\`) or free the slot with the worktree chip's Clean up action.`
+        : `${ticketId}'s worktree is clean but could not be automatically removed (likely a ` +
+          `transient file lock) — it is still holding one of the limited worktree slots. It will be ` +
+          `retried automatically; if it doesn't clear, remove it manually (\`${worktreePath}\`) or ` +
+          `free the slot with the worktree chip's Clean up action.`;
       addNotification({
         type: 'error',
         title: 'Worktree stuck holding a slot',
-        message:
-          `${ticketId}'s worktree still has uncommitted changes and could not be automatically ` +
-          `detached — it is still holding one of the limited worktree slots. Clean it up manually ` +
-          `(\`${worktreePath}\`) or free the slot with the worktree chip's Clean up action.`,
+        message,
         ticketId,
         actions: [{ label: 'Dismiss', actionId: 'dismiss' }],
       });
+      const historyMessage = kind === 'detach'
+        ? '⚠️ Task worktree still holds uncommitted changes and could not be automatically detached — it is still occupying a worktree slot. Clean it up manually.'
+        : '⚠️ Task worktree is clean but could not be automatically removed (likely a transient file lock) — it is still occupying a worktree slot. It will be retried automatically.';
       updateTaskWithHistory(ticketId, {
         updatedBy: 'Agent',
-        entries: [buildActivityEntry(
-          '⚠️ Task worktree still holds uncommitted changes and could not be automatically detached — it is still occupying a worktree slot. Clean it up manually.',
-          'Agent',
-          new Date().toISOString(),
-        )],
+        entries: [buildActivityEntry(historyMessage, 'Agent', new Date().toISOString())],
       }).catch(() => {});
     },
   }).catch(() => [] as string[]);
+  // Drop slots that cleared (no longer stuck this sweep) so a FUTURE stuck episode on the same
+  // worktree still notifies instead of staying suppressed forever.
+  for (const key of stuckWorktreeSlotsNotified) {
+    if (!stillStuck.has(key)) stuckWorktreeSlotsNotified.delete(key);
+  }
   for (const id of reclaimed) {
     const rule = rules.get(id) ?? 'idle-worktree-cleanup';
     await updateTaskWithHistory(id, {

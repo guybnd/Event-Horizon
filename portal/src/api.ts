@@ -224,6 +224,9 @@ export interface ContextBudget {
     modules: Array<{ name: string; bytes: number; tokensEst: number; missing?: boolean }>;
     note: string;
   };
+  /** FLUX-1376: EH's own MCP tool schemas, measured in-process — the actually-registered
+   * set, with a per-tool breakdown (`.tools`, heaviest-first). */
+  ehToolSchemas: McpServerSchemaMetrics;
   ehMeasurableTotalTokensEst: number;
   session?: SessionTokenTotals;
   caveats: string[];

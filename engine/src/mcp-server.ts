@@ -28,7 +28,7 @@ import { buildActivityEntry, type AgentSessionEntry, type AgentSessionProgress }
 import { sanitizeCompletion, completionInputSchema } from './completion-payload.js';
 import { getActiveFluxDir, getWorkspacesList, getWorkspaceRoot, resolveSkillSourceRoot } from './workspace.js';
 import { log } from './log.js';
-import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit, planFinishPr, type DiffFileSummary } from './branch-manager.js';
+import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, getGhAvailability, ghUnavailableMessage, captureDiff, resolveCommit, planFinishPr, type DiffFileSummary } from './branch-manager.js';
 import { detachTaskWorktree, taskWorktreeDir, findWorktreeForBranch, worktreeUncommittedCount, reclaimWorktrees } from './task-worktree.js';
 import { ensureTicketIsolation } from './ticket-isolation.js';
 import { cleanupMergedBranch, isWorktreeReclaimable } from './pr-cleanup.js';
@@ -1035,7 +1035,7 @@ export function buildMcpServer(): McpServer {
   // remains (FLUX-1249).
   server.tool(
     'extract_ticket',
-    'Carve a topic-slice out of a conversation stream into a NEW ticket (the promotion gate) — address the slice by seq range on the source stream. Human-approved only (CONFIRM gate / board-rebase proposal); the source turns are never moved or copied — the new card re-derives the slice. Exception: promoting a scratch chat CONSUMES it (the scratch is archived, pointing at the new ticket) so exactly one live card remains.',
+    'Carve a topic-slice out of a conversation stream into a NEW ticket by seq range — the promotion gate. Source turns are never moved or copied; the new card re-derives the slice. Promoting a scratch chat consumes it instead. Human-approved only (CONFIRM gate / board-rebase proposal).',
     {
       from: z.string().optional().describe('Source stream id to carve from (default: __board__, the orchestrator thread).'),
       fromSeq: z.number().int().describe('Inclusive start seq of the topic-slice on the source stream.'),
@@ -1458,8 +1458,8 @@ export function buildMcpServer(): McpServer {
         } else {
           // Rather than fail silently in a buried activity line, surface a no-commit branch
           // LOUDLY (notification + comment) so the user/agent knows to commit (FLUX-563).
-          const ghAvailable = await checkGhAuth();
-          if (ghAvailable) {
+          const ghAvailability = await getGhAvailability();
+          if (ghAvailability.ok) {
             if (branchStatus && branchStatus.exists && branchStatus.aheadCount === 0) {
               // Non-worktree (plain) branch with no commits: can't open a PR. Plain-branch tickets
               // are NOT enforced (per scope) — keep the existing soft warning + notification.
@@ -1578,7 +1578,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'start_plan_review',
-    'FLUX-1263: manually trigger ONE plan-review pass on a Grooming ticket right now — the plan gate\'s explicit human-invoked entry point. Use this under the "you" gate value (which never auto-triggers) or any time you want an extra look before moving Grooming to Todo. Runs exactly one pass (never loops, regardless of gate value) and records its verdict to `planReviewState`; it does not move the ticket — a later `change_status` to Todo goes through once the verdict is recorded.',
+    'Manually trigger ONE plan-review pass on a Grooming ticket — the plan gate\'s explicit human-invoked entry point. Use under the "you" gate value or any time before moving Grooming to Todo. Runs exactly one pass and records its verdict to `planReviewState`; does not move the ticket itself.',
     {
       ticketId: z.string().describe('Ticket ID (must currently be in Grooming).'),
     },
@@ -1764,7 +1764,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'add_note',
-    'Append a note to a ticket\'s history. type "comment" records a decision/observation (a human-facing comment); type "activity" logs an agent progress update ("agent did X"). summary/pin/supersedes apply to both: write a faithful summary for substantial notes (shown in the agent digest once the note ages past the recent window), pin to never collapse it, and supersedes to retire an earlier now-wrong entry.',
+    'Append a note to a ticket\'s history. type "comment" records a human-facing comment; "activity" logs an agent progress update. summary/pin/supersedes apply to both: summarize substantial notes, pin to keep one visible, supersedes to retire an earlier now-wrong entry.',
     {
       ticketId: z.string().describe('Ticket ID'),
       type: z.enum(['comment', 'activity']).describe('"comment" = a human-facing comment; "activity" = an agent progress/activity update.'),
@@ -1809,7 +1809,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'publish_artifact',
-    'Publish a self-contained HTML artifact so the user can reason against a concrete rendering instead of imagining it from prose. Spans both lifecycle ends: a plan-time grooming mockup/diagram/prototype AND a Ready-time visual recap of an implementation diff (touched-file tree + key diff hunks + plain-language summary; tag the recap title/note with "recap"). Each call is a NEW REVISION (never an overwrite). The HTML must be a COMPLETE, self-contained document (inline <style>/<script>; default to hand-written inline CSS. Mermaid via cdn.jsdelivr.net is allowed for diagrams. The Tailwind Play CDN via cdn.tailwindcss.com is allowed but is a heavy last resort, not the default — it is a full in-browser compiler that can freeze the host UI for seconds per load) and renders in a sandboxed iframe with no network access. Judge per ticket: emit for UI/UX, architecture, or "shape of the thing" work; SKIP bug fixes, XS/S tickets, and backend plumbing; default OFF when unsure. See the orchestrator skill\'s Rich Artifacts → Craft subsection for concrete quality rules (viewport fidelity, real test data, options-with-recommendation, measured claims, minimal revisions) before authoring or revising one.',
+    'Publish a self-contained HTML artifact — a concrete rendering instead of prose — for plan-time mockups or Ready-time diff recaps. Each call adds a new revision, never overwrites. Must be self-contained (inline CSS/JS), rendering sandboxed with no network access. Emit for UI/architecture work; skip bug fixes, XS/S tickets, backend plumbing.',
     {
       ticketId: z.string().describe('Ticket ID, e.g. FLUX-42'),
       html: z.string().describe('Complete, self-contained HTML document (inline styles/scripts — default to hand-written inline CSS; Mermaid via CDN script tag is allowed for diagrams; the Tailwind Play CDN is allowed but a heavy last resort, not the default). Rendered in a sandboxed opaque-origin iframe — it cannot reach the portal, cookies, or storage, and cannot make network requests (connect-src is blocked), so everything it needs must be inlined or loaded from the allowed CDNs.'),
@@ -1920,13 +1920,14 @@ export function buildMcpServer(): McpServer {
 
       // If ticket has a branch, merge the existing PR
       if (task.branch) {
-        const ghAvailable = await checkGhAuth();
-        if (!ghAvailable) {
+        const ghAvailability = await getGhAvailability();
+        if (!ghAvailability.ok) {
           // Can't merge without gh — bounce back to In Progress
-          const failEntries = [{ type: 'comment', user: 'Agent', comment: `⚠️ Finish aborted — gh not configured. Merge the PR manually, then finish again.`, date: new Date().toISOString() }];
+          const reasonMsg = ghUnavailableMessage(ghAvailability.reason);
+          const failEntries = [{ type: 'comment', user: 'Agent', comment: `⚠️ Finish aborted — ${reasonMsg} Merge the PR manually, then finish again.`, date: new Date().toISOString() }];
           await updateTaskWithHistory(ticketId, { entries: failEntries, updatedBy: 'Agent', nextStatus: 'In Progress', extraFields: { reviewState: null } });
           broadcastEvent('taskUpdated', { id: ticketId });
-          return errorResult(`Cannot finish ${ticketId} — gh not configured. Ticket moved back to In Progress.`, 'invalid_state');
+          return errorResult(`Cannot finish ${ticketId} — ${reasonMsg} Ticket moved back to In Progress.`, 'invalid_state');
         }
 
         // Ensure an OPEN PR exists before merging (FLUX-578 + FLUX-741). finish must be
@@ -2067,7 +2068,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'branch',
-    'Manage the git branch for a ticket. action: "create" makes a feature branch (and a dedicated worktree by default) and stores it on the ticket; "status" reports name + existence + ahead/behind counts; "delete" removes the branch (refuses unmerged unless force=true). baseBranch/worktree apply only to "create"; force applies only to "delete".',
+    'Manage the git branch for a ticket. action: "create" makes a feature branch (and worktree by default); "status" reports name + existence + ahead/behind counts; "delete" removes the branch (refuses unmerged unless force=true). baseBranch/worktree apply only to create; force only to delete.',
     {
       ticketId: z.string().describe('Ticket ID'),
       action: z.enum(['create', 'status', 'delete']).describe('Which branch operation to run.'),
@@ -2239,7 +2240,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'start_session',
-    'Start an agent work session ON a ticket and return IMMEDIATELY (fire-and-forget). Use this to DISPATCH work: when the user asks to groom/implement/review/finalize a ticket, start the phase session on that ticket instead of doing the work yourself. Use phase:\'fast-path\' for a small (XS/S) ticket to groom AND implement it in one session. The session runs in the ticket\'s own scope; the user opens that ticket\'s chat to drive it. Unlike delegate, this does NOT wait for the session to finish.',
+    'Start an agent work session ON a ticket and return IMMEDIATELY (fire-and-forget). Use to DISPATCH work: when the user asks to groom/implement/review/finalize a ticket, start the phase session instead of doing it yourself. phase:\'fast-path\' grooms+implements a small ticket in one session. Unlike delegate, doesn\'t wait for completion.',
     {
       ticketId: z.string().describe('Ticket ID to start the session on'),
       phase: z.enum(['grooming', 'implementation', 'review', 'finalize', 'fast-path']).optional().describe('Work phase — drives the session mission. If omitted, the engine derives it from the ticket status. \'fast-path\' (FLUX-1380) grooms AND implements an XS/S ticket in one session (Grooming → In Progress → Ready), structurally skipping the plan gate — refused server-side for L/XL-effort tickets or tickets with their own subtasks.'),
@@ -2285,7 +2286,7 @@ export function buildMcpServer(): McpServer {
   //   parallel   — each ticket its own worktree + PR, at burnRate (1–4) concurrency.
   server.tool(
     'furnace_get',
-    'Read Furnace batch(es). Pass `batchId` for one batch (its tickets + config + PRs + burn report); omit it to list every batch (optionally filter by `status`). A batch is a named bucket of tickets the Furnace burns unattended — implement → review → re-implement ≤ retryCap → leave the PR open at Ready — never merging. Also returns live worktree-slot usage.',
+    'Read Furnace batch(es). Pass `batchId` for one batch (tickets + config + PRs + burn report); omit to list every batch (optionally filter by `status`). A batch is a named bucket the Furnace burns unattended — implement → review → re-implement → leave the PR open at Ready, never merging.',
     {
       batchId: z.string().optional().describe('A specific batch id; omit to list all batches.'),
       status: z.enum(['draft', 'burning', 'done', 'parked']).optional().describe('When listing, only batches in this status.'),
@@ -2317,7 +2318,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'furnace_update',
-    'Live-adjust a Furnace batch — title, burn rate (parallel concurrency, 1–4), kind, retry cap, circuit breaker, auto-trigger. Changes are picked up on the next stoke tick. A title rename while burning updates the display name only — the branch is NOT renamed. `kind`/`branch` are only changeable while the batch is a draft. Does NOT ignite or stop — dedicated tools handle those.',
+    'Live-adjust a Furnace batch — title, burn rate, kind, retry cap, circuit breaker, auto-trigger. Changes apply on the next stoke tick. A title rename while burning updates the display name only, not the branch. `kind`/`branch` are changeable only while draft. Does NOT ignite or stop a batch.',
     {
       batchId: z.string().describe('The batch to update.'),
       title: z.string().optional().describe('Display name. Safe to change while burning (branch unchanged).'),
@@ -2362,7 +2363,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'furnace_build',
-    'Build a Furnace batch from the groomed backlog and create it as a `draft` you can edit and then ignite. Requires an explicit selector — `tag` (tickets carrying it, convention `burn-furnace`) or `tickets` (explicit ids) — a build with neither is refused; there is no way to pool the whole backlog. Deterministically reasons about independence (excludes parent/child pairs; flags — never blocks — likely file overlaps and orders them apart) and enforces the one-active-batch invariant (a ticket already queued in another non-terminal batch is excluded, not double-loaded). Returns the created batch plus what it excluded and why. Defaults to a `parallel` batch (each ticket its own worktree + PR); pass kind `sequential` for tickets that must stack onto one shared branch + PR in order. Edit with furnace_update / the Furnace drawer before igniting.',
+    'Build a Furnace batch from the groomed backlog as an editable draft. Requires explicit selector — `tag` or `tickets` — nothing pools the whole backlog. Reasons about independence (excludes parent/child pairs, flags file overlaps), enforces one-active-batch. Defaults to parallel (per-ticket branch+PR); pass kind:\'sequential\' to stack tickets on one shared branch+PR.',
     {
       tag: z.string().optional().describe('Only load tickets carrying this tag (a furnace opt-in hint). Required if `tickets` is omitted.'),
       tickets: z.array(z.string()).optional().describe('Explicit ticket ids to include — the other selector, usable instead of or alongside `tag`. Required if `tag` is omitted.'),
@@ -2460,7 +2461,7 @@ export function buildMcpServer(): McpServer {
   // exactly the tradeoff the investigation ticket flagged, so those three stay separate tools.
   server.tool(
     'furnace_batch',
-    'Transition an existing Furnace batch\'s lifecycle. action "ignite": draft→burning, claims a worktree slot (fails when the pool is full; a parallel batch clamps its burn rate to free slots), then the Stoker burns each ticket unattended (implement → review → re-implement ≤ retryCap → leave the PR open at Ready — NEVER merges). action "stop": halt it — graceful by default (stop feeding, let in-flight tickets finish, open PRs stay open), or pass `hard: true` for an immediate cutoff that kills in-flight sessions and parks them. action "resume": halted (`parked`) or finished (`done`) → `burning` — resets the circuit breaker, clears the stop request, re-queues tickets merely skipped by the halt, and claims a slot; parked/failed tickets are NOT auto-re-queued (retry those individually via furnace_ticket action:"retry"). action "discard": permanently delete a stale draft or old terminal batch — refuses a burning batch (stop it first). `reason`/`hard` apply only to "stop".',
+    'Transition a Furnace batch\'s lifecycle. ignite: draft→burning, claims a worktree slot, burns each ticket unattended (never merges). stop: halt it — graceful by default, or `hard: true` for an immediate cutoff. resume: parked/finished → burning, re-queues skipped tickets. discard: permanently delete a draft or terminal batch (refuses burning).',
     {
       action: z.enum(['ignite', 'stop', 'resume', 'discard']).describe('Which batch-lifecycle transition to apply.'),
       batchId: z.string().describe('The batch to transition.'),
@@ -2541,7 +2542,7 @@ export function buildMcpServer(): McpServer {
   // the batch-lifecycle group above (which still needed stop-only params).
   server.tool(
     'furnace_ticket',
-    'Act on a single ticket inside a Furnace batch. action "retry": reset a parked/failed ticket to `queued` with a FRESH attempt budget and hand ownership back to the Furnace — re-burns next tick if the batch is burning (a halted/finished batch needs furnace_batch action:"resume" first). action "dismiss": clear the board Require-Input flag on a parked/failed ticket ("I\'ve got this") WITHOUT re-queuing — works on a done/terminal batch too. action "takeover": owner → human — the Furnace yields (stops the session it was driving, never reclaims the worktree); hand it back later with action "handback" (or "retry", which also re-queues it under the Furnace). action "handback": owner → furnace — re-queue a human-owned ticket with a fresh attempt budget, bypassing the pr-open/active-state guards; errors clearly if the ticket is not currently human-owned. action "add": append a ticket to a batch (draft or burning) without a full furnace_build rebuild — rejects a done batch, a ticket already in the batch or not in an allowed status, or one already queued in a different non-terminal batch. action "remove": remove a ticket from a batch — disallowed while it is actively burning (stop the batch first); a still-queued or terminal-state ticket can always be removed.',
+    'Act on one ticket in a Furnace batch. retry: reset parked/failed to queued with a fresh budget. dismiss: clear the Require-Input flag without re-queuing. takeover: hand control to a human. handback: return control to the Furnace. add: append a Todo ticket. remove: drop a ticket (not while burning).',
     {
       action: z.enum(['retry', 'dismiss', 'takeover', 'handback', 'add', 'remove']).describe('Which per-ticket operation to run.'),
       batchId: z.string().describe('The batch containing the ticket.'),
@@ -2770,7 +2771,7 @@ export function buildMcpServer(): McpServer {
   // which blocks). "Propose, never silently restructure."
   server.tool(
     'propose_board_rebase',
-    'Propose a BATCH of board restructurings for the human to approve in one pass — the board-rebase ritual. Use this when asked to triage / "rebase the board" or at end-of-session, INSTEAD of mutating the board directly. Each item is a single action the user approves or rejects; nothing is applied until they click Apply approved. NEVER call the restructuring verbs (extract_ticket / merge_tickets / archive / change_status) directly to reorganize the board — emit them here as proposals. Returns immediately; the proposal is parked for approval.',
+    'Propose a BATCH of board restructurings for the human to approve in one pass — the board-rebase ritual. Use when triaging / "rebase the board" or at end-of-session, INSTEAD of mutating the board directly. NEVER call extract_ticket/merge_tickets/archive/change_status directly to reorganize — emit them here. Returns immediately and parks for approval.',
     {
       items: z.array(z.object({
         kind: z.enum(['promote', 'fold', 'archive', 'dispatch', 'status', 'leave']).describe('promote = extract a chat/turns into a new card; fold = merge one stream into another; archive = retire the ticket(s); dispatch = start a phase session; status = move a ticket to a new status; leave = keep it in the orchestrator thread (the safe default — never drop an item, leave it).'),
@@ -2806,7 +2807,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'permission_prompt',
-    'Internal — a gated agent CLI calls this via its permission-prompt hook (e.g. Claude Code\'s --permission-prompt-tool) to decide if a tool call is permitted. Returns {behavior:"allow",updatedInput} or {behavior:"deny",message}. Reads auto-allow; destructive ops (change_status, finish_ticket, archive, branch with action:"delete", furnace_batch with action:"discard", group_doc with action:"delete", Bash) require human approval via the EH portal.',
+    'Internal — a gated agent CLI calls this via its permission-prompt hook to decide if a tool call is permitted. Returns {behavior:"allow",updatedInput} or {behavior:"deny",message}. Reads auto-allow; destructive ops (change_status, finish_ticket, archive, branch delete, furnace_batch discard, group_doc delete, Bash) require human approval via the EH portal.',
     { tool_name: z.string(), input: z.any().optional() },
     { title: 'Permission decision', readOnlyHint: true, openWorldHint: false },
     async ({ tool_name, input }) => {
@@ -2845,7 +2846,7 @@ export function buildMcpServer(): McpServer {
   // headersTimeout so the held-open fetch doesn't abort before the park resolves).
   server.tool(
     'ask_user_question',
-    'Ask the user a structured multiple-choice question and BLOCK until they answer. Renders an interactive picker in the EH chat/board surface (single- or multi-select, with an "Other" free-text option) and returns the user\'s selection so you can continue the same turn. Use this whenever you need a decision or to resolve ambiguity instead of guessing — never assume; ask. Returns { answers: { [question]: chosenLabel | chosenLabel[] }, notes? }. If the user does not answer in time you get an unanswered result and should proceed with your best judgment.',
+    'Ask the user a structured multiple-choice question and BLOCK until they answer. Renders an interactive picker (single/multi-select, optional free-text "Other"). Use whenever you need a decision or to resolve ambiguity — never assume; ask. Returns { answers, notes? }; on timeout, proceed with your best judgment.',
     {
       questions: z.array(z.object({
         question: z.string().describe('The full question to ask the user.'),
@@ -2880,7 +2881,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'group_doc',
-    'Read or write the shared group docs (the cross-project knowledge base). Works from any workspace — parent or bound member. action: "list" returns all docs by path+title; "read" returns one doc body (needs path); "submit" creates/updates a doc and fans it out to all members (needs path+title+body); "delete" removes a doc and fans out (needs path). submit/delete return per-member fan-out results.',
+    'Read or write shared group docs (cross-project knowledge base). Works from any workspace — parent or bound member. list: all docs by path+title. read: one doc body (needs path). submit: creates/updates a doc and fans out to all members (needs path+title+body). delete: removes a doc and fans out (needs path).',
     {
       action: z.enum(['list', 'read', 'submit', 'delete']).describe('Which group-doc operation to run.'),
       path: z.string().optional().describe('read/delete: full doc path as returned by list (e.g. "Product/features/payments"). submit: store-relative path WITHOUT the group prefix and WITHOUT .md (e.g. "features/payments-api"); single safe segment, no ".." or absolute paths.'),

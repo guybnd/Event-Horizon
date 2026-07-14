@@ -560,10 +560,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     api.notify({ title: n.title, body: n.message, ticketId: n.ticketId });
   }, []);
 
-  const triggerRefresh = useCallback(() => {
+  // FLUX-1423: returns the in-flight refetch so a caller that just kicked off a fire-and-forget
+  // agent launch (e.g. fast-path) can `await` it and hold its button's busy state until the new
+  // session data has actually landed, instead of reverting to idle before there's anything on the
+  // card to show for the click.
+  const triggerRefresh = useCallback(async () => {
     setRefreshTrigger((prev) => prev + 1);
-    void loadTasks();
-    void loadParseErrors();
+    await Promise.all([loadTasks(), loadParseErrors()]);
   }, [loadTasks, loadParseErrors]);
 
   const updateTicketViewUrl = (taskId: string, viewMode: 'popup' | 'full') => {

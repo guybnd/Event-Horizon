@@ -3,8 +3,18 @@ import { HelpCircle, Send, Plus } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { usePendingInteractions } from './pendingInteractions';
-import { answerQuestion, type PendingQuestion, type AskQuestion } from '../api';
+import { answerQuestion, type PendingQuestion, type AskQuestion, type AskOption } from '../api';
 import { TaskMarkdown } from './TaskMarkdown';
+
+// FLUX-1409: heuristic flag for the agent's suggested pick — negation-aware so an option the
+// agent explicitly steers the user AWAY from ("not recommended") is never highlighted as the
+// good one. No wire/type change: this reads the same label/description text already rendered.
+const REC_RE = /\brecommended\b/i;
+const NOT_REC_RE = /\bnot\s+recommended\b/i;
+function isRecommended(opt: AskOption): boolean {
+  const text = `${opt.label} ${opt.description ?? ''}`;
+  return REC_RE.test(text) && !NOT_REC_RE.test(text);
+}
 
 /**
  * FLUX-888: minimal inline markdown for the picker's clickable option chips. Every block-level
@@ -61,12 +71,19 @@ export function ChatQuestionPicker({ conversationId }: { conversationId: string 
   if (mine.length === 0) return null;
 
   return (
-    <div className="flex flex-col gap-2">
+    // FLUX-1413: `min-h-0 flex-1` so this root actually claims the bounded space ChatView's
+    // wrapper (`flex min-h-0 shrink flex-col overflow-hidden`) offers it — without it, this div's
+    // height is content-driven (`auto`), so the card's own `flex-1 min-h-0` below has no bounded
+    // parent to resolve against and falls back to overflowing instead of scrolling in place.
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
       {mine.map((p) => (
         // FLUX-923: `eh-prompt-arrival` pulses the card on MOUNT (= a question arriving in this open
         // chat) then settles to a quiet ring. Keyed by `p.id` so a re-asked question remounts and the
         // pulse replays; a plain re-render does not restart it. Reduced-motion → static ring.
-        <div key={p.id} className="eh-prompt-arrival">
+        // FLUX-1413: made a flex column (not a plain block box) so it passes the bounded height
+        // down to `QuestionCard`. Multiple concurrent pending questions each get `flex-1`, splitting
+        // the available space evenly rather than any one collapsing to zero.
+        <div key={p.id} className="eh-prompt-arrival flex min-h-0 flex-1 flex-col">
           <QuestionCard pending={p} onResolved={() => removeQuestion(p.id)} scrollable />
         </div>
       ))}
@@ -172,15 +189,24 @@ export function QuestionCard({
   }
 
   return (
-    <div className={bare ? '' : 'eh-border rounded-xl border border-primary/30 bg-primary/5 p-3'}>
+    <div
+      className={`${bare ? '' : 'eh-border rounded-xl border border-primary/30 bg-primary/5 p-3'} ${
+        scrollable ? 'flex min-h-0 flex-col' : ''
+      }`}
+    >
       <div className="mb-2 flex items-center gap-1.5 text-xs font-bold text-primary">
         <HelpCircle className="h-3.5 w-3.5" /> The agent has a question
       </div>
-      <div className="flex flex-col gap-3">
+      <div className={`flex flex-col gap-3 ${scrollable ? 'min-h-0 flex-1' : ''}`}>
         <div
           className={
+            // FLUX-1413: `flex-1 min-h-0` lets the region fill (and shrink within) a bounded
+            // parent pane so the header/note/Send chrome below it never gets pushed off-screen —
+            // that's the ChatView task-modal case. `max-h-[60vh]` is the fallback cap for mounts
+            // with no definite parent height (AttentionDock tray, popovers), where flex-1 alone
+            // wouldn't constrain anything.
             scrollable
-              ? 'flex max-h-[60vh] min-h-[8rem] resize-y flex-col gap-3 overflow-y-auto pr-1'
+              ? 'flex flex-1 min-h-0 max-h-[60vh] resize-y flex-col gap-3 overflow-y-auto pr-1'
               : 'flex flex-col gap-3'
           }
         >
@@ -195,6 +221,7 @@ export function QuestionCard({
             <div className="flex flex-col gap-1.5">
               {q.options.map((opt, oi) => {
                 const sel = (choices[qi] ?? []).includes(opt.label);
+                const rec = isRecommended(opt);
                 return (
                   <button
                     key={oi}
@@ -203,11 +230,18 @@ export function QuestionCard({
                     className={`flex w-full flex-col rounded-lg border px-2.5 py-1.5 text-left transition-colors ${
                       sel
                         ? 'border-primary bg-primary/15 text-[var(--eh-text-primary)]'
-                        : 'eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-secondary)] hover:bg-black/5 dark:hover:bg-white/5'
+                        : rec
+                          ? 'eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-secondary)] ring-1 ring-primary/40 hover:bg-black/5 dark:hover:bg-white/5'
+                          : 'eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-secondary)] hover:bg-black/5 dark:hover:bg-white/5'
                     }`}
                   >
-                    <span className="text-[12px] font-medium">
+                    <span className="flex flex-wrap items-center gap-1 text-[12px] font-medium">
                       <InlineMarkdown text={opt.label} />
+                      {rec && (
+                        <span className="rounded bg-primary/15 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-primary">
+                          Recommended
+                        </span>
+                      )}
                     </span>
                     {opt.description && (
                       <span className="text-[11px] text-[var(--eh-text-muted)]">

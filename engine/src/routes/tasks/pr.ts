@@ -11,7 +11,7 @@ import { getWorkspaceRoot } from '../../workspace.js';
 import { buildActivityEntry } from '../../history.js';
 import { updateTaskWithHistory } from '../../task-store.js';
 import { stopAllSessionsForTask, getBlockingSessionsForTask, getParkedSessionsForTask } from '../../session-store.js';
-import { getTicketBranchStatus, createPullRequest, mergePullRequest, checkGhAuth, getPullRequestStatus, getDefaultBranch, isMergeConflict } from '../../branch-manager.js';
+import { getTicketBranchStatus, createPullRequest, mergePullRequest, getGhAvailability, ghUnavailableMessage, getPullRequestStatus, getDefaultBranch, isMergeConflict } from '../../branch-manager.js';
 import { findWorktreeForBranch, worktreeIsDirty } from '../../task-worktree.js';
 import { cleanupMergedBranch } from '../../pr-cleanup.js';
 import { disarmTemperForExternalStop } from '../../temper.js';
@@ -49,8 +49,9 @@ router.post('/:id/pr', async (req, res) => {
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
   if (!task.branch) return res.status(409).json({ error: 'Ticket has no branch to raise a PR for.' });
 
-  if (!(await checkGhAuth())) {
-    return res.status(409).json({ error: 'gh is not authenticated (or no GitHub remote).', unavailable: true });
+  const ghAvailability = await getGhAvailability();
+  if (!ghAvailability.ok) {
+    return res.status(409).json({ error: ghUnavailableMessage(ghAvailability.reason), unavailable: true });
   }
 
   // Pre-check: a branch with no commits ahead of the default branch can't open a PR
@@ -158,8 +159,9 @@ router.post('/:id/pr/merge', async (req, res) => {
     }
   }
 
-  if (!(await checkGhAuth())) {
-    return res.status(409).json({ error: 'gh is not authenticated (or no GitHub remote).', unavailable: true });
+  const ghAvailability = await getGhAvailability();
+  if (!ghAvailability.ok) {
+    return res.status(409).json({ error: ghUnavailableMessage(ghAvailability.reason), unavailable: true });
   }
 
   try {

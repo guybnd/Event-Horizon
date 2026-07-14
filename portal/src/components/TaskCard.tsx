@@ -114,7 +114,7 @@ export const TaskCardInner = memo(function TaskCardInner({
   }, [task.id]);
 
   const rustClass = useMemo(() => {
-    if (boardFx?.ticketAgeRust === false || isOverlay || c.hasActiveCliSession) return '';
+    if (boardFx?.ticketAgeRust === false || isOverlay || c.isSessionRunning) return '';
     // FLUX-725: max-activity date is pre-computed on the list digest (was a reduce over full history).
     const lastEntry = task.historyDigest?.lastActivityAt || undefined;
     if (!lastEntry) return '';
@@ -123,7 +123,7 @@ export const TaskCardInner = memo(function TaskCardInner({
     if (daysSince >= 7) return 'card-rust-2';
     if (daysSince >= 4) return 'card-rust-1';
     return '';
-  }, [boardFx?.ticketAgeRust, isOverlay, c.hasActiveCliSession, task.historyDigest?.lastActivityAt]);
+  }, [boardFx?.ticketAgeRust, isOverlay, c.isSessionRunning, task.historyDigest?.lastActivityAt]);
 
   const CardContainer = c.animationsEnabled && !c.isDragging && !isOverlay ? motion.div : 'div';
 
@@ -148,7 +148,7 @@ export const TaskCardInner = memo(function TaskCardInner({
         c.setIsHovering(false);
       }}
     >
-      <motion.div {...c.contentAnimation} style={isPrTicket ? PR_CARD_STYLE : c.columnTintStyle} className={`eh-card relative flex flex-col rounded-xl border p-0 shadow-sm transition-all ${rustClass} ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${c.hasActiveCliSession ? 'border-emerald-400 dark:border-emerald-500/60' : isPrTicket ? 'border-violet-400 dark:border-violet-500/60' : c.isPromptStatus && !compact ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : ''} ${c.liveAnimationClass} ${c.liveAccentClass} ${c.hasUnread && !c.liveAccentClass ? 'ring-2 ring-amber-400/60 dark:ring-amber-500/40' : ''} ${c.isEpic && !isPrTicket ? 'border-l-[3px] border-l-indigo-400 dark:border-l-indigo-500' : ''}`}>
+      <motion.div {...c.contentAnimation} style={isPrTicket ? PR_CARD_STYLE : c.columnTintStyle} className={`eh-card relative flex flex-col rounded-xl border p-0 shadow-sm transition-all ${rustClass} ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${c.isSessionRunning ? 'border-emerald-400 dark:border-emerald-500/60' : isPrTicket ? 'border-violet-400 dark:border-violet-500/60' : c.isPromptStatus && !compact ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : ''} ${c.liveAnimationClass} ${c.liveAccentClass} ${c.hasUnread && !c.liveAccentClass ? 'ring-2 ring-amber-400/60 dark:ring-amber-500/40' : ''} ${c.isEpic && !isPrTicket ? 'border-l-[3px] border-l-indigo-400 dark:border-l-indigo-500' : ''}`}>
         {boardFx?.ticketDna !== false && (
           <div
             className="card-foil pointer-events-none absolute inset-0 rounded-xl"
@@ -156,7 +156,7 @@ export const TaskCardInner = memo(function TaskCardInner({
             aria-hidden
           />
         )}
-        {c.hasActiveCliSession && !isOverlay && (
+        {c.isSessionRunning && !isOverlay && (
           <div className="pointer-events-none absolute inset-0 rounded-xl bot-border-breathe" />
         )}
         {/* Comment indicator owns the top-right corner on every surface — normal, compact

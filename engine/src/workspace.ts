@@ -185,6 +185,12 @@ export function getCliWorkspace(): string | null {
 export function resolveSkillSourceRoot(): string {
   if (isPkg) return __dirname_resolved;
   if (isSea) return getSeaExtractDir();
+  // FLUX-1416: build.js stages `.docs/skills` inside dist/ for every self-contained
+  // bundle (pkg, sea, and Electron's `resources/engine` dir run via ELECTRON_RUN_AS_NODE).
+  // Detect that layout directly instead of enumerating launch modes, so it also covers
+  // Electron (which is neither isPkg nor isSea) and any future dist-direct launcher.
+  if (existsSync(path.join(__dirname_resolved, '.docs', 'skills'))) return __dirname_resolved;
+  // Dev checkout: engine/dist -> repo root.
   return path.resolve(__dirname_resolved, '..', '..');
 }
 

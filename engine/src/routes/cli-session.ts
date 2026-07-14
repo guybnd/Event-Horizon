@@ -1291,6 +1291,17 @@ router.post('/:id/cli-session/input', async (req, res) => {
   if (!session || !['running', 'waiting-input', 'scheduled', 'completed'].includes(session.status)) {
     return res.status(409).json({ error: 'CLI session is not resumable', session: getCliSessionSummaryForTask(id) || null });
   }
+  // FLUX-1392: mirror the board branch's FLUX-714 guard (line ~1257) onto this ticket-session
+  // branch, which had no equivalent. sendCliSessionInput sets status='running' before several
+  // later awaited steps that can still throw (e.g. ensureSharedServersForRoot under resource
+  // contention); if one does, the route's catch below returns 500 but status is left stuck at
+  // 'running'. A caller that blindly retries on failure (furnace-stoker's postResumeInput) would
+  // then re-POST into a session already 'running', spawning a second concurrent `claude --resume`
+  // that races the first on the session JSONL and loses turns — the exact failure FLUX-714
+  // prevented on the board branch. Reject here too instead of double-dispatching.
+  if (session.status === 'running') {
+    return res.status(409).json({ error: 'CLI session is mid-turn — wait for the current turn to finish.', session: getCliSessionSummaryForTask(id) || null });
+  }
 
   let adapter;
   try {

@@ -304,6 +304,11 @@ export function useTicketActions(task: Task): UseTicketActions {
   // ticket. No pre-launch status move (design decision 6): the session itself advances
   // Grooming → In Progress → Ready. Eligibility (effort L/XL, subtasks) is enforced server-side by
   // the start route; on refusal its error surfaces here verbatim. ──
+  //
+  // FLUX-1423: await the refresh (rather than firing it and letting the button go idle
+  // immediately) so the card's busy spinner holds until the new session actually shows up as a
+  // "Starting…" row — otherwise the click looked like a no-op for the beat between the launch
+  // call returning and the next poll picking up the session, inviting a repeat click.
   const dispatchFastPath = async () => {
     try {
       await runAgentAction({ taskId: task.id, framework, action: { kind: 'launch' }, currentUser, phase: 'fast-path' });
@@ -311,7 +316,7 @@ export function useTicketActions(task: Task): UseTicketActions {
       alert(`Failed to start fast-path on ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
       return;
     }
-    triggerRefresh();
+    await triggerRefresh();
   };
 
   // Launch the phase's single default; false ⇒ no persona resolved (caller opens the launcher UI).

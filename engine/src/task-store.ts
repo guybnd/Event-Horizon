@@ -465,7 +465,12 @@ async function getMaxIdFromRemote(projectKey: string): Promise<number> {
 
   const storeDir = getFluxStoreDir();
   try {
-    await runGit(['fetch', 'origin', 'flux-data'], { cwd: storeDir });
+    // FLUX-1417: don't `git fetch` on the mint hot path — it contends with the background
+    // sync pipeline's own git operations under load (both hit the repo lock) and adds
+    // seconds of latency to every ticket create. Read `origin/flux-data` as last synced by
+    // the periodic background sync (sync-watcher.ts runSync) instead; it's fresh enough to
+    // guide id allocation, and the store's merge/reconcile on the next sync resolves any
+    // residual cross-machine collision — the same guarantee normal-ticket mints already rely on.
     const { stdout } = await runGit(['ls-tree', '-r', '--name-only', 'origin/flux-data'], { cwd: storeDir });
 
     let maxId = 0;
@@ -517,9 +522,16 @@ export async function createTask(options: CreateTaskOptions): Promise<CreateTask
     ? { history: [{ type: 'activity', user: actor, date: createdAt, comment: `Created as subtask of ${options.parentId}.` }], changed: true }
     : ensureCreationActivity(normalizedHistory.history, actor, createdAt);
 
+  // FLUX-1417: name scratch chats server-side so the portal doesn't need a follow-up rename
+  // round-trip before it can open the window. Only takes over the placeholder title the
+  // dock sends ('Scratch') or no title at all — an explicit custom title still wins.
+  const resolvedTitle = options.kind === 'scratch' && (!options.title || options.title === 'Scratch')
+    ? `Scratch ${maxId + 1}`
+    : (options.title || 'New Task');
+
   const frontmatter = {
     id: nextId,
-    title: options.title || 'New Task',
+    title: resolvedTitle,
     status: options.status || 'Todo',
     priority: options.priority || 'None',
     effort: options.effort || 'None',

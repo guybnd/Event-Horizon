@@ -85,7 +85,9 @@ export function FloatingPanel({
   /** FLUX-809: `attention` swaps the neutral surface for a loud amber accent (border + header),
    *  so a "the agent is waiting on you" window reads apart from the calm chat/dock surfaces. */
   tone?: 'default' | 'attention';
-  /** FLUX-809: pulse the attention glow (reuses `eh-taskcard-needs-input`) while prompts wait. */
+  /** FLUX-809: pulse the attention glow while prompts wait. FLUX-1419: uses the dedicated
+   *  `eh-panel-attention-pulse` (host-level animated shadow) — the panel root is overflow-hidden,
+   *  which would clip the taskcard classes' ::after glow. */
   pulse?: boolean;
   /** FLUX-809: bump this to re-clamp the (already-mounted) window back on-screen — e.g. when the
    *  pinned Pending tab is clicked to "bring it into view". A change after mount re-runs the clamp. */
@@ -370,7 +372,7 @@ export function FloatingPanel({
   const roundClass = maximized ? 'rounded-none' : 'rounded-xl';
   const panelClass = attention
     ? `${posClass} flex flex-col overflow-hidden ${roundClass} border border-amber-400/70 bg-[var(--eh-surface)] shadow-2xl shadow-amber-500/20 ring-1 ring-amber-400/40` +
-      (pulse ? ' eh-taskcard-needs-input' : '')
+      (pulse ? ' eh-panel-attention-pulse' : '')
     : `eh-surface eh-border ${posClass} flex flex-col overflow-hidden ${roundClass} border shadow-2xl`;
   const headerClass = attention
     ? 'flex shrink-0 cursor-move touch-none select-none items-center justify-between gap-2 border-b border-amber-400/40 bg-amber-400/15 px-2.5 py-1.5 text-amber-700 dark:text-amber-300'

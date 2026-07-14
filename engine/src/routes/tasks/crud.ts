@@ -92,7 +92,9 @@ router.post('/', async (req, res) => {
 
   try {
     const { task } = await createTask({
-      title: title || 'New Task',
+      // FLUX-1417: don't default here — createTask applies its own default, and for
+      // `kind:'scratch'` needs to see an empty/placeholder title to name it `Scratch <n>`.
+      title: title || '',
       status: status || 'Todo',
       priority: rest.priority || 'None',
       effort: rest.effort || 'None',

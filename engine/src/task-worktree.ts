@@ -1113,8 +1113,11 @@ export async function reclaimWorktrees(
     /** FLUX-1405: whether `ticketId`'s ticket status is terminal — gates dirty-worktree detach (see above). */
     isTerminal?: (ticketId: string) => boolean | Promise<boolean>;
     /** FLUX-1405: called when a reclaimable worktree fails to be removed/detached, so a stuck slot
-     *  can be surfaced instead of only logged (previously a silent `console.warn`). */
-    onStuck?: (ticketId: string, worktreePath: string, error: unknown) => void;
+     *  can be surfaced instead of only logged (previously a silent `console.warn`). FLUX-1411: `kind`
+     *  tells the caller which path failed — 'detach' (a dirty terminal worktree whose stash+apply
+     *  failed) vs 'remove' (a CLEAN worktree whose plain removal failed, e.g. a transient Windows
+     *  file lock) — so the surfaced message doesn't claim uncommitted changes on a clean tree. */
+    onStuck?: (ticketId: string, worktreePath: string, error: unknown, kind: 'detach' | 'remove') => void;
   } = {},
 ): Promise<string[]> {
   const runner = opts.gitRunner ?? defaultGitRunner;
@@ -1158,7 +1161,7 @@ export async function reclaimWorktrees(
       log.warn(
         `[worktree-reclaim] failed to ${detachDirty ? 'detach' : 'remove'} ${id} at ${wt.path}: ${err instanceof Error ? err.message : String(err)}`,
       );
-      opts.onStuck?.(id, wt.path, err);
+      opts.onStuck?.(id, wt.path, err, detachDirty ? 'detach' : 'remove');
     }
   }
   return reclaimed;

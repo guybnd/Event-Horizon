@@ -119,7 +119,9 @@ export function CardSessionRow({ task, c }: { task: Task; c: TaskCardController 
     <div
       // The emerald pulsing glow is a "live / working" signal — keep it only for the running state
       // so the calm parked states (idle / needs-input / starting / failed) don't read as still-running.
-      className={`${state === 'running' ? 'bot-assignee-glow ' : ''}mb-2 flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-md border px-2 py-1 text-[11px] ${p.wrapper}`}
+      // FLUX-1419: no overflow-hidden here — it would clip the glow's ::after shadow, and every
+      // child already truncates itself (shrink-0 / min-w-0 truncate).
+      className={`${state === 'running' ? 'bot-assignee-glow ' : ''}mb-2 flex min-w-0 max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] ${p.wrapper}`}
       title={`${label}: ${detail}`}
     >
       <Icon className={`h-3 w-3 shrink-0 ${p.pulse ? 'animate-pulse' : ''}`} />

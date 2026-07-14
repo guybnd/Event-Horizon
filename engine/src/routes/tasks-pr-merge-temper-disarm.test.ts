@@ -4,9 +4,9 @@
 // so its own tick can never observe the resulting 'cancelled' session and park a ticket whose work
 // just landed. This route had the identical stop-then-race shape but wasn't updated in lockstep.
 //
-// `checkGhAuth` is mocked to fail fast (no real `gh` dependency) — the disarm+stop loop under test
-// runs BEFORE the route's `checkGhAuth` call, so the request still exercises it even though the
-// merge itself never proceeds.
+// `getGhAvailability` is mocked to fail fast (no real `gh` dependency) — the disarm+stop loop under
+// test runs BEFORE the route's gh-availability check, so the request still exercises it even though
+// the merge itself never proceeds.
 
 import { getWorkspace } from '../workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -24,10 +24,11 @@ import { rehydrateTemper, isTempering, __resetTemperForTests } from '../temper.j
 import type { CliSessionRecord } from '../agents/types.js';
 
 const checkGhAuthMock = vi.fn(async () => false);
+const getGhAvailabilityMock = vi.fn(async () => ({ ok: false as const, reason: 'not-authenticated' as const }));
 
 vi.mock('../branch-manager.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../branch-manager.js')>();
-  return { ...actual, checkGhAuth: () => checkGhAuthMock() };
+  return { ...actual, checkGhAuth: () => checkGhAuthMock(), getGhAvailability: () => getGhAvailabilityMock() };
 });
 
 /** Register a resting waiting-input (parked) session — the state the merge route's Tier 2 branch stops. */
@@ -67,6 +68,8 @@ describe('POST /api/tasks/:id/pr/merge disarms Temper before stopping parked ses
     __resetTemperForTests();
     checkGhAuthMock.mockClear();
     checkGhAuthMock.mockResolvedValue(false);
+    getGhAvailabilityMock.mockClear();
+    getGhAvailabilityMock.mockResolvedValue({ ok: false, reason: 'not-authenticated' });
 
     const { default: tasksRouter } = await import('./tasks.js');
     const app = express();
@@ -109,10 +112,10 @@ describe('POST /api/tasks/:id/pr/merge disarms Temper before stopping parked ses
       body: JSON.stringify({ stopParkedSessions: true }),
     });
 
-    // The merge itself doesn't proceed (checkGhAuth is mocked to fail) — that's fine, the
+    // The merge itself doesn't proceed (gh availability is mocked to fail) — that's fine, the
     // disarm+stop loop under test runs BEFORE that check.
     expect(res.status).toBe(409);
-    expect(checkGhAuthMock).toHaveBeenCalled();
+    expect(getGhAvailabilityMock).toHaveBeenCalled();
 
     // Disarmed — Temper is no longer tracking this ticket, so no later tick can ever park it.
     expect(isTempering('FLUX-1')).toBe(false);
