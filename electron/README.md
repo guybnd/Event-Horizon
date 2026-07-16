@@ -33,6 +33,16 @@ drives it; everything is guarded behind `window.electronAPI`, so the plain brows
 - Policy (which types badge/pop, focus-gating) lives in `AppContext.tsx`'s notification handling — a
   one-line change if you want completions to always pop or info to badge.
 
+## Unsaved-doc close guard (FLUX-1458)
+`beforeunload` is a browser-only contract — Electron honors the cancel but never renders the "Leave
+site?" dialog, so a dirty doc used to make the window look unclosable. `DocsScreen.tsx` instead
+reports dirty state to main over `eh:set-unsaved-guard`; main owns a native
+`dialog.showMessageBoxSync` confirm (Cancel / Discard & Close) on **both** `win.on('close')` and the
+front of `app.on('before-quit')` — the latter is required because `before-quit` force-exits via
+`app.exit(0)` when we spawned the engine (the packaged/tray-Quit path), which bypasses
+`win.on('close')` entirely. The plain browser portal is unaffected — it still gets the native
+`beforeunload` warning.
+
 ## Run it (dev)
 The portal is served by Vite (5167) in dev, so run the normal dev stack first, then the shell:
 

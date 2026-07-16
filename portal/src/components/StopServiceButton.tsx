@@ -1,15 +1,17 @@
 import { useState } from 'react';
 import { Power } from 'lucide-react';
 import { useAppSelector } from '../store/useAppSelector';
+import { useConfirm } from '../hooks/useConfirm';
 
 // Stop the local Event Horizon engine. Lives in Settings (top-right, every panel)
 // rather than the top bar so the destructive action is deliberate, not one stray click away.
 export function StopServiceButton() {
   const isConnected = useAppSelector(s => s.isConnected);
   const [isStopping, setIsStopping] = useState(false);
+  const confirm = useConfirm();
 
   const handleStop = async () => {
-    if (!window.confirm('Stop the Event Horizon service? The portal will disconnect.')) return;
+    if (!(await confirm({ title: 'Stop the Event Horizon service? The portal will disconnect.', confirmLabel: 'Stop service' }))) return;
     setIsStopping(true);
     try {
       await fetch('/api/shutdown', { method: 'POST' });

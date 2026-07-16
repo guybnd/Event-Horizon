@@ -93,6 +93,17 @@ export function CliSessionPanel({
         </div>
       )}
 
+      {cliSession?.disallowedEhTools && cliSession.disallowedEhTools.length > 0 && (
+        <details className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs dark:border-white/10 dark:bg-white/5">
+          <summary className="cursor-pointer select-none font-semibold text-gray-500 dark:text-gray-400">
+            Tool scoping — {cliSession.disallowedEhTools.length} MCP tool{cliSession.disallowedEhTools.length === 1 ? '' : 's'} disallowed
+          </summary>
+          <p className="mt-1.5 break-words text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
+            {cliSession.disallowedEhTools.join(', ')}
+          </p>
+        </details>
+      )}
+
       {cliSessionError && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
           {cliSessionError}

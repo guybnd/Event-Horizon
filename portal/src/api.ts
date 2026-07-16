@@ -724,10 +724,12 @@ export interface StartSessionOptions {
   lockedPaths?: string[];
   /** FLUX-674: pasted-image attachments to send with the opening chat turn. */
   attachments?: ChatAttachment[];
+  /** FLUX-1235/1456: reclaim an idle parked `waiting-input` session instead of 409-ing. */
+  supersedeParked?: boolean;
 }
 
 export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOptions): Promise<CliSessionSummary> {
-  const { framework, appendPrompt, personaId, focusComment, skipPermissions = true, effortOverride, model, permissionMode, phase, role, pattern, patternPosition, groupId, groupSeq, groupTotal, groupType, groupVariant, lockedPaths, attachments } = opts;
+  const { framework, appendPrompt, personaId, focusComment, skipPermissions = true, effortOverride, model, permissionMode, phase, role, pattern, patternPosition, groupId, groupSeq, groupTotal, groupType, groupVariant, lockedPaths, attachments, supersedeParked } = opts;
   const body: Record<string, unknown> = { skipPermissions };
   // FLUX-906: omit `framework` when unset so the engine resolves the configured default.
   if (framework) body.framework = framework;
@@ -748,6 +750,7 @@ export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOp
   if (groupType) body.groupType = groupType;
   if (groupVariant) body.groupVariant = groupVariant;
   if (lockedPaths?.length) body.lockedPaths = lockedPaths;
+  if (supersedeParked) body.supersedeParked = true;
 
   const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/start`, {
     method: 'POST',
@@ -1460,7 +1463,7 @@ export interface SyncRemediation {
 }
 
 export interface SyncStatus {
-  state: 'idle' | 'syncing' | 'synced' | 'conflict' | 'diverged' | 'error';
+  state: 'idle' | 'syncing' | 'synced' | 'conflict' | 'diverged' | 'error' | 'protocol-mismatch';
   lastSyncTime?: string;
   conflicts?: ConflictInfo[];
   // FLUX-1232: commit counts vs origin/flux-data, present when state === 'diverged'.
@@ -1469,6 +1472,9 @@ export interface SyncStatus {
   error?: string;
   errorType?: 'network' | 'auth' | 'conflict' | 'unknown';
   remediation?: SyncRemediation;
+  // FLUX-1426: required vs supported sync-protocol version, present when state === 'protocol-mismatch'.
+  required?: number;
+  supported?: number;
 }
 
 export async function fetchSyncStatus(): Promise<SyncStatus> {

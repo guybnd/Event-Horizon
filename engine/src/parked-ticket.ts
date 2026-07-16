@@ -130,11 +130,17 @@ export function captureTurnStartState(session: CliSessionRecord, taskId: string)
 }
 
 /** True for sessions that are NOT expected to drive the ticket's status themselves —
- *  scatter-gather / delegated members. Their orchestrator owns the transition, so flagging
- *  them would be a false positive. Exported so other pre-spawn-failure call sites (e.g.
+ *  scatter-gather workers / supervisor delegates. Their orchestrator owns the transition, so
+ *  flagging them would be a false positive. Group LEADS (a supervisor orchestrator, a
+ *  scatter-gather combiner) are deliberately NOT exempt even though they carry the same
+ *  `groupId`: the lead IS the orchestrator that owns the transition, so a parked lead means
+ *  nobody is driving the ticket (FLUX-1436). (Real incident: a supervisor dev-lead fanned out 11 workers,
+ *  ended its turn "waiting for the stabilization signal" with no wakeup armed and no combiner
+ *  registered — the old blanket `groupId` exemption silently swallowed the backstop and the
+ *  ticket sat In Progress unflagged.) Exported so other pre-spawn-failure call sites (e.g.
  *  `prepareAndLaunchSession` in cli-session.ts) can apply the same guard as {@link flagIfParked}. */
 export function isDelegatedMember(session: CliSessionRecord): boolean {
-  return !!session.groupId || session.patternPosition === 'step';
+  return (!!session.groupId && session.patternPosition !== 'lead') || session.patternPosition === 'step';
 }
 
 /** Clear the `needsAction` flag if it is currently set — used when a fresh turn begins so a
@@ -186,20 +192,82 @@ export async function raiseNeedsAction(taskId: string, message: string): Promise
   }
 }
 
-/**
- * Called at every CLEAN turn end (completed / waiting-input — never cancelled/failed). If the
- * agent parked — working status with no board action (HARD, FLUX-651), or a resting status left
- * with a fresh comment and no board action (SOFT, FLUX-826) — set the `needsAction` flag and
- * raise a deduped notification. Idempotent and best-effort.
- */
-export async function flagIfParked(session: CliSessionRecord, taskId: string): Promise<void> {
-  try {
-    const task = getWorkspace().tasks[taskId] as ParkableTask | undefined;
-    if (!task) return;
+// FLUX-1432: phrases that promise the turn will resume itself once some external condition
+// clears ("I'll wait for the build, then run tests"). `tryEnterScheduledWake` (claude-code.ts)
+// unconditionally excludes `phase === 'chat'` from the real honored-wakeup mechanism, so a chat
+// turn narrating one of these makes an empty promise — the turn just ends `waiting-input` and
+// nothing polls or resumes it (real incident: FLUX-1428, a chat session sat 30+ minutes after
+// promising to check back). Heuristic/best-effort by design: a false negative (unusual phrasing)
+// just falls back to silent waiting-input as before; a false positive costs one extra needsAction
+// nudge on a turn that already ended waiting-input, which is cheap.
+// The `continu(e|ing) to wait` branch (FLUX-1436) catches the supervisor-lead incident phrasing
+// ("Continuing to wait for the stabilization signal") — a self-promise with no leading
+// "I'll/let me", kept deliberately narrow (requires the full "continue to wait" idiom) so
+// ordinary "waiting for your reply" chat narration never matches.
+const WAIT_PROMISE_RE = /\b(?:i'?ll|i will|let me|going to)\s+(?:pause|wait|hold off|sit tight|check back|come back|circle back)\b|\bcontinu(?:e|ing)\s+to\s+wait\b/i;
 
-    const status: string = task.status ?? '';
-    const isWorking = workingStatuses().has(status);
-    const parked = isParked({
+/** Does `text` narrate a promise to wait/pause and resume on its own? See {@link WAIT_PROMISE_RE}. */
+export function narratesUnarmedWaitPromise(text: string | undefined | null): boolean {
+  return !!text && WAIT_PROMISE_RE.test(text);
+}
+
+/**
+ * FLUX-1432: called alongside {@link flagIfParked} for a chat-phase turn that ended
+ * `waiting-input` cleanly (not a Require-Input pause, not a user stop — the only way a chat
+ * session reaches `waiting-input`, since chat can never arm a real ScheduleWakeup). If the
+ * agent's last message narrated an "I'll wait/pause for X" promise, that promise is empty —
+ * surface it via the same needsAction + notification plumbing as the generic parked backstop,
+ * with a message that names the false promise instead of the generic "no board action" one.
+ * Call this BEFORE `flagIfParked` so a detected promise's message wins the flag text; the
+ * generic backstop then no-ops (`needsActionSet` already true). No-op when the text doesn't
+ * match — the common case, costing nothing beyond the regex test.
+ */
+export async function flagIfUnarmedWaitPromise(taskId: string, lastAssistantText: string | undefined): Promise<void> {
+  if (!narratesUnarmedWaitPromise(lastAssistantText)) return;
+  await raiseNeedsAction(
+    taskId,
+    'Agent ended its turn saying it would wait/pause and resume automatically, but chat sessions have no armed wakeup mechanism to honor that — nothing will continue this turn on its own. Reply to resume it.',
+  );
+}
+
+/**
+ * FLUX-1436 (FLUX-1432 extension for NON-chat turns): a group LEAD (supervisor orchestrator / scatter-gather
+ * combiner) that ends a turn terminally — i.e. with NO wakeup armed, since `tryEnterScheduledWake`
+ * already claimed any turn honoring a real ScheduleWakeup — while narrating an "I'll wait for X"
+ * promise has made the same empty promise a chat session does: unless a deferred combiner is still
+ * registered for its group, nothing will resume it, and (post the {@link isDelegatedMember} fix)
+ * nobody else owns the transition either. Pure decision, same split as
+ * isParked/narratesUnarmedWaitPromise: the adapter supplies the group/pending-combiner facts and
+ * passes the returned message to {@link flagIfParked}, which uses it ONLY when the turn actually
+ * parked — a lead that took a board action is never flagged just for saying "I'll wait".
+ */
+export function leadUnarmedWaitMessage(opts: {
+  patternPosition?: string | undefined;
+  groupId?: string | undefined;
+  /** Is a deferred gather/combiner step still registered for this session's group?
+   *  (session-store's `getPendingCombiner` — injected to avoid a module cycle via hitl-prompts.) */
+  hasPendingCombiner: boolean;
+  /** The turn's final assistant text. */
+  lastText: string | undefined | null;
+}): string | undefined {
+  if (opts.patternPosition !== 'lead' || !opts.groupId) return undefined;
+  if (opts.hasPendingCombiner) return undefined; // the registered gather step will resume this group
+  if (!narratesUnarmedWaitPromise(opts.lastText)) return undefined;
+  return 'Agent orchestrator ended its turn saying it would keep waiting, but nothing is armed to resume it — no scheduled wakeup and no pending gather step — so nothing will continue this turn on its own. Resume the session or advance the ticket.';
+}
+
+/** Build the {@link ParkedSnapshot} `isParked` decides on, from the live ticket + session-turn-start
+ *  state. Extracted from {@link flagIfParked} (FLUX-1437) so a caller can ask "would this turn
+ *  park?" — e.g. the claude adapter's stale-wait catch-and-resume, which must decide BEFORE
+ *  `flagIfParked` raises the flag — without duplicating the snapshot-building logic. Returns
+ *  undefined for an unrouted/missing task, same as `flagIfParked`'s own early return. */
+function computeParkedSnapshot(session: CliSessionRecord, taskId: string): { task: ParkableTask; snapshot: ParkedSnapshot } | undefined {
+  const task = getWorkspace().tasks[taskId] as ParkableTask | undefined;
+  if (!task) return undefined;
+  const status: string = task.status ?? '';
+  return {
+    task,
+    snapshot: {
       status,
       statusAtTurnStart: session.statusAtTurnStart,
       swimlane: task.swimlane,
@@ -211,12 +279,40 @@ export async function flagIfParked(session: CliSessionRecord, taskId: string): P
       requireInputStatus: getConfig().requireInputStatus || 'Require Input',
       isDelegated: isDelegatedMember(session),
       needsActionSet: !!task.needsAction,
-    });
-    if (!parked) return;
+    },
+  };
+}
 
-    const message = isWorking
-      ? `Agent ended its turn with the ticket still in "${status}" without taking a board action (move it to Ready / Require Input, create subtasks, or resume).`
-      : `Agent left a comment on this "${status}" ticket without raising a structured prompt or taking a board action — it may contain a decision/question that needs your attention.`;
+/** FLUX-1437: pure "would this turn park?" check — the same decision {@link flagIfParked} uses
+ *  internally, exposed so a caller can intercept BEFORE the flag is raised (the stale-wait
+ *  catch-and-resume in the claude adapter: resume the session instead of parking it). */
+export function wouldPark(session: CliSessionRecord, taskId: string): boolean {
+  const built = computeParkedSnapshot(session, taskId);
+  return !!built && isParked(built.snapshot);
+}
+
+/**
+ * Called at every CLEAN turn end (completed / waiting-input — never cancelled/failed). If the
+ * agent parked — working status with no board action (HARD, FLUX-651), or a resting status left
+ * with a fresh comment and no board action (SOFT, FLUX-826) — set the `needsAction` flag and
+ * raise a deduped notification. Idempotent and best-effort.
+ *
+ * `unarmedWaitMessage` (optional): a caller-detected {@link leadUnarmedWaitMessage} — when the
+ * turn parked, it replaces the generic text so the flag names the false "I'll keep waiting"
+ * promise instead. It never widens the decision: a turn that took a board action stays unflagged.
+ */
+export async function flagIfParked(session: CliSessionRecord, taskId: string, unarmedWaitMessage?: string): Promise<void> {
+  try {
+    const built = computeParkedSnapshot(session, taskId);
+    if (!built) return;
+    const { snapshot } = built;
+    if (!isParked(snapshot)) return;
+
+    const isWorking = workingStatuses().has(snapshot.status);
+    const message = unarmedWaitMessage
+      ?? (isWorking
+        ? `Agent ended its turn with the ticket still in "${snapshot.status}" without taking a board action (move it to Ready / Require Input, create subtasks, or resume).`
+        : `Agent left a comment on this "${snapshot.status}" ticket without raising a structured prompt or taking a board action — it may contain a decision/question that needs your attention.`);
     await raiseNeedsAction(taskId, message);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

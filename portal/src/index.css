@@ -1165,6 +1165,37 @@ button:not(:disabled):active {
   animation: eh-notif-orb 2.8s ease-in-out infinite;
 }
 
+/* FLUX-1439: the streaming live-turn word-by-word reveal (ChatView). Each newest word mounts with
+   a brief ease-out fade/rise so text fills in like real typing rather than lines popping into
+   existence; `forwards` holds the settled (100%) state, and since the word only ever mounts once
+   (later re-renders reuse the same DOM node/key), the animation plays exactly once per word, never
+   replaying. The blanket reduced-motion override below collapses this to near-instant automatically
+   — ChatView additionally skips the word-pacing DELAY itself under reduced motion (JS-gated). */
+@keyframes eh-word-fade {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.eh-word-fade {
+  display: inline-block;
+  animation: eh-word-fade 190ms ease-out forwards;
+}
+/* Trailing end-of-stream caret — rendered as a literal inline sibling of the last revealed word
+   (inside the same paragraph as the text, never a separate block), so removing it at stream-end
+   changes no line count and causes no scroll jump. */
+@keyframes eh-live-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.15; }
+}
+.eh-live-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: currentColor;
+  animation: eh-live-cursor 900ms ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   /* FLUX-1419: the glow loops moved onto ::after pseudo-elements — target those (a pseudo with
      animation: none rests at its base opacity: 0, i.e. no ring, matching the old 0% frames). */

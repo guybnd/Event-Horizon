@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render } from '@testing-library/react';
 import { AppProvider } from './AppContext';
+import { ConfirmProvider } from './hooks/useConfirm';
+import { ToastProvider } from './hooks/useNotify';
 import type { Config } from './types';
 
 // FLUX-1191: FLUX-1189 added the `.eh-idle` idle-detection effect in AppContext.tsx (a 20s
@@ -67,7 +69,7 @@ describe('.eh-idle toggling on <html> (FLUX-1189)', () => {
   });
 
   it('adds .eh-idle after 20s of no input, and removes it on the next interaction', async () => {
-    render(<AppProvider><div /></AppProvider>);
+    render(<ConfirmProvider><ToastProvider><AppProvider><div /></AppProvider></ToastProvider></ConfirmProvider>);
 
     expect(document.documentElement.classList.contains('eh-idle')).toBe(false);
 

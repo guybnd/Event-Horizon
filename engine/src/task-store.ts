@@ -18,6 +18,8 @@ import { runGit } from './git-exec.js';
 import { getActiveFluxDir, getTaskAssetsDir, getFluxStoreDir, isOrphanMode, setWorkspaceRoot, getWorkspacesList, getWorkspaceRoot } from './workspace.js';
 import { attachWorktreeIfPresent, migrateStrandedFluxTickets } from './storage-sync.js';
 import { startSyncWatcher, allocateNewTicketId, triggerSync } from './sync-watcher.js';
+import { appendJournalEntry, setJournalReplayHandler, setJournalCacheReloadHandler } from './sync-journal.js';
+import { randomUUID } from 'crypto';
 import { loadConfig, autoRegisterUnknownTags, getConfig } from './config.js';
 import { loadCustomPersonas } from './orchestration-personas.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp, compactSessionProgress, type HistoryEntryLike } from './history.js';
@@ -195,7 +197,7 @@ function serializeTicketWrite<T>(taskId: string, run: () => Promise<T>): Promise
   return result;
 }
 
-export function updateTaskWithHistory(taskId: string, options: {
+export interface UpdateTaskWithHistoryOptions {
   entries?: unknown[];
   updatedBy?: string;
   nextStatus?: string;
@@ -214,21 +216,38 @@ export function updateTaskWithHistory(taskId: string, options: {
   // extraFields) — a concurrent write to the same parent (add_note/change_status/another
   // create_ticket) can't clobber this addition, which is exactly the race this option closes.
   appendSubtask?: string;
-}) {
+  // FLUX-1428: set true for engine-derived writes (PR-poller GitHub field mirrors, digests —
+  // anything recomputable from source-of-truth, not authored by a human/agent). Derived writes are
+  // never journaled: on a lost sync race they're simply re-derived against the new head instead of
+  // replayed, per the field-ownership taxonomy in FLUX-1427/1428.
+  derived?: boolean;
+  // FLUX-1428: dedup key for an externally-triggered intent (e.g. `pr-42-merged`, `ci-<sha>-pass`).
+  // If any entry already in the ticket's history carries this key, the whole call is a no-op — so
+  // the losing side of a sync race replaying "PR merged, advance to Done" against a head that
+  // already has that exact key applied converges cleanly instead of double-posting. Stamped onto
+  // the first pushed history entry when the call actually applies. Human/agent-authored writes
+  // (comments, manual status moves) need no key — they were genuinely discarded by a lost race and
+  // replaying them is a real addition, not a duplicate.
+  idempotencyKey?: string;
+  // FLUX-1428: internal — set by the sync-watcher replay loop when re-invoking this call for an
+  // already-journaled entry, so the replay itself doesn't get journaled again.
+  __replaying?: boolean;
+}
+
+export function updateTaskWithHistory(taskId: string, options: UpdateTaskWithHistoryOptions) {
   return serializeTicketWrite(taskId, () => updateTaskWithHistoryLocked(taskId, options));
 }
 
-async function updateTaskWithHistoryLocked(taskId: string, options: {
-  entries?: unknown[];
-  updatedBy?: string;
-  nextStatus?: string;
-  extraFields?: Record<string, unknown>;
-  deleteFields?: string[];
-  newTitle?: string;
-  newBody?: string;
-  tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean; cacheReadTokens?: number; cacheCreationTokens?: number } | undefined;
-  appendSubtask?: string;
-}) {
+// FLUX-1428: register this as the journal's replay entry point. sync-watcher.ts can't statically
+// import task-store.ts (task-store.ts already imports FROM sync-watcher.ts) — the indirection
+// avoids the cycle while keeping replay routed through the real handler, not a raw file write.
+setJournalReplayHandler((taskId, options) => updateTaskWithHistory(taskId, options as UpdateTaskWithHistoryOptions));
+// FLUX-1428: same indirection for the post-`reset --hard` cache reload the CAS loop needs before
+// replaying — reconcileBackgroundPull already does exactly this (re-load changed files, drop
+// deleted ones) for the chokidar background-pull path; reuse it rather than duplicating the logic.
+setJournalCacheReloadHandler(reconcileBackgroundPull);
+
+async function updateTaskWithHistoryLocked(taskId: string, options: UpdateTaskWithHistoryOptions) {
   const task = getWorkspace().tasks[taskId];
   if (!task) return null;
 
@@ -240,6 +259,33 @@ async function updateTaskWithHistoryLocked(taskId: string, options: {
   const { frontmatter, body } = await readTaskFromDisk(task);
 
   const normalizedExistingHistory = normalizeHistoryEntries(Array.isArray(frontmatter.history) ? frontmatter.history : []);
+
+  // FLUX-1428: idempotency dedup — applies to BOTH a fresh call and a replay. If this exact
+  // externally-triggered intent already landed (its key is already on some history entry), every
+  // further attempt (a retriggered poll, or a replay after a lost sync race) is a clean no-op:
+  // return the unchanged task without journaling or writing anything.
+  if (options.idempotencyKey) {
+    const alreadyApplied = normalizedExistingHistory.history.some(
+      (e) => e && typeof e === 'object' && (e as Record<string, unknown>).idempotencyKey === options.idempotencyKey,
+    );
+    if (alreadyApplied) return task;
+  }
+
+  // FLUX-1428: durable journal write MUST complete before the mutation below touches disk — that
+  // ordering is what makes replay-after-`reset --hard` safe (see sync-journal.ts's header comment).
+  // Skipped for derived writes (never replayed) and for the replay call itself (already journaled
+  // once; replaying it again would grow the journal forever and re-replay on every future tick).
+  if (!options.derived && !options.__replaying && isOrphanMode()) {
+    const { __replaying: _r, derived: _d, ...journaledOptions } = options;
+    await appendJournalEntry(getFluxStoreDir(), {
+      opId: randomUUID(),
+      taskId,
+      ts: activityTimestamp,
+      options: journaledOptions as Record<string, unknown>,
+      ...(options.idempotencyKey !== undefined ? { idempotencyKey: options.idempotencyKey } : {}),
+    });
+  }
+
   let nextHistory = ensureCreationActivity(
     normalizedExistingHistory.history,
     frontmatter.createdBy || actor,
@@ -274,6 +320,12 @@ async function updateTaskWithHistoryLocked(taskId: string, options: {
     if (!(options.extraFields && 'needsAction' in options.extraFields)) {
       frontmatter.needsAction = null;
     }
+  }
+
+  // FLUX-1428: stamp the dedup key onto the first entry this call actually pushes, so a future
+  // call (retriggered poll, or journal replay) can find it via the idempotencyKey scan above.
+  if (options.idempotencyKey && entries.length > 0 && entries[0] && typeof entries[0] === 'object') {
+    (entries[0] as Record<string, unknown>).idempotencyKey = options.idempotencyKey;
   }
 
   nextHistory = normalizeHistoryEntries([...nextHistory, ...entries]).history;

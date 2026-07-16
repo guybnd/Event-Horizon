@@ -265,6 +265,34 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     expect(parkTicketOnBoard).not.toHaveBeenCalled();
   });
 
+  // FLUX-1437: `decideTicketAction` returns `review-retry` (not an immediate park) the FIRST time a
+  // review session completes with no verdict AND no verdict-shaped comment (the FLUX-1434 incident
+  // shape — a reviewer that narrated a dead background/monitor wait instead of calling `change_status`).
+  // Regression coverage for the gate-runner-specific blocker: `advanceGateTicket`'s switch previously had
+  // no `case 'review-retry':`, so this action fell through silently — the run was never stopped and
+  // `reviewNudgeSent` was never set, wedging the ticket in Grooming forever (re-derived every 5s tick).
+  it('a review completed with no verdict and no verdict-shaped comment gets one review-retry pass, not an immediate park', async () => {
+    seedGrooming('RR-1');
+    await startPlanGateNow('RR-1', { mode: 'loop-auto' });
+    putSession('sess-1', 'review', 'completed');
+    dispatchSession.mockClear();
+    await gateRunnerTick();
+    expect(dispatchSession).toHaveBeenCalledWith('RR-1', 'review', expect.objectContaining({ skipIsolation: true }));
+    expect(parkTicketOnBoard).not.toHaveBeenCalled();
+    expect(isGateRunning('RR-1')).toBe(true);
+  });
+
+  it('a second verdict-less review completion (after the review-retry budget is spent) parks', async () => {
+    seedGrooming('RR-2');
+    await startPlanGateNow('RR-2', { mode: 'loop-auto' }); // dispatch #1 -> sess-1
+    putSession('sess-1', 'review', 'completed');
+    await gateRunnerTick(); // review-retry -> dispatch #2 -> sess-2, reviewNudgeSent set true
+    putSession('sess-2', 'review', 'completed');
+    await gateRunnerTick(); // budget spent -> park
+    expect(parkTicketOnBoard).toHaveBeenCalledWith('RR-2', expect.stringContaining('plan review:'), expect.objectContaining({ status: 'Grooming' }));
+    expect(isGateRunning('RR-2')).toBe(false);
+  });
+
   it('parks when the review session dies', async () => {
     seedGrooming('PKF-1');
     await startPlanGateNow('PKF-1', { mode: 'loop-auto' });

@@ -443,6 +443,20 @@ export async function syncDefaultBranch(workspaceRoot: string): Promise<boolean>
 export async function cleanupMergedBranch(workspaceRoot: string, branch: string, opts: { auto?: boolean } = {}): Promise<CleanupResult> {
   const branchTickets = (Object.values(getWorkspace().tasks) as CachedTicket[]).filter((t) => t.branch === branch);
 
+  // FLUX-1433: snapshot BEFORE step 1 advances anyone which branch tickets are non-Done AND
+  // carry a live (pending/running/waiting-input/scheduled) session. A shared batch branch can
+  // hold several tickets; one of them reaching Done via THIS merge must not tear down a
+  // still-in-progress sibling's session/worktree out from under it (the FLUX-1428 incident) —
+  // mirrors the reclaim-sweep's own branch-scoped live-session guard (hasLiveSessionOnBranch /
+  // worktreeUnreclaimableReason above), which was never wired into this merge-triggered teardown
+  // path. Deliberately a snapshot taken up front, not re-checked after step 1: a ticket that is
+  // ALREADY Done at this point (e.g. `finish_ticket` writes its own ticket to Done before calling
+  // this function) is excluded here, so a solo ticket's own in-flight session — the common case —
+  // never self-blocks its own post-merge teardown.
+  const nonDoneSiblingsWithLiveSession = branchTickets.filter(
+    (t) => t.status !== DONE_STATUS && getActiveSessionsForTask(t.id).length > 0,
+  );
+
   // 1. Advance non-Done tickets → Done. Each is isolated: the squash-merge already landed
   // (irreversible), so one ticket's write failure must NOT abort the rest of the cleanup
   // or leave siblings un-advanced (FLUX-561 #2).
@@ -464,6 +478,11 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
         nextStatus: DONE_STATUS,
         // Clear the open-pr swimlane (the PR is merged) and stamp a link if none was set.
         extraFields: { swimlane: null, ...(t.implementationLink ? {} : { implementationLink: `merged:${branch}` }) },
+        // FLUX-1428: derived, not journaled. This function's OWN idempotency (the DONE_STATUS +
+        // hasReachedDoneBefore guards above, re-checked against fresh state on every reconcile poll
+        // tick) already makes it safe to simply re-derive on the next poll if a write is lost to a
+        // sync race — gh's MERGED state doesn't change, so the next tick reaches the same verdict.
+        derived: true,
       });
       broadcastEvent('taskUpdated', { id: t.id });
       advanced.push(t.id);
@@ -480,6 +499,16 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
   // lingers until the reopened sibling also terminalises — correct, the branch is genuinely in use.)
   if (opts.auto && branchTickets.some((t) => !TERMINAL_TICKET_STATUSES.has(t.status) && hasReachedDoneBefore(t))) {
     return { outcome: 'noop', branch, advanced, masterSynced: false, worktreeRemoved: false, branchDeleted: false, reason: 'reopened' };
+  }
+
+  // FLUX-1433: a real sibling is still actively working this branch — defer the destructive
+  // teardown (session stop, dependency-junction unlink, worktree/branch removal) entirely, the
+  // same way the reclaim-sweep already refuses to yank a worktree out from under a live session.
+  // Step 1's Done-advancement above still stands (branch-scoped batch advancement is separate,
+  // pre-existing behavior) — only the teardown below waits for the next reconcile tick, once
+  // every ticket on the branch is genuinely idle.
+  if (nonDoneSiblingsWithLiveSession.length > 0) {
+    return { outcome: 'noop', branch, advanced, masterSynced: false, worktreeRemoved: false, branchDeleted: false, reason: 'live-sibling-session' };
   }
 
   // FLUX-1297: disarm Temper on every ticket on this branch BEFORE stopping their sessions —

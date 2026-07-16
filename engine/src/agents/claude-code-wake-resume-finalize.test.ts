@@ -33,6 +33,7 @@ vi.mock('../session-store.js', () => ({
   notifyGroupSessionTerminal: vi.fn(),
   notifyDelegationComplete: vi.fn(),
   checkAutoRestart: vi.fn(),
+  getPendingCombiner: vi.fn(() => undefined),
 }));
 vi.mock('../history.js', () => ({
   buildActivityEntry: vi.fn((comment: string) => ({ type: 'activity', comment })),
@@ -41,6 +42,7 @@ vi.mock('../history.js', () => ({
   buildAgentSessionEntry: vi.fn(() => ({ sessionId: 'test-session-entry', progress: [] })),
   appendSessionProgress: vi.fn(),
   closeAgentSession: vi.fn(),
+  lastAssistantText: vi.fn(() => ''),
 }));
 vi.mock('../notifications.js', () => ({
   checkFrameworkHealth: vi.fn().mockResolvedValue(undefined),
@@ -54,7 +56,13 @@ vi.mock('../parked-ticket.js', () => ({
   captureTurnStartState: vi.fn(),
   clearNeedsActionIfSet: vi.fn().mockResolvedValue(undefined),
   flagIfParked: vi.fn().mockResolvedValue(undefined),
+  flagIfUnarmedWaitPromise: vi.fn().mockResolvedValue(undefined),
+  leadUnarmedWaitMessage: vi.fn(() => undefined),
   raiseNeedsAction: vi.fn().mockResolvedValue(undefined),
+  // FLUX-1437: the stale-wait catch-and-resume's own guards — false/undefined here means it never
+  // fires in these tests, so flagIfParked's existing mocked behavior is exercised unchanged.
+  wouldPark: vi.fn(() => false),
+  narratesUnarmedWaitPromise: vi.fn(() => false),
 }));
 vi.mock('./shared.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./shared.js')>();
@@ -66,9 +74,11 @@ vi.mock('./shared.js', async (importOriginal) => {
 });
 
 function fakeChildProcess() {
-  const proc = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; pid: number };
+  // FLUX-1444: stdin stand-in — the code under test writes the prompt to stdin instead of argv.
+  const proc = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; stdin: { on: ReturnType<typeof vi.fn>; write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> }; pid: number };
   proc.stdout = new EventEmitter();
   proc.stderr = new EventEmitter();
+  proc.stdin = { on: vi.fn(), write: vi.fn(), end: vi.fn() };
   proc.pid = 4242;
   return proc;
 }
@@ -163,8 +173,9 @@ describe('claude-code.ts — wake-resume finalization (FLUX-1390 review follow-u
       }),
     );
 
-    // Same terminal bookkeeping a fresh dispatch's completion gets.
-    expect(flagIfParked).toHaveBeenCalledWith(session, 'FLUX-TEST');
+    // Same terminal bookkeeping a fresh dispatch's completion gets. (Third arg: the lead
+    // unarmed-wait override — undefined for this standalone, group-less session.)
+    expect(flagIfParked).toHaveBeenCalledWith(session, 'FLUX-TEST', undefined);
     expect(notifyDelegationComplete).toHaveBeenCalledWith(session);
     expect(checkAutoRestart).toHaveBeenCalled();
   });
@@ -172,6 +183,7 @@ describe('claude-code.ts — wake-resume finalization (FLUX-1390 review follow-u
   it('a crashed wake-resumed turn (no further sleep) finalizes failed and closes the history entry', async () => {
     const { sendCliSessionInput } = await import('./claude-code.js');
     const { updateAgentSession } = await import('../task-store.js');
+    const { raiseNeedsAction } = await import('../parked-ticket.js');
     const session = await seedScheduledSession();
 
     await sendCliSessionInput(session, 'wake', 'Guy', '/tmp/test-repo', { wakeResume: true });
@@ -186,6 +198,10 @@ describe('claude-code.ts — wake-resume finalization (FLUX-1390 review follow-u
     const entry: Record<string, unknown> = { status: 'scheduled', progress: [] };
     historyUpdater(entry);
     expect(entry.status).toBe('failed');
+
+    // FLUX-1393: finalizeTerminalSession does NOT itself raise needsAction — the wake-resume
+    // finalize branch must do it explicitly, same as the trailing non-wake-resume crash path does.
+    expect(raiseNeedsAction).toHaveBeenCalledWith('FLUX-TEST', expect.stringContaining('code 1'));
   });
 
   it('a wake-resumed turn that schedules ANOTHER wakeup does not finalize — stays scheduled', async () => {

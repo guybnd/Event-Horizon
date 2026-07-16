@@ -56,6 +56,13 @@ export default defineConfig([
       'react-hooks/purity': 'off',
       'react-hooks/preserve-manual-memoization': 'off',
       'react-hooks/static-components': 'off',
+      // FLUX-1459: no native window.alert()/confirm()/prompt() — use useConfirm()/useNotify()
+      // (portal/src/hooks/useConfirm.tsx, useNotify.tsx) instead. They're non-blocking, styled
+      // consistently with the rest of the app, and jsdom-testable where native dialogs are not.
+      // A handful of remaining sites are owned by sibling tickets mid-flight on their own
+      // branches (FLUX-1359, FLUX-1457) and are exempted with a targeted eslint-disable comment
+      // at each call site, not a file-wide override — see those tickets for status.
+      'no-alert': 'error',
     },
   },
 ])

@@ -572,6 +572,25 @@ describe('task-worktree', () => {
       expect(await currentBranch(resolved)).toBe(branch);
     });
 
+    it('reuses the empty husk in place without ever calling rmdir on it, so an undeletable dir still succeeds (FLUX-1442)', async () => {
+      const branch = 'flux/FLUX-54-husk';
+      const target = taskWorktreeDir(repo, 'FLUX-54');
+      // Same empty-husk scenario as the FLUX-52 test above, but this one proves the fix's
+      // actual contract: no delete happens at all, so a top-level rmdir that would EBUSY
+      // (e.g. a lingering Windows handle) never gets a chance to fail the spawn.
+      await fs.mkdir(target, { recursive: true });
+
+      const rmdirSpy = vi.spyOn(fs, 'rmdir');
+      try {
+        const resolved = await createTaskWorktree(repo, 'FLUX-54', branch);
+        expect(realpathSync(resolved)).toBe(realpathSync(target));
+        expect(await currentBranch(resolved)).toBe(branch);
+        expect(rmdirSpy).not.toHaveBeenCalledWith(target);
+      } finally {
+        rmdirSpy.mockRestore();
+      }
+    });
+
     it('still refuses a non-empty directory at the target that is not a valid/repairable worktree (FLUX-1277)', async () => {
       const branch = 'flux/FLUX-53-nonempty';
       const target = taskWorktreeDir(repo, 'FLUX-53');

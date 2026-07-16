@@ -1,7 +1,7 @@
 {
   "name": "portal",
   "private": true,
-  "version": "1.6.3",
+  "version": "1.6.5",
   "description": "Event Horizon portal — React UI for the local-first agent ticket board.",
   "homepage": "https://github.com/guybnd/Event-Horizon#readme",
   "repository": {

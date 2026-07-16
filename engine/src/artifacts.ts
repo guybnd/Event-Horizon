@@ -349,6 +349,22 @@ export const ARTIFACT_ANNOTATOR_SCRIPT = String.raw`
     };
   }
 
+  // FLUX-1440: best-effort value capture for form controls (INPUT/SELECT/TEXTAREA) or a custom
+  // control opted in via data-eh-value — most elements have neither, so this stays undefined
+  // (never thrown, never coerced to a misleading "undefined" string).
+  function readValue(target) {
+    if (!target || target.nodeType !== 1) return undefined;
+    var tag = target.tagName ? target.tagName.toUpperCase() : '';
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
+      var v = target.value;
+      if (v !== undefined && v !== null && v !== '') return String(v);
+    }
+    if (target.hasAttribute && target.hasAttribute('data-eh-value')) {
+      return target.getAttribute('data-eh-value');
+    }
+    return undefined;
+  }
+
   // Mirrors selectionInfo()'s shape for a right-click on ANY element (no text selection). The anchor
   // is the element's CSS path; 'label' is a short human descriptor (tag + a trimmed textContent
   // snippet) so the agent has context without a quoted excerpt. Returns null for our own UI / non-elements.
@@ -366,6 +382,7 @@ export const ARTIFACT_ANNOTATOR_SCRIPT = String.raw`
       text: '',
       containerText: norm(target.textContent).slice(0, 600),
       label: label,
+      value: readValue(target),
       rect: { left: rect.left, top: rect.top, bottom: rect.bottom },
       docX: rect.left + sx,
       docY: rect.top + sy
@@ -378,7 +395,7 @@ export const ARTIFACT_ANNOTATOR_SCRIPT = String.raw`
   // item carries its stable pin id so a host-side edit/remove round-trips back to the right pin.
   function postLive() {
     post({ ns: NS, type: 'annotations', items: annotations.map(function (a) {
-      return { id: a.id, kind: a.kind || 'text', selector: a.selector, text: a.text, containerText: a.containerText, label: a.label || '', note: a.note };
+      return { id: a.id, kind: a.kind || 'text', selector: a.selector, text: a.text, containerText: a.containerText, label: a.label || '', note: a.note, value: a.value };
     }) });
   }
   function findAnn(id) {
@@ -428,7 +445,7 @@ export const ARTIFACT_ANNOTATOR_SCRIPT = String.raw`
 
   function addAnnotation(info, note) {
     seq++;
-    annotations.push({ id: seq, kind: info.kind || 'text', selector: info.selector, text: info.text, containerText: info.containerText, label: info.label || '', note: norm(note), docX: info.docX, docY: info.docY });
+    annotations.push({ id: seq, kind: info.kind || 'text', selector: info.selector, text: info.text, containerText: info.containerText, label: info.label || '', note: norm(note), value: info.value, docX: info.docX, docY: info.docY });
     dropPin(seq, info.docX, info.docY, note);
     postLive();
   }
@@ -465,6 +482,151 @@ export const ARTIFACT_ANNOTATOR_SCRIPT = String.raw`
     var p = document.querySelector('[data-eh-pin="' + id + '"]');
     if (p && p.parentNode) p.parentNode.removeChild(p);
     postLive();
+  }
+
+  // FLUX-1440: guided controls. A groomer marks up plain HTML with data-eh-feel / data-eh-decision
+  // so interacting with the control auto-stages an annotation into the SAME annotations[]/postLive()
+  // transport used by selection/right-click — no composer, no second message channel. Re-interacting
+  // with a control restages IN PLACE (one annotation per control) by keying off a stable
+  // data-eh-anno-id the control remembers after its first stage, mirroring updateAnnotation()'s
+  // find-and-update rather than pushing a growing pile.
+  function ensureGuidedStyle() {
+    if (document.getElementById('eh-guided-style')) return;
+    var s = document.createElement('style');
+    s.id = 'eh-guided-style';
+    s.setAttribute('data-eh-ui', '');
+    s.textContent = [
+      '.eh-guided-feel{display:flex;align-items:center;gap:8px;margin-top:6px;}',
+      '.eh-guided-feel input[type=range]{flex:1;accent-color:#6366f1;}',
+      '.eh-guided-readout{min-width:44px;text-align:right;font-size:11px;color:#94a3b8;}',
+      '.eh-guided-card{background:#0b1220;color:#e5e7eb;border:1px solid #334155;border-radius:10px;padding:10px;font-size:12px;max-width:320px;}',
+      '.eh-guided-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px;}',
+      '.eh-guided-idx{color:#94a3b8;font-size:11px;white-space:nowrap;}',
+      '.eh-guided-opts{display:flex;flex-wrap:wrap;gap:6px;}',
+      '.eh-guided-opt{cursor:pointer;border:1px solid #334155;border-radius:6px;padding:5px 10px;font-size:11px;background:transparent;color:#e5e7eb;}',
+      '.eh-guided-opt.eh-guided-selected{background:#6366f1;border-color:#6366f1;color:#fff;}'
+    ].join('');
+    (document.head || document.documentElement).appendChild(s);
+  }
+
+  // Stage (create or, on a second interaction with the same control, in-place update) ONE annotation
+  // for a guided control. Never opens the composer — guided controls auto-stage, they don't collect a
+  // free-text note (out of scope here; sending stays an explicit host-side action).
+  function stageGuided(control, kind, selector, label, value) {
+    var existingId = control && control.getAttribute ? control.getAttribute('data-eh-anno-id') : null;
+    var a = existingId ? findAnn(Number(existingId)) : null;
+    if (a) {
+      a.kind = kind;
+      a.selector = selector;
+      a.label = label;
+      a.value = value;
+    } else {
+      seq++;
+      a = { id: seq, kind: kind, selector: selector, text: '', containerText: '', label: label, note: '', value: value };
+      annotations.push(a);
+      if (control && control.setAttribute) control.setAttribute('data-eh-anno-id', String(a.id));
+    }
+    postLive();
+  }
+
+  // [data-eh-feel]: upgrades to a labeled range slider (reusing an author-nested <input type=range>
+  // if present) with a live readout. Settling on a value (change, not every drag tick) stages a
+  // kind:'feel' annotation. Malformed/missing min/max/step/default fall back to sane defaults.
+  function upgradeFeelControls() {
+    var hosts = document.querySelectorAll('[data-eh-feel]');
+    if (!hosts.length) return;
+    ensureGuidedStyle();
+    for (var i = 0; i < hosts.length; i++) {
+      (function (host) {
+        var input = host.querySelector('input[type=range]');
+        var created = false;
+        if (!input) { input = el('input'); input.type = 'range'; created = true; }
+        var min = parseFloat(host.getAttribute('data-eh-min'));
+        var max = parseFloat(host.getAttribute('data-eh-max'));
+        var step = parseFloat(host.getAttribute('data-eh-step'));
+        var def = parseFloat(host.getAttribute('data-eh-default'));
+        if (isNaN(min)) min = 0;
+        if (isNaN(max) || max <= min) max = 100;
+        if (isNaN(step) || step <= 0) step = 1;
+        if (isNaN(def)) def = min;
+        var label = host.getAttribute('data-eh-label') || 'Feel';
+        var unit = host.getAttribute('data-eh-unit') || '';
+        input.min = String(min);
+        input.max = String(max);
+        input.step = String(step);
+        if (input.value === '' || input.value == null) input.value = String(def);
+        var readout = el('span', 'eh-guided-readout');
+        readout.textContent = input.value + unit;
+        if (created) {
+          var wrap = el('div', 'eh-guided-feel');
+          wrap.appendChild(input);
+          wrap.appendChild(readout);
+          host.appendChild(wrap);
+        } else if (input.parentNode) {
+          input.parentNode.insertBefore(readout, input.nextSibling);
+        } else {
+          host.appendChild(readout);
+        }
+        input.addEventListener('input', function () { readout.textContent = input.value + unit; });
+        input.addEventListener('change', function () {
+          readout.textContent = input.value + unit;
+          stageGuided(host, 'feel', cssPath(host), label, input.value + unit);
+        });
+      })(hosts[i]);
+    }
+  }
+
+  // [data-eh-decision]: upgrades to a small decision card (question + optional index/of tag + the
+  // child data-eh-opt elements rendered as selectable chips, replacing their raw markup). Picking an
+  // option stages a kind:'decision' annotation; picking a different option restages the SAME record.
+  function upgradeDecisionControls() {
+    var hosts = document.querySelectorAll('[data-eh-decision]');
+    if (!hosts.length) return;
+    ensureGuidedStyle();
+    for (var i = 0; i < hosts.length; i++) {
+      (function (host) {
+        var question = host.getAttribute('data-eh-question') || 'Decision';
+        var idx = host.getAttribute('data-eh-index');
+        var of = host.getAttribute('data-eh-of');
+        var defOpt = host.getAttribute('data-eh-default');
+        var optSrcs = host.querySelectorAll('[data-eh-opt]');
+        var card = el('div', 'eh-guided-card');
+        var head = el('div', 'eh-guided-head');
+        var q = el('span'); q.textContent = question;
+        head.appendChild(q);
+        if (idx && of) {
+          var tag = el('span', 'eh-guided-idx'); tag.textContent = idx + ' / ' + of;
+          head.appendChild(tag);
+        }
+        card.appendChild(head);
+        var opts = el('div', 'eh-guided-opts');
+        for (var j = 0; j < optSrcs.length; j++) {
+          (function (optSrc) {
+            var attr = optSrc.getAttribute('data-eh-opt');
+            var value = (attr && norm(attr)) || norm(optSrc.textContent) || 'Option';
+            optSrc.style.display = 'none';
+            var chip = el('button', 'eh-guided-opt');
+            chip.type = 'button';
+            chip.textContent = value;
+            if (defOpt && norm(defOpt) === value) chip.className += ' eh-guided-selected';
+            chip.addEventListener('click', function () {
+              var siblings = opts.querySelectorAll('.eh-guided-opt');
+              for (var k = 0; k < siblings.length; k++) siblings[k].className = 'eh-guided-opt';
+              chip.className = 'eh-guided-opt eh-guided-selected';
+              stageGuided(host, 'decision', cssPath(host), question, value);
+            });
+            opts.appendChild(chip);
+          })(optSrcs[j]);
+        }
+        card.appendChild(opts);
+        host.appendChild(card);
+      })(hosts[i]);
+    }
+  }
+
+  function upgradeGuidedControls() {
+    upgradeFeelControls();
+    upgradeDecisionControls();
   }
 
   document.addEventListener('mouseup', function (e) {
@@ -504,7 +666,9 @@ export const ARTIFACT_ANNOTATOR_SCRIPT = String.raw`
     if (d.type === 'remove-pin') removeAnnotation(d.id);
     else if (d.type === 'update-pin') updateAnnotation(d.id, d.note);
   });
-  post({ ns: NS, type: 'ready' });
+  upgradeGuidedControls();
+  var hasGuidedControls = document.querySelectorAll('[data-eh-feel],[data-eh-decision]').length > 0;
+  post({ ns: NS, type: 'ready', hasGuidedControls: hasGuidedControls });
 })();
 `;
 

@@ -229,6 +229,11 @@ async function bounceMembersToInProgress(memberIds: string[], comment: string): 
         // member is now active work again, not an approved-and-waiting ticket. Clear unconditionally;
         // this path never records a fresh verdict of its own.
         extraFields: { reviewState: null },
+        // FLUX-1428: derived, not journaled — this is a mechanical consequence of gh's live
+        // CHANGES_REQUESTED reviewDecision, re-evaluated (and re-applied if still needed) on every
+        // 90s poll via membersToBounce's own idempotency guard. A write lost to a sync race simply
+        // gets redone by the next poll instead of needing journal replay.
+        derived: true,
       });
       broadcastEvent('taskUpdated', { id });
     } catch {

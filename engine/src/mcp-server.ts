@@ -1868,6 +1868,15 @@ export function buildMcpServer(): McpServer {
       const task = getWorkspace().tasks[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
+      // FLUX-1443: a Scratch ticket has no PR/implementation lifecycle to finish — completion must
+      // go through a promoted card instead.
+      if (task.kind === 'scratch') {
+        return errorResult(
+          `Cannot finish ${ticketId} — it is a Scratch ticket (a conversation surface, not an implementation surface). Promote it into a real ticket first via extract_ticket (or propose a board-rebase "promote"), then finish the promoted ticket.`,
+          'invalid_state'
+        );
+      }
+
       const readyStatus = getConfig().readyForMergeStatus || 'Ready';
       if (task.status !== readyStatus) {
         return errorResult(
@@ -2086,6 +2095,16 @@ export function buildMcpServer(): McpServer {
       }
 
       if (action === 'create') {
+        // FLUX-1443: a Scratch ticket is a conversation surface, not an implementation surface —
+        // opening a branch/worktree for it bypasses the whole Grooming -> Todo -> implementation
+        // pipeline. Route toward promotion instead (extract_ticket already consumes the scratch
+        // on promote, FLUX-1249).
+        if (task.kind === 'scratch') {
+          return errorResult(
+            `Cannot create a branch for ${ticketId} — it is a Scratch ticket (a conversation surface, not an implementation surface). Promote it into a real ticket first via extract_ticket (or propose a board-rebase "promote"), which seeds a groomed card that can then get its own branch.`,
+            'invalid_state'
+          );
+        }
         if (task.branch) return errorResult(`Ticket ${ticketId} already has branch: ${task.branch}`, 'invalid_state');
         try {
           // Optionally create a dedicated worktree (worktree ⇒ branch). Agent branch sessions are
@@ -2194,6 +2213,7 @@ export function buildMcpServer(): McpServer {
         task: z.string().describe('What this delegate should do — be specific about files, scope, and expected output format.'),
         effort: z.string().optional().describe('Effort level: low, medium, high (default: medium).'),
         model: z.string().optional().describe('Optional model override for this delegate.'),
+        enableTools: z.array(z.string()).optional().describe('Optional extra event-horizon MCP tool names (bare, e.g. "furnace_ticket") to grant this delegate beyond its persona\'s normal toolset — for a delegate that genuinely needs a specific tool its worker role otherwise denies.'),
       })).min(1).describe('One or more delegation specs. Length 1 = serial; >1 = parallel.'),
       timeout: z.number().optional().describe('Timeout in seconds for ALL delegations (default: 300, max: 600).'),
     },
@@ -2213,6 +2233,7 @@ export function buildMcpServer(): McpServer {
               // FLUX-482: per-call model override (highest precedence); route resolves the
               // persona/config/status-derived fallback when omitted.
               ...(d.model ? { model: d.model } : {}),
+              ...(d.enableTools && d.enableTools.length > 0 ? { enableTools: d.enableTools } : {}),
               skipPermissions: true,
               timeout: timeoutMs,
             }),

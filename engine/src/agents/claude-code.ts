@@ -3,18 +3,18 @@ import { log } from '../log.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as path from 'path';
 import { getConfig } from '../config.js';
-import { buildActivityEntry, buildCommentEntry, buildAgentSessionEntry } from '../history.js';
+import { buildActivityEntry, buildCommentEntry, buildAgentSessionEntry, lastAssistantText } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, estimateCostUSD } from '../task-store.js';
 import { resolveTaskExecutionRoot, resolveResumeExecutionRoot, assertIsolatedSpawnRoot } from '../task-worktree.js';
 import { getWorkspaceRoot } from '../workspace.js';
-import { notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
+import { notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart, getPendingCombiner } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { emitOperationEvent, type OperationOutcome } from '../operation-telemetry.js';
 import { appendTranscriptLine, appendTranscriptEvent } from '../transcript.js';
 import type { DispatchLifecycle } from '../projection.js';
 import { killProcessTree } from '../kill-process-tree.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
-import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked, raiseNeedsAction } from '../parked-ticket.js';
+import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked, flagIfUnarmedWaitPromise, leadUnarmedWaitMessage, narratesUnarmedWaitPromise, raiseNeedsAction, wouldPark } from '../parked-ticket.js';
 import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { getModuleMcpServers, getActiveModules, getWorkspaceMcpServers } from '../modules.js';
@@ -23,9 +23,10 @@ import { signConversation } from '../session-binding.js';
 import { buildMcpServerEntry } from '../workflow-installer.js';
 import { ensureSharedServer, getSharedServerUrl, isSharedHttpPlatformProven } from '../shared-mcp-server.js';
 import { buildResumePreamble } from '../resume-preamble.js';
+import { disallowedEhToolsForPersona } from '../orchestration-personas.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest, SendInputOptions } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote, resolveModel, buildTokenMetadataUpdate } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate } from './shared.js';
 import { BOARD_CONVERSATION_ID } from './board.js';
 
 /**
@@ -44,6 +45,7 @@ interface ClaudeTask {
   tags?: string[];
   effortLevel?: string;
   branch?: string;
+  kind?: string;
 }
 
 // Build --mcp-config JSON string for active module MCP servers.
@@ -794,11 +796,54 @@ export { isChatEditGated };
 // 40,406 disallowing 28 of 29 `mcp__event-horizon__*` tools. So this flag is a real lever for
 // FLUX-1385's per-role toolsets, not merely a call-blocking permission layer requiring a
 // separate conditional-registration mechanism in buildMcpServer().
-export function disallowedToolsArgs(session: { phase?: CliSessionRecord['phase'] | undefined }, task: { status?: string | undefined } | undefined): string[] {
+export function disallowedToolsArgs(
+  session: {
+    phase?: CliSessionRecord['phase'] | undefined;
+    personaId?: string | undefined;
+    focusComment?: string | undefined;
+    patternPosition?: CliSessionRecord['patternPosition'] | undefined;
+    enableTools?: string[] | undefined;
+  },
+  task: { status?: string | undefined; kind?: string | undefined } | undefined,
+): string[] {
   const tools = ['AskUserQuestion'];
   if (session.phase !== 'chat' && !honorScheduledWakeupsEnabled()) tools.push('ScheduleWakeup');
-  if (isChatEditGated(session, task)) tools.push(...FILE_MUTATION_TOOLS);
+  // FLUX-1443: a scratch ticket is unconditionally gated (independent of session.phase/status) —
+  // its file-mutation tools must never unlock, even via the FLUX-926 chat self-unlock path.
+  if (isChatEditGated(session, task) || isScratchSession(task)) tools.push(...FILE_MUTATION_TOOLS);
+  // FLUX-1434: scope down a worker-role delegate's `event-horizon` toolset via the deny-list model
+  // (categoryDeny − persona.enableTools − phaseBaseline − dispatch.enableTools − NEVER_DENY) — see
+  // disallowedEhToolsForPersona's own comments for the fail-open rules. No-op (undefined) for
+  // lead/flex/unpersona'd sessions. Never scoped for `chat` sessions (interactive; savings
+  // negligible, confusion high) — checked here rather than inside the phase-baseline computation
+  // so a chat session with a stray personaId (ad-hoc launch) still gets the full toolset.
+  const ehDisallowed = session.phase === 'chat' ? undefined : disallowedEhToolsForPersona({
+    personaId: session.personaId,
+    phase: session.phase,
+    patternPosition: session.patternPosition,
+    enableTools: session.enableTools,
+    focusComment: session.focusComment,
+  });
+  if (ehDisallowed && ehDisallowed.length > 0) tools.push(...ehDisallowed.map((t) => `mcp__event-horizon__${t}`));
   return ['--disallowed-tools', ...tools];
+}
+
+/**
+ * FLUX-1434: recompute + stamp the effective `event-horizon` deny list onto the session record at
+ * every spawn AND resume — the deny-list model's own observability hook. A gap (a session missing
+ * a tool its mission needs, the FLUX-242 incident class) becomes a one-glance diagnosis via the
+ * portal session panel instead of a re-derivation from persona/phase/position by hand. Mirrors the
+ * EH-scoping half of `disallowedToolsArgs` exactly (same fail-open `undefined` for
+ * lead/flex/unpersona'd/chat sessions) but stores only the bare tool names, not the full CLI arg.
+ */
+export function stampDisallowedEhTools(session: CliSessionRecord): void {
+  session.disallowedEhTools = session.phase === 'chat' ? undefined : disallowedEhToolsForPersona({
+    personaId: session.personaId,
+    phase: session.phase,
+    patternPosition: session.patternPosition,
+    enableTools: session.enableTools,
+    focusComment: session.focusComment,
+  });
 }
 
 /** FLUX-1390: is the opt-in ScheduleWakeup-honoring path on? Default off (see CONFIG_DEFAULTS.agents). */
@@ -881,12 +926,73 @@ export function tryEnterScheduledWake(session: CliSessionRecord, code: number | 
  * stays frozen at "scheduled" forever and that turn's tokens/cost silently never reach the ticket's
  * total. Factored here so both call sites share one implementation instead of drifting out of sync.
  */
+/** FLUX-1436 (FLUX-1432 lead extension / FLUX-651 coverage hole): compute the unarmed-wait message override for
+ *  this turn's `flagIfParked` call. Both clean-turn-end paths that can end a group LEAD's turn with
+ *  no wakeup armed — `finalizeTerminalSession` and the resumed clean exit — pass the result through,
+ *  so a supervisor orchestrator / combiner that parks while narrating "I'll keep waiting" gets a flag
+ *  naming the false promise instead of the generic no-board-action text. The early lead/group check
+ *  keeps the (real, session-store-backed) pending-combiner lookup off the common standalone path. */
+function leadWaitOverride(session: CliSessionRecord): string | undefined {
+  if (session.patternPosition !== 'lead' || !session.groupId) return undefined;
+  return leadUnarmedWaitMessage({
+    patternPosition: session.patternPosition,
+    groupId: session.groupId,
+    hasPendingCombiner: !!getPendingCombiner(session.groupId),
+    lastText: lastAssistantText(session.sessionHistoryEntry?.progress),
+  });
+}
+
+// FLUX-1437: cap for tryResumeStaleWait below — a session that stalls on the same dead-wait-promise
+// failure mode twice falls through to the normal flagIfParked park instead of resuming forever.
+const MAX_STALE_WAIT_RESUMES = 1;
+
+/**
+ * FLUX-1437: the FLUX-1434 incident fix. A dispatched (non-chat) session's clean turn end that (a)
+ * took no board action this turn — the same decision {@link wouldPark} (`flagIfParked`'s own check)
+ * would otherwise raise a park on — and (b) narrated an unarmed "I'll wait for X" promise
+ * (`WAIT_PROMISE_RE` via `narratesUnarmedWaitPromise`) is not actually stuck on a human: its
+ * background tasks / monitor waits die the instant the turn ends, so nothing will ever resume it on
+ * its own. Catch it here instead of parking: resume the SAME session once (capped by
+ * `staleWaitResumes`) with a corrective message, via the same `--resume` plumbing as the FLUX-1390
+ * wake-resume path (`sendCliSessionInput` with `staleWaitResume: true`, so the exit handler
+ * finalizes a clean no-further-sleep turn as completed/failed instead of `waiting-input`).
+ *
+ * Never fires when a scheduled wakeup was honored (`tryEnterScheduledWake` claims those turns before
+ * either call site below reaches this check) or a pending combiner still owns the group (that gather
+ * step will resume it instead — mirrors `leadWaitOverride`'s own gate). Returns true when it resumed
+ * the session — the caller must skip `flagIfParked` (and any further terminal finalization) for this
+ * turn; false to fall through to the normal park/flag path, unchanged.
+ */
+async function tryResumeStaleWait(session: CliSessionRecord, id: string, workspaceRoot: string): Promise<boolean> {
+  if (!isDispatchedSession(session, id)) return false;
+  if ((session.staleWaitResumes ?? 0) >= MAX_STALE_WAIT_RESUMES) return false;
+  if (session.groupId && getPendingCombiner(session.groupId)) return false;
+  if (!wouldPark(session, id)) return false;
+  if (!narratesUnarmedWaitPromise(lastAssistantText(session.sessionHistoryEntry?.progress))) return false;
+
+  session.staleWaitResumes = (session.staleWaitResumes ?? 0) + 1;
+  try {
+    await sendCliSessionInput(
+      session,
+      'Your turn ended waiting on background tasks that are now dead — nothing will notify you. Complete your verification with what you have and record your verdict/status move now.',
+      'Agent',
+      workspaceRoot,
+      { staleWaitResume: true },
+    );
+    return true;
+  } catch (err: unknown) {
+    log.warn(`[claude-code] stale-wait resume failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
 async function finalizeTerminalSession(
   session: CliSessionRecord,
   id: string,
   finalStatus: 'completed' | 'failed' | 'cancelled',
   code: number | null,
   signal: NodeJS.Signals | null,
+  workspaceRoot: string,
 ): Promise<void> {
   const label = session.label;
   const outcome = session.requestedStop
@@ -925,8 +1031,7 @@ async function finalizeTerminalSession(
     });
 
     // Save the agent's final message as a comment on the ticket
-    const textEntries = accumulatedProgress.filter((p) => p.type === 'text' && p.message?.trim());
-    const lastText = textEntries.length > 0 ? textEntries[textEntries.length - 1]?.message : '';
+    const lastText = lastAssistantText(accumulatedProgress);
     if (lastText && finalStatus === 'completed') {
       const maxCommentLen = 3000;
       const commentBody = lastText.length > maxCommentLen ? lastText.slice(0, maxCommentLen) + '...' : lastText;
@@ -954,9 +1059,17 @@ async function finalizeTerminalSession(
   if (finalStatus === 'completed') {
     checkFrameworkHealth(session.framework).catch(() => {});
     checkSkillStaleness(session.framework).catch(() => {});
+    // FLUX-1437: try the stale-wait catch-and-resume BEFORE flagging/parking — a dispatched
+    // session that ended on a dead background-task wait promise isn't actually stuck on a human.
+    // If it resumed, this turn is no longer terminal: skip flagIfParked and the delegation/fan-in
+    // barriers below (the resumed turn re-enters this same helper when IT truly finishes).
+    if (await tryResumeStaleWait(session, id, workspaceRoot)) return;
     // FLUX-651: a phase session that ended cleanly but left the ticket in a working status
     // without taking a board action gets flagged Needs Action (surface, don't auto-resume).
-    await flagIfParked(session, id);
+    // A 'completed' turn by definition armed no wakeup (tryEnterScheduledWake claimed those before
+    // this helper ran), so a parked group lead's "I'll keep waiting" narration is an empty promise —
+    // leadWaitOverride upgrades the flag text to name it.
+    await flagIfParked(session, id, leadWaitOverride(session));
   }
 
   // Notify delegation awaiters (supervisor pattern).
@@ -994,7 +1107,7 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
     ? resolveModel(session.taskKey ?? 'implementation.lead', framework, getConfig())
     : null;
 
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { diffBlock: session.diffBlock, phase: session.phase, framework: 'claude', editsGated: isChatEditGated(session, task), patternPosition: session.patternPosition });
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { diffBlock: session.diffBlock, phase: session.phase, framework: 'claude', editsGated: isChatEditGated(session, task) || isScratchSession(task), patternPosition: session.patternPosition });
 
   // FLUX-579: ensure this session's per-worktree shared HTTP server(s) exist (keyed
   // by execution root) before building the MCP config that looks them up.
@@ -1006,9 +1119,13 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
   // fallback cost estimator had no real model to key on (it was passed session.resumeSessionId, a
   // UUID, instead) and a resumed turn's `--model` arg silently fell back to the CLI's own default.
   if (modelToUse) session.model = modelToUse;
+  stampDisallowedEhTools(session);
   const claudeArgs = [
     ...(modelToUse ? ['--model', modelToUse] : []),
-    '-p', initialPrompt,
+    // FLUX-1444: `-p` is a bare flag — the prompt is written to stdin after spawn, below. Windows'
+    // CreateProcess caps the command line at 32,767 chars, easily exceeded once a scatter-gather
+    // reviewer's PR diff is inlined; `claude -p` reads the prompt from stdin when no value follows.
+    '-p',
     '--output-format', 'stream-json',
     '--verbose',
     // FLUX-691: emit partial assistant deltas for token-by-token live streaming in the chat.
@@ -1068,6 +1185,12 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
       stdio: 'pipe',
     });
   }
+  // FLUX-1444: deliver the prompt over stdin instead of argv (see the `-p` comment above). Attach
+  // the stdin error listener before writing — an EPIPE (child exited before the write lands) would
+  // otherwise be an unhandled 'error' event; the spawn-level failure is handled by proc.on('error') below.
+  proc.stdin!.on('error', () => {});
+  proc.stdin!.write(initialPrompt);
+  proc.stdin!.end();
   session.proc = proc as ChildProcessWithoutNullStreams;
   session.pid = proc.pid;
   session.status = 'running';
@@ -1117,7 +1240,13 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
     session.endedAt = new Date().toISOString();
     commitPending();
     // FLUX-981: surface the spawn failure inline in the chat, not only as a history activity entry.
-    appendErrorToSession(session, `Failed to start agent: ${error.message}`);
+    // FLUX-1444: the prompt itself no longer rides argv (see stdin delivery above), but other argv
+    // content (MCP config JSON, tool lists) could still overflow the OS command-line limit — name
+    // the actual argv size so a residual ENAMETOOLONG is legible instead of a bare Node errno.
+    const failureMessage = (error as NodeJS.ErrnoException).code === 'ENAMETOOLONG'
+      ? `Failed to start agent: spawn ENAMETOOLONG — combined argv length ${claudeArgs.join(' ').length} chars exceeds the OS command-line limit (prompt is delivered via stdin, not argv)`
+      : `Failed to start agent: ${error.message}`;
+    appendErrorToSession(session, failureMessage);
     flushSessionOutput(session, true);
     await session.writeQueue;
 
@@ -1284,7 +1413,14 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
       }
       // FLUX-651: a chat turn that ends without the agent moving the ticket = "sat on its
       // hands". Don't flag a turn the agent itself paused for Require Input (pausedForInput).
-      if (!session.pausedForInput) await flagIfParked(session, id);
+      if (!session.pausedForInput) {
+        // FLUX-1432: `finalStatus === 'waiting-input'` here with `!pausedForInput` only happens
+        // for a clean (code 0) chat-phase turn (see the branch above) — the one case where a
+        // narrated "I'll wait for X" promise is unarmed. Check before flagIfParked so a detected
+        // promise's message wins the needsAction flag text.
+        await flagIfUnarmedWaitPromise(id, lastAssistantText(pausedHistoryEntry?.progress));
+        await flagIfParked(session, id);
+      }
       // FLUX-849: a dispatched session paused for input — mark it on the board thread.
       teeDispatchActivityToBoard(session, id, 'waiting-input', DISPATCH_LIFECYCLE_LABEL['waiting-input']);
       broadcastEvent('taskUpdated', { id });
@@ -1292,7 +1428,7 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
     }
 
     // `finalStatus` here is one of completed / failed / cancelled (waiting-input returns above).
-    await finalizeTerminalSession(session, id, finalStatus, code, signal);
+    await finalizeTerminalSession(session, id, finalStatus, code, signal, workspaceRoot);
   });}
 
 export class ClaudeCodeAdapter implements AgentAdapter {
@@ -1428,10 +1564,12 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   await ensureSharedServersForRoot(executionRoot, session.phase, resumeTags);
   const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, resumeTags, executionRoot, id);
   const meArgs = modelEffortArgs(session);
+  stampDisallowedEhTools(session);
   // FLUX-691: `--include-partial-messages` → token-by-token live streaming on the resume/send path.
+  // FLUX-1444: `-p` is a bare flag here too — promptForCli is written to stdin after spawn, below.
   const resumeArgs = session.resumeSessionId
-    ? ['-p', promptForCli, '--resume', session.resumeSessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...disallowedToolsArgs(session, task), ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs]
-    : ['-p', promptForCli, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...disallowedToolsArgs(session, task), ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs];
+    ? ['-p', '--resume', session.resumeSessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...disallowedToolsArgs(session, task), ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs]
+    : ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...disallowedToolsArgs(session, task), ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs];
 
   // S9 (epic FLUX-996): telemetry for this resume spawn — see the initial-spawn comment above for
   // why `cmd` omits the full prompt.
@@ -1464,6 +1602,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       windowsHide: true,
     });
   }
+  // FLUX-1444: deliver the prompt over stdin instead of argv — see the initial-spawn comment above.
+  replyProc.stdin!.on('error', () => {});
+  replyProc.stdin!.write(promptForCli);
+  replyProc.stdin!.end();
   session.proc = replyProc as ChildProcessWithoutNullStreams;
   session.pid = replyProc.pid;
 
@@ -1501,10 +1643,14 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     // FLUX-981: surface the reply spawn failure inline in the chat, not only on the board / as an
     // activity entry. Skip when the user cancelled — a stop that races the spawn error isn't a fault.
     if (!session.requestedStop) {
-      appendErrorToSession(session, `Failed to resume agent: ${error.message}`);
+      // FLUX-1444: name the argv size on a residual ENAMETOOLONG — see the initial-spawn comment above.
+      const failureMessage = (error as NodeJS.ErrnoException).code === 'ENAMETOOLONG'
+        ? `Failed to resume agent: spawn ENAMETOOLONG — combined argv length ${resumeArgs.join(' ').length} chars exceeds the OS command-line limit (prompt is delivered via stdin, not argv)`
+        : `Failed to resume agent: ${error.message}`;
+      appendErrorToSession(session, failureMessage);
       // S10 (epic FLUX-996): same needsAction + notification surfacing as the initial-spawn path.
       // Only raise when this handler is the first to observe the outcome (FLUX-1204).
-      if (isFirstOutcome) void raiseNeedsAction(id, `Failed to resume agent: ${error.message}`);
+      if (isFirstOutcome) void raiseNeedsAction(id, failureMessage);
     }
     flushSessionOutput(session, true);
     // FLUX-849: a crashed resumed turn (reply spawn error) was previously invisible on the board —
@@ -1578,13 +1724,20 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     // `finalizeTerminalSession` helper (previously this branch only set the in-memory status/endedAt
     // and left the on-disk `agent_session` history entry frozen at "scheduled" forever, silently
     // dropping this turn's tokens/cost from the ticket's tokenMetadata). Return immediately after —
-    // finalizeTerminalSession already covers the board tee / flagIfParked / error-surfacing this
-    // handler's trailing logic does for the other (non-wake-resume) exit paths below.
-    if (opts?.wakeResume && !session.pausedForInput && !session.requestedStop) {
+    // finalizeTerminalSession already covers the board tee / flagIfParked / inline error-surfacing
+    // this handler's trailing logic does for the other (non-wake-resume) exit paths below, but NOT
+    // raiseNeedsAction (FLUX-1393) — that's raised explicitly just below, mirroring the trailing
+    // `code !== 0 || signal` block.
+    // FLUX-1437: `opts.staleWaitResume` (the stale-wait catch-and-resume's own corrective turn) gets
+    // the identical treatment — same rationale, a different trigger.
+    if ((opts?.wakeResume || opts?.staleWaitResume) && !session.pausedForInput && !session.requestedStop) {
       const finalStatus = code === 0 ? 'completed' : 'failed';
       session.status = finalStatus;
       session.endedAt = new Date().toISOString();
-      await finalizeTerminalSession(session, id, finalStatus, code, signal);
+      await finalizeTerminalSession(session, id, finalStatus, code, signal, workspaceRoot);
+      if (finalStatus === 'failed' && isFirstOutcome) {
+        void raiseNeedsAction(id, `${session.label} reply ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`);
+      }
       return;
     }
     terminalizeResumedExit(session);
@@ -1599,7 +1752,23 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     }
     // FLUX-651: resumed chat turn ended — flag if the agent parked without acting. Skip a turn the
     // agent paused for Require Input (that IS an action) or one the user stopped (FLUX-915).
-    if (!session.pausedForInput && !session.requestedStop) await flagIfParked(session, id);
+    if (!session.pausedForInput && !session.requestedStop) {
+      // FLUX-1432: only chat sessions can never arm a real ScheduleWakeup (see claude-code.ts's
+      // tryEnterScheduledWake), so only flag the wait-promise language for chat — a resumed
+      // dispatched-phase session ending without a board action is already caught by flagIfParked's
+      // HARD backstop regardless of what it said.
+      if (session.phase === 'chat') {
+        await flagIfUnarmedWaitPromise(id, lastAssistantText(session.sessionHistoryEntry?.progress));
+      }
+      // FLUX-1437: same stale-wait catch-and-resume as finalizeTerminalSession — try it BEFORE
+      // flagging/parking. No-ops instantly for chat (tryResumeStaleWait's isDispatchedSession gate),
+      // so chat sessions always fall through to flagIfParked exactly as before.
+      // Non-chat: a resumed group LEAD ending clean here also armed no wakeup (tryEnterScheduledWake
+      // returned above), so its "I'll keep waiting" narration gets the same specific flag text.
+      if (!(await tryResumeStaleWait(session, id, workspaceRoot))) {
+        await flagIfParked(session, id, leadWaitOverride(session));
+      }
+    }
     // FLUX-849: bracket the dispatched session's board narration on this resumed path.
     // - Require-Input pause → 'needs input'.
     // - User-requested stop → 'stopped'.

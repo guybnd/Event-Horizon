@@ -5,6 +5,20 @@ import type { ArtifactAnnotation, PlanAnnotation } from '../../lib/planAnnotatio
 
 type EditState = { source: 'plan' | 'artifact'; key: number } | null;
 
+/** FLUX-1440: the expanded-row anchor label for an artifact annotation — mirrors the symbol/format
+ *  conventions `formatArtifactAnnotations` (planAnnotations.ts) uses for the composed chat message,
+ *  so the staged-tray row reads the same way the sent message will. Falls back to the existing
+ *  text/element anchor when a 'feel'/'decision' item has no `value` yet. */
+function artifactAnnotationAnchor(a: ArtifactAnnotation): string {
+  // `label` is the control's declared title/question — the engine already bakes any unit into
+  // `value` itself (e.g. "40ms"), so label is a descriptive prefix, not a suffix (FLUX-1440).
+  if (a.kind === 'feel' && a.value) return `· ${a.label ? `${a.label}: ` : 'value: '}${a.value}`;
+  if (a.kind === 'decision' && a.value) return `→ ${a.label ? `${a.label} — ` : ''}chose ${a.value}`;
+  // FLUX-1440: surface a raw right-click's captured `.value` (readValue) so it isn't dead data.
+  if (a.kind === 'element') return `⊙ ${a.label || 'element'}${a.value ? ` = ${a.value}` : ''}`;
+  return `> ${a.text || '(no excerpt)'}`;
+}
+
 /**
  * FLUX-1362: one row of the expanded list. Hoisted to module scope (NOT defined inside `AnnotationPill`'s
  * render body) — a component defined inline is a fresh element type on every parent render, so React would
@@ -117,6 +131,7 @@ export function AnnotationPill({
   sendDisabled = false,
   sentConfirm,
   bottomClass = 'bottom-4',
+  hasGuidedControls = false,
 }: {
   planItems?: PlanAnnotation[];
   artifactItems?: ArtifactAnnotation[];
@@ -135,6 +150,11 @@ export function AnnotationPill({
    *  Approve/Send buttons sit bottom-right too when the panel is maximized); the standalone
    *  artifact-only view keeps the default. */
   bottomClass?: string;
+  /** FLUX-1440: whether the current artifact revision exposes guided controls (sliders/pickers wired
+   *  to emit 'feel'/'decision' annotations). When true AND the list is otherwise empty, the pill
+   *  renders a small illustrated invitation instead of staying hidden — plain artifacts (the common
+   *  case, this prop falsy) are completely unaffected. */
+  hasGuidedControls?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   // Which row is mid-edit + its scratch text. Keyed by source so a plan index can't collide with an
@@ -143,7 +163,12 @@ export function AnnotationPill({
   const [draft, setDraft] = useState('');
 
   const count = planItems.length + artifactItems.length;
-  if (count === 0 && !sentConfirm) return null;
+  // FLUX-1440: an empty list normally renders nothing at all. The one exception is a guided-controls
+  // artifact with nothing captured yet — show a compact invitation instead of staying invisible. Every
+  // other empty case (plain artifacts, or `hasGuidedControls` falsy) is byte-for-byte the prior
+  // `return null` — no visual change for the common case.
+  const showGuidedEmptyState = count === 0 && !sentConfirm && hasGuidedControls;
+  if (count === 0 && !sentConfirm && !hasGuidedControls) return null;
 
   const beginEdit = (source: 'plan' | 'artifact', key: number, note: string) => {
     setEditing({ source, key });
@@ -210,7 +235,7 @@ export function AnnotationPill({
                 key={`artifact-${a.id}`}
                 source="artifact"
                 rowKey={a.id}
-                anchor={a.kind === 'element' ? `⊙ ${a.label || 'element'}` : `> ${a.text || '(no excerpt)'}`}
+                anchor={artifactAnnotationAnchor(a)}
                 note={a.note}
                 onRemove={onRemoveArtifact ? () => onRemoveArtifact(a.id) : undefined}
                 editing={editing}
@@ -236,15 +261,40 @@ export function AnnotationPill({
           )}
         </div>
       )}
-      <button
-        type="button"
-        onClick={() => count > 0 && setExpanded((v) => !v)}
-        title={count > 0 ? 'View & edit your changes' : undefined}
-        className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/50 bg-amber-500/90 px-3 py-1.5 text-[12px] font-semibold text-white shadow-lg transition-colors hover:bg-amber-500"
-      >
-        <MessageSquare className="h-3.5 w-3.5" />
-        {sentConfirm ? <span>{sentConfirm}</span> : <span>{count} change{count === 1 ? '' : 's'}</span>}
-      </button>
+      {showGuidedEmptyState ? (
+        // FLUX-1440: nothing captured yet, but the artifact has guided controls — a purely informational
+        // invitation, not a button (no count to view/expand and no send to trigger; preview-only, same
+        // as everything else in this pill — transmission stays behind the explicit Send action above).
+        <div
+          role="status"
+          className="eh-surface eh-border flex max-w-[15rem] items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] text-[var(--eh-text-secondary)] shadow-lg"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            className="h-5 w-5 flex-shrink-0 text-amber-500"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="8" cy="8" r="2.5" />
+            <path d="M4 16h6M14 16h6M17 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6Z" />
+          </svg>
+          <span>Drag a slider or pick an option to get started</span>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => count > 0 && setExpanded((v) => !v)}
+          title={count > 0 ? 'View & edit your changes' : undefined}
+          className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/50 bg-amber-500/90 px-3 py-1.5 text-[12px] font-semibold text-white shadow-lg transition-colors hover:bg-amber-500"
+        >
+          <MessageSquare className="h-3.5 w-3.5" />
+          {sentConfirm ? <span>{sentConfirm}</span> : <span>{count} change{count === 1 ? '' : 's'}</span>}
+        </button>
+      )}
     </div>,
     document.body,
   );

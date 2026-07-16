@@ -205,8 +205,15 @@ describe('decideTicketAction (pure decision core)', () => {
     const over = decideTicketAction({ ticket: mkTicket({ state: 'reviewing', attempts: 2 }), sessionStatus: 'completed', reviewState: 'changes-requested', retryCap: 2 });
     expect(over.type).toBe('park');
   });
-  it('review with no verdict parks', () => {
+  // FLUX-1437: no verdict AND no verdict-marker comment gets ONE fresh review-retry pass before
+  // parking — the FLUX-1434 incident shape (review completed but ended on a dead wait promise
+  // instead of calling change_status). Shares the reviewNudgeSent budget with the marker-nudge above.
+  it('review with no verdict gets ONE review-retry, not an immediate park', () => {
     const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'completed', reviewState: null, retryCap: 2 });
+    expect(a).toEqual({ type: 'review-retry' });
+  });
+  it('does not review-retry twice — a ticket that already used its nudge budget parks', () => {
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing', reviewNudgeSent: true }), sessionStatus: 'completed', reviewState: null, retryCap: 2 });
     expect(a.type).toBe('park');
   });
 
@@ -343,12 +350,15 @@ describe('FLUX-1396 (Group B) — decideTicketAction matrix', () => {
   // Item 6: a completed review with no verdict at all (no marker-nudge in play) must park with the exact
   // "no verdict" reason — this is the ScheduleWakeup-false-park class of bug: a caller that mistakenly
   // treats this as some other park class (e.g. a bogus needs-input) would silently change behavior.
+  // FLUX-1437: the FIRST such completion gets a `review-retry` instead (see the pure-decision-core
+  // tests above) — this asserts the exact park reason/class once the one-shot retry budget is spent
+  // (`reviewNudgeSent: true`), which is the only way this decision still reaches a real park.
   it('a completed review with reviewState null parks with the exact "no verdict" reason', () => {
-    const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'completed', reviewState: null, retryCap: 2 });
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing', reviewNudgeSent: true }), sessionStatus: 'completed', reviewState: null, retryCap: 2 });
     expect(a).toEqual({ type: 'park', reason: 'review completed without a verdict (reviewState unset)', failureClass: 'hard-fail' });
   });
   it('a completed review with reviewState left undefined (never even cleared) parks the same way', () => {
-    const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'completed', retryCap: 2 });
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing', reviewNudgeSent: true }), sessionStatus: 'completed', retryCap: 2 });
     expect(a).toEqual({ type: 'park', reason: 'review completed without a verdict (reviewState unset)', failureClass: 'hard-fail' });
   });
 
@@ -507,7 +517,9 @@ describe('FLUX-1066 — failure taxonomy + ownership', () => {
       .toMatchObject({ type: 'park', failureClass: 'needs-input' });
     expect(decideTicketAction({ ticket: mkTicket({ state: 'implementing' }), sessionStatus: 'failed', retryCap: 2 }))
       .toMatchObject({ type: 'park', failureClass: 'hard-fail' });
-    expect(decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'completed', reviewState: null, retryCap: 2 }))
+    // FLUX-1437: the first no-verdict completion gets a `review-retry`, not a park — spend the
+    // one-shot budget (`reviewNudgeSent: true`) to reach the actual park this test classifies.
+    expect(decideTicketAction({ ticket: mkTicket({ state: 'reviewing', reviewNudgeSent: true }), sessionStatus: 'completed', reviewState: null, retryCap: 2 }))
       .toMatchObject({ type: 'park', failureClass: 'hard-fail' });
   });
   it('treats a human-owned ticket as settled so it cannot wedge the batch', () => {

@@ -11,7 +11,7 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { forceResetToRemote } from './storage-sync.js';
-import { getSyncStatus, isSyncUnhealthy, reportDivergedStatus, _resetSyncStateForTests } from './sync-watcher.js';
+import { getSyncStatus, isSyncUnhealthy, reportDivergedStatus, _resetSyncStateForTests, SUPPORTED_SYNC_PROTOCOL, SYNC_PROTOCOL_MARKER_FILE } from './sync-watcher.js';
 
 const execFileAsync = promisify(execFile);
 const git = (cwd: string, args: string[]) => execFileAsync('git', args, { cwd, windowsHide: true });
@@ -40,12 +40,14 @@ describe('forceResetToRemote — force-reset-to-remote escape hatch (FLUX-1232)'
     await git(seed, ['config', 'user.name', 'Seed']);
     await git(seed, ['remote', 'add', 'origin', remote]);
     await fs.writeFile(path.join(seed, TICKET), baseContent, 'utf8');
-    // Seed the same .gitignore/.gitattributes entries a real migrated store already carries, so
-    // forceResetToRemote's idempotent post-attach steps (excludeLocalConfigFromSync,
-    // ensureUnionMergeAttributes) are true no-ops here, not a self-healing commit on top of the
-    // reset — matching the ticket's actual scenario (an already-migrated store diverging).
-    await fs.writeFile(path.join(seed, '.gitignore'), 'config.json\nread-state.json\nopen-prompts.json\nopen-prompts.json.tmp\nsession-binding-secret\nsession-binding-secret.tmp\nsessions/\n', 'utf8');
+    // Seed the same .gitignore/.gitattributes/sync-protocol-marker entries a real migrated store
+    // already carries, so forceResetToRemote's idempotent post-attach steps
+    // (excludeLocalConfigFromSync, ensureUnionMergeAttributes, ensureSyncProtocolMarker) are true
+    // no-ops here, not a self-healing commit on top of the reset — matching the ticket's actual
+    // scenario (an already-migrated store diverging).
+    await fs.writeFile(path.join(seed, '.gitignore'), 'config.json\nread-state.json\nopen-prompts.json\nopen-prompts.json.tmp\nsession-binding-secret\nsession-binding-secret.tmp\nsessions/\nsync-journal.jsonl\n', 'utf8');
     await fs.writeFile(path.join(seed, '.gitattributes'), 'transcripts/*.jsonl merge=union\n', 'utf8');
+    await fs.writeFile(path.join(seed, SYNC_PROTOCOL_MARKER_FILE), `${SUPPORTED_SYNC_PROTOCOL}\n`, 'utf8');
     await commitAll(seed, 'seed ticket');
     await git(seed, ['push', '-u', 'origin', 'flux-data']);
     await fs.rm(seed, { recursive: true, force: true }).catch(() => {});

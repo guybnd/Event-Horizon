@@ -52,6 +52,7 @@ interface StubFetchInit {
 interface CliSessionStartRequestBody {
   phase: string;
   focusComment?: string;
+  enableTools?: string[];
 }
 
 describe('Furnace integration (FLUX-1057)', () => {
@@ -910,6 +911,9 @@ describe('Furnace integration (FLUX-1057)', () => {
       const body = reviewStartBodyFor('FR-1');
       expect(body.phase).toBe('review');
       expect(body.focusComment).toBe(SOLE_REVIEWER_FOCUS + furnaceFollowupFocus(batch));
+      // FLUX-1434: the sole reviewer needs `furnace_ticket` for the follow-up mechanism
+      // `furnaceFollowupFocus` authorizes — granted explicitly, not via focus-text framing alone.
+      expect(body.enableTools).toEqual(['furnace_ticket']);
     });
 
     it('redrive — dispatched when a reviewing ticket has no observable session (e.g. after an engine restart)', async () => {

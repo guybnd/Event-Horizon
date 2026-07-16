@@ -5,7 +5,7 @@
 // `changeTaskStatus` so status moves are constructed in exactly one place.
 
 import type { Config, HistoryDigest, HistoryEntry, Task } from '../types';
-import { updateTask } from '../api';
+import { updateTask, type DiffOverview } from '../api';
 import { getReadyForMergeStatus, getRequireInputStatus } from '../workflow';
 import type { LaunchPhase } from '../agentActions';
 
@@ -121,6 +121,125 @@ export async function changeTaskStatus(
     appendHistory,
     updatedBy: currentUser,
   });
+}
+
+// ── FLUX-1359: prompt/error seam ────────────────────────────────────────────
+// `changeStatus` and `finishViaEngine` used to fire `window.prompt`/`alert` directly, which
+// Electron's renderer doesn't implement (`prompt()` throws — no polyfill in `electron/`),
+// silently no-oping Finish and every comment-gated status move there. These injected types let
+// the host (useTicketActions) supply a styled modal instead, and let the logic below be
+// unit-tested without a DOM `prompt`.
+
+/** Requests a single value from the user. Resolves the entered string, or `null` on cancel. */
+export type PromptResolver = (req: {
+  title: string;
+  message?: string;
+  defaultValue?: string;
+  submitLabel?: string;
+  multiline?: boolean;
+}) => Promise<string | null>;
+
+/** Surfaces a non-actionable failure to the user (replaces `alert`). */
+export type ErrorNotifier = (title: string, message: string) => void;
+
+/**
+ * Engine status move (moved out of `useTicketActions.changeStatus`, FLUX-1359): optionally prompt
+ * for the Ready/Require-Input comment, persist the move, and reactively re-prompt once if the
+ * engine rejects it for a missing comment. A genuine (non-missing-comment) failure notifies
+ * instead of throwing — matching the old `alert` behavior — while a failed *retry* is left to
+ * propagate so `fire()`'s catch (FLUX-1359) is the single backstop.
+ */
+export async function runChangeStatus(deps: {
+  task: Task;
+  newStatus: string;
+  currentUser: string;
+  needsComment?: boolean;
+  requireInputStatus: string;
+  prompt: PromptResolver;
+  notifyError: ErrorNotifier;
+  onDone: () => void;
+}): Promise<void> {
+  const { task, newStatus, currentUser, needsComment, requireInputStatus, prompt, notifyError, onDone } = deps;
+  let comment: string | undefined;
+  if (needsComment) {
+    const label = newStatus === requireInputStatus ? 'question for the user' : 'completion summary';
+    const entered = await prompt({
+      title: `Move ${task.id} to "${newStatus}"`,
+      message: `Add a ${label}:`,
+      submitLabel: 'Continue',
+      multiline: true,
+    });
+    if (entered === null) return; // cancelled
+    comment = entered.trim() || undefined;
+  }
+  try {
+    await changeTaskStatus(task, newStatus, currentUser, { comment });
+  } catch (err) {
+    // Reactive: the engine rejects Ready/Require Input without a comment. Prompt + retry once.
+    if (isMissingCommentError(err) && !comment) {
+      const entered = await prompt({
+        title: `Move ${task.id} to "${newStatus}"`,
+        message: 'A comment is required to move it here:',
+        submitLabel: 'Continue',
+        multiline: true,
+      });
+      if (entered === null || !entered.trim()) return;
+      await changeTaskStatus(task, newStatus, currentUser, { comment: entered.trim() });
+    } else {
+      notifyError(`Failed to move ${task.id}`, err instanceof Error ? err.message : String(err));
+      return;
+    }
+  }
+  onDone();
+}
+
+/**
+ * Branchless finish (moved out of `useTicketActions.finishViaEngine`, FLUX-618/FLUX-1359): gather
+ * the main tree's uncommitted files, prompt for a curated commit message showing exactly what will
+ * be committed, then commit + finish server-side. A clean tree (or an unavailable diff overview)
+ * falls back to the agent finish rather than guessing.
+ */
+export async function runFinishBranchless(deps: {
+  task: Task;
+  prompt: PromptResolver;
+  notifyError: ErrorNotifier;
+  onDone: () => void;
+  dispatchFinish: () => void | Promise<void>;
+  fetchDiffOverview: (uncommittedOnly?: boolean) => Promise<DiffOverview>;
+  finishBranchless: (taskId: string, body: { files: string[]; message: string }) => Promise<unknown>;
+}): Promise<void> {
+  const { task, prompt, notifyError, onDone, dispatchFinish, fetchDiffOverview, finishBranchless } = deps;
+  let files: string[];
+  try {
+    const overview = await fetchDiffOverview(true);
+    const mainGroup = overview.groups.find((g) => g.kind === 'main');
+    files = (mainGroup?.files ?? []).map((f) => f.file);
+  } catch {
+    // Diff overview unavailable — fall back to the agent finish rather than guess.
+    await dispatchFinish();
+    return;
+  }
+  if (files.length === 0) {
+    // Nothing uncommitted to curate — let the agent finish handle it (already-committed work, etc.).
+    await dispatchFinish();
+    return;
+  }
+  const fileList = files.map((f) => `  • ${f}`).join('\n');
+  const entered = await prompt({
+    title: `Finish ${task.id}`,
+    message: `These ${files.length} file(s) will be committed:\n\n${fileList}\n\nCommit message (describe the shipped behavior):`,
+    defaultValue: `${task.id}: ${task.title}`,
+    submitLabel: 'Finish',
+  });
+  if (entered === null) return; // cancelled
+  const message = entered.trim();
+  if (!message) { notifyError('Cannot finish', 'A commit message is required to finish.'); return; }
+  try {
+    await finishBranchless(task.id, { files, message });
+    onDone();
+  } catch (err) {
+    notifyError(`Failed to finish ${task.id}`, err instanceof Error ? err.message : String(err));
+  }
 }
 
 // ── The unified ticket-action registry (FLUX-715) ───────────────────────────

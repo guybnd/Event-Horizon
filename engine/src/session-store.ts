@@ -48,6 +48,22 @@ export function unregisterSession(taskId: string, sessionId: string): void {
   if (ids.length === 0) cliSessionsByTaskId.delete(taskId);
 }
 
+/**
+ * Core resumable-session predicate (FLUX-1391): a session is resumable only when its status is in
+ * the caller's allowed set AND it carries a `resumeSessionId`. Callers intentionally use different
+ * status sets — e.g. furnace-stoker's `findResumeCandidate` deliberately excludes `'running'` as a
+ * defensive rail (FLUX-1396 H1) while the broader chat-resumable derivation below does not — so this
+ * only unifies the shared shape, not the allowed statuses. Never widen one call site's set to match
+ * another's without re-checking why it was narrowed.
+ */
+export function isResumable(session: Pick<CliSessionRecord, 'status' | 'resumeSessionId'>, allowedStatuses: ReadonlySet<CliSessionRecord['status']>): boolean {
+  return allowedStatuses.has(session.status) && !!session.resumeSessionId;
+}
+
+// Statuses the ticket-chat input route (and the summary's `resumable` flag below) can resume —
+// 'completed' included per FLUX-606: a finished session with a resumeSessionId is continuable.
+const INPUT_RESUMABLE_STATUSES: ReadonlySet<CliSessionRecord['status']> = new Set(['running', 'waiting-input', 'scheduled', 'completed']);
+
 function toSummary(session: CliSessionRecord): CliSessionSummary {
   const summary: CliSessionSummary = {
     id: session.id,
@@ -90,9 +106,10 @@ function toSummary(session: CliSessionRecord): CliSessionSummary {
   // that has a known resumeSessionId — including a dispatched grooming session that ended
   // `completed`. Expose a boolean (not the raw id) so the frontend resumes that thread
   // instead of starting a fresh, amnesiac chat.
-  summary.resumable = ['running', 'waiting-input', 'scheduled', 'completed'].includes(session.status) && !!session.resumeSessionId;
+  summary.resumable = isResumable(session, INPUT_RESUMABLE_STATUSES);
   if (session.wakeAt) summary.wakeAt = session.wakeAt;
   if (session.wakeReason) summary.wakeReason = session.wakeReason;
+  if (session.disallowedEhTools && session.disallowedEhTools.length > 0) summary.disallowedEhTools = session.disallowedEhTools;
   return summary;
 }
 
@@ -225,6 +242,38 @@ export function getActiveSessionsForTask(taskId: string): CliSessionRecord[] {
   return ids
     .map(id => cliSessionsById.get(id))
     .filter((s): s is CliSessionRecord => !!s && ['pending', 'running', 'waiting-input', 'scheduled'].includes(s.status));
+}
+
+// Positions marking a session as a group SUBORDINATE — spawned to serve another session (a
+// supervisor delegate or a scatter-gather/relay step), never the thread the user is addressing.
+// 'standalone' is stripped at registration (cli-session.ts createPendingSession), so solo
+// sessions carry no patternPosition at all; leads and combiners keep theirs.
+const SUBORDINATE_POSITIONS: ReadonlySet<string> = new Set(['assistant', 'step']);
+
+/**
+ * The session a no-target ticket-chat message should land on. Raw registration order
+ * (`cliSessionIdByTaskId.get`) is wrong for orchestration runs: a supervisor lead spawns its
+ * delegates AFTER itself, so "last registered" resolves the user's follow-up ("all good?") to
+ * the most recently spawned worker — even a completed one — instead of the lead running the
+ * show. Preference order:
+ *   1. the most recently registered resumable session the user would actually address — a
+ *      lead, a combiner, or a solo session (no patternPosition);
+ *   2. else the most recent resumable subordinate (assistant/step — e.g. a relay mid-chain has
+ *      nothing else on offer), matching the old behavior;
+ *   3. else the last-registered id, so the route still 409s with that session's summary when
+ *      nothing is resumable at all.
+ */
+export function getPreferredInputSessionId(taskId: string): string | undefined {
+  const ids = cliSessionsByTaskId.get(taskId);
+  if (!ids || ids.length === 0) return undefined;
+  let subordinate: string | undefined;
+  for (let i = ids.length - 1; i >= 0; i--) {
+    const session = cliSessionsById.get(ids[i]!);
+    if (!session || !INPUT_RESUMABLE_STATUSES.has(session.status)) continue;
+    if (!SUBORDINATE_POSITIONS.has(session.patternPosition ?? '')) return session.id;
+    subordinate ??= session.id;
+  }
+  return subordinate ?? ids[ids.length - 1];
 }
 
 // Narrow selector for the merge guard: only sessions that are actively executing work.
@@ -771,6 +820,9 @@ interface SessionStub {
   lastOutputAt?: string;
   phase?: LaunchPhase;
   role?: string;
+  /** Persisted so `getPreferredInputSessionId`'s lead-over-worker preference survives a
+   *  restart — a rehydrated delegate/step stub must not read as an addressable solo session. */
+  patternPosition?: PatternPosition;
   /** FLUX-1378: the live-context gauge, persisted so `resumeOrDispatchSession`'s viability check
    *  survives an engine restart (else a rehydrated stub always looks like "no usage recorded" and
    *  falls back to the turn-count proxy instead of the real gauge). */
@@ -817,6 +869,7 @@ function stubFor(session: CliSessionRecord): SessionStub | null {
   if (session.lastOutputAt) stub.lastOutputAt = session.lastOutputAt;
   if (session.phase) stub.phase = session.phase;
   if (session.role) stub.role = session.role;
+  if (session.patternPosition) stub.patternPosition = session.patternPosition;
   if (session.lastTurnContextTokens != null) stub.lastTurnContextTokens = session.lastTurnContextTokens;
   if (session.contextWindow != null) stub.contextWindow = session.contextWindow;
   return stub;
@@ -861,6 +914,7 @@ function rehydratedRecord(stub: SessionStub): CliSessionRecord {
     ...(stub.lastOutputAt ? { lastOutputAt: stub.lastOutputAt } : {}),
     ...(stub.phase ? { phase: stub.phase } : {}),
     ...(stub.role ? { role: stub.role } : {}),
+    ...(stub.patternPosition ? { patternPosition: stub.patternPosition } : {}),
     ...(stub.lastTurnContextTokens != null ? { lastTurnContextTokens: stub.lastTurnContextTokens } : {}),
     ...(stub.contextWindow != null ? { contextWindow: stub.contextWindow } : {}),
     ...(scheduled ? { wakeAt: stub.wakeAt } : {}),

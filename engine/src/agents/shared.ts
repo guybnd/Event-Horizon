@@ -421,6 +421,7 @@ export interface CliTask {
   tags?: string[];
   branch?: string;
   effortLevel?: string;
+  kind?: string;
   history?: CliTaskHistoryEntry[];
 }
 
@@ -436,27 +437,48 @@ export function isChatEditGated(
   return session.phase === 'chat' && task?.status !== 'In Progress';
 }
 
+// FLUX-1443: a Scratch ticket (`task.kind === 'scratch'`) is a conversation surface, never an
+// implementation surface — its outcome must be PROMOTED (extract_ticket / board-rebase `promote`)
+// into a real, groomed card before any code gets written. Deliberately independent of
+// `session.phase`/`task.status`: unlike isChatEditGated (which unlocks once the ticket flips to
+// 'In Progress'), a scratch session must stay gated even if it flips its own status — that
+// self-unlock is exactly the hole this ticket closes. Checked live per call, so a scratch ticket
+// whose `kind` gets cleared (e.g. by a rebase) immediately falls back under normal rules.
+export function isScratchSession(task: { kind?: string | undefined } | undefined): boolean {
+  return task?.kind === 'scratch';
+}
+
 // FLUX-1123: only Claude Code can actually ENFORCE the FLUX-926 gate — `--disallowed-tools` has no
 // equivalent in the Copilot/Gemini CLIs (see CLI_CAPABILITIES.chatEditGateEnforced and the
 // copilot-board.ts / gemini-board.ts FLUX-959 comments). Copilot/Gemini chat still gets a note so a
 // well-behaved agent avoids the tools voluntarily, but the wording must not overclaim a block that
 // doesn't exist — hence the framework branch here instead of one shared string.
-export function chatEditGateNote(framework: CliFramework): string {
-  return CLI_CAPABILITIES[framework].chatEditGateEnforced
+// FLUX-1443: `reason` picks the wording — 'scratch' explains the promote-first rule (independent of
+// ticket status), 'status' is the original FLUX-926 not-In-Progress wording.
+export function chatEditGateNote(framework: CliFramework, reason: 'status' | 'scratch' = 'status'): string {
+  const enforced = CLI_CAPABILITIES[framework].chatEditGateEnforced;
+  if (reason === 'scratch') {
+    return enforced
+      ? 'FLUX-1443: this is a Scratch ticket — a conversation surface, not an implementation surface. File-mutation tools (Write/Edit/etc.) are disabled for this turn regardless of ticket status — the CLI will refuse them. When the discussion concludes "let\'s build it", call extract_ticket (or propose a board-rebase "promote") to seed a real, groomed card — that card then flows through Grooming -> Todo -> implementation normally. Discussion, planning, and read-only tools work as normal.'
+      : 'FLUX-1443 / FLUX-1123: this is a Scratch ticket — a conversation surface, not an implementation surface. Unlike Claude Code, this CLI has no enforced file-edit block — treat file-mutation tools (Write/Edit/etc.) as off-limits on your own judgment, regardless of ticket status. When the discussion concludes "let\'s build it", call extract_ticket (or propose a board-rebase "promote") to seed a real, groomed card instead of implementing here. Discussion, planning, and read-only tools work as normal.';
+  }
+  return enforced
     ? 'FLUX-926: this ticket is not In Progress, so file-mutation tools (Write/Edit/etc.) are disabled for this turn — the CLI will refuse them. Move the ticket to "In Progress" (or ask the user to) before making changes; discussion, planning, and read-only tools work as normal.'
     : 'FLUX-926 / FLUX-1123: this ticket is not In Progress. Unlike Claude Code, this CLI has no enforced file-edit block — treat file-mutation tools (Write/Edit/etc.) as off-limits for this turn on your own judgment and do not use them. Move the ticket to "In Progress" (or ask the user to) before making changes; discussion, planning, and read-only tools work as normal.';
 }
 
-// FLUX-926 / FLUX-1123: prepend the edit-gate note to a RESUMED turn's prompt when gated, shared by
-// every adapter's sendCliSessionInput. (The initial-spawn path goes through buildInitialPrompt's
-// `editsGated` option instead, below — chat's opening turn there has no separate user message to
-// prepend onto.)
+// FLUX-926 / FLUX-1123 / FLUX-1443: prepend the edit-gate note to a RESUMED turn's prompt when
+// gated, shared by every adapter's sendCliSessionInput. (The initial-spawn path goes through
+// buildInitialPrompt's `editsGated` option instead, below — chat's opening turn there has no
+// separate user message to prepend onto.) Scratch takes priority over the status-based note since
+// it's the more specific, unconditional reason.
 export function prependEditGateNote(
   session: { phase?: CliSessionRecord['phase'] | undefined },
-  task: { status?: string | undefined } | undefined,
+  task: { status?: string | undefined; kind?: string | undefined } | undefined,
   framework: CliFramework,
   message: string,
 ): string {
+  if (isScratchSession(task)) return `${chatEditGateNote(framework, 'scratch')}\n\n---\n\n${message}`;
   return isChatEditGated(session, task) ? `${chatEditGateNote(framework)}\n\n---\n\n${message}` : message;
 }
 
@@ -474,7 +496,7 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
   // (disallowedToolsArgs in claude-code.ts); Gemini/Copilot have no equivalent flag (FLUX-1123), so
   // this text note is their only enforcement — hence it is added here, framework-agnostically, for
   // every framework's review/implementation dispatch.
-  const noDeferNote = 'You are a one-shot unattended session — you will NOT be resumed by a scheduled wakeup. Run any verification (tests, background checks) to completion within this turn, then record your verdict/status before ending. Never defer via ScheduleWakeup.';
+  const noDeferNote = 'You are a one-shot unattended session — you will NOT be resumed by a scheduled wakeup. Run any verification (tests, background checks) to completion within this turn, then record your verdict/status before ending. Never defer via ScheduleWakeup, and never end the turn saying you will "wait for" a background task or notification — background tasks are killed the instant this turn ends, so nothing will ever wake you to continue; finish with what you have now.';
 
   const requireInputStopInstruction = caps.selfPause
     ? 'IMPORTANT: If you call change_status to "Require Input", STOP immediately after. Do not continue working — the user will reply and you will be resumed with their answer.'
@@ -506,7 +528,7 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
             `Leaving the ticket parked in a working status with only a chat summary is a defect: the board flags it "Needs Action" and the user is notified. If you genuinely cannot decide, that itself is a "Require Input" — raise it, don't sit on it.\n\n` +
             `To ask the user a structured question mid-turn, call the ask_user_question tool — it shows an interactive picker in this chat and returns their choice so you continue immediately. Never assume when a quick question would resolve ambiguity; ask.\n` +
             `This holds REGARDLESS of the ticket's status (FLUX-826): even on a Done/Ready/closed ticket, any decision ("file a ticket / commit / leave it?") goes through ask_user_question — never as chat prose. A decision typed only into chat on a resting ticket has no picker, no notification, and no board flag, so it is lost if the user isn't watching live. (If ask_user_question times out unanswered on a ticket, the engine now leaves a persistent "Needs Action" flag as a backstop — but route it structurally, don't rely on the backstop.)` +
-            (opts?.editsGated ? `\n\n${chatEditGateNote(framework)}` : '') +
+            (opts?.editsGated ? `\n\n${chatEditGateNote(framework, isScratchSession(task) ? 'scratch' : 'status')}` : '') +
             orchestrationProposalsParagraph + `\n\n` +
             mcpNote;
         case 'grooming':

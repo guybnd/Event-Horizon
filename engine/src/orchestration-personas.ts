@@ -1,4 +1,4 @@
-﻿import type { CliCapabilities, LaunchPhase } from './agents/types.js';
+﻿import type { CliCapabilities, LaunchPhase, PatternPosition } from './agents/types.js';
 import type { Phase } from './models/workflow.js';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -34,6 +34,15 @@ export interface OrchestrationPersona {
   prompt: string;
   /** True for code-defined personas (cannot be edited or deleted). */
   builtIn?: boolean;
+  /**
+   * FLUX-1434: explicit `event-horizon` MCP tool re-enables for this persona (bare names, no
+   * `mcp__event-horizon__` prefix) — subtracted from `CATEGORY_DENY_DEFAULTS[role]` at every
+   * scope computation, regardless of launch position (unlike `PHASE_BASELINE`, which only
+   * applies to standalone/lead positions). Only meaningful for `role: 'worker'` (lead/flex are
+   * never scoped). Custom worker personas can declare this too — an undeclared worker persona
+   * just gets its role default (the deny list alone).
+   */
+  enableTools?: string[];
 
   // ── Deprecated fields (read on load for backward compat, never written) ──
   /** @deprecated Use `phases` (multi-select) instead. */
@@ -303,6 +312,7 @@ IMPORTANT: Do NOT use \`update_ticket\`. Do NOT use \`change_status\` to move to
 **When to pause for user input:** If any question is truly blocking (no safe default, the answer fundamentally changes the implementation direction), use \`change_status\` to move the ticket to "Require Input" with your questions in the comment. Then STOP — do not exit, do not proceed. The user will answer and the session will resume. This is critical in relay pipelines: if you exit without pausing, the next agent runs immediately with your proposed defaults and the user never gets to weigh in.
 
 **When NOT to pause:** If all unknowns have reasonable defaults that a planner can safely adopt, just post your findings as a comment and exit normally. The next step will proceed with your proposed defaults.`,
+    enableTools: ['change_status'], // pauses to Require Input on a blocking question
   },
   {
     id: 'planner',
@@ -346,6 +356,7 @@ Steps to follow:
 5. **If the finding no longer exists** — the code it described has already changed such that the ticket's premise is gone — do NOT greenlight implementation by leaving it in Todo/In Progress. Recommend re-scoping or archiving in your \`add_note\`, then use \`change_status\` to move the ticket to "Require Input" with a concise question (re-scope vs. archive) and your recommendation as the comment. This is the one case where you own the status decision.
 
 IMPORTANT: Other than the Require Input case above, do NOT use \`change_status\`. You are a grounding step, not the planner or implementer — leave the next status move (Todo, In Progress, Ready) to whoever delegated to you.`,
+    enableTools: ['update_ticket', 'change_status'], // rewrites the body; Require Input if the finding is dead
   },
   {
     id: 'epic-decomposer',
@@ -377,6 +388,7 @@ Steps to follow:
    - **If the question times out or there is no user to ask** (e.g. running unattended under a lead): leave your proposal comment as the final artifact and STOP. Never mass-create subtasks without sign-off.
 
 IMPORTANT: Do NOT use \`change_status\` on this ticket — decomposing an epic doesn't change the epic's own status; leave routing to whoever is running you. Do NOT call any \`furnace_*\` tool — recommend the batch shape, never build it.`,
+    enableTools: ['create_ticket', 'update_ticket', 'ask_user_question'], // creates subtasks on approval
   },
   {
     id: 'test-engineer',
@@ -420,6 +432,7 @@ Steps to follow:
    - **Branchless ticket:** leave the code files uncommitted and use \`change_status\` to move the ticket to "Ready" with the same summary — the user finalizes via the finish handoff, which creates the commit.
 
 Prefer correctness and minimal footprint over cleverness. Do not add features, refactors, or abstractions beyond what the ticket asks.`,
+    enableTools: ['change_status'], // In Progress / Ready / Require Input
   },
   {
     id: 'finalizer',
@@ -462,6 +475,7 @@ Steps to follow:
 5. Use \`add_note\` to list exactly which docs you updated (with paths), or state explicitly that none needed changes and why.
 
 Do not commit or change ticket status — a later step handles that.`,
+    enableTools: ['update_ticket'], // fixes ticket metadata while auditing docs
   },
   {
     id: 'shipper',
@@ -743,6 +757,12 @@ export async function saveCustomPersona(input: Partial<OrchestrationPersona>): P
     requiredCapabilities: Array.isArray(input.requiredCapabilities) ? input.requiredCapabilities : [],
     prompt: input.prompt!,
     builtIn: false,
+    // FLUX-1434: custom worker personas can declare their own MCP tool re-enables, same as a
+    // built-in's `enableTools` — makes a custom `role: 'worker'` persona first-class in the
+    // deny-list model instead of silently getting only the role default forever.
+    ...(Array.isArray(input.enableTools) && input.enableTools.length > 0
+      ? { enableTools: input.enableTools.filter((t) => typeof t === 'string') }
+      : {}),
   };
   const dir = getPersonasDir();
   if (!existsSync(dir)) await fs.mkdir(dir, { recursive: true });
@@ -791,6 +811,153 @@ export function getPersonaById(id: string): OrchestrationPersona | undefined {
   if (direct) return direct;
   const resolvedId = RETIRED_PERSONA_ALIASES[id];
   return resolvedId ? ALL_BUILT_IN.find((p) => p.id === resolvedId) : undefined;
+}
+
+// ── Per-role MCP toolset scoping — deny-list model (FLUX-1434, replaces FLUX-1385) ──────────
+//
+// FLUX-1376 empirically verified that `--disallowed-tools` (claude-code.ts's
+// `disallowedToolsArgs`) genuinely drops the listed tools' SCHEMAS from what the CLI sends
+// the model, not just their call permission (see the comment above `disallowedToolsArgs`).
+// So a role→toolset default fed into that same flag is enough to realize the savings — no
+// separate conditional-registration mechanism is needed. A worker delegate (context-scout,
+// requirements-interrogator, most reviewers, ...) only ever calls a handful of the
+// `event-horizon` MCP tools below, but without scoping it pays for every tool's schema on
+// every turn (~500 tok/tool per FLUX-1376's measurement).
+//
+// FLUX-1385 shipped this as an ALLOW-list (`ALL_EH_TOOL_NAMES − WORKER_BASE_EH_TOOLS − overrides`):
+// authority was encoded in three places that drifted independently (persona prompts, a hand-
+// maintained override table, and magic words in focus text), and a session could be *instructed*
+// by a phase mission or Furnace focus text to call a tool its scoping had already stripped —
+// six confirmed regressions (plan-revise sessions unable to `update_ticket`, the Furnace sole
+// reviewer unable to `create_ticket`/`furnace_ticket`, custom worker personas failing closed,
+// the resume seam reusing a scoped delegate's session, gated permission mode disallowing its own
+// `permission_prompt` tool). FLUX-1434 inverts the model to a DENY-list computed fresh at every
+// spawn AND resume:
+//
+//   deny = categoryDeny[persona.role]      (the cost lever, config-overridable)
+//        − persona.enableTools             (per-persona re-enables, declared on the persona)
+//        − phaseBaseline[launchPhase]      (standalone/lead positions only — what the launched
+//                                            phase's own generic mission text instructs)
+//        − dispatch.enableTools            (explicit per-launch grant, e.g. Furnace review)
+//        − NEVER_DENY                      (undeniable floor)
+//
+// A newly registered MCP tool that isn't in `CATEGORY_DENY_DEFAULTS` is simply never scoped down
+// for anyone — fails OPEN to "available" (the opposite failure mode from the old allow-list,
+// which failed a new tool CLOSED until someone remembered an override). The deliberate tradeoff:
+// a new expensive tool leaks its token cost to worker delegates until someone adds it here.
+
+/**
+ * Shipped per-role deny defaults — the cost lever. `worker` denies most of the catalog (a
+ * delegate reads the ticket + posts a note by default); `lead`/`flex` deny nothing (they are
+ * complete, self-authoritative workflows, never scoped down). Board-config overridable via
+ * `toolScoping.categoryDeny` (see `resolveCategoryDeny` below) — tuning or disabling scoping is
+ * config, not code. Hand-maintained against `mcp-server.ts`'s registered tool names; the CI lint
+ * (`orchestration-personas.test.ts`) cross-checks every listed name is a real registered tool.
+ */
+export const CATEGORY_DENY_DEFAULTS: Record<PersonaRole, string[]> = {
+  worker: [
+    'get_session_log', 'list_tickets', 'get_board_config', 'get_project_group',
+    'create_ticket', 'extract_ticket', 'merge_tickets', 'update_ticket', 'change_status',
+    'start_plan_review', 'archive', 'swimlane', 'publish_artifact', 'finish_ticket',
+    'branch', 'list_available_agents', 'delegate', 'start_session', 'furnace_get',
+    'furnace_update', 'furnace_build', 'furnace_batch', 'furnace_ticket', 'get_board_state',
+    'propose_board_rebase', 'group_doc',
+  ],
+  lead: [],
+  flex: [],
+};
+
+/** Undeniable floor — never in any computed deny list, regardless of role/config/persona. A
+ *  stranded delegate (its lead crashes/times out) can always `get_ticket` + `add_note` a trace;
+ *  `ask_user_question` is the mandated decision surface; `permission_prompt` is harness plumbing
+ *  a gated-permission-mode session needs to be reachable AT ALL (FLUX-1385 regression #6: the old
+ *  allow-list denied this tool for workers while `permissionArgs` simultaneously routed every
+ *  tool decision through it). */
+export const NEVER_DENY = ['get_ticket', 'add_note', 'ask_user_question', 'permission_prompt'];
+
+/**
+ * Tools each launch phase's own generic mission text (`buildInitialPrompt` in shared.ts) instructs
+ * — re-enabled ONLY for `standalone`/`lead` pattern positions (a delegate's contract defers status
+ * moves to its lead; the token savings live specifically in delegates, so they keep the trimmed
+ * set). This is what fixes "any standalone launch of a phase with a worker persona" as a class —
+ * previously only a persona's OWN override table could re-enable a tool, so a worker persona
+ * launched standalone (portal Start Task picker, `start_session` with `personaId`) in a phase
+ * whose mission demanded more than that persona's override still failed. Pinned against the
+ * mission/skill texts during implementation; the CI lint keeps them honest.
+ */
+export const PHASE_BASELINE: Partial<Record<LaunchPhase, string[]>> = {
+  grooming: ['update_ticket', 'change_status', 'create_ticket', 'publish_artifact'],
+  'fast-path': ['update_ticket', 'change_status', 'create_ticket', 'publish_artifact'],
+  implementation: ['change_status', 'create_ticket'],
+  review: ['change_status', 'create_ticket', 'update_ticket'],
+  finalize: ['finish_ticket', 'update_ticket', 'change_status'],
+};
+
+/**
+ * @deprecated FLUX-1434: the sole-reviewer restore set from the old allow-list model, kept ONLY as
+ * a fallback for an in-flight pre-upgrade session (dispatched before this shipped, so its session
+ * record has no `enableTools` stamped) whose focus text still carries the sole-reviewer framing.
+ * `add_note`/`ask_user_question` are already in `NEVER_DENY`; listed for clarity. Delete this and
+ * `SOLE_REVIEWER_FOCUS_RE` in the release after this ships — `furnace-stoker.ts`'s
+ * `reviewDispatchOpts` now sends `enableTools` explicitly instead of relying on focus-text framing.
+ */
+const DEPRECATED_SOLE_REVIEWER_EH_TOOLS = ['change_status', 'add_note', 'ask_user_question', 'update_ticket'];
+
+/**
+ * @deprecated FLUX-1434: matches the old focus-text signal ("...SOLE reviewer..."). See
+ * `DEPRECATED_SOLE_REVIEWER_EH_TOOLS` above.
+ */
+const SOLE_REVIEWER_FOCUS_RE = /\b(sole|only)\s+reviewer\b/i;
+
+/** Resolve a role's deny list: the board-config override (`toolScoping.categoryDeny[role]`) if
+ *  present, else the shipped default. The override is a full replacement for that role's list,
+ *  not a merge — an operator who opts into tuning this owns the whole list. */
+function resolveCategoryDeny(role: PersonaRole): string[] {
+  const override = getConfig()?.toolScoping?.categoryDeny?.[role];
+  return Array.isArray(override) ? override : CATEGORY_DENY_DEFAULTS[role];
+}
+
+/** Everything `disallowedEhToolsForPersona` needs to compute a session's effective deny list. */
+export interface ToolScopingContext {
+  personaId?: string | undefined;
+  /** The launch phase — gates `PHASE_BASELINE` and picks the right baseline set. */
+  phase?: LaunchPhase | undefined;
+  /** Delegates (`assistant`/`step`) never get `PHASE_BASELINE`; every other position
+   *  (`standalone`/`lead`/`combiner`/undefined) does. */
+  patternPosition?: PatternPosition | undefined;
+  /** Explicit per-launch grant (e.g. the Furnace review dispatch's `['furnace_ticket']`) —
+   *  applies regardless of pattern position, same as `persona.enableTools`. */
+  enableTools?: string[] | undefined;
+  /** @deprecated only consulted for the pre-upgrade sole-reviewer fallback, see
+   *  `DEPRECATED_SOLE_REVIEWER_EH_TOOLS`. */
+  focusComment?: string | undefined;
+}
+
+/**
+ * The `event-horizon` tool names to DISALLOW (bare names) for a session, or `undefined` for "no
+ * restriction" — `role: 'lead'` and `role: 'flex'` personas, and any unresolvable personaId
+ * (custom persona removed after launch, ad-hoc non-persona session), always get the full toolset.
+ * Fails OPEN toward more tools on ambiguity, mirroring `buildSpawnMcpConfigArgs`'s own strict-mode
+ * fail-open philosophy — a session that can't be confidently scoped down is never the one that
+ * loses `change_status`/`add_note`.
+ */
+export function disallowedEhToolsForPersona(ctx: ToolScopingContext): string[] | undefined {
+  if (!ctx.personaId) return undefined;
+  const persona = getPersonaById(ctx.personaId);
+  if (!persona || persona.role !== 'worker') return undefined;
+
+  const allow = new Set(persona.enableTools ?? []);
+  const isDelegatePosition = ctx.patternPosition === 'assistant' || ctx.patternPosition === 'step';
+  if (!isDelegatePosition && ctx.phase) {
+    for (const t of PHASE_BASELINE[ctx.phase] ?? []) allow.add(t);
+  }
+  for (const t of ctx.enableTools ?? []) allow.add(t);
+  if (ctx.focusComment && SOLE_REVIEWER_FOCUS_RE.test(ctx.focusComment)) {
+    for (const t of DEPRECATED_SOLE_REVIEWER_EH_TOOLS) allow.add(t);
+  }
+
+  const categoryDeny = resolveCategoryDeny('worker');
+  return categoryDeny.filter((t) => !allow.has(t) && !NEVER_DENY.includes(t));
 }
 
 /**

@@ -11,7 +11,7 @@ Scope: Interpret requirements, update frontmatter, and handle `.flux` metadata d
 
 # Event Horizon Agent — Grooming Skill
 
-Version: 2.16.0
+Version: 2.16.1
 
 ## When This Skill Applies
 
@@ -32,7 +32,7 @@ Full contract lives in the orchestrator skill's "End-of-Turn Action Contract" se
 6. Once resolved, use `update_ticket` to rewrite `body` with, in this order:
    - **TL;DR** (FIRST, always): a 1–3 sentence plain-language / ELI5 summary as a leading `> **TL;DR** — …` blockquote, so the user grasps the ticket at a glance without reading the full plan (see the orchestrator skill's "Body convention").
    - **Problem / Motivation** (1–3 sentences): what problem, who benefits, why prioritised.
-   - **Implementation plan**: concrete steps so another agent could pick up without re-discovery. Apply the Plan Discipline items below, scaled to the ticket's size and risk.
+   - **Implementation plan**: concrete steps so another agent could pick up without re-discovery. Apply the Plan Discipline items below, scaled to the ticket's size and risk. Scale ceremony to effort generally — see the orchestrator skill's "Ceremony by effort" table.
 7. Use `change_status` with `newStatus: 'Todo'`. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.** If the board's `plan` gate policy is `Auto` or `Auto→You` (FLUX-1263), this call may not move the ticket immediately — it instead kicks off an automated plan-review pass and the tool's response explains what happened. That's expected: stop the same way regardless of whether the move applied directly or the gate took over.
    - **Exception — fast-path sessions (FLUX-1380).** This "stop at Todo" instruction is the default grooming contract, not an absolute rule. When the launch mission text explicitly identifies this session as `fast-path` (a combined groom-and-implement session dispatched via `phase:'fast-path'`), that mission overrides this step for this launch only: continue straight into implementation per the fast-path mission's own instructions instead of stopping at Todo. This is a launch-time override, not a change to what a normally-dispatched grooming session does — absent an explicit fast-path mission, stop at Todo as written above.
 
@@ -87,6 +87,8 @@ This is a **default-ON** rule, not the old "exception, not the norm" — **almos
 - **Skip** only for **XS/S non-UI** tickets with no visual or structural "shape" to react to (a one-line fix, pure backend plumbing). A markdown plan is the right output for these.
 
 When in doubt on a plan proposal, emit one.
+
+A plan with a genuinely open-ended "feel" variable (no right answer on paper — scroll speed, easing, spacing) or several pivotal choices buried in prose is a strong signal to emit — and to use the `data-eh-feel`/`data-eh-decision` guided-annotation controls (see the orchestrator skill's "Rich Artifacts" section) so the user settles them directly on the rendering instead of guessing in a comment. This reinforces the UI-or-M+ rule above; it doesn't replace it.
 
 This judgment call is workflow step 5, not just a section to remember on your own (FLUX-1313) — see the ownership note there for Dynamic Delegation. The plan-review gate also checks for this: a UI/UX-shaped plan with no artifact gets flagged in the review comment as a gap rather than silently approved, so a missed decision here surfaces there too — but that's a backstop, not a substitute for making the call at grooming time.
 

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { act, cleanup, render } from '@testing-library/react';
 import { Board } from './Board';
 import { DockProvider } from './DockProvider';
+import { ToastProvider } from '../hooks/useNotify';
 import { appStore } from '../store/appStore';
 import { AppActionsContext } from '../store/useAppSelector';
 import type { AppActions } from '../store/appStore';
@@ -78,11 +79,13 @@ describe('Column pin escapes swimlane buckets (FLUX-1300)', () => {
 
     const actions = stubActions<AppActions>();
     const { container } = render(
-      <AppActionsContext.Provider value={actions}>
-        <DockProvider>
-          <Board furnaceOpen={false} onCloseFurnace={() => {}} />
-        </DockProvider>
-      </AppActionsContext.Provider>,
+      <ToastProvider>
+        <AppActionsContext.Provider value={actions}>
+          <DockProvider>
+            <Board furnaceOpen={false} onCloseFurnace={() => {}} />
+          </DockProvider>
+        </AppActionsContext.Provider>
+      </ToastProvider>,
     );
 
     await act(async () => {});

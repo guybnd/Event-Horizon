@@ -18,7 +18,7 @@ import { appendTranscriptLine } from '../transcript.js';
 import { buildMcpServerEntry } from '../workflow-installer.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, type CliTask } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, type CliTask } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   powershell: 'Running command',
@@ -457,11 +457,15 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
 
   // FLUX-1123: Copilot has no --disallowed-tools equivalent (see FILE_MUTATION_TOOLS's comment in
   // claude-code.ts), so this can only be an advisory note in the prompt, not a real block.
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'copilot', editsGated: isChatEditGated(session, task) });
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'copilot', editsGated: isChatEditGated(session, task) || isScratchSession(task) });
 
   const copilotArgs = [
     ...(selectedModel ? ['--model', selectedModel] : []),
-    '-p', initialPrompt,
+    // FLUX-1444: `-p` is a bare flag — the prompt is written to stdin after spawn, below. Windows'
+    // CreateProcess caps the command line at 32,767 chars, easily exceeded once a scatter-gather
+    // reviewer's PR diff is inlined; copilot reads the prompt from stdin when no value follows `-p`
+    // (verified live: piped stdin with no `-p` value gets accepted as the prompt).
+    '-p',
     '--output-format', 'json',
     ...(session.skipPermissions ? ['--yolo'] : ['--allow-all-tools']),
     // FLUX-984: explicit MCP config injection — workspace .mcp.json is never auto-loaded in -p mode.
@@ -492,9 +496,16 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
     log.info(`[${id}] Dropping --effort "${effectiveEffort}" — no Copilot model configured (integrations.copilotCli); Copilot rejects --effort without an explicit --model.`);
   }
 
-  log.info(`[${id}] Args: [${copilotArgs.map((a, i) => i === copilotArgs.indexOf(initialPrompt) ? `<prompt ${initialPrompt.length} chars>` : a).join(', ')}]`);
+  // FLUX-1444: the prompt no longer rides argv (delivered via stdin below), so no redaction needed.
+  log.info(`[${id}] Args: [${copilotArgs.join(', ')}] (prompt ${initialPrompt.length} chars, via stdin)`);
 
   const proc = spawnCopilot(id, copilotArgs, executionRoot);
+  // FLUX-1444: deliver the prompt over stdin instead of argv — see the copilotArgs comment above.
+  // Attach the stdin error listener before writing — an EPIPE (child exited before the write lands)
+  // would otherwise be an unhandled 'error' event; the spawn-level failure is handled by proc.on('error') below.
+  proc.stdin.on('error', () => {});
+  proc.stdin.write(initialPrompt);
+  proc.stdin.end();
 
   session.proc = proc;
   session.pid = proc.pid;
@@ -521,7 +532,12 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
     session.endedAt = new Date().toISOString();
     commitPending();
     // FLUX-981: surface the spawn failure inline in the chat, not only as a history activity entry.
-    appendErrorToSession(session, `Failed to start agent: ${error.message}`);
+    // FLUX-1444: the prompt no longer rides argv (delivered via stdin above); name the actual argv
+    // size on a residual ENAMETOOLONG so it's legible instead of a bare Node errno.
+    const failureMessage = (error as NodeJS.ErrnoException).code === 'ENAMETOOLONG'
+      ? `Failed to start agent: spawn ENAMETOOLONG — combined argv length ${copilotArgs.join(' ').length} chars exceeds the OS command-line limit (prompt is delivered via stdin, not argv)`
+      : `Failed to start agent: ${error.message}`;
+    appendErrorToSession(session, failureMessage);
     flushSessionOutput(session, true, 'text');
     await session.writeQueue;
 
@@ -776,12 +792,17 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   // recomputed per resumed turn (Copilot has no real block — see the editsGated comment above).
   const promptForCli = prependEditGateNote(session, getWorkspace().tasks[id] as CliTask, 'copilot', safeMessage);
   // FLUX-984: explicit MCP config injection on the resume path too — the gap applies to every spawn.
+  // FLUX-1444: `-p` is a bare flag here too — promptForCli is written to stdin after spawn, below.
   const resumeArgs = session.resumeSessionId
-    ? ['-p', promptForCli, '--resume', session.resumeSessionId, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id)]
-    : ['-p', promptForCli, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id)];
+    ? ['-p', '--resume', session.resumeSessionId, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id)]
+    : ['-p', '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id)];
 
   log.info(`[${id}] Reply spawn, resume=${session.resumeSessionId || 'none'}`);
   const replyProc = spawnCopilot(id, resumeArgs, executionRoot);
+  // FLUX-1444: deliver the prompt over stdin instead of argv — see the initial-spawn comment above.
+  replyProc.stdin.on('error', () => {});
+  replyProc.stdin.write(promptForCli);
+  replyProc.stdin.end();
 
   session.proc = replyProc;
   session.pid = replyProc.pid;
@@ -799,7 +820,11 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     // FLUX-981: surface the reply spawn failure inline in the chat, not only as an activity entry.
     // Skip when the user cancelled — a stop that races the spawn error isn't a fault.
     if (!session.requestedStop) {
-      appendErrorToSession(session, `Failed to resume agent: ${error.message}`);
+      // FLUX-1444: name the argv size on a residual ENAMETOOLONG — see the initial-spawn comment above.
+      const failureMessage = (error as NodeJS.ErrnoException).code === 'ENAMETOOLONG'
+        ? `Failed to resume agent: spawn ENAMETOOLONG — combined argv length ${resumeArgs.join(' ').length} chars exceeds the OS command-line limit (prompt is delivered via stdin, not argv)`
+        : `Failed to resume agent: ${error.message}`;
+      appendErrorToSession(session, failureMessage);
     }
     flushSessionOutput(session, true, 'text');
     await updateTaskWithHistory(id, {

@@ -29,7 +29,7 @@ import { log } from './log.js';
 import { getConfig } from './config.js';
 import { updateTaskWithHistory } from './task-store.js';
 import { addNotification } from './notifications.js';
-import { cliSessionsById, getActiveSessionsForTask, getAllSessionsForTask, stopAllSessionsForTask } from './session-store.js';
+import { cliSessionsById, getActiveSessionsForTask, getAllSessionsForTask, isResumable, stopAllSessionsForTask } from './session-store.js';
 import type { CliSessionRecord, CliSessionStatus, TaskKey } from './agents/types.js';
 import {
   getFurnaceBatch,
@@ -110,6 +110,15 @@ const SOLE_REVIEWER_FOCUS = 'You are the ONLY reviewer for this ticket in this F
 export const REVIEW_NUDGE_FOCUS = 'Your previous review comment on this ticket already reads like a verdict (it started with **APPROVED** or **CHANGES NEEDED**), but `change_status` was never called to record it, so the ticket was about to be parked for a human over that alone. You are the sole reviewer for this ticket. Read your own last review comment, then call `change_status` now with `reviewState` set to match it (\'approved\' or \'changes-requested\'), and end your turn. Do not re-review the diff from scratch.';
 
 /**
+ * FLUX-1437: the one-shot corrective focus for a review session that ended with NO verdict AND no
+ * verdict-shaped comment either (unlike REVIEW_NUDGE_FOCUS's case, there is no prior verdict comment
+ * to point back at) — the FLUX-1434 incident shape: the reviewer fully completed its verification but
+ * ended the turn narrating a background-task/monitor wait that will never resume it, instead of
+ * calling `change_status`. Reused by Temper (temper.ts) — exported.
+ */
+export const REVIEW_RETRY_FOCUS = 'Your previous review session for this ticket ended without ever calling `change_status` to record a verdict, and without leaving a verdict-shaped comment either — so the ticket was about to be parked for a human over that alone. You are the sole reviewer for this ticket. Give it a fresh review pass now: assess the implementation, then call `change_status` with `reviewState` set to "approved" or "changes-requested" to match your verdict, and end your turn. If you genuinely cannot decide, use "Require Input" instead of ending the turn without a verdict again.';
+
+/**
  * FLUX-1218: name the batch the reviewer is running inside so it can queue a genuine, scoped follow-up
  * straight back into this same burn (`create_ticket` + `furnace_ticket` action:'add') — same trust level
  * as its own `reviewState` verdict, no human gate. Without the batch id threaded in here, the reviewer has
@@ -134,9 +143,9 @@ export function deltaReviewFocus(ticketId: string): string {
   return ` This ticket was already reviewed once and sent back for changes (as of commit ${since.slice(0, 12)}). Re-read your own prior review comment for the named findings and verify each is actually fixed, then scan \`git diff ${since}..HEAD\` for anything else introduced in that delta. You do not need to re-review the whole PR from scratch — just the named findings plus this delta.`;
 }
 
-/** Furnace review-phase dispatch options: the configured persona (if any) plus the sole-reviewer focus every review session needs to actually record its verdict, the delta-scoping addendum (FLUX-1378) for a re-review, and the batch-follow-up affordance (FLUX-1218). */
-function reviewDispatchOpts(batch: FurnaceBatch, ticketId: string): { personaId?: string; focusComment: string } {
-  return { ...(batch.reviewPersonaId ? { personaId: batch.reviewPersonaId } : {}), focusComment: SOLE_REVIEWER_FOCUS + deltaReviewFocus(ticketId) + furnaceFollowupFocus(batch) };
+/** Furnace review-phase dispatch options: the configured persona (if any) plus the sole-reviewer focus every review session needs to actually record its verdict, the delta-scoping addendum (FLUX-1378) for a re-review, and the batch-follow-up affordance (FLUX-1218). FLUX-1434: `enableTools: ['furnace_ticket']` explicitly grants the sole reviewer the follow-up mechanism `furnaceFollowupFocus` authorizes — a worker `reviewPersonaId`'s deny-list wouldn't otherwise include it (it's Furnace-context-specific, not part of the generic `review` phase baseline). */
+function reviewDispatchOpts(batch: FurnaceBatch, ticketId: string): { personaId?: string; focusComment: string; enableTools: string[] } {
+  return { ...(batch.reviewPersonaId ? { personaId: batch.reviewPersonaId } : {}), focusComment: SOLE_REVIEWER_FOCUS + deltaReviewFocus(ticketId) + furnaceFollowupFocus(batch), enableTools: ['furnace_ticket'] };
 }
 
 /** Exported for tests (FLUX-1080): assert this exact string is what reaches the outgoing dispatch body. */
@@ -208,6 +217,12 @@ export type TicketAction =
   // known verdict-marker convention — give it ONE corrective pass to record the verdict via
   // `change_status` before falling back to a park. Capped by `ticket.reviewNudgeSent`.
   | { type: 'review-nudge' }
+  // FLUX-1437: the review session completed with `reviewState` unset AND no verdict-shaped comment
+  // either — the FLUX-1434 incident shape (the reviewer finished but ended the turn on a dead
+  // background-task/monitor wait promise). Give it ONE fresh review pass before parking. Shares
+  // `ticket.reviewNudgeSent` with `review-nudge` above (one nudge budget per review pass total, not
+  // per failure mode — see the ticket's "Layer 3 nudge accounting").
+  | { type: 'review-retry' }
   // FLUX-1297: a CANCELLED session (a deliberate stop, not a crash) on a ticket whose board status
   // already reads merged/terminal — something else (a finish/merge flow) intentionally killed this
   // session because the ticket's work already landed, not a failure to report. Settle it the same way
@@ -344,7 +359,15 @@ export function decideTicketAction(input: {
   if (input.reviewVerdictMarkerSeen && !ticket.reviewNudgeSent) {
     return { type: 'review-nudge' };
   }
-  // The reviewer finished but recorded no verdict — an anomaly (bad state), not a posed question.
+  // FLUX-1437: no verdict AND no verdict-shaped comment — still give it ONE fresh review pass before
+  // parking (the FLUX-1434 incident: the reviewer completed but ended on a dead wait promise instead
+  // of calling change_status). Shares the same `reviewNudgeSent` one-shot budget as the marker-nudge
+  // above, so a ticket gets at most one re-dispatch per review pass, never both.
+  if (!ticket.reviewNudgeSent) {
+    return { type: 'review-retry' };
+  }
+  // The reviewer finished but recorded no verdict, even after the one-shot retry — an anomaly (bad
+  // state), not a posed question.
   return { type: 'park', reason: 'review completed without a verdict (reviewState unset)', failureClass: 'hard-fail' };
 }
 
@@ -428,7 +451,7 @@ export async function dispatchSession(
   // FLUX-1373: `taskKey` is an explicit task-tier policy override, forwarded verbatim as the
   // start route's `taskKey` body param. Needed by callers (the plan-gate review pass) whose
   // dispatched phase alone doesn't map to the right key — see gate-runner.ts's spawnGate.
-  opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean; taskKey?: TaskKey } = {},
+  opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean; taskKey?: TaskKey; enableTools?: string[] } = {},
 ): Promise<DispatchOutcome> {
   // A sequential follower reuses the anchor's shared worktree (resolved server-side by the shared
   // branch), so it must NOT request isolation — that would check the same branch out twice.
@@ -445,6 +468,7 @@ export async function dispatchSession(
   if (opts.personaId) body.personaId = opts.personaId;
   if (opts.focusComment) body.focusComment = opts.focusComment;
   if (opts.taskKey) body.taskKey = opts.taskKey;
+  if (opts.enableTools && opts.enableTools.length > 0) body.enableTools = opts.enableTools;
   try {
     const res = await fetch(`${engineBase()}/api/tasks/${encodeURIComponent(ticketId)}/cli-session/start`, {
       method: 'POST',
@@ -495,6 +519,12 @@ interface ResumeCandidate {
   worktreeRecreated: boolean;
 }
 
+// Resume-eligible statuses for findResumeCandidate — deliberately narrower than session-store.ts's
+// broader chat-resumable set: 'running' is excluded because today's only caller (reimplement) targets
+// a completed implementation session, never a live one, so this is a defensive rail against a future
+// caller resuming a live-phase session out from under itself (FLUX-1396 H1).
+const FURNACE_RESUMABLE_STATUSES: ReadonlySet<CliSessionStatus> = new Set(['waiting-input', 'completed']);
+
 /**
  * Find the most recent session for `phase` on this ticket and run the resume-viability decision table
  * against it (resumable? -> engine-restart guard -> context headroom / turn-count proxy -> staleness ->
@@ -505,16 +535,23 @@ async function findResumeCandidate(ticketId: string, phase: FurnacePhase | 'groo
   const sessions = getAllSessionsForTask(ticketId);
   let candidate: CliSessionRecord | undefined;
   for (let i = sessions.length - 1; i >= 0; i--) {
-    if (sessions[i]!.phase === phase) { candidate = sessions[i]; break; }
+    const s = sessions[i]!;
+    if (s.phase !== phase) continue;
+    // FLUX-1434: a `standalone`/`lead`-position session is a genuine warm continuation of the
+    // revise/reimplement loop; a delegate (`assistant`/`step`) never was — its context belonged to
+    // whatever lead spawned it, and its `event-horizon` toolset is scoped down to that delegate's
+    // narrow contract (the deny-list model only re-enables the phase's own mission tools for
+    // standalone/lead positions). Resuming INTO a completed delegate reproduced FLUX-1385's
+    // regression #1 (a plan-revise resumed into a `requirements-interrogator` delegate that no
+    // longer held `update_ticket`). `patternPosition` is only stamped for non-standalone positions
+    // (createPendingSession), so `undefined` here means standalone — a qualifying candidate.
+    if (s.patternPosition === 'assistant' || s.patternPosition === 'step') continue;
+    candidate = s;
+    break;
   }
   if (!candidate) return null;
 
-  // Session not resumable — mirrors session-store.ts's own `resumable` derivation, EXCEPT 'running'
-  // is deliberately excluded: today's only caller (reimplement) targets a completed implementation
-  // session, never a live one, so this narrower set is a defensive rail against a future caller
-  // resuming a live-phase session out from under itself (FLUX-1396 H1).
-  const resumable = ['waiting-input', 'completed'].includes(candidate.status) && !!candidate.resumeSessionId;
-  if (!resumable) return null;
+  if (!isResumable(candidate, FURNACE_RESUMABLE_STATUSES)) return null;
 
   // Engine-restart guard (conservative v1 — no engineStartedAt/boot-id primitive exists yet, and the
   // safe default is cold-spawn either way): a session rehydrated from an on-disk stub after a restart
@@ -591,10 +628,16 @@ export interface ResumeDispatchOutcome extends DispatchOutcome {
 export async function resumeOrDispatchSession(
   ticketId: string,
   phase: FurnacePhase | 'grooming',
-  opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean; resumeMessage: string },
+  opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean; resumeMessage: string; enableTools?: string[] },
 ): Promise<ResumeDispatchOutcome> {
   const candidate = await findResumeCandidate(ticketId, phase);
   if (candidate) {
+    // FLUX-1434: re-stamp this dispatch's `enableTools` grant onto the resumed session record
+    // BEFORE the resume POST — disallowedToolsArgs recomputes the deny list from the session
+    // record on every turn (including resumed ones), so without this a resumed session keeps
+    // whatever `enableTools` it launched with, even if the CURRENT mission (a different focus
+    // than its original dispatch) grants something different.
+    candidate.session.enableTools = opts.enableTools;
     const message = candidate.worktreeRecreated
       ? `${opts.resumeMessage}\n\n⚠️ Your worktree was reclaimed and has been recreated from the branch tip — any uncommitted scratch state is gone. Re-verify the current file state before editing.`
       : opts.resumeMessage;
@@ -1185,7 +1228,7 @@ async function spawnOrCount(
   batchId: string,
   ticketId: string,
   phase: FurnacePhase,
-  opts: { personaId?: string; focusComment?: string; resumeMessage?: string } = {},
+  opts: { personaId?: string; focusComment?: string; resumeMessage?: string; enableTools?: string[] } = {},
 ): Promise<{ sid: string | null; parked: boolean }> {
   const batch0 = getFurnaceBatch(batchId);
   const t0 = batch0 ? findTicket(batch0, ticketId) : undefined;
@@ -1284,6 +1327,23 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
       });
       if (r.sid) await recordSession(batchId, ticketId, r.sid);
       log.info(`[furnace] ${ticketId} review completed with reviewState unset but a verdict-shaped comment — nudging for the explicit change_status call instead of parking.`);
+      break;
+    }
+
+    case 'review-retry': {
+      // FLUX-1437: no verdict AND no verdict-shaped comment — one fresh review pass before parking.
+      const batch = getFurnaceBatch(batchId);
+      if (!batch) return;
+      await mutateFurnaceBatch(batchId, (b) => {
+        const t = findTicket(b, ticketId);
+        if (t) t.reviewNudgeSent = true;
+      });
+      const r = await spawnOrCount(batchId, ticketId, 'review', {
+        ...(batch.reviewPersonaId ? { personaId: batch.reviewPersonaId } : {}),
+        focusComment: REVIEW_RETRY_FOCUS,
+      });
+      if (r.sid) await recordSession(batchId, ticketId, r.sid);
+      log.info(`[furnace] ${ticketId} review completed without a verdict or a verdict-shaped comment — giving it one fresh review pass before parking.`);
       break;
     }
 

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  clipExcerpt, clearPlanReviewDraft, formatRegroomNotes, loadPlanReviewDraft, savePlanReviewDraft,
-  PLAN_ANNOTATION_EXCERPT_MAX,
+  clipExcerpt, clearPlanReviewDraft, formatArtifactAnnotations, formatRegroomNotes, loadPlanReviewDraft,
+  savePlanReviewDraft, PLAN_ANNOTATION_EXCERPT_MAX, type ArtifactAnnotation,
 } from './planAnnotations';
 
 describe('clipExcerpt (FLUX-1303)', () => {
@@ -38,6 +38,58 @@ describe('formatRegroomNotes (FLUX-1303)', () => {
     expect(formatRegroomNotes([{ excerpt: 'a', note: 'b' }], '  ')).toBe('🎯 Plan annotations · 1 region:\n\n> a\nb');
     expect(formatRegroomNotes([], ' just this ')).toBe('just this');
     expect(formatRegroomNotes([], '')).toBe('');
+  });
+});
+
+describe('formatArtifactAnnotations — guided-control kinds (FLUX-1440)', () => {
+  const base: Omit<ArtifactAnnotation, 'kind' | 'value'> = {
+    id: 1,
+    selector: '#delay-slider',
+    text: '',
+    label: '',
+    note: '',
+    rev: 3,
+  };
+
+  it('renders the captured value for a feel annotation', () => {
+    const out = formatArtifactAnnotations([{ ...base, kind: 'feel', value: '340' }]);
+    expect(out).toContain('· value: `340`');
+  });
+
+  it('uses label as a descriptive prefix when present (the engine bakes any unit into value itself)', () => {
+    const out = formatArtifactAnnotations([{ ...base, kind: 'feel', value: '340ms', label: 'Scroll speed' }]);
+    expect(out).toContain('· Scroll speed: `340ms`');
+  });
+
+  it('renders the chosen option for a decision annotation', () => {
+    const out = formatArtifactAnnotations([{ ...base, kind: 'decision', value: 'auto' }]);
+    expect(out).toContain('→ chose `auto`');
+  });
+
+  it('prefixes a decision with its question when label is present', () => {
+    const out = formatArtifactAnnotations([{ ...base, kind: 'decision', value: 'auto', label: 'Empty-state treatment?' }]);
+    expect(out).toContain('→ Empty-state treatment? — chose `auto`');
+  });
+
+  it('falls back to existing text/element rendering when value is absent', () => {
+    const feelNoValue = formatArtifactAnnotations([{ ...base, kind: 'feel', text: 'a control' }]);
+    expect(feelNoValue).not.toContain('value:');
+    expect(feelNoValue).toContain('> a control');
+
+    const decisionNoValue = formatArtifactAnnotations([{ ...base, kind: 'decision', label: 'a picker' }]);
+    expect(decisionNoValue).not.toContain('chose');
+    expect(decisionNoValue).toContain('> (no excerpt)');
+  });
+
+  it('appends a raw right-click element capture\'s value so it is not dropped', () => {
+    const out = formatArtifactAnnotations([{ ...base, kind: 'element', label: 'input#delay', value: '340' }]);
+    expect(out).toContain('⊙ `input#delay` = `340`');
+  });
+
+  it('renders an element annotation with no captured value exactly as before', () => {
+    const out = formatArtifactAnnotations([{ ...base, kind: 'element', label: 'div.card' }]);
+    expect(out).toContain('⊙ `div.card`\n');
+    expect(out).not.toContain('=');
   });
 });
 

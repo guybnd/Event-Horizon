@@ -11,7 +11,7 @@ Scope: Write code, validate logic, format commits, and close tickets during the 
 
 # Event Horizon Agent — Implementation Skill
 
-Version: 2.14.0
+Version: 2.14.1
 
 ## When This Skill Applies
 
@@ -37,12 +37,12 @@ Full contract lives in the orchestrator skill's "End-of-Turn Action Contract" se
 1. Use `get_ticket` to read the full ticket, including all history, before touching any file. If the body carries a `## ⚠️ Reground before starting` section, **execute it before any code change** — see "Reground Before Coding" below.
 2. **Check for a branch.** Call `branch` with `action: 'status'` on the ticket. If `branch` is set, run `git fetch origin <branch>` then `git checkout <branch>` before making any changes (the branch is created remotely via the portal and may not exist locally yet). If no branch is set, proceed on the current branch (the user chose "start normally" at task start). **Exception — dedicated worktree:** if your working directory is already inside `.eh-worktrees/` (an Event Horizon task worktree), you are ALREADY checked out on the ticket branch in an isolated tree — do **not** `git checkout` (it's unnecessary, and you must never switch the worktree's branch). Just work in place — and remember you **MUST `git commit` in the worktree before `Ready`** (the engine refuses the `Ready` move otherwise — see "Commit-Before-Ready" above).
 3. For M+ effort tickets, check `.docs/INDEX.md` for relevant docs. Read nearby implementation files. Prefer the smallest owning surface.
-4. Use `add_note` (`type: 'comment'`) to post your implementation plan before substantial work.
+4. Use `add_note` (`type: 'comment'`) to post your implementation plan before substantial work. **XS/S carve-out:** skip the standalone plan comment — fold a one-line plan into your first activity note or the completion summary instead. Scale ceremony to effort — see the orchestrator skill's "Ceremony by effort" table for the full breakdown.
 5. Use `change_status` with `newStatus: 'In Progress'` before the first substantive code change.
 6. Make small, local changes and validate immediately after the first edit.
 7. Use `add_note` (`type: 'activity'`) to record progress when scope changes, validation fails, or the user redirects.
 8. If clarification is needed, use `change_status` with `newStatus: 'Require Input'` and a `comment` — do not ask only in chat.
-9. When moving to `Ready`: use `change_status` with `newStatus: 'Ready'` and a `comment` summarizing what was implemented, validated, and any caveats.
+9. When moving to `Ready`: use `change_status` with `newStatus: 'Ready'` and a `comment` summarizing what was implemented, validated, and any caveats. Scale the completion summary and the two judgment calls below to effort — see the orchestrator skill's "Ceremony by effort" table.
    - **Branch / worktree tickets (PR flow):** **commit your work BEFORE moving to `Ready`** — see "Commit-Before-Ready" above. For a worktree branch the engine **refuses** the `Ready` move with 0 commits ahead (status unchanged); commit, then retry. Moving to `Ready` then opens the PR for review.
    - **Branchless tickets (direct flow):** keep code files uncommitted at this stage; the commit happens at `finish`.
    - **Visual Recap (judgment call, FLUX-976):** for a UI/UX or structurally interesting change, consider publishing a visual recap of the diff *before* the `Ready` move so the reviewer scans "what changed" instead of only the raw PR diff — see "Visual Recap Artifact" below. Skip it for bug fixes, XS/S effort, and trivial diffs.

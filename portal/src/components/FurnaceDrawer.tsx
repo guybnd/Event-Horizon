@@ -40,6 +40,7 @@ import { FurnaceReportModal } from './FurnaceReportModal';
 import { fmtDuration } from '../lib/furnaceFormat';
 import { mergeFurnaceBatches } from '../lib/mergeFurnaceBatches';
 import { useEscapeKey } from '../hooks/useEscapeKey';
+import { useConfirm } from '../hooks/useConfirm';
 
 const POLL_MS = 3000;
 
@@ -568,6 +569,7 @@ const BatchCard = memo(function BatchCard({ batch, allBatches, slots, onChanged 
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState(batch.title);
   const [busy, setBusy] = useState(false);
+  const confirm = useConfirm();
   const [adding, setAdding] = useState(false);
   const [addQuery, setAddQuery] = useState('');
   // null = popup closed; an array (possibly empty) = popup open, naming the current slot holders (FLUX-1157).
@@ -650,12 +652,12 @@ const BatchCard = memo(function BatchCard({ batch, allBatches, slots, onChanged 
     } finally { setBusy(false); }
   }, [batch.id, onChanged]);
 
-  const onDelete = useCallback(() => {
+  const onDelete = useCallback(async () => {
     // Drafts hold unsaved config/tickets, so confirm before discarding. Terminal batches are already
     // done — delete straight away. Burning batches never reach this control (engine also 409s).
-    if (isDraft && !window.confirm(`Delete draft batch "${batch.title}"? This can't be undone.`)) return;
+    if (isDraft && !(await confirm({ title: `Delete draft batch "${batch.title}"? This can't be undone.`, tone: 'danger', confirmLabel: 'Delete' }))) return;
     void run(() => deleteFurnaceBatch(batch.id));
-  }, [isDraft, batch.title, batch.id, run]);
+  }, [isDraft, batch.title, batch.id, run, confirm]);
 
   const addResults = useMemo(() => (addQuery.trim() ? searchTasks(tasks, addQuery, 6) : []), [tasks, addQuery]);
   const igniteDisabled = busy || slots.free < 1 || batch.tickets.length === 0;

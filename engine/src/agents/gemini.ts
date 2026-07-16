@@ -18,7 +18,7 @@ import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { appendTranscriptLine } from '../transcript.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote, resolveModel, buildTokenMetadataUpdate } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   Bash: 'Running command',
@@ -58,6 +58,7 @@ interface GeminiTask {
   branch?: string;
   status?: string;
   effortLevel?: string;
+  kind?: string;
 }
 
 /** Claude-schema `assistant.content[]` block — the fallback shape this adapter also parses. */
@@ -563,11 +564,17 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
 
   // FLUX-1123: Gemini has no --disallowed-tools equivalent (see FILE_MUTATION_TOOLS's comment in
   // claude-code.ts), so this can only be an advisory note in the prompt, not a real block.
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'gemini', editsGated: isChatEditGated(session, task) });
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'gemini', editsGated: isChatEditGated(session, task) || isScratchSession(task) });
 
   const geminiArgs = [
     ...(selectedModel ? ['--model', selectedModel] : []),
-    '-p', initialPrompt,
+    // FLUX-1444: gemini's `-p` requires a value (unlike claude/copilot's bare-flag form), so pass an
+    // empty placeholder and write the real prompt to stdin after spawn, below. gemini's CLI reads
+    // stdin whenever it isn't a TTY (always true for our piped spawns) and merges it with `-p`'s
+    // value; an empty `-p` value means the merged prompt is exactly the stdin content, unmodified.
+    // Windows' CreateProcess caps the command line at 32,767 chars, easily exceeded once a
+    // scatter-gather reviewer's PR diff is inlined into the prompt.
+    '-p', '',
     '--output-format', 'stream-json',
     '--screen-reader',
     ...(session.skipPermissions ? ['--yolo'] : []),
@@ -589,6 +596,12 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
   }
 
   const proc = await spawnGemini(geminiArgs, executionRoot, id);
+  // FLUX-1444: deliver the prompt over stdin instead of argv — see the geminiArgs comment above.
+  // Attach the stdin error listener before writing — an EPIPE (child exited before the write lands)
+  // would otherwise be an unhandled 'error' event; the spawn-level failure is handled by proc.on('error') below.
+  proc.stdin!.on('error', () => {});
+  proc.stdin!.write(initialPrompt);
+  proc.stdin!.end();
   session.proc = proc as ChildProcessWithoutNullStreams;
   session.pid = proc.pid;
   session.status = 'running';
@@ -614,7 +627,12 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
     session.endedAt = new Date().toISOString();
     commitPending();
     // FLUX-981: surface the spawn failure inline in the chat, not only as a history activity entry.
-    appendErrorToSession(session, `Failed to start agent: ${error.message}`);
+    // FLUX-1444: the prompt no longer rides argv (delivered via stdin above); name the actual argv
+    // size on a residual ENAMETOOLONG so it's legible instead of a bare Node errno.
+    const failureMessage = (error as NodeJS.ErrnoException).code === 'ENAMETOOLONG'
+      ? `Failed to start agent: spawn ENAMETOOLONG — combined argv length ${geminiArgs.join(' ').length} chars exceeds the OS command-line limit (prompt is delivered via stdin, not argv)`
+      : `Failed to start agent: ${error.message}`;
+    appendErrorToSession(session, failureMessage);
     flushSessionOutput(session, true, 'text');
     await session.writeQueue;
 
@@ -873,11 +891,17 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   // recomputed per resumed turn (Gemini has no real block — see the editsGated comment above).
   const promptForCli = prependEditGateNote(session, getWorkspace().tasks[id] as GeminiTask, 'gemini', safeMessage);
   const geminiScopeArgs = buildGeminiScopeArgs(workspaceRoot);
+  // FLUX-1444: `-p` takes an empty placeholder here too — promptForCli is written to stdin after
+  // spawn, below. See the initial-spawn geminiArgs comment for why this merges cleanly.
   const resumeArgs = session.resumeSessionId
-    ? ['-p', promptForCli, '--resume', session.resumeSessionId, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs]
-    : ['-p', promptForCli, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs];
+    ? ['-p', '', '--resume', session.resumeSessionId, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs]
+    : ['-p', '', '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs];
 
   const replyProc = await spawnGemini(resumeArgs, executionRoot, id);
+  // FLUX-1444: deliver the prompt over stdin instead of argv — see the initial-spawn comment above.
+  replyProc.stdin!.on('error', () => {});
+  replyProc.stdin!.write(promptForCli);
+  replyProc.stdin!.end();
   session.proc = replyProc as ChildProcessWithoutNullStreams;
   session.pid = replyProc.pid;
 
@@ -894,7 +918,11 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     // FLUX-981: surface the reply spawn failure inline in the chat, not only as an activity entry.
     // Skip when the user cancelled — a stop that races the spawn error isn't a fault.
     if (!session.requestedStop) {
-      appendErrorToSession(session, `Failed to resume agent: ${error.message}`);
+      // FLUX-1444: name the argv size on a residual ENAMETOOLONG — see the initial-spawn comment above.
+      const failureMessage = (error as NodeJS.ErrnoException).code === 'ENAMETOOLONG'
+        ? `Failed to resume agent: spawn ENAMETOOLONG — combined argv length ${resumeArgs.join(' ').length} chars exceeds the OS command-line limit (prompt is delivered via stdin, not argv)`
+        : `Failed to resume agent: ${error.message}`;
+      appendErrorToSession(session, failureMessage);
     }
     flushSessionOutput(session, true, 'text');
     await updateTaskWithHistory(id, {

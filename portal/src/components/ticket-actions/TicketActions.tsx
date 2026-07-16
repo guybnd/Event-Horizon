@@ -19,6 +19,7 @@ import { resolveEffectiveAgent } from '../../utils';
 import { OrchestrationLauncher } from '../OrchestrationLauncher';
 import { StartTaskPrompt } from '../task-modal/StartTaskPrompt';
 import { FinishMergeConfirm } from '../task-modal/FinishMergeConfirm';
+import { PromptModal } from '../task-modal/PromptModal';
 
 type Variant = TicketActionSurface;
 
@@ -132,6 +133,16 @@ export function TicketActionsLaunchers({ ctl }: { ctl: UseTicketActions }) {
             busy={ctl.finishMergeBusy}
             onConfirm={(opts) => void ctl.confirmFinishMerge(opts)}
             onCancel={ctl.cancelFinishMerge}
+          />,
+          document.body,
+        )}
+      {ctl.promptState &&
+        createPortal(
+          <PromptModal
+            state={ctl.promptState}
+            busy={ctl.promptBusy}
+            onSubmit={ctl.submitPrompt}
+            onCancel={ctl.cancelPrompt}
           />,
           document.body,
         )}

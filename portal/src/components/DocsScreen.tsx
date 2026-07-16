@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
@@ -15,7 +16,10 @@ import { useAppSelector } from '../store/useAppSelector';
 import type { Doc } from '../types';
 import type { GroupStatus } from '../api';
 import { resolveDocEditability } from '../utils';
+import { getElectronAPI } from '../electronApi';
 import { DocsSidebar } from './DocsSidebar';
+import { PromptModal, type PromptModalState } from './task-modal/PromptModal';
+import { useConfirm } from '../hooks/useConfirm';
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -226,6 +230,7 @@ export function DocsScreen() {
   const [docsRefreshKey, setDocsRefreshKey] = useState(0);
   const [notice, setNotice] = useState<{ tone: 'error' | 'success'; message: string } | null>(null);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const confirm = useConfirm();
   const [editorSnapshot, setEditorSnapshot] = useState('');
   const [isEditorFocused, setIsEditorFocused] = useState(false);
   const [hasTextSelection, setHasTextSelection] = useState(false);
@@ -246,6 +251,36 @@ export function DocsScreen() {
   const lastSyncedDocSignatureRef = useRef<string | null>(null);
   const loadedDocsRef = useRef<Doc[]>([]);
   const [groupStatus, setGroupStatus] = useState<GroupStatus | null>(null);
+  const [promptState, setPromptState] = useState<PromptModalState | null>(null);
+  const promptResolverRef = useRef<((value: string | null) => void) | null>(null);
+
+  // FLUX-1457: window.prompt throws in the Electron desktop shell; this promise-based seam feeds
+  // the styled PromptModal instead. Resolves `null` on cancel/Escape/unmount, same as window.prompt.
+  const runPrompt = (req: { title: string; message?: string; defaultValue?: string; submitLabel?: string; multiline?: boolean }): Promise<string | null> => {
+    return new Promise((resolve) => {
+      promptResolverRef.current = resolve;
+      setPromptState({ mode: 'input', ...req });
+    });
+  };
+
+  const submitPrompt = (value: string) => {
+    promptResolverRef.current?.(value);
+    promptResolverRef.current = null;
+    setPromptState(null);
+  };
+
+  const cancelPrompt = () => {
+    promptResolverRef.current?.(null);
+    promptResolverRef.current = null;
+    setPromptState(null);
+  };
+
+  useEffect(() => {
+    return () => {
+      promptResolverRef.current?.(null);
+      promptResolverRef.current = null;
+    };
+  }, []);
 
   if (!turndownServiceRef.current) {
     turndownServiceRef.current = createTurndownService();
@@ -557,6 +592,16 @@ export function DocsScreen() {
   }, [workspacePath]);
 
   useEffect(() => {
+    const electron = getElectronAPI();
+    if (electron) {
+      // Electron never renders the beforeunload dialog — it just silently cancels the close.
+      // Report dirty state to main instead, which owns a native confirm on close/quit (FLUX-1458).
+      // Do NOT also preventDefault beforeunload here: it would re-cancel the close right after
+      // the user picks "Discard" in the native dialog, stranding the window.
+      electron.setUnsavedGuard?.(isDirty);
+      return () => { electron.setUnsavedGuard?.(false); };
+    }
+
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!isDirty) {
         return;
@@ -572,20 +617,20 @@ export function DocsScreen() {
     };
   }, [isDirty]);
 
-  const confirmDiscardChanges = () => {
+  const confirmDiscardChanges = async () => {
     if (!isDirty) {
       return true;
     }
 
-    return window.confirm('Discard unsaved doc changes?');
+    return await confirm({ title: 'Discard unsaved doc changes?', tone: 'danger', confirmLabel: 'Discard' });
   };
 
-  const handleOpenDoc = (docPath: string) => {
+  const handleOpenDoc = async (docPath: string) => {
     if (docPath === selectedPath) {
       return;
     }
 
-    if (!confirmDiscardChanges()) {
+    if (!(await confirmDiscardChanges())) {
       return;
     }
 
@@ -593,8 +638,8 @@ export function DocsScreen() {
     setSelectedPath(docPath);
   };
 
-  const handleOpenCreateForm = (folderPath: string) => {
-    if (!confirmDiscardChanges()) {
+  const handleOpenCreateForm = async (folderPath: string) => {
+    if (!(await confirmDiscardChanges())) {
       return;
     }
 
@@ -769,7 +814,7 @@ export function DocsScreen() {
       return;
     }
 
-    const confirmed = window.confirm(`Delete ${selectedDoc.title}? This removes the markdown file from the workspace.`);
+    const confirmed = await confirm({ title: `Delete ${selectedDoc.title}? This removes the markdown file from the workspace.`, tone: 'danger', confirmLabel: 'Delete' });
     if (!confirmed) {
       return;
     }
@@ -831,7 +876,7 @@ export function DocsScreen() {
     const href = anchor.getAttribute('href') || '';
     if (href.startsWith('wiki:')) {
       event.preventDefault();
-      handleOpenDoc(decodeURIComponent(href.slice(5)));
+      void handleOpenDoc(decodeURIComponent(href.slice(5)));
       return;
     }
 
@@ -847,13 +892,18 @@ export function DocsScreen() {
     }
   };
 
-  const handleInsertWikiLink = () => {
+  const handleInsertWikiLink = async () => {
     if (!editor || !canEditSelectedDoc) {
       return;
     }
 
     const selectionText = editor.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to, ' ');
-    const nextTarget = window.prompt('Enter the doc path or title to link with wiki syntax.', selectionText || '');
+    const nextTarget = await runPrompt({
+      title: 'Insert wiki link',
+      message: 'Enter the doc path or title to link with wiki syntax.',
+      defaultValue: selectionText || '',
+      submitLabel: 'Insert',
+    });
     if (!nextTarget || !nextTarget.trim()) {
       return;
     }
@@ -897,13 +947,18 @@ export function DocsScreen() {
     }
   };
 
-  const handleSetLink = () => {
+  const handleSetLink = async () => {
     if (!editor || !canEditSelectedDoc) {
       return;
     }
 
     const existingLink = editor.getAttributes('link').href as string | undefined;
-    const nextLink = window.prompt('Enter the link URL. Leave blank to remove the current link.', existingLink || '');
+    const nextLink = await runPrompt({
+      title: 'Link URL',
+      message: 'Enter the link URL. Leave blank to remove the current link.',
+      defaultValue: existingLink || '',
+      submitLabel: 'Set link',
+    });
     if (nextLink === null) {
       return;
     }
@@ -981,7 +1036,7 @@ export function DocsScreen() {
             {showFeatureMap && selectedPath && (
               <button
                 type="button"
-                onClick={() => { if (confirmDiscardChanges()) setSelectedPath(null); }}
+                onClick={() => { void (async () => { if (await confirmDiscardChanges()) setSelectedPath(null); })(); }}
                 className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl border border-sky-200 px-3 py-2 text-xs font-semibold text-sky-700 transition-colors hover:bg-sky-50 dark:border-sky-500/20 dark:text-sky-300 dark:hover:bg-sky-500/10"
               >
                 <Network className="h-3.5 w-3.5" />
@@ -1359,6 +1414,7 @@ export function DocsScreen() {
         </div>
       </div>
     )}
+    {promptState && createPortal(<PromptModal state={promptState} busy={false} onSubmit={submitPrompt} onCancel={cancelPrompt} />, document.body)}
     </>
   );
 }

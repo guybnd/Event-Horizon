@@ -4,6 +4,7 @@ import { X, Loader2 } from 'lucide-react';
 import { updateTask, fetchDoc, updateDoc, createDoc } from '../api';
 import type { Task } from '../types';
 import { useEscapeKey } from '../hooks/useEscapeKey';
+import { useNotify } from '../hooks/useNotify';
 
 interface ReleaseModalProps {
   tasks: Task[];
@@ -17,6 +18,7 @@ export function ReleaseModal({ tasks: initialTasks, onClose }: ReleaseModalProps
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set(initialTasks.map(t => t.id)));
   const [version, setVersion] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const notify = useNotify();
 
   // FLUX-1022: route Escape through the shared stack instead of a standalone listener, so it
   // coordinates with other overlays (e.g. a floating chat window open at the same time) instead of
@@ -90,7 +92,7 @@ export function ReleaseModal({ tasks: initialTasks, onClose }: ReleaseModalProps
       onClose();
     } catch (err) {
       console.error('Failed to orchestrate release from UI:', err);
-      alert('Failed to release tasks. Check console for details.');
+      notify.error('Failed to release tasks. Check console for details.');
     } finally {
       setIsSubmitting(false);
     }

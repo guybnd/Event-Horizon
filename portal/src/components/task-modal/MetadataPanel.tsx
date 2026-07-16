@@ -5,6 +5,7 @@ import { TagSelector } from '../TagSelector';
 import { fetchBranchStatus, detachWorktree, type BranchStatus } from '../../api';
 import { DiffSummaryPanel } from './DiffSummaryPanel';
 import { useAppActions } from '../../store/useAppSelector';
+import { useConfirm } from '../../hooks/useConfirm';
 
 const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
 
@@ -50,6 +51,7 @@ export function MetadataPanel({
   isWideMode,
 }: MetadataPanelProps) {
   const { triggerRefresh, refreshWorktrees } = useAppActions();
+  const confirm = useConfirm();
   const [branchStatus, setBranchStatus] = useState<BranchStatus | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -70,7 +72,11 @@ export function MetadataPanel({
   const [detachMsg, setDetachMsg] = useState<string | null>(null);
   const handleDetach = async () => {
     if (!task?.id) return;
-    if (!window.confirm('Detach the dedicated worktree? The branch is kept; any uncommitted work is surfaced onto master (or kept as a stash).')) return;
+    if (!(await confirm({
+      title: 'Detach the dedicated worktree?',
+      body: 'The branch is kept; any uncommitted work is surfaced onto master (or kept as a stash).',
+      confirmLabel: 'Detach',
+    }))) return;
     setDetaching(true);
     setDetachMsg(null);
     try {

@@ -12,7 +12,7 @@ Scope: Route the agent to the correct phase-specific skill based on ticket statu
 
 # Event Horizon Agent — Orchestrator
 
-Version: 2.11.0
+Version: 2.12.0
 
 ## Overview
 
@@ -174,6 +174,23 @@ This is the authoritative text — phase skills (grooming, implementation) each 
 - Every call is a **new revision** (history is kept — never an overwrite). Add a `title` and, when revising, a `note` on what changed. The viewer defaults to the latest revision.
 - **Annotation round-trip (FLUX-874/875/892):** the user can annotate the rendered artifact two ways — **select text** (a floating composer pops up at the selection) or **right-click any element** (FLUX-892), which anchors to non-text controls — toggles, SVG chart bars, buttons — that have no selectable text. Either way the notes **collect in a host-side floating "N changes" pill** (FLUX-1362 — a unified, editable list shared with the plan-review panel; click a pin to edit its note) and **send together**. They arrive as **one** chat message starting with `🎯 Artifact annotations`: text picks list the selected excerpt (`> …`), element picks show the element label (`⊙ \`button "Save"\``); both carry a CSS-path anchor (`_anchor:_`) plus the user's note. When you receive one, revise the artifact to address **every** listed region and call `publish_artifact` again (with a `note` on what changed) so the new revision streams back to the viewer. (The viewer also offers a full-screen mode for reviewing large artifacts.) Right-click annotates the artifact **as-is** — no handles or chrome are injected into your markup, so author the design however you like.
 
+- **Guided annotation — declare feel + decision controls (FLUX-1440):** for two specific shapes of feedback, you can skip right-click entirely by declaring plain, framework-free markup and letting the injected viewer script upgrade it into a live, auto-staging control — no hand-wired JS, no new machinery on top of the round-trip above.
+  - **`data-eh-feel`** — for an open-ended variable with no right answer on paper (scroll speed, easing, spacing) that the user should *feel out* with a live control rather than have you guess a number:
+    ```html
+    <div data-eh-feel data-eh-label="Scroll speed" data-eh-min="0" data-eh-max="100" data-eh-default="40" data-eh-unit="ms"></div>
+    ```
+    The viewer renders a range slider + live readout inside that element. Settling on a value auto-**stages** an annotation (`kind:'feel'`, value read straight from the control — no right-click, no textContent guessing); re-dragging restages the same annotation in place, not a growing pile.
+  - **`data-eh-decision`** — for a pivotal choice buried in prose that deserves a deliberate, located answer instead of being skimmed:
+    ```html
+    <div data-eh-decision data-eh-question="Empty-state treatment?" data-eh-index="1" data-eh-of="3" data-eh-default="illustration">
+      <button data-eh-opt>illustration</button>
+      <button data-eh-opt>hidden</button>
+      <button data-eh-opt>text-only</button>
+    </div>
+    ```
+    The viewer renders a consistent decision card (question + index/of tag + options); picking an option auto-stages `{kind:'decision', value: chosenOption}`, restaging in place on a different pick.
+  - Both auto-stage into the **same** `annotations[]` set and **same** `postLive()` preview pill as manual annotations — staging is automatic, but the staged set is **only** transmitted back to you via the user's explicit Send action (auto-stage ≠ auto-send). When it lands in a `🎯 Artifact annotations` message, a feel pick renders its dialed value and a decision renders the chosen option alongside the usual anchor/note. These are **opt-in conventions, not required templates** — reach for them when a plan genuinely has an open-ended variable or a handful of pivotal choices (cap around 3-4 decisions per plan); don't sprout sliders and decision forms on a plan that doesn't call for them.
+
 ### Richer artifact kinds (FLUX-875) — diagrams, mockups, charts, prototypes
 
 Because the artifact is a **real HTML page** rendered entirely by the sandboxed iframe, you are not limited to static markup — pick the form that makes the *shape of the thing* easiest to react to:
@@ -247,6 +264,28 @@ Read this before your **first emit** on a ticket and before every **revision**. 
 - **Every revision answers annotations explicitly** — show the annotated element before → after at the top, and state in the `note` what changed and why. Never silently redesign elements the user already approved.
 - **Style-guide lookup** — if `.docs/design/style-guide.md` exists, derive mockup tokens from it rather than re-deriving from source; if it's missing on a UI/UX ticket, see the grooming skill's "Design Style Guide" section for the non-blocking bootstrap offer.
 
+## Ceremony by effort — scale mandated writing to ticket size (FLUX-1382)
+
+Output tokens bill roughly 5x input, so an XS one-line fix paying full L-ticket ceremony (standalone plan comment, full Plan-Discipline writeup, structured completion payload, visual recap) is real, avoidable cost. This table is the **canonical lookup** — the per-section `Skip for: XS/S` footnotes scattered through the grooming/implementation skills remain the detail and rationale; this table just indexes them in one place so the scaling is consistent and easy to find. It does not invent new ceremony or new skip rules beyond what those sections already state.
+
+| Output | XS / S | M | L / XL |
+|---|---|---|---|
+| TL;DR blockquote | Every size — 1 line | Every size | Every size |
+| Problem/Motivation + plan prose | Terse, a sentence or two | Anchored steps (Plan Discipline, scaled) | Full Plan Discipline treatment |
+| Standalone implementation plan comment (before coding) | **Skip** — fold into the first activity note or the completion summary | Optional, judgment call | Post before substantial work |
+| Acceptance criteria / Recommended Tests / Adversarial self-review / Anchor-to-code / Hard-to-reverse callouts | Skip (each section states its own skip condition) | Situational — apply what's genuinely relevant | Full treatment |
+| Structured `completion` payload + Visual Recap artifact | Skip (non-UI) | Judgment call; UI/UX → lean toward emitting | Emit for structurally interesting changes |
+| Ready completion summary / `finish` completionComment / "no docs needed because…" line | Present, terse | Present, normal length | Present, full detail |
+| Activity notes + faithful `summary` | By event / by note substance, not by effort — same rule at every size | Same | Same |
+
+**Load-bearing at every size — never diet, regardless of effort:**
+- `Require Input` questions (with proposed defaults)
+- Review verdict + `reviewState` + changes-requested handoff (see the review skill's "reviewState Contract")
+- Pinned review/key-decision handoffs
+- The End-of-Turn Action Contract (a board action every turn)
+
+These four are marked here precisely because they are the ones a diet-minded agent could mistakenly shrink or skip — they scale in length like everything else above, but never in presence.
+
 ## Critical Rules
 
 - **End-of-Turn Action Contract (FLUX-651/826)** — see the dedicated section above; it applies to every phase and every session, chat/discussion turns included.
@@ -258,7 +297,7 @@ Read this before your **first emit** on a ticket and before every **revision**. 
 
 ## End-to-End Checklist
 
-- Ticket read fully — Relevant docs reviewed — Plan comment added
+- Ticket read fully — Relevant docs reviewed — Plan comment added (M+; XS/S folds the plan into the first activity/completion note instead — see "Ceremony by effort")
 - Grooming produced a concrete plan with filled metadata
 - Implementation-critical choices clarified before coding
 - Status moved at the right time — Code changed in smallest surface — Validation passed

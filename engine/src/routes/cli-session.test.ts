@@ -376,6 +376,46 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
       expect(res.status).toBe(200);
       expect(sendInputMock).toHaveBeenCalledTimes(1);
     });
+
+    // Role-aware no-target fallback: a supervisor lead spawns its delegates AFTER itself, so the
+    // old "last registered session" fallback resumed the most recent worker — even a completed
+    // one ('completed' is resumable per FLUX-606) — instead of the lead the user was addressing.
+    it('routes a no-target message to the supervisor lead, not the last-registered completed delegate', async () => {
+      const base = {
+        taskId: 'FLUX-1', framework: TEST_FRAMEWORK, command: 'claude', args: [],
+        startedAt: new Date().toISOString(), label: 'Claude Code', outputBuffer: '',
+        liveOutputBuffer: '', pendingAssistantText: '', skipPermissions: true,
+        requestedStop: false, writeQueue: Promise.resolve(),
+      };
+      const lead = { ...base, id: 'lead', status: 'waiting-input', resumeSessionId: 'resume-lead', pattern: 'supervisor', patternPosition: 'lead', groupId: 'g1' } as unknown as CliSessionRecord;
+      const worker = { ...base, id: 'worker', status: 'completed', resumeSessionId: 'resume-worker', pattern: 'supervisor', patternPosition: 'assistant', groupId: 'g1' } as unknown as CliSessionRecord;
+      cliSessionsById.set(lead.id, lead);
+      cliSessionsById.set(worker.id, worker);
+      cliSessionsByTaskId.set('FLUX-1', [lead.id, worker.id]); // worker registered last
+
+      const res = await sendInput();
+      expect(res.status).toBe(200);
+      expect(sendInputMock).toHaveBeenCalledTimes(1);
+      expect((sendInputMock.mock.calls[0]![0] as CliSessionRecord).id).toBe('lead');
+    });
+
+    it('an explicit sessionId still targets that exact session, bypassing the role-aware fallback', async () => {
+      const base = {
+        taskId: 'FLUX-1', framework: TEST_FRAMEWORK, command: 'claude', args: [],
+        startedAt: new Date().toISOString(), label: 'Claude Code', outputBuffer: '',
+        liveOutputBuffer: '', pendingAssistantText: '', skipPermissions: true,
+        requestedStop: false, writeQueue: Promise.resolve(),
+      };
+      const lead = { ...base, id: 'lead', status: 'waiting-input', resumeSessionId: 'resume-lead', pattern: 'supervisor', patternPosition: 'lead', groupId: 'g1' } as unknown as CliSessionRecord;
+      const worker = { ...base, id: 'worker', status: 'completed', resumeSessionId: 'resume-worker', pattern: 'supervisor', patternPosition: 'assistant', groupId: 'g1' } as unknown as CliSessionRecord;
+      cliSessionsById.set(lead.id, lead);
+      cliSessionsById.set(worker.id, worker);
+      cliSessionsByTaskId.set('FLUX-1', [lead.id, worker.id]);
+
+      const res = await sendInput({ sessionId: 'worker' });
+      expect(res.status).toBe(200);
+      expect((sendInputMock.mock.calls[0]![0] as CliSessionRecord).id).toBe('worker');
+    });
   });
 
   it('phase:"grooming" skips ensureTicketIsolation regardless of requested isolation (FLUX-1214)', async () => {
@@ -516,5 +556,21 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
     // Give the (best-effort, non-awaited) needsAction path a tick to have fired if it were going to.
     await new Promise((r) => setTimeout(r, 50));
     expect(getWorkspace().tasks['FLUX-1']?.needsAction).toBeFalsy();
+  });
+
+  // The inverse: a group LEAD (supervisor orchestrator / scatter-gather combiner) carries the same
+  // groupId but IS the orchestrator — if it fails to spawn, nobody is driving the ticket, so the
+  // delegated-member exemption must not swallow the flag (FLUX-1436, a FLUX-651 coverage hole:
+  // the old blanket `groupId` check exempted leads too).
+  it('DOES raise needsAction when a group LEAD fails to spawn', async () => {
+    vi.mocked(ensureTicketIsolation).mockRejectedValue(new Error('Task worktree limit reached (4/4).'));
+
+    const res = await startRoleless({ isolation: 'worktree', groupId: 'group-1', patternPosition: 'lead' });
+    expect(res.status).toBe(201);
+    const { session } = await res.json();
+
+    await waitFor(() => cliSessionsById.get(session.id)?.status === 'failed');
+    await waitFor(() => typeof getWorkspace().tasks['FLUX-1']?.needsAction === 'string');
+    expect(getWorkspace().tasks['FLUX-1'].needsAction).toContain('failed to start');
   });
 });

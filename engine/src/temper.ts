@@ -59,6 +59,7 @@ import {
   deltaReviewFocus,
   REIMPLEMENT_FOCUS,
   REVIEW_NUDGE_FOCUS,
+  REVIEW_RETRY_FOCUS,
   type TicketAction,
 } from './furnace-stoker.js';
 
@@ -302,6 +303,17 @@ async function advanceTemperTicket(ticketId: string, action: TicketAction): Prom
       delete ticket.sessionStartedAt;
       await spawnTemper(ticket, 'review', REVIEW_NUDGE_FOCUS);
       log.info(`[temper] ${ticketId} review left a verdict-shaped comment without change_status — nudging instead of parking.`);
+      break;
+    }
+
+    case 'review-retry': {
+      // FLUX-1437: no verdict AND no verdict-shaped comment (the FLUX-1434 incident shape) — one
+      // fresh review pass before parking. Shares reviewNudgeSent with review-nudge above.
+      ticket.reviewNudgeSent = true;
+      delete ticket.currentSessionId;
+      delete ticket.sessionStartedAt;
+      await spawnTemper(ticket, 'review', REVIEW_RETRY_FOCUS);
+      log.info(`[temper] ${ticketId} review completed without a verdict or a verdict-shaped comment — giving it one fresh review pass before parking.`);
       break;
     }
 

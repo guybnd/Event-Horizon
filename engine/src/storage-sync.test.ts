@@ -5,7 +5,8 @@ import path from 'path';
 import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { excludeLocalConfigFromSync, ensureUnionMergeAttributes, migrateToOrphan } from './storage-sync.js';
+import { excludeLocalConfigFromSync, ensureUnionMergeAttributes, ensureSyncProtocolMarker, migrateToOrphan } from './storage-sync.js';
+import { SUPPORTED_SYNC_PROTOCOL } from './sync-watcher.js';
 
 const execFileAsync = promisify(execFile);
 const git = (cwd: string, args: string[]) => execFileAsync('git', args, { cwd, windowsHide: true });
@@ -155,6 +156,59 @@ describe('storage-sync — union-merge attribute for transcripts (FLUX-1076)', (
     const ga = await fs.readFile(path.join(storeDir, '.gitattributes'), 'utf8');
     expect(ga).toContain('*.png binary');
     expect(ga).toContain('transcripts/*.jsonl merge=union');
+  });
+});
+
+describe('storage-sync — sync-protocol marker seeding (FLUX-1426)', () => {
+  let repo: string;
+  let storeDir: string;
+
+  beforeEach(async () => {
+    repo = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-sync-'));
+    await git(repo, ['init', '-b', 'master']);
+    await git(repo, ['config', 'user.email', 'test@test.com']);
+    await git(repo, ['config', 'user.name', 'Test']);
+    await fs.writeFile(path.join(repo, 'README.md'), '# test\n', 'utf8');
+    await git(repo, ['add', '.']);
+    await git(repo, ['commit', '-m', 'init']);
+
+    storeDir = path.join(repo, '.flux-store');
+    await git(repo, ['worktree', 'add', '--orphan', '-b', 'flux-data', storeDir]);
+    await fs.writeFile(path.join(storeDir, 'FLUX-1.md'), '# ticket\n', 'utf8');
+    await git(storeDir, ['add', '-A']);
+    await git(storeDir, ['commit', '-m', 'init store']);
+  });
+
+  afterEach(async () => {
+    await git(repo, ['worktree', 'remove', '--force', storeDir]).catch(() => {});
+    await fs.rm(repo, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('seeds a sync-protocol marker with the supported version and commits it', async () => {
+    await ensureSyncProtocolMarker(storeDir);
+
+    const marker = await fs.readFile(path.join(storeDir, 'sync-protocol'), 'utf8');
+    expect(marker.trim()).toBe(String(SUPPORTED_SYNC_PROTOCOL));
+    expect(await trackedFiles(storeDir)).toContain('sync-protocol');
+  });
+
+  it('is idempotent — a second run makes no new commit', async () => {
+    await ensureSyncProtocolMarker(storeDir);
+    const { stdout: firstHead } = await git(storeDir, ['rev-parse', 'HEAD']);
+    await ensureSyncProtocolMarker(storeDir);
+    const { stdout: secondHead } = await git(storeDir, ['rev-parse', 'HEAD']);
+    expect(secondHead.trim()).toBe(firstHead.trim());
+  });
+
+  it('never overwrites an existing (e.g. bumped) marker', async () => {
+    await fs.writeFile(path.join(storeDir, 'sync-protocol'), '99\n', 'utf8');
+    await git(storeDir, ['add', '-A']);
+    await git(storeDir, ['commit', '-m', 'protocol bump']);
+
+    await ensureSyncProtocolMarker(storeDir);
+
+    const marker = await fs.readFile(path.join(storeDir, 'sync-protocol'), 'utf8');
+    expect(marker.trim()).toBe('99');
   });
 });
 

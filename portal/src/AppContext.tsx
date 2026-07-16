@@ -11,6 +11,7 @@ import type { AppStoreState, AppActions, AppView, AppTheme, TaskSortOption, Oper
 import { AppActionsContext } from './store/useAppSelector';
 import { getElectronAPI, renderBadgeDataUrl } from './electronApi';
 import { incr, recordDuration, recordSseEvent } from './perfClient';
+import { useConfirm } from './hooks/useConfirm';
 
 export type { AppView, TaskSortOption, AppTheme };
 
@@ -176,6 +177,7 @@ function reconcileUser(prev: string, users: unknown[] | undefined): string {
 }
 
 export function AppProvider({ children }: { children: ReactNode }) {
+  const confirm = useConfirm();
   const initialFilters = getTaskFiltersFromLocation();
   const [currentUser, setCurrentUser] = useState(getInitialUser);
   const [currentProject, setCurrentProject] = useState('');
@@ -851,14 +853,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const switchWorkspace = useCallback(async (wsPath: string, force?: boolean) => {
     const result = await apiSwitchWorkspace(wsPath, force);
     if ('blocked' in result && result.blocked) {
-      const proceed = window.confirm(`${result.message}\n\nStop them and switch anyway?`);
+      const proceed = await confirm({ title: 'Stop live sessions and switch?', body: result.message, tone: 'danger', confirmLabel: 'Stop & switch' });
       if (proceed) {
         await switchWorkspace(wsPath, true);
       }
       return;
     }
     notifyWorkspaceSet();
-  }, [notifyWorkspaceSet]);
+  }, [confirm, notifyWorkspaceSet]);
 
   // On mount, fetch workspace state. Then poll health alongside connection checks.
   useEffect(() => {

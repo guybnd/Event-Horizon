@@ -160,6 +160,37 @@ describe('resumeOrDispatchSession (FLUX-1378)', () => {
     expect(outcome.resumed).toBe(false);
   });
 
+  it('FLUX-1434: never resumes into a delegate (assistant/step) session — cold-spawns instead', async () => {
+    // Regression #1: a plan-revise resume must never land in a completed delegate (e.g. a
+    // requirements-interrogator run as an `assistant`-position session) — its event-horizon
+    // toolset is scoped to that delegate's narrow contract, not the resuming mission's.
+    const ticketId = 'TICK-DELEGATE';
+    getWorkspace().tasks[ticketId] = { id: ticketId, status: 'Grooming' };
+    registerTicketSession(makeSession({ id: 'sess-delegate', taskId: ticketId, phase: 'grooming', patternPosition: 'assistant' }));
+    const outcome = await resumeOrDispatchSession(ticketId, 'grooming', { resumeMessage: 'go' });
+    expect(outcome.resumed).toBe(false);
+    expect(outcome.sid).toBe('cold-1');
+  });
+
+  it('FLUX-1434: skips a trailing delegate session and resumes an earlier standalone one for the same phase', async () => {
+    const ticketId = 'TICK-DELEGATE-2';
+    getWorkspace().tasks[ticketId] = { id: ticketId, status: 'Grooming' };
+    registerTicketSession(makeSession({ id: 'sess-standalone', taskId: ticketId, phase: 'grooming' }));
+    registerTicketSession(makeSession({ id: 'sess-delegate-later', taskId: ticketId, phase: 'grooming', patternPosition: 'step' }));
+    const outcome = await resumeOrDispatchSession(ticketId, 'grooming', { resumeMessage: 'go' });
+    expect(outcome.resumed).toBe(true);
+    expect(outcome.sid).toBe('sess-standalone');
+  });
+
+  it('FLUX-1434: re-stamps enableTools onto the resumed session record before the resume POST', async () => {
+    const ticketId = 'TICK-ENABLE';
+    getWorkspace().tasks[ticketId] = { id: ticketId, status: 'In Progress' };
+    const session = makeSession({ id: 'sess-enable', taskId: ticketId });
+    registerTicketSession(session);
+    await resumeOrDispatchSession(ticketId, 'implementation', { resumeMessage: 'go', enableTools: ['furnace_ticket'] });
+    expect(session.enableTools).toEqual(['furnace_ticket']);
+  });
+
   it('cold-spawns a session rehydrated from an on-disk stub (engine restarted since dispatch)', async () => {
     const ticketId = 'TICK-5';
     getWorkspace().tasks[ticketId] = { id: ticketId, status: 'In Progress' };

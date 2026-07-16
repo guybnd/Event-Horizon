@@ -10,6 +10,8 @@ import { TaskModal } from './components/TaskModal';
 import { ChatDock } from './components/ChatDock';
 import { DockProvider } from './components/DockProvider';
 import { PendingInteractionsProvider } from './components/pendingInteractions';
+import { ConfirmProvider } from './hooks/useConfirm';
+import { ToastProvider } from './hooks/useNotify';
 import { Settings } from './components/Settings';
 import { ReleasesScreen } from './components/ReleasesScreen';
 import { EpicsScreen } from './components/EpicsScreen';
@@ -136,13 +138,21 @@ function AppContent() {
 function App() {
   return (
     <>
-      <AppProvider>
-        <DockProvider>
-          <PendingInteractionsProvider>
-            <AppContent />
-          </PendingInteractionsProvider>
-        </DockProvider>
-      </AppProvider>
+      {/* FLUX-1459: ConfirmProvider/ToastProvider wrap AppProvider (not the other way round) because
+          AppContext.tsx's own callbacks (e.g. switchWorkspace) call useConfirm()/useNotify() — those
+          hooks need an ANCESTOR provider, and AppProvider's body runs above whatever it renders as
+          children. */}
+      <ConfirmProvider>
+        <ToastProvider>
+          <AppProvider>
+            <DockProvider>
+              <PendingInteractionsProvider>
+                <AppContent />
+              </PendingInteractionsProvider>
+            </DockProvider>
+          </AppProvider>
+        </ToastProvider>
+      </ConfirmProvider>
       {/* FLUX-1134: mounted outside every provider on purpose — a perf debug tool must never
           subscribe to the app state it's measuring, and it works even pre-onboarding/workspace. */}
       <PerfPanel />

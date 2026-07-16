@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { Board } from './Board';
 import { DockProvider } from './DockProvider';
+import { ToastProvider } from '../hooks/useNotify';
 import { appStore } from '../store/appStore';
 import { AppActionsContext } from '../store/useAppSelector';
 import type { AppActions } from '../store/appStore';
@@ -87,20 +88,22 @@ function renderBoard(onRender: ProfilerOnRenderCallback) {
   const onCloseFurnace = () => {}; // stable across renders — Board never receives a fresh one from App.tsx either
 
   render(
-    <AppActionsContext.Provider value={actions}>
-      <DockProvider>
-        <Harness>
-          {(toggleUnrelated) => (
-            <>
-              <button onClick={toggleUnrelated}>toggle unrelated</button>
-              <Profiler id="board" onRender={onRender}>
-                <Board furnaceOpen={false} onCloseFurnace={onCloseFurnace} />
-              </Profiler>
-            </>
-          )}
-        </Harness>
-      </DockProvider>
-    </AppActionsContext.Provider>,
+    <ToastProvider>
+      <AppActionsContext.Provider value={actions}>
+        <DockProvider>
+          <Harness>
+            {(toggleUnrelated) => (
+              <>
+                <button onClick={toggleUnrelated}>toggle unrelated</button>
+                <Profiler id="board" onRender={onRender}>
+                  <Board furnaceOpen={false} onCloseFurnace={onCloseFurnace} />
+                </Profiler>
+              </>
+            )}
+          </Harness>
+        </DockProvider>
+      </AppActionsContext.Provider>
+    </ToastProvider>,
   );
 }
 

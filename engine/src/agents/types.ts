@@ -20,6 +20,14 @@ export interface SendInputOptions {
    * unattended phase session as needing a human and get it parked by `decideTicketAction`.
    */
   wakeResume?: boolean;
+  /**
+   * FLUX-1437: this `sendInput` call is the claude adapter's own stale-wait catch-and-resume (a
+   * dispatched turn ended narrating a dead background-task wait promise) — same finalization
+   * rationale as `wakeResume` above: the exit handler must finalize a clean, no-further-sleep turn
+   * as `completed`/`failed` (mirroring a fresh dispatch), not `terminalizeResumedExit`'s always-
+   * `waiting-input` fallback, or this corrective resume would itself misreport as needing a human.
+   */
+  staleWaitResume?: boolean;
 }
 
 export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'scheduled' | 'completed' | 'failed' | 'cancelled';
@@ -207,6 +215,11 @@ export interface CliSessionSummary {
   wakeAt?: string;
   /** FLUX-1390: the agent's own `reason` for the pending wakeup, if it gave one — surfaced next to `wakeAt`. */
   wakeReason?: string;
+  /** FLUX-1434: the `event-horizon` MCP tool names (bare) actually disallowed for this session at
+   *  its last spawn/resume — the deny-list model's own computed output, so a gap (a session
+   *  missing a tool its mission needs) is a one-glance diagnosis instead of a re-derivation.
+   *  Portal-visible, read-only. Empty/absent means unscoped (lead/flex/no-persona/chat). */
+  disallowedEhTools?: string[] | undefined;
 }
 
 export interface CliSessionRecord extends CliSessionSummary {
@@ -232,6 +245,18 @@ export interface CliSessionRecord extends CliSessionSummary {
   outputData?: string;
   /** Pre-computed diff block injected into the initial prompt (scatter-gather reviews). */
   diffBlock?: string;
+  /** FLUX-1385: the launched persona id, if any — feeds disallowedEhToolsForPersona so a
+   *  worker-role delegate's `event-horizon` MCP toolset is scoped down at spawn. Internal
+   *  (not part of CliSessionSummary — never exposed to the client). */
+  personaId?: string;
+  /** FLUX-1385: this launch's focus text — checked for the sole-reviewer-of-record signal that
+   *  restores a scoped-down worker's full write toolset. Internal, same as personaId above. */
+  focusComment?: string;
+  /** FLUX-1434: explicit per-launch `event-horizon` MCP tool grant (dispatch.enableTools in the
+   *  deny-list model — see disallowedEhToolsForPersona in orchestration-personas.ts). Re-stamped
+   *  on resume so a resumed session's toolset always matches its current mission. Internal, same
+   *  as personaId/focusComment above. */
+  enableTools?: string[] | undefined;
   /** Set when the session paused itself via change_status('Require Input'). */
   pausedForInput?: boolean;
   /**
@@ -308,6 +333,14 @@ export interface CliSessionRecord extends CliSessionSummary {
   pendingWakeAt?: string;
   pendingWakeReason?: string;
   scheduledResumeCount?: number;
+  /**
+   * FLUX-1437: how many times the claude adapter's stale-wait catch-and-resume has already
+   * resumed THIS session — a dispatched (non-chat) turn that ended narrating an unarmed "I'll wait
+   * for X" promise (`WAIT_PROMISE_RE`) with no board action taken. Capped at 1 (mirrors
+   * `scheduledResumeCount`'s bound precedent): a session that stalls on the same failure mode twice
+   * falls through to the normal `flagIfParked` park instead of resuming again.
+   */
+  staleWaitResumes?: number;
 }
 
 export interface AgentEvent {

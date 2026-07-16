@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { FolderGit2, FolderX, ExternalLink, Loader2, RefreshCw, GitCompare } from 'lucide-react';
 import { fetchWorktrees, detachWorktree, openWorktreeWindow, type WorktreeInfo } from '../../api';
 import { useAppActions } from '../../store/useAppSelector';
+import { useConfirm } from '../../hooks/useConfirm';
 
 /**
  * Worktrees management surface (FLUX-516): the one place worktrees get their own
@@ -11,6 +12,7 @@ import { useAppActions } from '../../store/useAppSelector';
  */
 export function WorktreesPanel() {
   const { refreshWorktrees } = useAppActions();
+  const confirm = useConfirm();
   const [worktrees, setWorktrees] = useState<WorktreeInfo[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -26,7 +28,11 @@ export function WorktreesPanel() {
 
   const handleDetach = async (w: WorktreeInfo) => {
     if (!w.ticketId) { setMsg('This worktree has no associated ticket — remove it from the terminal with `git worktree remove`.'); return; }
-    if (!window.confirm(`Detach the worktree for ${w.branch}? The branch is kept; any uncommitted work is surfaced onto master (or kept as a stash).`)) return;
+    if (!(await confirm({
+      title: `Detach the worktree for ${w.branch}?`,
+      body: 'The branch is kept; any uncommitted work is surfaced onto master (or kept as a stash).',
+      confirmLabel: 'Detach',
+    }))) return;
     setBusy(w.path); setMsg(null);
     try {
       const r = await detachWorktree(w.ticketId);

@@ -12,6 +12,7 @@ import {
   getCliSessionSummaryForTask,
   getAllSessionSummariesForTask,
   getActiveSessionsForTask,
+  getPreferredInputSessionId,
   getSessionGroup,
   checkPathConflicts,
   validatePatternSupport,
@@ -142,6 +143,16 @@ function parseChatAttachments(raw: unknown): ChatAttachment[] {
   return out;
 }
 
+/** FLUX-1434: parse an optional `enableTools` body param (dispatch.enableTools in the deny-list
+ *  model) into a clean string array, or `undefined` if absent/empty. Best-effort — an unknown
+ *  tool name is simply never matched by the deny-list filter (a no-op grant), so this never
+ *  rejects the request; it only narrows the shape. */
+function parseEnableTools(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const names = raw.filter((t): t is string => typeof t === 'string' && t.trim().length > 0).map((t) => t.trim());
+  return names.length > 0 ? names : undefined;
+}
+
 function formatDiffBlock(capture: PromptDiffCapture): string {
   const lines = [
     '## Scoped Diff (auto-injected)',
@@ -188,6 +199,16 @@ interface SpawnOptions {
   groupVariant?: GroupVariant | undefined;
   lockedPaths?: string[] | undefined;
   diffBlock?: string | undefined;
+  /** FLUX-1385: launched persona id — scopes this session's `event-horizon` MCP toolset by
+   *  role (see disallowedEhToolsForPersona in orchestration-personas.ts). */
+  personaId?: string | undefined;
+  /** FLUX-1385: this launch's focus text — carries the sole-reviewer-of-record override signal
+   *  through to the same tool-scoping check. */
+  focusComment?: string | undefined;
+  /** FLUX-1434: explicit per-launch `event-horizon` MCP tool grant (dispatch.enableTools in the
+   *  deny-list model) — re-enabled regardless of pattern position, same as persona.enableTools.
+   *  Forwarded from the `/start` and `/delegate` route bodies and the `delegate` MCP tool. */
+  enableTools?: string[] | undefined;
 }
 
 // FLUX-1373: derive session.taskKey from what a dispatch site knows at spawn time — phase +
@@ -289,6 +310,9 @@ function createPendingSession(task: TaskRecord, opts: SpawnOptions): CliSessionR
   if (opts.groupVariant) session.groupVariant = opts.groupVariant;
   if (opts.lockedPaths && opts.lockedPaths.length > 0) session.lockedPaths = opts.lockedPaths;
   if (opts.diffBlock) session.diffBlock = opts.diffBlock;
+  if (opts.personaId) session.personaId = opts.personaId;
+  if (opts.focusComment) session.focusComment = opts.focusComment;
+  if (opts.enableTools && opts.enableTools.length > 0) session.enableTools = opts.enableTools;
   if (opts.model) session.model = opts.model;
   if (opts.effortOverride) session.effortOverride = opts.effortOverride;
   if (opts.permissionMode) session.permissionMode = opts.permissionMode;
@@ -436,7 +460,9 @@ async function prepareAndLaunchSession(
     // (clearNeedsActionIfSet). Best-effort by design (raiseNeedsAction catches internally).
     // Mirrors flagIfParked's isDelegatedMember guard: a scatter-gather worker or supervisor
     // delegate shares the ticket with an actively-running orchestrator that owns the transition,
-    // so flagging the ticket here on a delegate's failure would be a false positive.
+    // so flagging the ticket here on a delegate's failure would be a false positive. A group LEAD
+    // (supervisor orchestrator / combiner) is NOT exempt — it IS the orchestrator, so its failure
+    // to spawn means nobody is driving the ticket and must surface.
     if (!isDelegatedMember(session)) {
       void raiseNeedsAction(id, `${session.label} session failed to start: ${message}`);
     }
@@ -503,6 +529,8 @@ setRelayStepLauncher(async (spec: PendingRelaySpec, previousOutput: string, prev
     ...(spec.phase ? { phase: spec.phase } : {}),
     skipPermissions: spec.skipPermissions,
     role: step.role,
+    personaId: step.personaId || undefined,
+    focusComment: step.focusComment || undefined,
     pattern: 'relay',
     patternPosition: 'step',
     groupId: spec.groupId,
@@ -614,6 +642,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
     // accidentally cold-start a generic, unpersona'd turn on this conversation id.
     const explicitPersonaId = typeof req.body?.personaId === 'string' ? req.body.personaId.trim() : '';
     const boardPersonaId = explicitPersonaId || (id === FURNACE_CONVERSATION_ID ? 'smelter' : '');
+    const boardFocusComment = typeof req.body?.focusComment === 'string' ? req.body.focusComment.trim() : '';
     // FLUX-1211: a personaId-only launch (no user-typed appendPrompt) is a valid silent boot —
     // the persona resolves identity server-side and no fake `user` transcript turn gets recorded
     // (see startBoardSession). Only error when there's neither text, an attachment, nor a persona.
@@ -623,7 +652,6 @@ router.post('/:id/cli-session/start', async (req, res) => {
     if (boardPersonaId) {
       const persona = getPersonaById(boardPersonaId);
       if (!persona) return res.status(400).json({ error: `Unknown personaId: ${boardPersonaId}` });
-      const boardFocusComment = typeof req.body?.focusComment === 'string' ? req.body.focusComment.trim() : '';
       boardPersonaPrompt = resolvePersonaPrompt(boardPersonaId, boardFocusComment, 'chat');
       boardPersonaLabel = persona.label;
     }
@@ -675,6 +703,8 @@ router.post('/:id/cli-session/start', async (req, res) => {
       // FLUX-1373: virtual board/Smelter conversations are always the `chat` task key — they never
       // flow through createPendingSession's deriveTaskKey (this session record is built by hand).
       taskKey: 'chat',
+      ...(boardPersonaId ? { personaId: boardPersonaId } : {}),
+      ...(boardFocusComment ? { focusComment: boardFocusComment } : {}),
     };
     cliSessionsById.set(boardSession.id, boardSession);
     registerSession(id, boardSession.id);
@@ -753,6 +783,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
   // the shared phase contract composed onto the persona's lens.
   const personaId = typeof req.body?.personaId === 'string' ? req.body.personaId.trim() : '';
   const focusComment = typeof req.body?.focusComment === 'string' ? req.body.focusComment.trim() : '';
+  const enableTools = parseEnableTools(req.body?.enableTools);
   const launchedBy = typeof req.body?.user === 'string' && req.body.user.trim() ? req.body.user.trim() : 'User';
   let appendPrompt = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
   if (personaId) {
@@ -912,6 +943,9 @@ router.post('/:id/cli-session/start', async (req, res) => {
       groupType,
       groupVariant,
       lockedPaths,
+      personaId: personaId || undefined,
+      focusComment: focusComment || undefined,
+      enableTools,
     };
     const session = createPendingSession(task, spawnOpts);
 
@@ -1096,6 +1130,7 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
   const personaId = typeof req.body?.personaId === 'string' ? req.body.personaId.trim() : '';
   const taskPrompt = typeof req.body?.task === 'string' ? req.body.task.trim() : '';
   const focusComment = typeof req.body?.focusComment === 'string' ? req.body.focusComment.trim() : '';
+  const enableTools = parseEnableTools(req.body?.enableTools);
   const effortOverride = typeof req.body?.effortOverride === 'string' ? req.body.effortOverride.trim() : '';
   // FLUX-482: per-call model override from the delegate MCP tool (highest precedence).
   const modelOverride = typeof req.body?.model === 'string' ? req.body.model.trim() : '';
@@ -1190,6 +1225,9 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
       taskKey,
       skipPermissions,
       role: personaId ? `assistant:${personaId}` : 'assistant',
+      personaId: personaId || undefined,
+      focusComment: focusComment || undefined,
+      enableTools,
       pattern: 'supervisor',
       patternPosition: 'assistant',
       groupId,
@@ -1283,8 +1321,11 @@ router.post('/:id/cli-session/input', async (req, res) => {
   const attachments = parseChatAttachments(req.body?.attachments);
   if (!message && attachments.length === 0) return res.status(400).json({ error: 'message is required' });
 
-  // Allow targeting a specific session, or fall back to most recent active
-  const sessionId = targetSessionId || cliSessionIdByTaskId.get(id);
+  // Allow targeting a specific session, or fall back role-aware: prefer the session the user is
+  // actually addressing (supervisor lead / combiner / solo) over the most recently registered one —
+  // in a scatter-gather run the delegates register AFTER the lead, so raw registration order would
+  // resume a narrow-scope (possibly completed) worker instead of the lead.
+  const sessionId = targetSessionId || getPreferredInputSessionId(id);
   if (!sessionId) return res.status(409).json({ error: 'No active CLI session for this ticket' });
 
   const session = cliSessionsById.get(sessionId);

@@ -29,4 +29,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('eh:notification-click', listener);
     return () => ipcRenderer.removeListener('eh:notification-click', listener);
   },
+  /**
+   * Tell main whether there are unsaved doc changes, so it can guard window-close / quit with a
+   * native confirm instead of relying on `beforeunload` (which Electron cancels silently, with
+   * no dialog — FLUX-1458).
+   */
+  setUnsavedGuard(isDirty) {
+    ipcRenderer.send('eh:set-unsaved-guard', !!isDirty);
+  },
 });

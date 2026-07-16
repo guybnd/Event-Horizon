@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import { WorktreesPanel } from './WorktreesPanel';
+import { ConfirmProvider } from '../../hooks/useConfirm';
 import { AppActionsContext } from '../../store/useAppSelector';
 import type { AppActions } from '../../store/appStore';
 import type { WorktreeInfo } from '../../api';
@@ -30,9 +31,11 @@ import { detachWorktree } from '../../api';
 
 function renderPanel(actions: Partial<AppActions>) {
   return render(
-    <AppActionsContext.Provider value={actions as AppActions}>
-      <WorktreesPanel />
-    </AppActionsContext.Provider>,
+    <ConfirmProvider>
+      <AppActionsContext.Provider value={actions as AppActions}>
+        <WorktreesPanel />
+      </AppActionsContext.Provider>
+    </ConfirmProvider>,
   );
 }
 
@@ -44,7 +47,6 @@ describe('WorktreesPanel handleDetach (FLUX-1259)', () => {
   });
 
   it('calls refreshWorktrees() after a successful detach', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     const refreshWorktrees = vi.fn();
     renderPanel({ refreshWorktrees });
 
@@ -53,18 +55,28 @@ describe('WorktreesPanel handleDetach (FLUX-1259)', () => {
       detachButton.click();
     });
 
+    const dialog = await screen.findByRole('dialog');
+    const confirmButton = within(dialog).getByRole('button', { name: 'Detach' });
+    await act(async () => {
+      confirmButton.click();
+    });
+
     await waitFor(() => expect(detachWorktree).toHaveBeenCalledWith('FLUX-1'));
     await waitFor(() => expect(refreshWorktrees).toHaveBeenCalledTimes(1));
   });
 
   it('does not call refreshWorktrees() when the confirm dialog is dismissed', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
     const refreshWorktrees = vi.fn();
     renderPanel({ refreshWorktrees });
 
     const detachButton = await screen.findByRole('button', { name: /detach/i });
     await act(async () => {
       detachButton.click();
+    });
+
+    const cancelButton = await screen.findByRole('button', { name: 'Cancel' });
+    await act(async () => {
+      cancelButton.click();
     });
 
     expect(detachWorktree).not.toHaveBeenCalled();

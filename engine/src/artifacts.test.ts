@@ -213,6 +213,46 @@ describe('grooming artifacts (FLUX-873)', () => {
       // only a composer-less Escape reaches the host (which then pops its own LIFO stack).
       expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('if (composer) { clearComposer(); return; }');
     });
+
+    // FLUX-1440: declarative data-eh-feel / data-eh-decision markup upgrades into guided controls
+    // that auto-stage an annotation on interaction, via the SAME annotations[]/postLive() transport.
+    it('wires the guided-controls upgrader (data-eh-feel / data-eh-decision) into the same transport', () => {
+      // Both selectors are queried — the upgraders no-op cleanly when neither is present.
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain("querySelectorAll('[data-eh-feel]')");
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain("querySelectorAll('[data-eh-decision]')");
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('function upgradeGuidedControls');
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('function upgradeFeelControls');
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('function upgradeDecisionControls');
+      // Guided interactions stage into the SAME array/transport — no second message channel.
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('function stageGuided');
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain("stageGuided(host, 'feel'");
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain("stageGuided(host, 'decision'");
+      // Restaging in place keys off a stable per-control annotation id, not a fresh push each time.
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('data-eh-anno-id');
+    });
+
+    // FLUX-1440: raw right-click on a slider/input previously carried no value — elementInfo() now
+    // captures .value (or an opt-in data-eh-value) and threads it through add/update/live-mirror.
+    it('captures a control value (.value or data-eh-value) and threads it through the annotation record', () => {
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('function readValue');
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('data-eh-value');
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('value: readValue(target)');
+      // Threaded into the pushed annotation record and the live-mirrored item shape.
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('value: info.value');
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('value: a.value');
+    });
+
+    // FLUX-1440: the host learns up front (a single boolean on the existing 'ready' post, not a new
+    // message type) whether this artifact has any guided controls to render chrome around.
+    it('signals hasGuidedControls as a single boolean on the existing ready post', () => {
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain("type: 'ready'");
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('hasGuidedControls: hasGuidedControls');
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain(
+        "querySelectorAll('[data-eh-feel],[data-eh-decision]')"
+      );
+      // Still one, single ready post — no new message type/channel introduced for this signal.
+      expect((ARTIFACT_ANNOTATOR_SCRIPT.match(/type: 'ready'/g) || []).length).toBe(1);
+    });
   });
 
   // FLUX-875 (Tier 3): the open-time layout-audit gate is injected alongside the annotator.

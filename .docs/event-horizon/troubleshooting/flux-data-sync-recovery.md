@@ -11,25 +11,36 @@ title: Recovering a Wedged flux-data Sync (Dev-Machine Swap)
 `git pull --ff-only origin flux-data`. If you switch dev machines (or come back to one after a
 long time away), your local board branch can fall far behind the shared remote while also
 carrying local sync commits of its own. The fast-forward pull then fails — the branches have
-genuinely diverged — and a later periodic sync tries to auto-merge instead. On a small
-divergence the engine's existing conflict machinery (per-ticket `use-remote`/`use-local`/
-`rename-local`/`manual`, plus the FLUX-1076 append-only history auto-merge) handles this fine.
-On a *large* divergence (hundreds of commits, many conflicted ticket files), attempting to
-resolve every ticket one at a time is the wrong tool — and forcing a resolution across that many
-files is exactly how the conflict-resolution path can end up baking `<<<<<<<` markers into ticket
-frontmatter, which the board then can't parse ("N board errors").
+genuinely diverged.
+
+**FLUX-1428: the periodic sync tick no longer auto-merges at all.** `runSync()` treats the push to
+`origin/flux-data` as a compare-and-swap: push directly, and if it's rejected (the remote moved),
+`reset --hard` onto the new remote head and replay this engine's own not-yet-pushed mutations
+through the real ticket handlers (a durable local op journal — never a text-level merge of ticket
+files), then push again. A journaled write (any human/agent-authored mutation — status changes,
+comments, body edits) survives a lost race this way; nothing gets textually merged, so `<<<<<<<`
+conflict markers can no longer be baked into ticket frontmatter by the periodic sync path. The
+older per-ticket conflict-resolution machinery (`use-remote`/`use-local`/`rename-local`/`manual`,
+plus the FLUX-1076 append-only history auto-merge) still exists and is still reachable through the
+manual `resolveConflicts()`/`/api/storage/resolve-conflicts` endpoint for a worktree that's
+genuinely mid-merge on disk (e.g. left over from an older engine version, or external git surgery)
+— it is no longer something the periodic tick itself produces.
+
+A *very large* startup divergence (hundreds of commits) is a different problem from a lost sync
+race: replaying a long backlog of journaled ops through CAS's bounded retries isn't the right tool
+either, which is what the escape hatch below is for.
 
 ## Detecting it
 
 The engine surfaces a distinct `diverged` sync status (`{ state: 'diverged', ahead, behind }`,
 FLUX-1232) as soon as the startup pull fails for a reason other than a network/auth problem — this
-happens *before* any auto-merge is attempted, so you get the choice before the periodic sync risks
-a many-file conflict. `isSyncUnhealthy()` treats `diverged` the same as `conflict`/`error`. The
-portal's sync status indicator (top of the board) turns orange and shows "Diverged" for this case.
+is a heads-up shown before the periodic sync tick even gets a chance to run its CAS+replay loop on
+a large backlog. `isSyncUnhealthy()` treats `diverged` the same as `conflict`/`error`. The portal's
+sync status indicator (top of the board) turns orange and shows "Diverged" for this case.
 
-If sync has already moved past this into a real `conflict` state (the periodic auto-merge already
-ran), the same escape hatch below still applies — see the "Discard all local & take remote" button
-in the conflict-resolution modal.
+If sync has already moved past this into a real `conflict` state (a worktree that's genuinely
+mid-merge on disk — see the FLUX-1428 note above), the same escape hatch below still applies — see
+the "Discard all local & take remote" button in the conflict-resolution modal.
 
 ## The escape hatch: force-reset-to-remote
 

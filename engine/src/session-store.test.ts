@@ -34,6 +34,7 @@ import {
   getListSessionSummariesForTask,
   getActiveSessionsForTask,
   getLiveStandaloneSessionForTask,
+  getPreferredInputSessionId,
   slimSessionSummaryForAgent,
   checkPathConflicts,
   validatePatternSupport,
@@ -162,6 +163,55 @@ describe('session-store', () => {
 
     it('returns undefined when no sessions exist', () => {
       expect(getCliSessionSummaryForTask('FLUX-NONE')).toBeUndefined();
+    });
+  });
+
+  describe('getPreferredInputSessionId (role-aware no-target chat fallback)', () => {
+    function register(task: string, s: CliSessionRecord) {
+      cliSessionsById.set(s.id, s);
+      registerSession(task, s.id);
+    }
+
+    it('prefers the supervisor lead over a later-registered completed delegate (the incident shape)', () => {
+      register('FLUX-1', createMockSession({ id: 'lead', taskId: 'FLUX-1', status: 'waiting-input', pattern: 'supervisor', patternPosition: 'lead', groupId: 'g1' }));
+      register('FLUX-1', createMockSession({ id: 'worker-1', taskId: 'FLUX-1', status: 'completed', patternPosition: 'assistant', groupId: 'g1' }));
+      register('FLUX-1', createMockSession({ id: 'worker-2', taskId: 'FLUX-1', status: 'completed', patternPosition: 'assistant', groupId: 'g1' }));
+      expect(getPreferredInputSessionId('FLUX-1')).toBe('lead');
+    });
+
+    it('a newer solo session outranks an older lead — recency wins within addressable sessions', () => {
+      register('FLUX-1', createMockSession({ id: 'lead', taskId: 'FLUX-1', status: 'completed', patternPosition: 'lead', groupId: 'g1' }));
+      register('FLUX-1', createMockSession({ id: 'solo-chat', taskId: 'FLUX-1', status: 'waiting-input' }));
+      expect(getPreferredInputSessionId('FLUX-1')).toBe('solo-chat');
+    });
+
+    it('prefers a scatter-gather combiner over its steps', () => {
+      register('FLUX-1', createMockSession({ id: 'step-1', taskId: 'FLUX-1', status: 'completed', patternPosition: 'step', groupId: 'g1' }));
+      register('FLUX-1', createMockSession({ id: 'combiner', taskId: 'FLUX-1', status: 'waiting-input', patternPosition: 'combiner', groupId: 'g1' }));
+      register('FLUX-1', createMockSession({ id: 'step-late', taskId: 'FLUX-1', status: 'completed', patternPosition: 'step', groupId: 'g1' }));
+      expect(getPreferredInputSessionId('FLUX-1')).toBe('combiner');
+    });
+
+    it('falls back to the most recent resumable subordinate when no addressable session is resumable (relay mid-chain)', () => {
+      register('FLUX-1', createMockSession({ id: 'step-1', taskId: 'FLUX-1', status: 'completed', patternPosition: 'step', groupId: 'g1' }));
+      register('FLUX-1', createMockSession({ id: 'step-2', taskId: 'FLUX-1', status: 'waiting-input', patternPosition: 'step', groupId: 'g1' }));
+      expect(getPreferredInputSessionId('FLUX-1')).toBe('step-2');
+    });
+
+    it('skips non-resumable sessions (failed/cancelled) when picking the addressable one', () => {
+      register('FLUX-1', createMockSession({ id: 'lead', taskId: 'FLUX-1', status: 'waiting-input', patternPosition: 'lead', groupId: 'g1' }));
+      register('FLUX-1', createMockSession({ id: 'solo-dead', taskId: 'FLUX-1', status: 'failed' }));
+      expect(getPreferredInputSessionId('FLUX-1')).toBe('lead');
+    });
+
+    it('returns the last-registered id when nothing is resumable, preserving the 409-with-summary path', () => {
+      register('FLUX-1', createMockSession({ id: 'a', taskId: 'FLUX-1', status: 'failed' }));
+      register('FLUX-1', createMockSession({ id: 'b', taskId: 'FLUX-1', status: 'cancelled' }));
+      expect(getPreferredInputSessionId('FLUX-1')).toBe('b');
+    });
+
+    it('returns undefined when no sessions exist', () => {
+      expect(getPreferredInputSessionId('FLUX-NONE')).toBeUndefined();
     });
   });
 

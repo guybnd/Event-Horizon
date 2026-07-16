@@ -21,11 +21,14 @@ export interface PlanAnnotation {
  */
 export interface ArtifactAnnotation {
   id: number;
-  kind: 'text' | 'element';
+  kind: 'text' | 'element' | 'feel' | 'decision';
   selector: string;
   text: string;
   label: string;
   note: string;
+  /** FLUX-1440: a captured control value ('feel') or chosen option ('decision') from the artifact's
+   *  guided controls. Absent for the pre-existing 'text'/'element' kinds. */
+  value?: string;
   /** The artifact revision the pin was placed on. */
   rev: number;
 }
@@ -42,8 +45,26 @@ export function formatArtifactAnnotations(items: ArtifactAnnotation[]): string {
     .map((it, i) => {
       const noteLine = it.note ? `   ${it.note}\n` : '';
       const anchorLine = `   _anchor:_ \`${it.selector || '(document)'}\``;
+      // FLUX-1440: guided-control captures. `value` is the signal — a 'feel'/'decision' item with no
+      // `value` (e.g. an older payload, or a kind sent before the control was interacted with) falls
+      // through to the text/element rendering below unchanged.
+      if (it.kind === 'feel' && it.value) {
+        // `label` is the control's declared title (e.g. "Scroll speed") — the engine already bakes
+        // any unit into `value` itself (e.g. "40ms"), so label is a descriptive prefix, not a suffix.
+        const prefix = it.label ? `${it.label}: ` : 'value: ';
+        return `${i + 1}. · ${prefix}\`${it.value}\`\n` + noteLine + anchorLine;
+      }
+      if (it.kind === 'decision' && it.value) {
+        // `label` carries the decision's question; only shown when present so the fixture without one
+        // still reads as a plain "chose `x`".
+        const prefix = it.label ? `${it.label} — ` : '';
+        return `${i + 1}. → ${prefix}chose \`${it.value}\`\n` + noteLine + anchorLine;
+      }
       if (it.kind === 'element') {
-        return `${i + 1}. ⊙ \`${it.label || 'element'}\`\n` + noteLine + anchorLine;
+        // FLUX-1440: a raw right-clicked <input>/<select>/<textarea> also captures `.value` now
+        // (readValue in the engine script) — surface it here so it isn't dead data at render time.
+        const valueSuffix = it.value ? ` = \`${it.value}\`` : '';
+        return `${i + 1}. ⊙ \`${it.label || 'element'}\`${valueSuffix}\n` + noteLine + anchorLine;
       }
       const excerpt = it.text || '(no excerpt)';
       return `${i + 1}. > ${excerpt}\n` + noteLine + anchorLine;

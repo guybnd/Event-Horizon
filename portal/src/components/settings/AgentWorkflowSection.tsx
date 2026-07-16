@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { installWorkspaceSkill } from '../../api';
 import type { AppView } from '../../AppContext';
 import type { SkillStatusState } from './useSkillStatus';
+import { useNotify } from '../../hooks/useNotify';
 
 interface AgentWorkflowSectionProps {
   targetFramework: string;
@@ -17,6 +18,7 @@ interface AgentWorkflowSectionProps {
 export function AgentWorkflowSection({ targetFramework, workspacePath, setView, skillStatus }: AgentWorkflowSectionProps) {
   const [skillInstalling, setSkillInstalling] = useState(false);
   const [installOverride, setInstallOverride] = useState<{ skillInstalledPath: string; instructionsInstalledPath: string } | null>(null);
+  const notify = useNotify();
 
   const handleInstallSkill = async () => {
     setSkillInstalling(true);
@@ -24,10 +26,10 @@ export function AgentWorkflowSection({ targetFramework, workspacePath, setView, 
       const result = await installWorkspaceSkill(targetFramework);
       setInstallOverride({ skillInstalledPath: result.skillInstalledPath, instructionsInstalledPath: result.instructionsInstalledPath || '' });
       skillStatus.refresh();
-      alert(`Installed Event Horizon workflow to ${result.skillInstalledPath}${result.instructionsInstalledPath ? `\nPatched instructions at ${result.instructionsInstalledPath}` : ''}`);
+      notify.success(`Installed Event Horizon workflow to ${result.skillInstalledPath}${result.instructionsInstalledPath ? `\nPatched instructions at ${result.instructionsInstalledPath}` : ''}`);
     } catch (error) {
       console.error(error);
-      alert(error instanceof Error ? error.message : 'Failed to install Event Horizon workflow');
+      notify.error(error instanceof Error ? error.message : 'Failed to install Event Horizon workflow');
     } finally {
       setSkillInstalling(false);
     }
@@ -38,10 +40,10 @@ export function AgentWorkflowSection({ targetFramework, workspacePath, setView, 
     const command = `npm run install-skill -- --target "${targetPath}" --framework ${targetFramework}`;
     try {
       await navigator.clipboard.writeText(command);
-      alert('Copied skill install command to clipboard');
+      notify.success('Copied skill install command to clipboard');
     } catch (error) {
       console.error(error);
-      alert(command);
+      notify.info(command);
     }
   };
 

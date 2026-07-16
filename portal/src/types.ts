@@ -323,6 +323,9 @@ export interface CliSessionSummary {
   wakeAt?: string;
   /** FLUX-1390: the agent's own reason for the pending wakeup, if it gave one. */
   wakeReason?: string;
+  /** FLUX-1434: `event-horizon` MCP tool names (bare) disallowed for this session at its last
+   *  spawn/resume — the deny-list model's computed output, read-only. Absent/empty = unscoped. */
+  disallowedEhTools?: string[];
 }
 
 export interface TaskLiveEvent {

@@ -17,6 +17,11 @@ export interface ElectronAPI {
   notify: (opts: { title: string; body?: string; ticketId?: string }) => void;
   /** Subscribe to native-toast clicks; the callback gets the clicked ticket id. Returns an unsubscribe fn. */
   onNotificationClick?: (cb: (ticketId?: string) => void) => (() => void) | void;
+  /**
+   * Report whether there are unsaved doc changes, so main can guard window-close / quit with a
+   * native confirm dialog (`beforeunload` is silently cancelled with no dialog in Electron).
+   */
+  setUnsavedGuard?: (isDirty: boolean) => void;
 }
 
 declare global {

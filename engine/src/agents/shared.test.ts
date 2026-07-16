@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { checkBinaryInstalled, resolveClaudeExePath, isDefinitiveNotInstalled, surfaceResumeFailure, isChatEditGated, chatEditGateNote, prependEditGateNote, resolveModel } from './shared.js';
+import { checkBinaryInstalled, resolveClaudeExePath, isDefinitiveNotInstalled, surfaceResumeFailure, isChatEditGated, isScratchSession, chatEditGateNote, prependEditGateNote, resolveModel } from './shared.js';
 import type { CliSessionRecord } from './types.js';
 import { INTEGRATION_TIER_DEFAULTS, MODEL_POLICY_PRESETS } from '../config.js';
 
@@ -231,6 +231,43 @@ describe('chatEditGateNote / prependEditGateNote (FLUX-1123)', () => {
     const session = { phase: 'chat' as const };
     expect(isChatEditGated(session, { status: 'Todo' })).toBe(true);
     expect(isChatEditGated(session, { status: 'In Progress' })).toBe(false);
+  });
+});
+
+// FLUX-1443: isScratchSession/chatEditGateNote('scratch')/prependEditGateNote must gate a scratch
+// ticket UNCONDITIONALLY — independent of session.phase/task.status, unlike isChatEditGated above.
+describe('isScratchSession / scratch edit-gate note (FLUX-1443)', () => {
+  it('isScratchSession is true only for kind === "scratch"', () => {
+    expect(isScratchSession({ kind: 'scratch' })).toBe(true);
+    expect(isScratchSession({ kind: 'pr' })).toBe(false);
+    expect(isScratchSession({})).toBe(false);
+    expect(isScratchSession(undefined)).toBe(false);
+  });
+
+  it('chatEditGateNote("scratch") explains the promote-first rule and points at extract_ticket', () => {
+    for (const framework of ['claude', 'copilot', 'gemini'] as const) {
+      const note = chatEditGateNote(framework, 'scratch');
+      expect(note).toContain('Scratch ticket');
+      expect(note).toContain('extract_ticket');
+      expect(note).not.toContain('not In Progress');
+    }
+    expect(chatEditGateNote('claude', 'scratch')).toContain('the CLI will refuse them');
+    expect(chatEditGateNote('copilot', 'scratch')).not.toContain('the CLI will refuse them');
+  });
+
+  it('prependEditGateNote prepends the scratch note for a scratch ticket regardless of phase/status', () => {
+    const scratchTask = { status: 'In Progress', kind: 'scratch' };
+    expect(prependEditGateNote({ phase: 'chat' as const }, scratchTask, 'copilot', 'hello')).toBe(
+      `${chatEditGateNote('copilot', 'scratch')}\n\n---\n\nhello`,
+    );
+    expect(prependEditGateNote({ phase: 'implementation' as const }, scratchTask, 'copilot', 'hello')).toBe(
+      `${chatEditGateNote('copilot', 'scratch')}\n\n---\n\nhello`,
+    );
+  });
+
+  it('prependEditGateNote does not apply the scratch note to a non-scratch ticket', () => {
+    const realTask = { status: 'In Progress', kind: undefined };
+    expect(prependEditGateNote({ phase: 'chat' as const }, realTask, 'copilot', 'hello')).toBe('hello');
   });
 });
 

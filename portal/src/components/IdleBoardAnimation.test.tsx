@@ -32,6 +32,8 @@ import { TaskModal } from './TaskModal';
 import { TerminalPanel } from './TerminalPanel';
 import { DockProvider } from './DockProvider';
 import { PendingInteractionsProvider } from './pendingInteractions';
+import { ConfirmProvider } from '../hooks/useConfirm';
+import { ToastProvider } from '../hooks/useNotify';
 
 class FakeResizeObserver {
   observe() {}
@@ -96,17 +98,21 @@ function renderIdleBoard() {
   document.documentElement.setAttribute('data-theme', 'matrix');
 
   return render(
-    <AppActionsContext.Provider value={actions}>
-      <DockProvider>
-        <PendingInteractionsProvider>
-          <Header />
-          <Board />
-          <ChatDock />
-          <TaskModal />
-          <TerminalPanel isOpen={false} onClose={() => {}} />
-        </PendingInteractionsProvider>
-      </DockProvider>
-    </AppActionsContext.Provider>,
+    <ConfirmProvider>
+      <ToastProvider>
+        <AppActionsContext.Provider value={actions}>
+          <DockProvider>
+            <PendingInteractionsProvider>
+              <Header />
+              <Board />
+              <ChatDock />
+              <TaskModal />
+              <TerminalPanel isOpen={false} onClose={() => {}} />
+            </PendingInteractionsProvider>
+          </DockProvider>
+        </AppActionsContext.Provider>
+      </ToastProvider>
+    </ConfirmProvider>,
   );
 }
 

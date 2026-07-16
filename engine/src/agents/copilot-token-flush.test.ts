@@ -85,9 +85,11 @@ function makeSession(overrides: Partial<CliSessionRecord> = {}): CliSessionRecor
 }
 
 function fakeChildProcess() {
-  const proc = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; pid: number };
+  // FLUX-1444: stdin stand-in — the code under test writes the prompt to stdin instead of argv.
+  const proc = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; stdin: { on: ReturnType<typeof vi.fn>; write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> }; pid: number };
   proc.stdout = new EventEmitter();
   proc.stderr = new EventEmitter();
+  proc.stdin = { on: vi.fn(), write: vi.fn(), end: vi.fn() };
   proc.pid = 4242;
   return proc;
 }

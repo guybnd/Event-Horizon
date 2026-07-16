@@ -10,6 +10,7 @@ import { setWorkspaceRoot } from './workspace.js';
 import { syncDefaultBranch, isWorktreeReclaimable, reclaimReadyWorktrees, cleanupMergedBranch } from './pr-cleanup.js';
 import { clearNotifications, getNotifications } from './notifications.js';
 import { createTaskWorktree, listTaskWorktrees } from './task-worktree.js';
+import { createTask, updateTaskWithHistory } from './task-store.js';
 
 import {
   cliSessionsById,
@@ -647,5 +648,85 @@ describe('cleanupMergedBranch disarms Temper before stopping sessions (FLUX-1297
 
     await expect(cleanupMergedBranch(repo, 'flux/FLUX-2')).resolves.toBeDefined();
     expect(isTempering('FLUX-2')).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLUX-1433 — cleanupMergedBranch must not tear down a shared batch branch's worktree/sessions
+// out from under a sibling ticket that is still genuinely in progress. Mirrors the FLUX-1428
+// incident: sibling A's PR merges (a shared batch branch), sibling B is still actively worked —
+// B's live session and the shared worktree must survive the merge cleanup.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('cleanupMergedBranch defers teardown for a live sibling session (FLUX-1433)', () => {
+  beforeEach(async () => {
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
+    cliSessionsById.clear();
+    cliSessionsByTaskId.clear();
+    __resetSessionStubStateForTests();
+    __resetTemperForTests();
+    // createTask persists a real ticket markdown file — needs the .flux dir the outer suite's
+    // beforeEach doesn't create (it only exercises direct getWorkspace().tasks injection).
+    await fs.mkdir(path.join(repo, '.flux'), { recursive: true });
+  });
+  afterEach(() => {
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
+    cliSessionsById.clear();
+    cliSessionsByTaskId.clear();
+    __resetSessionStubStateForTests();
+    __resetTemperForTests();
+  });
+
+  it('does not stop sessions or remove the worktree while a non-Done sibling has a live session', async () => {
+    const branch = 'flux/furnace-shared';
+    const a = await createTask({ title: 'A', status: 'In Progress' });
+    const b = await createTask({ title: 'B', status: 'In Progress' });
+    await updateTaskWithHistory(a.id, { updatedBy: 'Agent', extraFields: { branch } });
+    await updateTaskWithHistory(b.id, { updatedBy: 'Agent', extraFields: { branch } });
+    await gitC(repo, ['add', '-A']);
+    await gitC(repo, ['commit', '-m', 'seed shared-branch tickets']);
+
+    const wt = await createTaskWorktree(repo, a.id, branch);
+    await commitInWorktree(wt, 'a.txt');
+
+    // B is a still-active sibling on the SAME shared branch, with a live running session —
+    // the FLUX-1428 scenario. A has no live session, so step 1 can still advance it to Done.
+    addLiveSession(b.id, 'sess-b');
+
+    const result = await cleanupMergedBranch(repo, branch, { auto: true });
+
+    expect(result.outcome).toBe('noop');
+    expect(result.reason).toBe('live-sibling-session');
+    expect(result.worktreeRemoved).toBe(false);
+    expect(result.branchDeleted).toBe(false);
+    // Step 1's Done-advancement still landed for A (no live session on it).
+    expect(getWorkspace().tasks[a.id]?.status).toBe('Done');
+    // B's session survives — never stopped by the deferred teardown, even though step 1's
+    // pre-existing branch-scoped batch advancement still marks it Done alongside A (unchanged,
+    // out of this fix's scope — only the session-stop/worktree-teardown below is gated).
+    expect(cliSessionsById.get('sess-b')?.status).toBe('running');
+    // The worktree itself is still on disk.
+    expect(existsSync(wt)).toBe(true);
+  });
+
+  it('still cleans up normally once no ticket on the branch has a live session', async () => {
+    const branch = 'flux/furnace-idle';
+    const c = await createTask({ title: 'C', status: 'In Progress' });
+    const d = await createTask({ title: 'D', status: 'In Progress' });
+    await updateTaskWithHistory(c.id, { updatedBy: 'Agent', extraFields: { branch } });
+    await updateTaskWithHistory(d.id, { updatedBy: 'Agent', extraFields: { branch } });
+    await gitC(repo, ['add', '-A']);
+    await gitC(repo, ['commit', '-m', 'seed shared-branch tickets']);
+
+    const wt = await createTaskWorktree(repo, c.id, branch);
+    await commitInWorktree(wt, 'a.txt');
+    // No live sessions registered for either ticket.
+
+    const result = await cleanupMergedBranch(repo, branch, { auto: true });
+
+    expect(result.outcome).toBe('cleaned');
+    expect(result.worktreeRemoved).toBe(true);
+    expect(existsSync(wt)).toBe(false);
+    expect(getWorkspace().tasks[c.id]?.status).toBe('Done');
+    expect(getWorkspace().tasks[d.id]?.status).toBe('Done');
   });
 });

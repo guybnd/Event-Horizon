@@ -222,3 +222,311 @@ describe('getPersonaById — retired-id alias must not shadow a same-named custo
     expect(persona?.id).toBe('shipper');
   });
 });
+
+describe('disallowedEhToolsForPersona — per-role MCP toolset deny-list scoping (FLUX-1434)', () => {
+  it('returns undefined (full toolset) for every lead persona', async () => {
+    const { disallowedEhToolsForPersona, getPersonaById } = await import('./orchestration-personas.js');
+    for (const id of ['orchestrator', 'supervisor', 'dev-lead', 'smelter', 'planner']) {
+      expect(getPersonaById(id)?.role, id).toBe('lead');
+      expect(disallowedEhToolsForPersona({ personaId: id }), id).toBeUndefined();
+    }
+  });
+
+  it('returns undefined (full toolset) for every flex persona', async () => {
+    const { disallowedEhToolsForPersona, getPersonaById } = await import('./orchestration-personas.js');
+    for (const id of ['senior-dev', 'finalizer']) {
+      expect(getPersonaById(id)?.role, id).toBe('flex');
+      expect(disallowedEhToolsForPersona({ personaId: id }), id).toBeUndefined();
+    }
+  });
+
+  it('returns undefined for no personaId or an unresolvable one (fail open)', async () => {
+    const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+    expect(disallowedEhToolsForPersona({})).toBeUndefined();
+    expect(disallowedEhToolsForPersona({ personaId: 'not-a-real-persona' })).toBeUndefined();
+  });
+
+  it('scopes a base review-lens worker down to the category-deny default (no phase/position context)', async () => {
+    const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+    for (const id of ['qa-correctness', 'security-auditor', 'angry-linus', 'architect', 'perf-expert', 'ux-expert', 'dry-reviewer', 'context-scout', 'test-engineer', 'shipper']) {
+      const disallowed = disallowedEhToolsForPersona({ personaId: id }) ?? [];
+      expect(disallowed, id).toContain('change_status');
+      expect(disallowed, id).toContain('update_ticket');
+      expect(disallowed, id).toContain('furnace_build');
+      expect(disallowed, id).not.toContain('get_ticket');
+      expect(disallowed, id).not.toContain('add_note');
+    }
+  });
+
+  it('restores change_status for personas whose own prompt calls it (requirements-interrogator, regrounder, implementer) regardless of position', async () => {
+    const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+    for (const id of ['requirements-interrogator', 'regrounder', 'implementer']) {
+      // persona.enableTools applies unconditionally — even for a delegate position, unlike phaseBaseline.
+      const disallowed = disallowedEhToolsForPersona({ personaId: id, patternPosition: 'assistant' }) ?? [];
+      expect(disallowed, id).not.toContain('change_status');
+      expect(disallowed, id).not.toContain('get_ticket');
+      expect(disallowed, id).not.toContain('add_note');
+    }
+    // regrounder and requirements-interrogator still don't get everything — furnace tools stay out.
+    expect(disallowedEhToolsForPersona({ personaId: 'requirements-interrogator' })).toContain('furnace_build');
+  });
+
+  it('gives epic-decomposer create_ticket/update_ticket/ask_user_question but not change_status', async () => {
+    const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+    const disallowed = disallowedEhToolsForPersona({ personaId: 'epic-decomposer' }) ?? [];
+    expect(disallowed).not.toContain('create_ticket');
+    expect(disallowed).not.toContain('update_ticket');
+    expect(disallowed).not.toContain('ask_user_question');
+    expect(disallowed).toContain('change_status');
+  });
+
+  it('gives docs-auditor update_ticket but not change_status', async () => {
+    const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+    const disallowed = disallowedEhToolsForPersona({ personaId: 'docs-auditor' }) ?? [];
+    expect(disallowed).not.toContain('update_ticket');
+    expect(disallowed).toContain('change_status');
+  });
+
+  it('a deprecated sole-reviewer-of-record focus note still restores the full write set (pre-upgrade fallback)', async () => {
+    const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+    const scoped = disallowedEhToolsForPersona({ personaId: 'qa-correctness' }) ?? [];
+    expect(scoped).toContain('change_status');
+    const solo = disallowedEhToolsForPersona({ personaId: 'qa-correctness', focusComment: 'You are the SOLE reviewer for this ticket.' }) ?? [];
+    expect(solo).not.toContain('change_status');
+    expect(solo).not.toContain('update_ticket');
+    // Still scoped away from furnace/epic tooling the review lens never needs.
+    expect(solo).toContain('furnace_build');
+  });
+
+  it('recognizes the exact SOLE_REVIEWER_FOCUS wording furnace-stoker.ts historically sent ("ONLY reviewer")', async () => {
+    const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+    const focus = 'You are the ONLY reviewer for this ticket in this Furnace run — no orchestrator will synthesize other reviews, so you own the decision.';
+    const disallowed = disallowedEhToolsForPersona({ personaId: 'security-auditor', focusComment: focus }) ?? [];
+    expect(disallowed).not.toContain('change_status');
+  });
+
+  it('every worker persona in the roster resolves to a non-empty, non-full disallow list', async () => {
+    const { ORCHESTRATION_PERSONAS, disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+    const workers = ORCHESTRATION_PERSONAS.filter((p) => p.role === 'worker');
+    expect(workers.length).toBeGreaterThan(0);
+    for (const p of workers) {
+      const disallowed = disallowedEhToolsForPersona({ personaId: p.id });
+      expect(Array.isArray(disallowed), p.id).toBe(true);
+      expect((disallowed ?? []).length, p.id).toBeGreaterThan(0);
+      // The mandatory floor (NEVER_DENY: retained on every scoped-down session at minimum).
+      expect(disallowed, p.id).not.toContain('add_note');
+      expect(disallowed, p.id).not.toContain('get_ticket');
+      expect(disallowed, p.id).not.toContain('ask_user_question');
+      expect(disallowed, p.id).not.toContain('permission_prompt');
+    }
+  });
+
+  describe('phase baseline (FLUX-1434) — standalone/lead positions only', () => {
+    it('grants a worker persona the phase mission tools when launched standalone', async () => {
+      const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+      // qa-correctness has no persona.enableTools of its own — a standalone launch in the review
+      // phase still gets the review phase baseline (fixes "any standalone launch of a phase with a
+      // worker persona" as a class, FLUX-1385 regression #3's generic form).
+      const disallowed = disallowedEhToolsForPersona({ personaId: 'qa-correctness', phase: 'review' }) ?? [];
+      expect(disallowed).not.toContain('change_status');
+      expect(disallowed).not.toContain('create_ticket');
+      expect(disallowed).not.toContain('update_ticket');
+      // Still scoped away from what the review phase baseline doesn't grant.
+      expect(disallowed).toContain('furnace_build');
+    });
+
+    it('grants the grooming phase baseline including publish_artifact (fixes plan-revise, regression #1)', async () => {
+      const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+      const disallowed = disallowedEhToolsForPersona({ personaId: 'requirements-interrogator', phase: 'grooming' }) ?? [];
+      expect(disallowed).not.toContain('update_ticket');
+      expect(disallowed).not.toContain('publish_artifact');
+      expect(disallowed).not.toContain('create_ticket');
+    });
+
+    it('does NOT grant the phase baseline to a delegate position (assistant/step)', async () => {
+      const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+      for (const patternPosition of ['assistant', 'step'] as const) {
+        const disallowed = disallowedEhToolsForPersona({ personaId: 'qa-correctness', phase: 'review', patternPosition }) ?? [];
+        expect(disallowed, patternPosition).toContain('change_status');
+        expect(disallowed, patternPosition).toContain('update_ticket');
+      }
+    });
+
+    it('treats an undefined patternPosition as standalone (not a delegate)', async () => {
+      const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+      const explicit = disallowedEhToolsForPersona({ personaId: 'qa-correctness', phase: 'review', patternPosition: 'standalone' }) ?? [];
+      const implicit = disallowedEhToolsForPersona({ personaId: 'qa-correctness', phase: 'review' }) ?? [];
+      expect(implicit.sort()).toEqual(explicit.sort());
+    });
+
+    it('grants the phase baseline for lead/combiner positions too', async () => {
+      const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+      for (const patternPosition of ['lead', 'combiner'] as const) {
+        const disallowed = disallowedEhToolsForPersona({ personaId: 'qa-correctness', phase: 'review', patternPosition }) ?? [];
+        expect(disallowed, patternPosition).not.toContain('change_status');
+      }
+    });
+  });
+
+  describe('dispatch.enableTools (FLUX-1434) — explicit per-launch grant, regardless of position', () => {
+    it('grants an explicit tool even to a delegate position', async () => {
+      const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+      const disallowed = disallowedEhToolsForPersona({
+        personaId: 'qa-correctness',
+        patternPosition: 'assistant',
+        enableTools: ['furnace_ticket'],
+      }) ?? [];
+      expect(disallowed).not.toContain('furnace_ticket');
+      // Nothing else is granted just because one tool was.
+      expect(disallowed).toContain('change_status');
+    });
+
+    it('is what fixes the Furnace sole reviewer needing furnace_ticket (regression #2)', async () => {
+      const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+      const disallowed = disallowedEhToolsForPersona({
+        personaId: 'qa-correctness',
+        phase: 'review',
+        patternPosition: 'standalone',
+        enableTools: ['furnace_ticket'],
+      }) ?? [];
+      expect(disallowed).not.toContain('furnace_ticket');
+      expect(disallowed).not.toContain('create_ticket'); // from the review phase baseline
+    });
+  });
+
+  describe('NEVER_DENY floor (FLUX-1434)', () => {
+    it('is never in the deny list regardless of role or context', async () => {
+      const { disallowedEhToolsForPersona, NEVER_DENY } = await import('./orchestration-personas.js');
+      const disallowed = disallowedEhToolsForPersona({ personaId: 'context-scout' }) ?? [];
+      for (const t of NEVER_DENY) expect(disallowed, t).not.toContain(t);
+    });
+  });
+
+  describe('custom worker personas (FLUX-1434 regression #4)', () => {
+    it('a custom worker persona with no declared enableTools gets the role default', async () => {
+      const { disallowedEhToolsForPersona, saveCustomPersona, deleteCustomPersona, CATEGORY_DENY_DEFAULTS } = await import('./orchestration-personas.js');
+      await saveCustomPersona({
+        id: 'custom-worker-test',
+        label: 'Custom Worker',
+        description: 'test-only',
+        role: 'worker',
+        phases: [],
+        requiredCapabilities: [],
+        prompt: 'You are a custom worker.',
+      });
+      try {
+        const disallowed = disallowedEhToolsForPersona({ personaId: 'custom-worker-test' }) ?? [];
+        expect(disallowed.sort()).toEqual(CATEGORY_DENY_DEFAULTS.worker.slice().sort());
+      } finally {
+        await deleteCustomPersona('custom-worker-test');
+      }
+    });
+
+    it('a custom worker persona with declared enableTools gets exactly that re-enable', async () => {
+      const { disallowedEhToolsForPersona, saveCustomPersona, deleteCustomPersona } = await import('./orchestration-personas.js');
+      await saveCustomPersona({
+        id: 'custom-worker-enabled-test',
+        label: 'Custom Worker (enabled)',
+        description: 'test-only',
+        role: 'worker',
+        phases: [],
+        requiredCapabilities: [],
+        prompt: 'You are a custom worker.',
+        enableTools: ['create_ticket'],
+      });
+      try {
+        const disallowed = disallowedEhToolsForPersona({ personaId: 'custom-worker-enabled-test' }) ?? [];
+        expect(disallowed).not.toContain('create_ticket');
+        expect(disallowed).toContain('change_status');
+      } finally {
+        await deleteCustomPersona('custom-worker-enabled-test');
+      }
+    });
+  });
+
+  describe('toolScoping.categoryDeny board-config override (FLUX-1434)', () => {
+    it('a configured override fully replaces the shipped worker deny list', async () => {
+      const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+      const { getConfig } = await import('./config.js');
+      const config = getConfig();
+      const prior = config.toolScoping;
+      config.toolScoping = { categoryDeny: { worker: ['create_ticket'] } };
+      try {
+        const disallowed = disallowedEhToolsForPersona({ personaId: 'context-scout' }) ?? [];
+        expect(disallowed).toEqual(['create_ticket']);
+      } finally {
+        config.toolScoping = prior;
+      }
+    });
+
+    it('the NEVER_DENY floor still applies even if a misconfigured override lists a floor tool', async () => {
+      const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+      const { getConfig } = await import('./config.js');
+      const config = getConfig();
+      const prior = config.toolScoping;
+      config.toolScoping = { categoryDeny: { worker: ['create_ticket', 'get_ticket', 'add_note'] } };
+      try {
+        const disallowed = disallowedEhToolsForPersona({ personaId: 'context-scout' }) ?? [];
+        expect(disallowed).toEqual(['create_ticket']);
+      } finally {
+        config.toolScoping = prior;
+      }
+    });
+  });
+});
+
+// FLUX-1434 CI lint: no persona prompt POSITIVELY instructs a tool call its own scoping would
+// deny in EVERY launch position. `persona.enableTools` is the only re-enable guaranteed
+// regardless of position (PHASE_BASELINE only applies to standalone/lead; dispatch.enableTools is
+// per-launch, not a property of the prompt text itself) — so a backtick-quoted EH tool name a
+// persona's prompt tells it to CALL must be covered by `persona.enableTools` (∪ the undeniable
+// NEVER_DENY floor), or the persona can be launched as a delegate and told to do something it
+// structurally cannot. This is the automated form of the regression class FLUX-1385 shipped
+// (a persona's own prompt outrunning its scoping) for the one surface (persona prompts) where
+// "positive instruction" vs "explicit negation" is unambiguous prose (`do NOT use X`) — the
+// composed PHASE_CONTRACTS review text and Furnace/gate-runner focus constants use CONDITIONAL
+// phrasing ("...unless you are the sole reviewer...") a simple lint can't safely classify without
+// false positives, so those are covered by the targeted scenario tests above instead (the
+// sole-reviewer-focus / phase-baseline / dispatch.enableTools describe blocks).
+describe('CI lint — persona prompts never reference a tool their own scoping denies (FLUX-1434)', () => {
+  it('extracts backtick tool references per sentence and checks positive ones against enableTools', async () => {
+    const { ORCHESTRATION_PERSONAS, CATEGORY_DENY_DEFAULTS, NEVER_DENY } = await import('./orchestration-personas.js');
+    const knownTools = new Set([...CATEGORY_DENY_DEFAULTS.worker, ...NEVER_DENY]);
+    const negationCue = /\b(do\s+not|does\s+not|never|won't|cannot|can't)\b/i;
+    const violations: string[] = [];
+
+    for (const persona of ORCHESTRATION_PERSONAS) {
+      if (persona.role !== 'worker') continue;
+      const allowed = new Set([...(persona.enableTools ?? []), ...NEVER_DENY]);
+      // Split into sentence-ish chunks so a negation earlier in the SAME sentence (e.g. "Do NOT
+      // use `change_status` unless...") suppresses that occurrence, without also suppressing an
+      // unrelated positive reference to the same tool in a LATER sentence.
+      const sentences = persona.prompt.split(/(?<=[.!?\n])\s+/);
+      // A tool name in backticks immediately followed by one of these nouns is a DATA reference
+      // (e.g. "the `branch` field", "`publish_artifact` revisions") — several tool names collide
+      // with ticket-frontmatter field names or generic nouns, not an instruction to call the tool.
+      const dataReferenceNoun = /^\s+(field|revision|revisions)\b/i;
+      for (const sentence of sentences) {
+        const negated = negationCue.test(sentence);
+        const matches = sentence.matchAll(/`([a-z_]+)`/g);
+        for (const m of matches) {
+          const tool = m[1]!;
+          if (!knownTools.has(tool) || negated) continue;
+          if (dataReferenceNoun.test(sentence.slice(m.index! + m[0].length))) continue;
+          if (!allowed.has(tool)) violations.push(`${persona.id}: prompt references \`${tool}\` positively but persona.enableTools doesn't include it`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it('every persona.enableTools entry is a real, currently-registered EH tool name (drift guard)', async () => {
+    const { ORCHESTRATION_PERSONAS, CATEGORY_DENY_DEFAULTS, NEVER_DENY } = await import('./orchestration-personas.js');
+    const knownTools = new Set([...CATEGORY_DENY_DEFAULTS.worker, ...NEVER_DENY]);
+    for (const persona of ORCHESTRATION_PERSONAS) {
+      for (const tool of persona.enableTools ?? []) {
+        expect(knownTools.has(tool), `${persona.id}: enableTools has unknown tool "${tool}"`).toBe(true);
+      }
+    }
+  });
+});

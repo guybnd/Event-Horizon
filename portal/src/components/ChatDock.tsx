@@ -28,6 +28,7 @@ import { planReviewDraftCount, formatRegroomNotes, loadPlanReviewDraft, clearPla
 import { AttentionDock } from './attention/AttentionDock';
 import { useDock, MIN_SIDEVIEW_WIDTH, MAX_SIDEVIEW_WIDTH, DEFAULT_SIDEVIEW_WIDTH, type ComposerSelections, type AnchorRect, type WindowGeometry } from './DockProvider';
 import { useTicketSideView } from '../hooks/useTicketSideView';
+import { useConfirm } from '../hooks/useConfirm';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { fireDesktopNotification } from '../hooks/useDesktopNotifications';
 import { getStatusTint, getStatusColorClass } from '../statusStyles';
@@ -226,6 +227,7 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
   // Window/open state lives in the app-root DockProvider (FLUX-603) so a card can drive it
   // and it survives view switches. `anchors` records where each window should spawn from.
   const { open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, windowGeometry, toggle, closeCard, reopenFromHistory, setDraft, setSelections, reorder, promoteToFront, toggleSideView, openSideView, setSideviewWidth, seedSideviewWidth, setSectionOpen, setWindowGeometry, openTicket, openChat, raise, planApprovalOpen, planApprovalNonce, closePlanApproval } = useDock();
+  const confirm = useConfirm();
 
   // FLUX-744: open-ticket bridge. `openTask` (AppContext, which lives ABOVE the DockProvider) can't
   // call dock actions directly, so for the default 'chat' open mode it dispatches a `flux:open-ticket`
@@ -1005,10 +1007,12 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
             setMenu(null);
           }}
           onReset={() => {
-            if (window.confirm(`Reset the ${titleOf(menu.id)} conversation? This clears its chat history.`)) {
-              void resetSession(menu.id);
-            }
-            setMenu(null);
+            void (async () => {
+              if (await confirm({ title: `Reset the ${titleOf(menu.id)} conversation? This clears its chat history.`, tone: 'danger', confirmLabel: 'Reset' })) {
+                void resetSession(menu.id);
+              }
+              setMenu(null);
+            })();
           }}
           onCloseCard={() => {
             closeCard(menu.id);
@@ -2192,6 +2196,7 @@ const ChatWindow = memo(function ChatWindow({
   // never destroyed) — but only while it's the frontmost window, so a press doesn't reach into
   // background windows.
   useEscapeKey(() => onMinimize(id), { enabled: isTopmost });
+  const confirm = useConfirm();
 
   const config = useAppSelector((s) => s.config);
   // FLUX-801: pop-open / shrink-close animation. Gated on `animationsEnabled` (default true) AND
@@ -2563,9 +2568,11 @@ const ChatWindow = memo(function ChatWindow({
           onClick={() => {
             // Destructive: clears the durable board transcript so the next send is a genuinely clean
             // context (no re-prime). Confirm — same one-way action as the header "Reset conversation".
-            if (window.confirm('Start a fresh context? This clears the board conversation history.')) {
-              void chat.reset();
-            }
+            void (async () => {
+              if (await confirm({ title: 'Start a fresh context? This clears the board conversation history.', tone: 'danger', confirmLabel: 'Reset' })) {
+                void chat.reset();
+              }
+            })();
           }}
           title="Discard the previous conversation and start a clean context"
           className="inline-flex items-center gap-1 rounded-md border border-[var(--eh-border)] bg-[var(--eh-input-bg)] px-2.5 py-1 text-[11px] font-semibold text-[var(--eh-text-secondary)] transition-colors hover:bg-black/5 dark:hover:bg-white/5"
@@ -2708,11 +2715,11 @@ const ChatWindow = memo(function ChatWindow({
     />
   );
 
-  const handleResetConversation = () => {
+  const handleResetConversation = async () => {
     // FLUX-1221: this button also backs the Furnace-chat's reset (see ChatWindowHeader) — label the
     // confirm off which window it actually is instead of hardcoding "orchestrator".
     const label = orchestrator ? 'orchestrator' : isFurnaceChat ? (session?.label ?? 'Furnace chat') : 'this';
-    if (window.confirm(`Reset the ${label} conversation? This clears its chat history.`)) {
+    if (await confirm({ title: `Reset the ${label} conversation? This clears its chat history.`, tone: 'danger', confirmLabel: 'Reset' })) {
       void chat.reset();
     }
   };

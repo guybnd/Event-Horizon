@@ -7,7 +7,7 @@ import { promisify } from 'util';
 import { BUILTIN_MODULES } from './modules.js';
 import { buildGitSyncEnv, classifyGitError, GIT_SYNC_TIMEOUT_MS } from './git-sync-env.js';
 import { addOrphanWorktree, isWorktreeOnBranch } from './git-worktree.js';
-import { reportDivergedStatus, clearSyncStateAfterForceReset, withSyncLock } from './sync-watcher.js';
+import { reportDivergedStatus, clearSyncStateAfterForceReset, withSyncLock, SUPPORTED_SYNC_PROTOCOL, SYNC_PROTOCOL_MARKER_FILE } from './sync-watcher.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -59,7 +59,10 @@ async function git(cwd: string, args: string[]): Promise<{ stdout: string; stder
  * revert on every fetch and leak between clones. They stay on disk locally; they
  * just stop being version-controlled in the orphan store.
  */
-const STORE_LOCAL_IGNORES = ['config.json', 'read-state.json', 'open-prompts.json', 'open-prompts.json.tmp', 'session-binding-secret', 'session-binding-secret.tmp', 'sessions/'];
+// FLUX-1428: sync-journal.jsonl is the durable op journal backing push-as-CAS + replay — pure
+// per-engine local state (what THIS engine has applied but not yet confirmed pushed), never
+// meaningful to another clone. It must never be synced/merged like a ticket file.
+const STORE_LOCAL_IGNORES = ['config.json', 'read-state.json', 'open-prompts.json', 'open-prompts.json.tmp', 'session-binding-secret', 'session-binding-secret.tmp', 'sessions/', 'sync-journal.jsonl'];
 
 /** Ensure the store-root `.gitignore` lists the local-only files. Returns true if it changed. */
 async function ensureStoreLocalGitignore(storeDir: string): Promise<boolean> {
@@ -150,6 +153,53 @@ export async function ensureUnionMergeAttributes(storeDir: string): Promise<void
   }
 }
 
+/**
+ * FLUX-1426: `sync-protocol` is a single-integer marker file at the store root that a stale
+ * engine compares against {@link SUPPORTED_SYNC_PROTOCOL} before any mutating sync op — a
+ * marker ahead of what this build supports fences sync read-only (see sync-watcher.ts's
+ * `runSync`/`resolveConflicts` gate checks). Write-only helper (no commit) so callers that need
+ * the marker bundled into a specific commit — the initial migration commit below — can do so.
+ *
+ * FLUX-1428: forward-bumps, never seed-if-absent-only — a protocol bump (like this ticket's 1 -> 2
+ * for CAS+replay) must actually propagate to stores that already have an older marker committed.
+ * "Never auto-bump" (FLUX-1426) means the engine never invents a version number at runtime, not
+ * that a version deliberately shipped in code can't move an existing marker forward. Never
+ * decreases: a marker already >= what we support is either already bumped or was set by a newer
+ * engine we don't understand — either way this engine must not touch it (the gate handles the
+ * latter case by fencing this engine out read-only).
+ */
+async function ensureSyncProtocolMarkerFile(storeDir: string): Promise<boolean> {
+  const markerPath = path.join(storeDir, SYNC_PROTOCOL_MARKER_FILE);
+  const current = await fs.readFile(markerPath, 'utf-8')
+    .then((raw) => { const parsed = parseInt(raw.trim(), 10); return Number.isFinite(parsed) ? parsed : null; })
+    .catch(() => null);
+  if (current !== null && current >= SUPPORTED_SYNC_PROTOCOL) return false;
+  await fs.writeFile(markerPath, `${SUPPORTED_SYNC_PROTOCOL}\n`, 'utf-8');
+  return true;
+}
+
+/**
+ * Seed (or forward-bump) the `sync-protocol` marker in the store worktree and commit it when it
+ * changed. Idempotent — safe on every startup, mirroring {@link ensureUnionMergeAttributes}'s
+ * self-healing pattern so a store created before FLUX-1426 picks up the marker automatically, and
+ * a store still on an older protocol number picks up a deliberate bump (FLUX-1428) the same way.
+ */
+export async function ensureSyncProtocolMarker(storeDir: string): Promise<void> {
+  if (!existsSync(storeDir)) return;
+  try {
+    const seeded = await ensureSyncProtocolMarkerFile(storeDir);
+    if (!seeded) return;
+    await git(storeDir, ['add', SYNC_PROTOCOL_MARKER_FILE]).catch(() => {});
+    const { stdout: status } = await git(storeDir, ['status', '--porcelain']).catch(() => ({ stdout: '' }));
+    if (status.trim()) {
+      await git(storeDir, ['commit', '-m', `flux: sync-protocol marker -> ${SUPPORTED_SYNC_PROTOCOL}`]).catch(() => {});
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.info(`[storage-sync] ensureSyncProtocolMarker skipped: ${message}`);
+  }
+}
+
 async function gitWithRetry(cwd: string, args: string[], maxRetries = 3): Promise<{ stdout: string; stderr: string }> {
   let attempts = 0;
   while (attempts < maxRetries) {
@@ -229,6 +279,8 @@ export async function attachWorktreeIfPresent(
     await excludeLocalConfigFromSync(storeDir);
     // Self-heal a store created before FLUX-1076 onto the union-merge transcript attribute.
     await ensureUnionMergeAttributes(storeDir);
+    // Self-heal a store created before FLUX-1426 onto the sync-protocol marker.
+    await ensureSyncProtocolMarker(storeDir);
     return;
   }
 
@@ -241,6 +293,7 @@ export async function attachWorktreeIfPresent(
     await scaffoldModuleDirs(storeDir, MEMORY_GITIGNORE_DIRS);
     await excludeLocalConfigFromSync(storeDir);
     await ensureUnionMergeAttributes(storeDir);
+    await ensureSyncProtocolMarker(storeDir);
     log.info('[storage-sync] Re-attached .flux-store worktree from origin/flux-data');
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -317,6 +370,7 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
         await scaffoldModuleDirs(storeDir, MEMORY_GITIGNORE_DIRS);
         await excludeLocalConfigFromSync(storeDir);
         await ensureUnionMergeAttributes(storeDir);
+        await ensureSyncProtocolMarker(storeDir);
         return;
       }
     } else {
@@ -363,6 +417,8 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
   await ensureStoreLocalGitignore(storeDir);
   // Seed the union-merge attribute for transcripts (FLUX-1076) into the same initial commit.
   await ensureStoreGitattributes(storeDir);
+  // Seed the sync-protocol marker (FLUX-1426) into the same initial commit.
+  await ensureSyncProtocolMarkerFile(storeDir);
 
   // Initial commit in the worktree — status-gated so resuming after a partial failure (or an
   // already-committed worktree) never errors on "nothing to commit" (FLUX-297).
@@ -580,6 +636,7 @@ export async function forceResetToRemote(storeDir: string): Promise<ForceResetRe
     await scaffoldModuleDirs(storeDir, MEMORY_GITIGNORE_DIRS);
     await excludeLocalConfigFromSync(storeDir);
     await ensureUnionMergeAttributes(storeDir);
+    await ensureSyncProtocolMarker(storeDir);
 
     const newHead = await git(storeDir, ['rev-parse', 'HEAD']).then((r) => r.stdout.trim()).catch(() => '');
 

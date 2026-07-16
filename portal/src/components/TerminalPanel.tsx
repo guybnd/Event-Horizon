@@ -457,7 +457,7 @@ function QuickLaunchRow({
             <MoreHorizontal className="w-3.5 h-3.5" /> More
           </button>
           {showMore && (
-            <div className="absolute bottom-full left-0 mb-1 z-50 rounded-lg border shadow-xl overflow-hidden" style={{ background: 'var(--eh-surface)', borderColor: 'var(--eh-border)' }}>
+            <div className="absolute top-full left-0 mt-1 z-50 rounded-lg border shadow-xl overflow-hidden" style={{ background: 'var(--eh-surface)', borderColor: 'var(--eh-border)' }}>
               {overflow.map(cmd => {
                 const isArmedOverflow = armed === cmd.id;
                 return (
@@ -508,7 +508,7 @@ function QuickLaunchRow({
         </button>
         {showAddForm && (
           <div
-            className="absolute bottom-full right-0 mb-1 z-50 p-3 rounded-lg border shadow-xl w-64"
+            className="absolute top-full right-0 mt-1 z-50 p-3 rounded-lg border shadow-xl w-64"
             style={{ background: 'var(--eh-surface)', borderColor: 'var(--eh-border)' }}
           >
             <div className="text-[11px] font-bold mb-2" style={{ color: 'var(--eh-text-primary)' }}>Add shortcut</div>

@@ -24,6 +24,8 @@ import {
   type WorkflowPhase,
 } from '../api';
 import type { Config, Doc } from '../types';
+import { useConfirm } from '../hooks/useConfirm';
+import { useNotify } from '../hooks/useNotify';
 
 // --- Constants ---
 
@@ -603,6 +605,8 @@ export function WorkflowBuilder() {
   const [templateCliTarget, setTemplateCliTarget] = useState<CliTarget>('claude');
   const [templatePhases, setTemplatePhases] = useState<Partial<Record<WorkflowPhase, WorkflowPhaseConfig>>>({});
   const [templateSaving, setTemplateSaving] = useState(false);
+  const confirm = useConfirm();
+  const notify = useNotify();
 
   const reloadPersonas = useCallback(() => fetchOrchestrationPersonas().then(setPersonas).catch(() => {}), []);
   const reloadTemplates = useCallback(() => fetchWorkflows().then(setTemplates).catch(() => {}), []);
@@ -763,7 +767,7 @@ export function WorkflowBuilder() {
   const supportedPatterns = CLI_PATTERN_SUPPORT[templateCliTarget];
 
   // Handlers
-  const handleDeleteTemplate = useCallback(async (t: WorkflowTemplate) => { if (!window.confirm(`Delete "${t.name}"?`)) return; try { await deleteWorkflow(t.id); await reloadTemplates(); if (activeTemplate?.id === t.id) { setActiveTemplate(null); setTemplateName(''); setTemplatePhases({}); } if (config) { let next: Config = config; if (config.defaultWorkflowId === t.id) next = { ...next, defaultWorkflowId: '' }; if (next !== config) { await saveConfig(next); setConfigState(next); } } } catch {} }, [reloadTemplates, config, activeTemplate]);
+  const handleDeleteTemplate = useCallback(async (t: WorkflowTemplate) => { if (!(await confirm({ title: `Delete "${t.name}"?`, tone: 'danger', confirmLabel: 'Delete' }))) return; try { await deleteWorkflow(t.id); await reloadTemplates(); if (activeTemplate?.id === t.id) { setActiveTemplate(null); setTemplateName(''); setTemplatePhases({}); } if (config) { let next: Config = config; if (config.defaultWorkflowId === t.id) next = { ...next, defaultWorkflowId: '' }; if (next !== config) { await saveConfig(next); setConfigState(next); } } } catch {} }, [reloadTemplates, config, activeTemplate, confirm]);
   const handleSetPhaseDefault = useCallback(async (phase: WorkflowPhase, variant: 'single' | 'multi', templateId: string) => {
     if (!config) return;
     const current = config.phaseDefaults?.[phase]?.[variant];
@@ -773,7 +777,7 @@ export function WorkflowBuilder() {
     try { await saveConfig(next); setConfigState(next); } catch {}
   }, [config]);
   const handleSaveSkill = useCallback(async (updated: SkillDef) => { setSkillSaving(true); try { if (updated.path) { await updateDoc(updated.path, { title: updated.name, body: updated.body }); setSkills(prev => prev.map(s => (s.id === updated.id ? updated : s))); } else { const slug = updated.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''); const doc = await createDoc({ path: `skills/${slug}.md`, title: updated.name, body: updated.body }); setSkills(prev => [...prev, docToSkill(doc)]); } setEditingSkill(null); } catch {} finally { setSkillSaving(false); } }, []);
-  const handleDeleteSkill = useCallback(async (skill: SkillDef) => { if (!window.confirm(`Delete "${skill.name}"?`)) return; try { await deleteDoc(skill.path); setSkills(prev => prev.filter(s => s.id !== skill.id)); setEditingSkill(null); } catch {} }, []);
+  const handleDeleteSkill = useCallback(async (skill: SkillDef) => { if (!(await confirm({ title: `Delete "${skill.name}"?`, tone: 'danger', confirmLabel: 'Delete' }))) return; try { await deleteDoc(skill.path); setSkills(prev => prev.filter(s => s.id !== skill.id)); setEditingSkill(null); } catch (err) { notify.error(`Failed to delete "${skill.name}": ${err instanceof Error ? err.message : String(err)}`); } }, [confirm, notify]);
   const toggleGuide = useCallback(() => {
     setGuideCollapsed(prev => {
       const next = !prev;

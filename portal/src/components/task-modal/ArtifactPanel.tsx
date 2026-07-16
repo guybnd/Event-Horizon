@@ -41,12 +41,15 @@ const NS = 'eh-artifact';
  * stable pin `id` so a host-side edit/remove round-trips to the matching `data-eh-pin`. */
 interface AnnotationItem {
   id?: number;
-  kind?: 'text' | 'element';
+  kind?: 'text' | 'element' | 'feel' | 'decision';
   selector: string;
   text: string;
   containerText?: string;
   label?: string;
   note?: string;
+  /** FLUX-1440: a captured control value ('feel') or chosen option ('decision') from the artifact's
+   *  guided controls. */
+  value?: string;
 }
 
 /** FLUX-875 (Tier 3): one layout problem the open-time audit found inside the artifact. */
@@ -58,7 +61,7 @@ interface LayoutWarning {
 
 /** Messages the iframe sends up to the host (validated by `source` + this `ns`/`type` allowlist). */
 type InboundMessage =
-  | { ns: typeof NS; type: 'ready' }
+  | { ns: typeof NS; type: 'ready'; hasGuidedControls?: boolean }
   | { ns: typeof NS; type: 'annotations'; items: AnnotationItem[] }
   | { ns: typeof NS; type: 'layout-audit'; ok: boolean; warnings: LayoutWarning[] }
   | { ns: typeof NS; type: 'escape' };
@@ -103,12 +106,19 @@ function sanitizeAnnotations(items: AnnotationItem[], rev: number): ArtifactAnno
     .filter((it) => typeof it?.id === 'number' && Number.isFinite(it.id))
     .map((it) => ({
       id: it.id as number,
-      // Element items are equally untrusted: coerce kind to 'element' only on an exact match, else 'text'.
-      kind: it?.kind === 'element' ? ('element' as const) : ('text' as const),
+      // Every kind is equally untrusted: coerce through an explicit allowlist, else fall back to
+      // 'text'. FLUX-1440: widened to admit the guided-control kinds ('feel'/'decision') the same way.
+      kind:
+        it?.kind === 'element' || it?.kind === 'feel' || it?.kind === 'decision'
+          ? it.kind
+          : ('text' as const),
       selector: clampLine(it?.selector, 300),
       text: clampLine(it?.text, 280),
       label: clampLine(it?.label, 120),
       note: clampLine(it?.note, MAX_NOTE),
+      // FLUX-1440: a guided-control capture ('feel'/'decision'); clamped the same as the other
+      // single-line string fields above.
+      value: clampLine(it?.value, 120),
       rev,
     }));
 }
@@ -134,6 +144,7 @@ export function ArtifactPanel({
   fillHeight = false,
   artifactAnnotations,
   onArtifactAnnotationsChange,
+  onHasGuidedControlsChange,
 }: {
   task: Task;
   onSendToChat?: (text: string) => void;
@@ -150,6 +161,11 @@ export function ArtifactPanel({
    *  only view, which owns its own list + Send. */
   artifactAnnotations?: ArtifactAnnotation[];
   onArtifactAnnotationsChange?: (items: ArtifactAnnotation[]) => void;
+  /** FLUX-1440: fires whenever the in-iframe annotator reports (via `type:'ready'`) whether this
+   *  artifact revision exposes guided controls (sliders/pickers wired to emit 'feel'/'decision'
+   *  annotations). Only needed in CONTROLLED mode, where the caller renders its own pill and needs the
+   *  signal to drive that pill's empty state; the standalone view reads its own local state instead. */
+  onHasGuidedControlsChange?: (value: boolean) => void;
 }) {
   const { subscribeToEvent } = useAppActions();
   const isWindowVisible = useAppSelector((s) => s.isWindowVisible);
@@ -171,6 +187,9 @@ export function ArtifactPanel({
   const [fullscreen, setFullscreen] = useState(false);
   // Transient "sent N annotations" confirmation after the standalone view's Send.
   const [sentCount, setSentCount] = useState(0);
+  // FLUX-1440: whether the currently-shown revision's annotator reports guided controls (sliders /
+  // pickers). Reported once per iframe mount via `type:'ready'`; false until that arrives.
+  const [hasGuidedControls, setHasGuidedControls] = useState(false);
 
   // FLUX-1362: the unified artifact-annotation list. CONTROLLED by the plan panel when
   // `onArtifactAnnotationsChange` is given; otherwise owned here (standalone artifact-only view).
@@ -240,6 +259,10 @@ export function ArtifactPanel({
     iframeLiveRef.current = new Map(next.map((a) => [a.id, a.note]));
     applyItemsRef.current(next);
   }, []);
+  // FLUX-1440: read live in the stable (no-deps) message-listener effect below, same pattern as
+  // `applyItemsRef`.
+  const onHasGuidedControlsChangeRef = useRef(onHasGuidedControlsChange);
+  useEffect(() => { onHasGuidedControlsChangeRef.current = onHasGuidedControlsChange; }, [onHasGuidedControlsChange]);
 
   // Host-side message listener — the trust boundary. Validate `source` (our iframe) over the opaque
   // origin string, then the `ns`/`type` allowlist. Stable (no deps) — reads live values via refs.
@@ -250,6 +273,13 @@ export function ArtifactPanel({
       if (!d || typeof d !== 'object' || d.ns !== NS) return;
       if (d.type === 'annotations') {
         if (Array.isArray(d.items)) ingestAnnotations(d.items);
+      } else if (d.type === 'ready') {
+        // FLUX-1440: reported once per iframe mount by the injected annotator script. Threaded to
+        // both local state (standalone view's own pill) and the controlled-mode callback (the plan
+        // panel renders its own pill and needs the signal too).
+        const value = !!d.hasGuidedControls;
+        setHasGuidedControls(value);
+        onHasGuidedControlsChangeRef.current?.(value);
       } else if (d.type === 'layout-audit') {
         // Advisory only now — never masks. A late clean re-audit still upgrades the icon away.
         const warnings = sanitizeWarnings(Array.isArray(d.warnings) ? d.warnings : []);
@@ -295,6 +325,10 @@ export function ArtifactPanel({
     if (!iframeMounted) return;
     setAudit({ status: 'pending' });
     setSentCount(0);
+    // FLUX-1440: a fresh iframe hasn't announced 'ready' yet — don't carry the previous revision's
+    // guided-controls signal over.
+    setHasGuidedControls(false);
+    onHasGuidedControlsChangeRef.current?.(false);
     // The fresh iframe holds no pins; drop any stale host list + live map so counts start clean.
     iframeLiveRef.current = new Map();
     applyItemsRef.current([]);
@@ -549,6 +583,7 @@ export function ArtifactPanel({
           } : undefined}
           sendDisabled={items.length === 0}
           sentConfirm={sentCount > 0 ? `✓ Sent ${sentCount}` : undefined}
+          hasGuidedControls={hasGuidedControls}
         />
       )}
     </div>

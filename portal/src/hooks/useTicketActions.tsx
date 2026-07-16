@@ -7,7 +7,7 @@
 //
 // This is the launch slice that used to live inline in useTaskCardController, lifted out so the
 // card and the chat surfaces share it verbatim instead of re-implementing it.
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Task } from '../types';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import {
@@ -18,8 +18,9 @@ import {
   type WorkflowTemplate,
 } from '../api';
 import type { FinishMergeState, MergeConfirmOpts } from '../components/task-modal/FinishMergeConfirm';
+import type { PromptModalState } from '../components/task-modal/PromptModal';
 import { resolveEffectiveAgent, frameworkSupports } from '../utils';
-import { isActiveSession } from '../orchestration';
+import { isLiveInputTarget } from '../orchestration';
 import { getArchiveStatus, getReadyForMergeStatus, getRequireInputStatus, isPromptableStatus } from '../workflow';
 import {
   runAgentAction,
@@ -35,9 +36,10 @@ import {
 import { type OrchestrationLaunchPlan } from '../components/OrchestrationLauncher';
 import {
   actionsForStatus,
-  changeTaskStatus,
-  isMissingCommentError,
+  runChangeStatus,
+  runFinishBranchless,
   type LaunchTemplateOption,
+  type PromptResolver,
   type TicketAction,
   type TicketActionContext,
 } from '../lib/ticketActions';
@@ -115,6 +117,12 @@ export interface UseTicketActions {
   finishMergeBusy: boolean;
   confirmFinishMerge: (opts: MergeConfirmOpts) => Promise<void>;
   cancelFinishMerge: () => void;
+  // ── Input/error prompt modal (FLUX-1359) — replaces native window.prompt/alert, which Electron
+  // doesn't implement (prompt() throws there) ──
+  promptState: PromptModalState | null;
+  promptBusy: boolean;
+  submitPrompt: (value: string) => void;
+  cancelPrompt: () => void;
   // ── For ContextMenu re-exposure (FLUX-717 will migrate it onto the registry) ──
   singleDefaultId: string;
 }
@@ -144,6 +152,36 @@ export function useTicketActions(task: Task): UseTicketActions {
   // chain that picks up `force` then needs `stopParkedSessions` keeps both (the engine checks them
   // in sequence — see tasks.ts:1022-1024). Reset whenever the modal opens fresh or is cancelled.
   const finishMergeOptsRef = useRef<MergeConfirmOpts>({});
+
+  // ── Input/error prompt modal (FLUX-1359) — the injected `PromptResolver`/`ErrorNotifier` seam
+  // `runChangeStatus`/`runFinishBranchless` (lib/ticketActions) drive instead of native
+  // window.prompt/alert. A dangling resolver (component unmounts mid-prompt) resolves `null` on
+  // cleanup so an in-flight `await runPrompt(...)` never hangs. `promptBusy` is NOT derived from
+  // `busyKey`: `fire()` sets `busyKey` before `run()` even reaches the `await prompt(...)` call, so
+  // it spans the entire time the modal is open waiting for input — gating the modal's
+  // submit/cancel/dismiss on it made the modal permanently un-submittable (review catch on the
+  // first pass of this ticket). `submitPrompt`/`cancelPrompt` resolve and unmount synchronously, so
+  // there's no post-submit in-flight phase to show a spinner for; `promptBusy` stays `false`.
+  const [promptState, setPromptState] = useState<PromptModalState | null>(null);
+  const promptResolveRef = useRef<((value: string | null) => void) | null>(null);
+  useEffect(() => () => promptResolveRef.current?.(null), []);
+
+  const runPrompt: PromptResolver = (req) =>
+    new Promise<string | null>((resolve) => {
+      promptResolveRef.current = resolve;
+      setPromptState({ mode: 'input', ...req });
+    });
+  const submitPrompt = (value: string) => {
+    promptResolveRef.current?.(value);
+    promptResolveRef.current = null;
+    setPromptState(null);
+  };
+  const cancelPrompt = () => {
+    promptResolveRef.current?.(null);
+    promptResolveRef.current = null;
+    setPromptState(null);
+  };
+  const notifyError = (title: string, message: string) => setPromptState({ mode: 'error', title, message });
 
   // Lazily load the workflow catalog the first time a launch ▾ menu opens. Until then the menu
   // still shows Single/Multi (their ids resolve synchronously); names + extra templates fill in.
@@ -178,33 +216,23 @@ export function useTicketActions(task: Task): UseTicketActions {
 
   // ── Engine: status move (prompts for the comment Ready/Require Input require) ──
   const changeStatus = async (newStatus: string, opts?: { needsComment?: boolean }) => {
-    let comment: string | undefined;
-    if (opts?.needsComment) {
-      const label = newStatus === requireInputStatus ? 'question for the user' : 'completion summary';
-      const entered = window.prompt(`Add a ${label} for moving ${task.id} to "${newStatus}":`);
-      if (entered === null) return; // cancelled
-      comment = entered.trim() || undefined;
-    }
-    try {
-      await changeTaskStatus(task, newStatus, currentUser, { comment });
-    } catch (err) {
-      // Reactive: the engine rejects Ready/Require Input without a comment. Prompt + retry once.
-      if (isMissingCommentError(err) && !comment) {
-        const entered = window.prompt(`A comment is required to move ${task.id} to "${newStatus}":`);
-        if (entered === null || !entered.trim()) return;
-        await changeTaskStatus(task, newStatus, currentUser, { comment: entered.trim() });
-      } else {
-        const msg = err instanceof Error ? err.message : String(err);
-        alert(`Failed to move ${task.id}: ${msg}`);
-        return;
-      }
-    }
-    triggerRefresh();
+    await runChangeStatus({
+      task,
+      newStatus,
+      currentUser,
+      needsComment: opts?.needsComment,
+      requireInputStatus,
+      prompt: runPrompt,
+      notifyError,
+      onDone: triggerRefresh,
+    });
   };
 
-  // FLUX-719: a live CLI session on the ticket. When present, the agent `finish` is routed as
-  // input into the running conversation rather than spawning a fresh finalize session.
-  const hasActiveCliSession = Boolean(task.cliSession && isActiveSession(task.cliSession));
+  // FLUX-719/1456: a live CLI session on the ticket. When present, the agent `finish` is routed as
+  // input into the running conversation rather than spawning a fresh finalize session. Uses
+  // `isLiveInputTarget` (not the broader `isActiveSession`) so a stale/parked `waiting-input`
+  // session — proc already exited, no recent output — doesn't swallow the finish command silently.
+  const hasActiveCliSession = Boolean(task.cliSession && isLiveInputTarget(task.cliSession));
 
   // ── Engine: finish a branch ticket by merging its open PR (zero tokens) ──
   // A branch ticket can sit at Ready before any PR was raised; `mergePr` assumes an open PR
@@ -251,51 +279,34 @@ export function useTicketActions(task: Task): UseTicketActions {
   };;
 
   // ── Engine: branchless finish (FLUX-618) — zero tokens. Gather the main tree's uncommitted files,
-  // show them + prompt for a curated commit message (the same reactive window.prompt Ready/Require
+  // show them + prompt for a curated commit message (the same reactive prompt Ready/Require
   // Input use), then commit + finish server-side. The user sees EXACTLY what goes in — no silent
   // `git add -A`. A clean tree (nothing to commit) falls back to the agent finish, which can sort out
   // an already-committed or empty case. ──
   const finishViaEngine = async () => {
-    let files: string[];
-    try {
-      const overview = await fetchDiffOverview(true);
-      const mainGroup = overview.groups.find((g) => g.kind === 'main');
-      files = (mainGroup?.files ?? []).map((f) => f.file);
-    } catch {
-      // Diff overview unavailable — fall back to the agent finish rather than guess.
-      await dispatchFinish();
-      return;
-    }
-    if (files.length === 0) {
-      // Nothing uncommitted to curate — let the agent finish handle it (already-committed work, etc.).
-      await dispatchFinish();
-      return;
-    }
-    const fileList = files.map((f) => `  • ${f}`).join('\n');
-    const entered = window.prompt(
-      `Finish ${task.id} — these ${files.length} file(s) will be committed:\n\n${fileList}\n\n` +
-        `Commit message (describe the shipped behavior):`,
-      `${task.id}: ${task.title}`,
-    );
-    if (entered === null) return; // cancelled
-    const message = entered.trim();
-    if (!message) { alert('A commit message is required to finish.'); return; }
-    try {
-      await finishBranchless(task.id, { files, message });
-      triggerRefresh();
-    } catch (err) {
-      alert(`Failed to finish ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    await runFinishBranchless({
+      task,
+      prompt: runPrompt,
+      notifyError,
+      onDone: triggerRefresh,
+      dispatchFinish,
+      fetchDiffOverview,
+      finishBranchless,
+    });
   };
 
   // ── Agent: no-open-PR finish (and the branchless clean-tree fallback) needs a curated commit → run
   // the `finish` command. FLUX-719: when a CLI session is live, continue it by sending `finish` as
-  // input rather than spawning a new session, mirroring the pre-FLUX-715 card behavior. ──
+  // input rather than spawning a new session, mirroring the pre-FLUX-715 card behavior. FLUX-1456:
+  // a stale/parked session no longer counts as live (see `hasActiveCliSession` above) — it falls
+  // through to the finalize spawn instead of swallowing the command. That spawn passes
+  // `supersedeParked` so it reclaims the idle parked session rather than 409-ing on it (FLUX-1235).
   const dispatchFinish = async () => {
     if (hasActiveCliSession) {
       await sendTaskCliInput(task.id, `finish ${task.id}`, currentUser);
+      openTask(task); // FLUX-1456: surface where the routed command went.
     } else {
-      await runAgentAction({ taskId: task.id, framework, action: { kind: 'command', verb: 'finish' }, currentUser, phase: 'finalize' });
+      await runAgentAction({ taskId: task.id, framework, action: { kind: 'command', verb: 'finish' }, currentUser, phase: 'finalize', supersedeParked: true });
     }
     triggerRefresh();
   };
@@ -313,7 +324,7 @@ export function useTicketActions(task: Task): UseTicketActions {
     try {
       await runAgentAction({ taskId: task.id, framework, action: { kind: 'launch' }, currentUser, phase: 'fast-path' });
     } catch (err) {
-      alert(`Failed to start fast-path on ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
+      notifyError(`Failed to start fast-path on ${task.id}`, err instanceof Error ? err.message : String(err));
       return;
     }
     await triggerRefresh();
@@ -493,6 +504,11 @@ export function useTicketActions(task: Task): UseTicketActions {
     setBusyKey(key);
     try {
       await fn();
+    } catch (err) {
+      // FLUX-1359: the backstop — no registry action can fail invisibly again. Individual actions
+      // may already notify more specifically (e.g. runChangeStatus's genuine-failure branch); this
+      // catches everything else, including a failed comment-prompt retry.
+      notifyError('Action failed', err instanceof Error ? err.message : String(err));
     } finally {
       setBusyKey(null);
     }
@@ -523,6 +539,10 @@ export function useTicketActions(task: Task): UseTicketActions {
     finishMergeBusy,
     confirmFinishMerge,
     cancelFinishMerge,
+    promptState,
+    promptBusy: false,
+    submitPrompt,
+    cancelPrompt,
     singleDefaultId,
   };
 }

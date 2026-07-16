@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Cloud, CloudOff, RefreshCw, AlertCircle, AlertTriangle, WifiOff, Lock, Copy, Check, X } from 'lucide-react';
+import { Cloud, CloudOff, RefreshCw, AlertCircle, AlertTriangle, WifiOff, Lock, Copy, Check, X, ArrowUpCircle } from 'lucide-react';
 import { ConflictResolutionModal } from './ConflictResolutionModal';
 import * as api from '../api';
 import type { ConflictInfo, ResolutionStrategy, SyncRemediation } from '../api';
@@ -14,7 +14,10 @@ export type SyncStatus =
   | { state: 'diverged'; ahead: number; behind: number }
   // FLUX-895: `remediation` (auth case) carries the exact fix commands so this
   // indicator can render an actionable "sign-in needed" panel.
-  | { state: 'error'; error: string; errorType: 'network' | 'auth' | 'conflict' | 'unknown'; remediation?: SyncRemediation };
+  | { state: 'error'; error: string; errorType: 'network' | 'auth' | 'conflict' | 'unknown'; remediation?: SyncRemediation }
+  // FLUX-1426: this store's `sync-protocol` marker is ahead of what this engine build
+  // supports — sync is read-only until the engine is upgraded.
+  | { state: 'protocol-mismatch'; required: number; supported: number };
 
 // Fallback fix steps if the engine didn't attach a remediation payload (older engine).
 const FALLBACK_AUTH_REMEDIATION: SyncRemediation = {
@@ -40,6 +43,8 @@ export function SyncStatusIndicator() {
   const [isOffline, setIsOffline] = useState(false);
   const [showConflictModal, setShowConflictModal] = useState(false);
   const [showErrorToast, setShowErrorToast] = useState(false);
+  // FLUX-1426: the protocol-mismatch details panel (read-only fence — no fix from the portal).
+  const [showProtocolMismatchPanel, setShowProtocolMismatchPanel] = useState(false);
   // FLUX-1232: the diverged-state panel and its confirm-gated reset-to-remote action.
   const [showDivergedPanel, setShowDivergedPanel] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
@@ -221,6 +226,8 @@ export function SyncStatusIndicator() {
           default:
             return <AlertCircle className="h-3.5 w-3.5" />;
         }
+      case 'protocol-mismatch':
+        return <ArrowUpCircle className="h-3.5 w-3.5" />;
       default:
         return <Cloud className="h-3.5 w-3.5" />;
     }
@@ -264,6 +271,8 @@ export function SyncStatusIndicator() {
           default:
             return 'Sync Error';
         }
+      case 'protocol-mismatch':
+        return 'Upgrade needed';
       default:
         return 'Idle';
     }
@@ -286,6 +295,8 @@ export function SyncStatusIndicator() {
         return status.errorType === 'auth'
           ? 'GitHub sign-in needed — sync is paused. Click for the fix.'
           : `Sync failed: ${status.error}`;
+      case 'protocol-mismatch':
+        return `This store requires a newer engine (sync protocol ${status.required}, this engine supports ${status.supported}). Sync is read-only until the engine is upgraded. Click for details.`;
       default:
         return 'Sync status unknown';
     }
@@ -311,6 +322,8 @@ export function SyncStatusIndicator() {
         return 'border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-500/30 dark:bg-orange-500/10 dark:text-orange-300';
       case 'error':
         return 'border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300';
+      case 'protocol-mismatch':
+        return 'border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300';
       default:
         return 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400';
     }
@@ -333,6 +346,8 @@ export function SyncStatusIndicator() {
         return status.errorType === 'auth'
           ? 'Sync status: GitHub sign-in needed — sync is paused. Click for the fix steps.'
           : `Sync status: ${status.errorType} error - ${status.error}. Click for details.`;
+      case 'protocol-mismatch':
+        return `Sync status: this store requires sync protocol ${status.required}, this engine supports ${status.supported}. Sync is read-only until the engine is upgraded. Click for details.`;
       default:
         return 'Sync status: Idle';
     }
@@ -347,6 +362,8 @@ export function SyncStatusIndicator() {
       setShowDivergedPanel(true);
     } else if (status.state === 'error') {
       setShowErrorToast(true);
+    } else if (status.state === 'protocol-mismatch') {
+      setShowProtocolMismatchPanel(true);
     } else if (status.state !== 'syncing') {
       void api.triggerSync();
     }
@@ -603,6 +620,58 @@ export function SyncStatusIndicator() {
 
       {status.state === 'error' && status.errorType === 'auth' && showErrorToast && createPortal(
         renderAuthPanel(),
+        document.body
+      )}
+
+      {status.state === 'protocol-mismatch' && showProtocolMismatchPanel && createPortal(
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 overflow-auto"
+          onClick={() => setShowProtocolMismatchPanel(false)}
+        >
+          <div
+            className="bg-white dark:bg-gray-800 border border-red-300 dark:border-red-500/40 rounded-lg shadow-xl p-6 space-y-4 w-full"
+            style={{ maxWidth: '32rem', margin: 'auto' }}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Engine upgrade needed"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3 flex-1 min-w-0">
+                <ArrowUpCircle className="h-6 w-6 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">Engine upgrade needed</h3>
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5">
+                    This board requires sync protocol {status.required}; this engine only supports {status.supported}.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowProtocolMismatchPanel(false)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 shrink-0 transition-colors"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <p className="text-sm text-gray-700 dark:text-gray-300">
+              Sync is paused read-only — this engine will not commit, merge, or push into the board's
+              shared store until it is upgraded to a version that supports protocol {status.required}.
+              The board stays usable locally in the meantime. This clears automatically once the engine
+              is upgraded.
+            </p>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                onClick={() => setShowProtocolMismatchPanel(false)}
+                className="ml-auto flex items-center gap-2 rounded-md bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>,
         document.body
       )}
 

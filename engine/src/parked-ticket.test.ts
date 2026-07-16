@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { isParked, type ParkedSnapshot } from './parked-ticket.js';
+import { isDelegatedMember, isParked, leadUnarmedWaitMessage, narratesUnarmedWaitPromise, type ParkedSnapshot } from './parked-ticket.js';
+import type { CliSessionRecord } from './agents/types.js';
 
 // FLUX-651 — the "agent sat on its hands" decision. Pure logic; the I/O wrapper (flagIfParked)
 // is exercised end-to-end by the session lifecycle.
@@ -116,5 +117,114 @@ describe('isParked', () => {
 
   it('handles a missing turn-start snapshot conservatively (no false "changed")', () => {
     expect(isParked({ ...base, statusAtTurnStart: undefined })).toBe(true);
+  });
+});
+
+// FLUX-1436 (FLUX-651 coverage hole) — the blanket `groupId` exemption also exempted group LEADS (supervisor
+// orchestrator / scatter-gather combiner), so an orchestrator that parked went entirely unflagged:
+// it owns the transition, and nobody else was left to drive the ticket. Real incident: a supervisor
+// dev-lead fanned out 11 workers, ended its turn "Continuing to wait for the stabilization signal"
+// with nothing armed, and the ticket sat In Progress silently.
+describe('isDelegatedMember', () => {
+  const session = (o: Partial<CliSessionRecord>): CliSessionRecord => o as CliSessionRecord;
+
+  it('exempts scatter-gather workers (step position), with or without a groupId', () => {
+    expect(isDelegatedMember(session({ groupId: 'g1', patternPosition: 'step' }))).toBe(true);
+    expect(isDelegatedMember(session({ patternPosition: 'step' }))).toBe(true);
+  });
+
+  it('exempts non-lead group members (supervisor delegates / position-less members)', () => {
+    expect(isDelegatedMember(session({ groupId: 'g1', patternPosition: 'assistant' }))).toBe(true);
+    expect(isDelegatedMember(session({ groupId: 'g1' }))).toBe(true);
+  });
+
+  it('does NOT exempt a group LEAD — the lead IS the orchestrator that owns the transition', () => {
+    expect(isDelegatedMember(session({ groupId: 'g1', patternPosition: 'lead' }))).toBe(false);
+  });
+
+  it('does NOT exempt a standalone session', () => {
+    expect(isDelegatedMember(session({}))).toBe(false);
+    expect(isDelegatedMember(session({ patternPosition: 'standalone' }))).toBe(false);
+  });
+});
+
+// FLUX-1432 — the "chat session promised an unarmed wait" backstop. Pure logic; the I/O wrapper
+// (flagIfUnarmedWaitPromise) is exercised end-to-end by the session lifecycle, same split as
+// isParked/flagIfParked above.
+describe('narratesUnarmedWaitPromise', () => {
+  it('flags the real FLUX-1428 incident phrasing', () => {
+    expect(narratesUnarmedWaitPromise(
+      "I'll pause here and wait for the background copy to finish before running the tests.",
+    )).toBe(true);
+  });
+
+  it('flags common promise-to-resume phrasings', () => {
+    expect(narratesUnarmedWaitPromise("I'll wait for the build to finish, then run the tests.")).toBe(true);
+    expect(narratesUnarmedWaitPromise('I will wait for CI before merging.')).toBe(true);
+    expect(narratesUnarmedWaitPromise('Let me wait for the deployment to complete.')).toBe(true);
+    expect(narratesUnarmedWaitPromise("I'm going to hold off until the migration lands.")).toBe(true);
+    expect(narratesUnarmedWaitPromise("I'll check back once the job finishes.")).toBe(true);
+  });
+
+  it('is case-insensitive', () => {
+    expect(narratesUnarmedWaitPromise("I'LL WAIT for the build to finish.")).toBe(true);
+  });
+
+  it('does NOT flag ordinary progress narration with no wait promise', () => {
+    expect(narratesUnarmedWaitPromise("I'll now run the tests.")).toBe(false);
+    expect(narratesUnarmedWaitPromise('Moved the ticket to Ready — implementation complete.')).toBe(false);
+    expect(narratesUnarmedWaitPromise('Tests are passing; no further action needed.')).toBe(false);
+  });
+
+  it('handles missing/empty text without throwing', () => {
+    expect(narratesUnarmedWaitPromise(undefined)).toBe(false);
+    expect(narratesUnarmedWaitPromise(null)).toBe(false);
+    expect(narratesUnarmedWaitPromise('')).toBe(false);
+  });
+
+  it('flags the supervisor-lead incident phrasing ("continuing to wait")', () => {
+    expect(narratesUnarmedWaitPromise('Continuing to wait for the stabilization signal from the workers.')).toBe(true);
+    expect(narratesUnarmedWaitPromise('I will continue to wait for the fan-out to settle.')).toBe(true);
+  });
+
+  it('does NOT flag ordinary "waiting for" narration without the full idiom', () => {
+    expect(narratesUnarmedWaitPromise('Waiting for your reply before proceeding.')).toBe(false);
+    expect(narratesUnarmedWaitPromise('The build is still waiting for a runner.')).toBe(false);
+  });
+});
+
+// FLUX-1436 (FLUX-1432 lead extension) — a non-chat group LEAD ending its turn terminally (no wakeup armed by
+// definition: tryEnterScheduledWake claims scheduled turns first) while narrating a wait promise,
+// with no deferred combiner registered for its group, has promised a resume nothing will honor.
+// Pure decision; the claude adapter's leadWaitOverride supplies the session/session-store facts.
+describe('leadUnarmedWaitMessage', () => {
+  const base = {
+    patternPosition: 'lead',
+    groupId: 'g1',
+    hasPendingCombiner: false,
+    lastText: "I'll wait for the workers to report back, then synthesize.",
+  };
+
+  it('returns the specific message for a lead that promised an unarmed wait', () => {
+    expect(leadUnarmedWaitMessage(base)).toContain('nothing is armed to resume it');
+  });
+
+  it('fires on the real incident phrasing', () => {
+    expect(leadUnarmedWaitMessage({ ...base, lastText: 'Continuing to wait for the stabilization signal.' })).toBeDefined();
+  });
+
+  it('returns undefined when a pending combiner is registered — the gather step will resume the group', () => {
+    expect(leadUnarmedWaitMessage({ ...base, hasPendingCombiner: true })).toBeUndefined();
+  });
+
+  it('returns undefined for non-lead or group-less sessions', () => {
+    expect(leadUnarmedWaitMessage({ ...base, patternPosition: 'step' })).toBeUndefined();
+    expect(leadUnarmedWaitMessage({ ...base, patternPosition: undefined })).toBeUndefined();
+    expect(leadUnarmedWaitMessage({ ...base, groupId: undefined })).toBeUndefined();
+  });
+
+  it('returns undefined when the final text makes no wait promise', () => {
+    expect(leadUnarmedWaitMessage({ ...base, lastText: 'All workers done; moving the ticket to Ready.' })).toBeUndefined();
+    expect(leadUnarmedWaitMessage({ ...base, lastText: undefined })).toBeUndefined();
   });
 });

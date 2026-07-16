@@ -14,7 +14,7 @@
  * engine skips its own browser-open + systray — see engine/src/index.ts) and kill it on quit.
  */
 
-const { app, BrowserWindow, Tray, Menu, shell, nativeImage, ipcMain, Notification } = require('electron');
+const { app, BrowserWindow, Tray, Menu, shell, nativeImage, ipcMain, Notification, dialog } = require('electron');
 const { spawn } = require('node:child_process');
 const http = require('node:http');
 const path = require('node:path');
@@ -34,6 +34,11 @@ let win = null;
 let tray = null;
 /** @type {import('node:child_process').ChildProcess | null} */
 let engineProc = null; // only set when WE spawned the engine (so we only kill what we own)
+
+// FLUX-1458: `beforeunload` can't show a dialog in Electron — it just silently cancels the close.
+// The renderer instead reports dirty state here, and main owns the confirm + the actual guard.
+let hasUnsavedChanges = false;
+let allowClose = false;
 
 // ── Defender false-positive mitigation ─────────────────────────────────────────
 // Windows Defender's JS heuristic (VirTool:JS/Anomelesz.A) false-positives on the minified portal
@@ -166,7 +171,17 @@ function createWindow() {
     if (!isAppUrl(url)) { e.preventDefault(); shell.openExternal(url).catch(() => {}); }
   });
 
-  win.on('close', () => { if (win) saveBounds(win.getBounds()); });
+  win.on('close', (e) => {
+    if (win && !allowClose && hasUnsavedChanges) {
+      const choice = promptUnsaved();
+      if (choice === 0) {
+        e.preventDefault();
+        return;
+      }
+      allowClose = true;
+    }
+    if (win) saveBounds(win.getBounds());
+  });
   win.on('closed', () => { win = null; });
 }
 
@@ -188,6 +203,23 @@ function registerNativeBridge() {
   });
   ipcMain.on('eh:notify', (_e, payload) => {
     if (payload && typeof payload === 'object') showNotification(payload);
+  });
+  ipcMain.on('eh:set-unsaved-guard', (_e, dirty) => { hasUnsavedChanges = !!dirty; });
+}
+
+/**
+ * Native confirm shown in place of the browser's `beforeunload` dialog, which Electron never
+ * renders (it just silently cancels the close). Returns the clicked button index — 0 = Cancel.
+ */
+function promptUnsaved() {
+  return dialog.showMessageBoxSync(win, {
+    type: 'warning',
+    buttons: ['Cancel', 'Discard & Close'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Unsaved changes',
+    message: 'You have unsaved doc changes.',
+    detail: 'Closing now will discard them.',
   });
 }
 
@@ -346,6 +378,14 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', async (e) => {
+  if (win && !allowClose && hasUnsavedChanges) {
+    e.preventDefault();
+    const choice = promptUnsaved();
+    if (choice === 0) return; // Cancel — stay open
+    allowClose = true;
+    app.quit(); // re-fires before-quit, now past the guard
+    return;
+  }
   if (engineProc) {
     e.preventDefault();
     await shutdownEngine();

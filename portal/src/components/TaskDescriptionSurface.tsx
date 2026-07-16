@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type MouseEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
@@ -15,6 +16,7 @@ import { buildUnsupportedImageMessage, uploadTaskImageMarkdownLinks } from '../t
 import { normalizeTaskMarkdownBody, resolveTaskMarkdownHref } from '../taskMarkdownUtils';
 import { parseAcceptanceCriteriaProgress } from '../lib/acceptanceCriteria';
 import { EpicProgressBar } from './EpicProgressBar';
+import { PromptModal, type PromptModalState } from './task-modal/PromptModal';
 
 type TaskDescriptionSurfaceMode = 'popup' | 'full' | 'backlog';
 
@@ -128,10 +130,40 @@ export function TaskDescriptionSurface({
   const editorSnapshotRef = useRef('');
   const hasPendingUserEditRef = useRef(false);
   const pendingFocusPositionRef = useRef<number | null>(null);
+  const [promptState, setPromptState] = useState<PromptModalState | null>(null);
+  const promptResolverRef = useRef<((value: string | null) => void) | null>(null);
 
   if (!turndownServiceRef.current) {
     turndownServiceRef.current = createTurndownService();
   }
+
+  // FLUX-1457: window.prompt throws in the Electron desktop shell; this promise-based seam feeds
+  // the styled PromptModal instead. Resolves `null` on cancel/Escape/unmount, same as window.prompt.
+  const runPrompt = (req: { title: string; message?: string; defaultValue?: string; submitLabel?: string; multiline?: boolean }): Promise<string | null> => {
+    return new Promise((resolve) => {
+      promptResolverRef.current = resolve;
+      setPromptState({ mode: 'input', ...req });
+    });
+  };
+
+  const submitPrompt = (value: string) => {
+    promptResolverRef.current?.(value);
+    promptResolverRef.current = null;
+    setPromptState(null);
+  };
+
+  const cancelPrompt = () => {
+    promptResolverRef.current?.(null);
+    promptResolverRef.current = null;
+    setPromptState(null);
+  };
+
+  useEffect(() => {
+    return () => {
+      promptResolverRef.current?.(null);
+      promptResolverRef.current = null;
+    };
+  }, []);
 
   const syncEditorSelectionState = (activeEditor: NonNullable<typeof editor>) => {
     const { from, to } = activeEditor.state.selection;
@@ -492,13 +524,18 @@ export function TaskDescriptionSurface({
     void attachImageFiles(files);
   };
 
-  const handleSetLink = () => {
+  const handleSetLink = async () => {
     if (!editor) {
       return;
     }
 
     const existingLink = editor.getAttributes('link').href as string | undefined;
-    const nextLink = window.prompt('Enter the link URL. Leave blank to remove the current link.', existingLink || '');
+    const nextLink = await runPrompt({
+      title: 'Link URL',
+      message: 'Enter the link URL. Leave blank to remove the current link.',
+      defaultValue: existingLink || '',
+      submitLabel: 'Set link',
+    });
     if (nextLink === null) {
       return;
     }
@@ -650,6 +687,7 @@ export function TaskDescriptionSurface({
           )}
         </div>
       )}
+      {promptState && createPortal(<PromptModal state={promptState} busy={false} onSubmit={submitPrompt} onCancel={cancelPrompt} />, document.body)}
     </div>
   );
 }

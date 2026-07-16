@@ -21,6 +21,8 @@ import {
 } from '../../lib/planAnnotations';
 import type { HistoryEntry } from '../../types';
 import type { TicketSideViewController } from '../../hooks/useTicketSideView';
+import { useConfirm } from '../../hooks/useConfirm';
+import { useNotify } from '../../hooks/useNotify';
 
 /** Mirrors ChatMetadataBar's local effort ladder (FLUX-740) — kept as a small duplicated constant
  *  rather than exporting ChatDock's private one, so this panel has no dependency on that file. */
@@ -119,6 +121,8 @@ export function PlanApprovalPanel({
   onSendToChat: (text: string) => void;
 }) {
   const task = c.task;
+  const confirm = useConfirm();
+  const notify = useNotify();
   const mode: 'review' | 'later' = isPlanApprovalPending(task, c.config) ? 'review' : 'later';
   // FLUX-1296: the `you` gate never auto-starts a review (see `gate-runner.ts`'s trigger-semantics
   // doc) — a Grooming ticket resolved to `you` with no verdict yet has NO other way to reach
@@ -189,6 +193,10 @@ export function PlanApprovalPanel({
   // Deliberately NOT persisted into the plan-review draft (they live in the iframe/session, not the
   // durable plan text), so the draft contract is unchanged.
   const [artifactItems, setArtifactItems] = useState<ArtifactAnnotation[]>([]);
+  // FLUX-1440: whether the shown artifact revision exposes guided controls — reported by `ArtifactPanel`
+  // (it owns the iframe bridge) via `onHasGuidedControlsChange`, threaded to the pill below so its
+  // empty state can invite interaction instead of staying hidden.
+  const [hasGuidedControls, setHasGuidedControls] = useState(false);
 
   // The ONE derivation of "is there anything to send" — the exact string every send handler uses,
   // so the buttons' enabled-state can never disagree with what the handler would actually send.
@@ -322,7 +330,7 @@ export function PlanApprovalPanel({
     onClose(); // ticket is now correctly in Todo — everything below is best-effort dispatch only.
 
     if (updated.cliSession && isActiveSession(updated.cliSession)) {
-      alert(`${updated.id} approved, but a session is already running on it — no new session was started.`);
+      notify.info(`${updated.id} approved, but a session is already running on it — no new session was started.`);
       return;
     }
 
@@ -342,10 +350,10 @@ export function PlanApprovalPanel({
         focusComment,
       });
       if (!result) {
-        alert(`${updated.id} approved, but no default implementation persona is configured — start it manually.`);
+        notify.info(`${updated.id} approved, but no default implementation persona is configured — start it manually.`);
       }
     } catch (err) {
-      alert(`${updated.id} approved, but couldn't auto-start implementation: ${err instanceof Error ? err.message : String(err)}`);
+      notify.error(`${updated.id} approved, but couldn't auto-start implementation: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -430,7 +438,11 @@ export function PlanApprovalPanel({
     if (busy || revising) return;
     // FLUX-1306: Set aside silently discarded any composed-but-unsent notes/annotations, unlike
     // Approve/Send-for-re-grooming (both fold `combinedNotes` in) — confirm before throwing them away.
-    if (combinedNotes && !window.confirm('Discard your unsent notes and set the plan review aside?')) return;
+    if (combinedNotes && !(await confirm({
+      title: 'Discard your unsent notes and set the plan review aside?',
+      tone: 'danger',
+      confirmLabel: 'Discard',
+    }))) return;
     setBusy(true);
     setActionError(null);
     try {
@@ -596,6 +608,7 @@ export function PlanApprovalPanel({
               fillHeight
               artifactAnnotations={artifactItems}
               onArtifactAnnotationsChange={setArtifactItems}
+              onHasGuidedControlsChange={setHasGuidedControls}
               onSendToChat={onSendToChat}
             />
           </div>
@@ -871,6 +884,7 @@ export function PlanApprovalPanel({
         onRemovePlan={(index) => setAnnotations((prev) => prev.filter((_, i) => i !== index))}
         onEditArtifact={(id, note) => setArtifactItems((prev) => prev.map((a) => (a.id === id ? { ...a, note } : a)))}
         onRemoveArtifact={(id) => setArtifactItems((prev) => prev.filter((a) => a.id !== id))}
+        hasGuidedControls={hasGuidedControls}
       />
     </div>
   );

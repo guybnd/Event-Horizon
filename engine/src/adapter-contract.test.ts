@@ -66,11 +66,14 @@ vi.mock('./transcript.js', () => ({
 // keeps execSync/execFileSync/exec/execFile REAL via importOriginal (the per-adapter binary
 // resolution above and copilot.ts/gemini.ts's own binary-path probing still exercise real, harmless
 // `where`/`npm` lookups) and only replaces `spawn` with a recording fake.
+// FLUX-1444: the prompt is now delivered over stdin instead of argv — each proc's stdin.write mock
+// records what was sent, and `promptFromLastSpawnCall` (below) reads it back via `mockSpawn.mock.results`.
 const { mockSpawn } = vi.hoisted(() => {
   return {
     mockSpawn: vi.fn((_command: string, _args?: readonly string[], _options?: unknown) => {
       const proc = new EventEmitter() as unknown as ChildProcessWithoutNullStreams;
-      Object.assign(proc, { stdout: new EventEmitter(), stderr: new EventEmitter(), pid: 4242, kill: () => true });
+      const stdin = { write: vi.fn(), end: vi.fn(), on: vi.fn() };
+      Object.assign(proc, { stdout: new EventEmitter(), stderr: new EventEmitter(), stdin, pid: 4242, kill: () => true });
       return proc;
     }),
   };
@@ -509,15 +512,16 @@ async function loadAdapter(framework: 'copilot' | 'gemini'): Promise<{
   return framework === 'copilot' ? import('./agents/copilot.js') : import('./agents/gemini.js');
 }
 
-/** Pulls the `-p` value out of a mocked spawn() call's args array, regardless of which
- *  binary-resolution branch (node+entry / exe / cmd.exe shell fallback) fired. */
+/** Pulls the prompt written to the last mocked spawn() call's stdin, regardless of which
+ *  binary-resolution branch (node+entry / exe / cmd.exe shell fallback) fired. FLUX-1444: the
+ *  prompt is delivered over stdin, not the `-p` argv value (which is now a bare/empty flag). */
 function promptArgFromLastSpawnCall(): string {
-  const call = mockSpawn.mock.calls[mockSpawn.mock.calls.length - 1];
-  expect(call, 'spawn() was never called').toBeDefined();
-  const args = call![1] as string[];
-  const idx = args.indexOf('-p');
-  expect(idx, `-p not found in spawn args: ${JSON.stringify(args)}`).toBeGreaterThanOrEqual(0);
-  return args[idx + 1]!;
+  const result = mockSpawn.mock.results[mockSpawn.mock.results.length - 1];
+  expect(result, 'spawn() was never called').toBeDefined();
+  const proc = result!.value as ChildProcessWithoutNullStreams & { stdin: { write: ReturnType<typeof vi.fn> } };
+  const writeCalls = proc.stdin.write.mock.calls as unknown[][];
+  expect(writeCalls.length, 'nothing was written to stdin').toBeGreaterThan(0);
+  return writeCalls.map((c) => c[0]).join('');
 }
 
 /** Pulls the `--model` value out of a mocked spawn() call's args array, or undefined if the
@@ -701,4 +705,71 @@ describe('FLUX-931: session.model reaches the real spawn --model arg', () => {
     expect(spawnedModel).toBeTruthy();
     expect(session.model).toBe(spawnedModel);
   });
+});
+
+// ─── FLUX-1444: oversized prompt is delivered via stdin, not argv ───────────────────────────────
+// Windows' CreateProcess caps the command line at 32,767 chars — a scatter-gather reviewer inlines
+// the whole PR diff into the prompt (shared.ts's buildInitialPrompt, diffBlock), easily exceeding
+// that cap when passed as a single `-p <prompt>` argv element (the HomeUp PR #79 "spawn
+// ENAMETOOLONG" incident). The fix delivers the prompt over child stdin instead. This locks that,
+// for gemini/copilot too (claude's own initial+resume paths are covered directly in
+// claude-code-prompt-stdin.test.ts), no argv element carries the oversized prompt and the full
+// prompt bytes land on the spawned process's stdin.
+describe('FLUX-1444: oversized prompt is delivered via stdin, not argv', () => {
+  beforeAll(async () => {
+    const shared = await import('./agents/shared.js');
+    vi.spyOn(shared, 'checkBinaryInstalled').mockResolvedValue(undefined);
+  });
+  afterAll(() => {
+    vi.restoreAllMocks();
+  });
+
+  // A synthetic scatter-gather reviewer prompt, well past the 32,767-char Windows CreateProcess cap.
+  const OVERSIZED_PROMPT = 'DIFF_LINE_'.repeat(4000); // 40,000 chars
+
+  function assertNoArgvElementCarriesPrompt() {
+    const call = mockSpawn.mock.calls[mockSpawn.mock.calls.length - 1];
+    expect(call, 'spawn() was never called').toBeDefined();
+    const args = call![1] as string[];
+    for (const arg of args) {
+      expect(arg.length).toBeLessThan(1000);
+      expect(arg).not.toContain('DIFF_LINE_');
+    }
+  }
+
+  for (const framework of ['copilot', 'gemini'] as const) {
+    it(`${framework}: initial spawn — no argv element carries the oversized prompt, full prompt lands on stdin`, async () => {
+      const { startCliSession } = await loadAdapter(framework);
+      const taskId = `FLUX-TEST-${framework}-oversized-initial`;
+      const task = { id: taskId, status: 'Todo' };
+      const session = fakeChatSession(taskId, framework);
+
+      mockSpawn.mockClear();
+      await startCliSession(session, task, OVERSIZED_PROMPT, '', '/tmp/test-repo');
+      if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
+
+      assertNoArgvElementCarriesPrompt();
+      expect(promptArgFromLastSpawnCall()).toContain(OVERSIZED_PROMPT);
+    });
+
+    it(`${framework}: resume — no argv element carries the oversized prompt, full prompt lands on stdin`, async () => {
+      const { startCliSession, sendCliSessionInput } = await loadAdapter(framework);
+      const { getWorkspace } = await import('./workspace-context.js');
+      const taskId = `FLUX-TEST-${framework}-oversized-resume`;
+      const task = { id: taskId, status: 'Todo' };
+      getWorkspace().tasks[taskId] = task;
+      const session = fakeChatSession(taskId, framework);
+
+      mockSpawn.mockClear();
+      await startCliSession(session, task, '', '', '/tmp/test-repo');
+      if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
+
+      mockSpawn.mockClear();
+      await sendCliSessionInput(session, OVERSIZED_PROMPT, 'TestUser', '/tmp/test-repo');
+      if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
+
+      assertNoArgvElementCarriesPrompt();
+      expect(promptArgFromLastSpawnCall()).toContain(OVERSIZED_PROMPT);
+    });
+  }
 });

@@ -55,6 +55,9 @@ export interface RunAgentActionOptions {
   pattern?: 'relay' | 'scatter-gather' | 'supervisor';
   /** Position within the pattern. */
   patternPosition?: 'lead' | 'assistant' | 'combiner' | 'step' | 'standalone';
+  /** FLUX-1235/1456: reclaim an idle parked `waiting-input` session instead of 409-ing on the start
+   *  route (`cli-session.ts`). Never supersedes a live `running`/`pending` session. */
+  supersedeParked?: boolean;
 }
 
 /**
@@ -75,6 +78,7 @@ export async function runAgentAction(opts: RunAgentActionOptions): Promise<CliSe
     role,
     pattern,
     patternPosition,
+    supersedeParked,
   } = opts;
 
   if (preStatus) {
@@ -98,6 +102,7 @@ export async function runAgentAction(opts: RunAgentActionOptions): Promise<CliSe
     framework,
     appendPrompt,
     personaId,
+    supersedeParked,
     focusComment,
     skipPermissions,
     effortOverride,

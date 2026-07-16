@@ -6,6 +6,8 @@ import { GroupWizard } from '../GroupWizard';
 import { DocsPromotionPanel } from '../DocsPromotionPanel';
 import { groupRegistrationGaps, parentDirOf, multiRepoNudge, groupWorkspaces } from '../../utils';
 import { pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage, fetchWorkspaces, addWorkspace, removeWorkspace, updateWorkspaceLabel as apiUpdateLabel, switchWorkspace as apiSwitchWorkspace, fetchGroupStatus, ensureGroupRegistered, discoverGroupFolder, updateGroupDocsLabel, type WorkspaceInfo, type GroupStatus } from '../../api';
+import { useConfirm } from '../../hooks/useConfirm';
+import { useNotify } from '../../hooks/useNotify';
 
 interface WorkspaceSectionProps {
   users: UserDef[];
@@ -44,6 +46,8 @@ export function WorkspaceSection({
   syncMaxWaitMs,
   setSyncMaxWaitMs,
 }: WorkspaceSectionProps) {
+  const confirm = useConfirm();
+  const notify = useNotify();
   const [storageMode, setStorageMode] = useState<'in-repo' | 'orphan' | null>(null);
   const [storageBusy, setStorageBusy] = useState(false);
   const [storageError, setStorageError] = useState<string | null>(null);
@@ -160,7 +164,7 @@ export function WorkspaceSection({
       setConfiguredWorkspaces(list);
       setAddWorkspacePath('');
       const added = list.find(w => w.path.toLowerCase() === wsPath.toLowerCase() || w.path === wsPath);
-      if (added && !added.active && window.confirm(`"${added.displayName}" added. Switch to it now?`)) {
+      if (added && !added.active && await confirm({ title: `"${added.displayName}" added. Switch to it now?`, confirmLabel: 'Switch' })) {
         setSwitchingPath(added.path);
         try {
           await apiSwitchWorkspace(added.path);
@@ -180,12 +184,12 @@ export function WorkspaceSection({
   const [switchingPath, setSwitchingPath] = useState<string | null>(null);
 
   const handleSwitchWorkspace = async (ws: WorkspaceInfo, force?: boolean) => {
-    if (!force && !window.confirm(`Switch to "${ws.displayName}"?\n\nThis will reload the board with the new project's data.`)) return;
+    if (!force && !(await confirm({ title: `Switch to "${ws.displayName}"?`, body: "This will reload the board with the new project's data." }))) return;
     setSwitchingPath(ws.path);
     try {
       const result = await apiSwitchWorkspace(ws.path, force);
       if ('blocked' in result && result.blocked) {
-        const proceed = window.confirm(`${result.message}\n\nStop them and switch anyway?`);
+        const proceed = await confirm({ title: 'Stop live sessions and switch?', body: result.message, tone: 'danger', confirmLabel: 'Stop & switch' });
         if (proceed) {
           await handleSwitchWorkspace(ws, true);
         }
@@ -194,7 +198,7 @@ export function WorkspaceSection({
       notifyWorkspaceSet();
       loadWorkspaces();
     } catch (err) {
-      alert(`Failed to switch: ${err instanceof Error ? err.message : String(err)}`);
+      notify.error(`Failed to switch: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setSwitchingPath(null);
     }

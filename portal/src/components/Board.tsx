@@ -22,6 +22,7 @@ import { getArchiveStatus, getRequireInputStatus, normalizeStatus } from '../wor
 import { collectPrMemberIds, collectEpicFoldedIds, collectCrossColumnClusters } from '../lib/decks';
 import { ParseErrorButton } from './ParseErrorButton';
 import { BootstrapPreview } from './BootstrapPreview';
+import { useNotify } from '../hooks/useNotify';
 
 // Stable empty array so columns with no tasks get a referentially-stable prop (memo-friendly).
 const EMPTY_TASKS: Task[] = [];
@@ -65,6 +66,7 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
   // popping in, reading as a "reload". `liveTasks` is already resolved above by the time this
   // lazy initializer runs, so remounting now paints with real data immediately.
   const [tasks, setTasks] = useState<Task[]>(() => liveTasks);
+  const notify = useNotify();
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [releaseModalTasks, setReleaseModalTasks] = useState<Task[] | null>(null);
   const [showBootstrap, setShowBootstrap] = useState(false);
@@ -569,7 +571,7 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
         delete next[taskId];
         return next;
       });
-      alert('Failed to update task: ' + errMessage);
+      notify.error('Failed to update task: ' + errMessage);
     }
     setPendingStatusChange(null);
     setCommentText('');

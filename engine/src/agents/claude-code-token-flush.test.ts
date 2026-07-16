@@ -45,6 +45,7 @@ vi.mock('../session-store.js', () => ({
   notifyGroupSessionTerminal: vi.fn(),
   notifyDelegationComplete: vi.fn(),
   checkAutoRestart: vi.fn(),
+  getPendingCombiner: vi.fn(() => undefined),
 }));
 vi.mock('../history.js', () => ({
   buildActivityEntry: vi.fn((comment: string) => ({ type: 'activity', comment })),
@@ -53,6 +54,7 @@ vi.mock('../history.js', () => ({
   buildAgentSessionEntry: vi.fn(() => ({ sessionId: 'test-session-entry', progress: [] })),
   appendSessionProgress: vi.fn(),
   closeAgentSession: vi.fn(),
+  lastAssistantText: vi.fn(() => ''),
 }));
 vi.mock('../notifications.js', () => ({
   checkFrameworkHealth: vi.fn().mockResolvedValue(undefined),
@@ -66,7 +68,13 @@ vi.mock('../parked-ticket.js', () => ({
   captureTurnStartState: vi.fn(),
   clearNeedsActionIfSet: vi.fn().mockResolvedValue(undefined),
   flagIfParked: vi.fn().mockResolvedValue(undefined),
+  flagIfUnarmedWaitPromise: vi.fn().mockResolvedValue(undefined),
+  leadUnarmedWaitMessage: vi.fn(() => undefined),
   raiseNeedsAction: vi.fn().mockResolvedValue(undefined),
+  // FLUX-1437: the stale-wait catch-and-resume's own guards — false/undefined here means it never
+  // fires in these tests, so flagIfParked's existing mocked behavior is exercised unchanged.
+  wouldPark: vi.fn(() => false),
+  narratesUnarmedWaitPromise: vi.fn(() => false),
 }));
 vi.mock('./shared.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./shared.js')>();
@@ -188,11 +196,13 @@ describe('buildTokenMetadataUpdate (FLUX-1378)', () => {
 
 /** A bare EventEmitter stands in for the spawned CLI's ChildProcess — same rationale as
  *  claude-code-needs-action.test.ts's fakeProc: the code under test only ever calls
- *  `.stdout!.on('data', …)`, `.stderr!.on('data', …)`, `.on('error', …)`, and `.on('exit', …)`. */
+ *  `.stdout!.on('data', …)`, `.stderr!.on('data', …)`, `.on('error', …)`, `.on('exit', …)`, and
+ *  (FLUX-1444) `.stdin!.on('error', …)`/`.write()`/`.end()` to deliver the prompt. */
 function fakeChildProcess() {
-  const proc = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; pid: number };
+  const proc = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; stdin: { on: ReturnType<typeof vi.fn>; write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> }; pid: number };
   proc.stdout = new EventEmitter();
   proc.stderr = new EventEmitter();
+  proc.stdin = { on: vi.fn(), write: vi.fn(), end: vi.fn() };
   proc.pid = 4242;
   return proc;
 }

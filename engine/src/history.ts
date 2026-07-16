@@ -36,6 +36,15 @@ export interface AgentSessionProgress {
   data?: unknown;
 }
 
+/** Most recent non-empty `type:'text'` progress entry's message — "what did the agent actually
+ *  say" right before a turn ended. Shared by the terminal-finalization final-comment path and the
+ *  FLUX-1432 wait-promise backstop, both of which need the same answer from a session's progress
+ *  log. */
+export function lastAssistantText(progress: AgentSessionProgress[] | undefined): string {
+  const entries = (progress || []).filter((p) => p.type === 'text' && p.message?.trim());
+  return entries.length > 0 ? entries[entries.length - 1]?.message ?? '' : '';
+}
+
 export interface AgentSessionEntry {
   type: 'agent_session';
   sessionId: string;
@@ -710,8 +719,9 @@ function stableStringify(value: unknown): string {
 /** FLUX-1308: identity for a history entry — its persisted `id` where present (comment/activity
  *  entries always have one, FLUX-811), else a content signature. Entry types with no `id`
  *  (status_change, swimlane_change, agent_session, ...) fall back to the signature; content
- *  equality is the only identity available for them. */
-function historyEntryIdentity(entry: HistoryEntryLike): string {
+ *  equality is the only identity available for them. Exported for FLUX-1427's PR-mirror-card
+ *  conflict resolution, which unions history the same identity-based way. */
+export function historyEntryIdentity(entry: HistoryEntryLike): string {
   if (typeof entry.id === 'string' && entry.id.trim()) return `id:${entry.id.trim()}`;
   return `sig:${stableStringify(entry)}`;
 }

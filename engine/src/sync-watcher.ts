@@ -16,8 +16,9 @@ import {
   type SyncRemediation,
 } from './git-sync-env.js';
 import { generateSyncAuthNotification, clearSyncAuthNotification, generateSyncConflictNotification, clearSyncConflictNotification } from './notifications.js';
-import { getHistoryTimestamp } from './history.js';
+import { getHistoryTimestamp, historyEntryIdentity, type HistoryEntryLike } from './history.js';
 import { runGit } from './git-exec.js';
+import { readJournalEntries, dropFlushedJournalEntries, replayJournalEntry, reloadCacheAfterReset } from './sync-journal.js';
 
 const execFileAsyncRaw = promisify(execFile);
 // All sync git calls go through here so they share the non-interactive +
@@ -52,8 +53,32 @@ async function execFileAsync(file: string, args: string[]) {
 // slow cadence. A successful sync (or a manual retry) clears it (FLUX-895).
 const AUTH_RETRY_DELAY_MS = 5 * 60_000;
 
+// FLUX-1428: push-as-CAS bounded retries — a rejected push means the remote moved; reset+replay
+// and try again. Bounded so a sustained multi-engine push storm surfaces as a sync-status error
+// (the caller's retry timer picks it back up next tick) instead of spinning forever within one tick.
+const CAS_MAX_ATTEMPTS = 5;
+
+// A push rejection from a non-fast-forward remote — the CAS signal to reset+replay, distinct from
+// classifyGitError's network/auth/unknown buckets (git's own wording, not ours to reclassify there).
+function isNonFastForwardRejection(message: string): boolean {
+  const msg = message.toLowerCase();
+  return msg.includes('[rejected]') || msg.includes('non-fast-forward') || msg.includes('fetch first')
+    || msg.includes('behind its remote counterpart') || msg.includes('updates were rejected');
+}
+
 let watcher: ReturnType<typeof chokidar.watch> | null = null;
 let scheduler: ReturnType<typeof createScheduler> | null = null;
+
+// FLUX-1426/1428: the sync protocol version this engine build implements. Bumped only when a
+// sync-protocol change ships — never auto-incremented at runtime (this literal is the deliberate
+// bump). Compared against the `sync-protocol` marker file committed at the flux-data store root
+// (seeded/forward-bumped in storage-sync.ts) to fence out an engine that predates a protocol
+// change the store now requires. 1 = merge-based sync (FLUX-1426 gate only). 2 = push-as-CAS +
+// idempotent journal replay (FLUX-1428) — a v1 engine no longer understands how the store
+// resolves a lost race, so it must not touch it once any engine has bumped the marker to 2.
+export const SUPPORTED_SYNC_PROTOCOL = 2;
+
+export const SYNC_PROTOCOL_MARKER_FILE = 'sync-protocol';
 
 export interface ConflictInfo {
   ticketId: string;
@@ -75,7 +100,11 @@ export type SyncStatus =
   // FLUX-895: `remediation` carries engine-owned, copy-paste fix steps for the
   // `auth` case so the portal renders an actionable "sign-in needed" panel
   // instead of a raw error string.
-  | { state: 'error'; error: string; errorType: 'network' | 'auth' | 'conflict' | 'unknown'; remediation?: SyncRemediation };
+  | { state: 'error'; error: string; errorType: 'network' | 'auth' | 'conflict' | 'unknown'; remediation?: SyncRemediation }
+  // FLUX-1426: the flux-data store's `sync-protocol` marker is ahead of what this engine
+  // build supports — sync is fenced read-only (no add/commit/merge/push) until the engine is
+  // upgraded. Clears automatically once a tick observes `marker <= SUPPORTED_SYNC_PROTOCOL`.
+  | { state: 'protocol-mismatch'; required: number; supported: number };
 
 let currentStatus: SyncStatus = { state: 'idle' };
 const statusListeners: Array<(status: SyncStatus) => void> = [];
@@ -185,7 +214,8 @@ export function getSyncStatus(): SyncStatus {
 // add/add conflict on the next successful pull). Existing-ticket updates aren't gated by this —
 // only net-new creation needs to wait for sync to be healthy again.
 export function isSyncUnhealthy(): boolean {
-  return currentStatus.state === 'conflict' || currentStatus.state === 'error' || currentStatus.state === 'diverged';
+  return currentStatus.state === 'conflict' || currentStatus.state === 'error' || currentStatus.state === 'diverged'
+    || currentStatus.state === 'protocol-mismatch';
 }
 
 // FLUX-1232: called by storage-sync.ts's background startup pull when `git pull --ff-only`
@@ -270,6 +300,13 @@ export function _resetSyncStateForTests(): void {
   syncInFlight = false;
   lastConflictNotifyAt = 0;
   lastAuthNotifyAt = 0;
+  _testOnAfterResetHook = null;
+}
+
+// FLUX-1428: see the call site in runSync's CAS loop — test-only, no-op unless a test sets it.
+let _testOnAfterResetHook: (() => Promise<void>) | null = null;
+export function _setPostResetHookForTests(fn: (() => Promise<void>) | null): void {
+  _testOnAfterResetHook = fn;
 }
 
 // Test-only: drive the module straight into the FLUX-895 auth-failure state (the same
@@ -397,12 +434,122 @@ export function mergeAppendOnlyHistory(baseContent: string, oursContent: string,
   return matter.stringify(ours.content, { ...oursRest, history: mergedHistory });
 }
 
+// FLUX-1427: GitHub-owned scalars on a PR-mirror card (`kind: 'pr'`) — re-derived by the ~90s
+// syncPrTickets poll every cycle (pr-tickets.ts `prTicketFields`), so two sides disagreeing on
+// these is never a real conflict to reason about, just staleness the next poll fixes regardless.
+const PR_GITHUB_OWNED_SCALAR_FIELDS = [
+  'prState', 'reviewDecision', 'isDraft', 'ciStatus', 'prNumber', 'branch', 'title', 'implementationLink',
+] as const;
+
+// Sticky, EH-set swimlanes the poller deliberately preserves (FLUX-986). When both sides carry a
+// DIFFERENT sticky value, `merge-conflict` (the PR is blocked outright) outranks the lower-stakes
+// `changes-requested` tint.
+const PR_SWIMLANE_PRIORITY: Record<string, number> = { 'merge-conflict': 2, 'changes-requested': 1 };
+
+function pickPrSwimlane(oursValue: unknown, theirsValue: unknown): string | null {
+  const ours = typeof oursValue === 'string' ? oursValue : null;
+  const theirs = typeof theirsValue === 'string' ? theirsValue : null;
+  if (ours && theirs && ours !== theirs) {
+    return (PR_SWIMLANE_PRIORITY[ours] ?? 0) >= (PR_SWIMLANE_PRIORITY[theirs] ?? 0) ? ours : theirs;
+  }
+  return ours ?? theirs ?? null;
+}
+
+// A PR ticket's own `status` is recorded as a `status_change` history entry only when a
+// human/agent moves it via change_status (updateTaskWithHistory) — the poller (prTicketFields /
+// upsertManagedTicket) overwrites the frontmatter field directly with no history entry (FLUX-566).
+// So the unioned history's latest status_change is the authoritative signal for a genuine
+// EH-authored move; when neither side recorded one, prefer whichever side isn't the bare poll
+// default ('Ready') — a send-for-review In Progress must survive a poll-set Ready (FLUX-569).
+function pickPrStatus(oursStatus: unknown, theirsStatus: unknown, mergedHistory: unknown[]): unknown {
+  const ours = typeof oursStatus === 'string' ? oursStatus : undefined;
+  const theirs = typeof theirsStatus === 'string' ? theirsStatus : undefined;
+  if (ours === theirs) return ours ?? theirs;
+
+  for (let i = mergedHistory.length - 1; i >= 0; i--) {
+    const entry = mergedHistory[i] as Record<string, unknown> | null;
+    if (!entry || entry.type !== 'status_change') continue;
+    const to = typeof entry.to === 'string' ? entry.to : (typeof entry.newStatus === 'string' ? entry.newStatus : undefined);
+    if (to != null && (to === ours || to === theirs)) return to;
+  }
+
+  if (ours === 'Ready' && theirs !== 'Ready') return theirs;
+  if (theirs === 'Ready' && ours !== 'Ready') return ours;
+  return ours ?? theirs;
+}
+
+function unionStringArray(a: unknown, b: unknown): string[] {
+  const arrA = Array.isArray(a) ? a.filter((v): v is string => typeof v === 'string') : [];
+  const arrB = Array.isArray(b) ? b.filter((v): v is string => typeof v === 'string') : [];
+  return [...new Set([...arrA, ...arrB])].sort();
+}
+
+/**
+ * FLUX-1427: field-class-aware conflict resolution for PR-mirror cards (`kind: 'pr'`). Unlike
+ * mergeAppendOnlyHistory above — which refuses whenever ANY non-history field differs — a PR
+ * card's GitHub-owned scalars are EXPECTED to legitimately differ between two sides that each
+ * polled gh at a slightly different moment; that's staleness, not a real disagreement. Resolves
+ * per the field-ownership taxonomy in the ticket body: GitHub-owned scalars take the remote
+ * (theirs) value; `history[]` unions by entry identity (FLUX-1308); `swimlane`/`status`/`members`
+ * follow EH-ownership preservation rules. Returns null (falls back to manual resolution) only
+ * when neither side is a PR card, or the frontmatter is unparseable.
+ */
+export function mergePrTicketConflict(baseContent: string, oursContent: string, theirsContent: string): string | null {
+  let ours: matter.GrayMatterFile<string>;
+  let theirs: matter.GrayMatterFile<string>;
+  try {
+    ours = matter(oursContent);
+    theirs = matter(theirsContent);
+  } catch {
+    return null;
+  }
+
+  if (ours.data?.kind !== 'pr' && theirs.data?.kind !== 'pr') return null;
+
+  let baseHistory: unknown[] = [];
+  try {
+    const base = baseContent ? matter(baseContent) : null;
+    if (Array.isArray(base?.data?.history)) baseHistory = base!.data.history;
+  } catch {
+    baseHistory = [];
+  }
+
+  const oursHistory = Array.isArray(ours.data.history) ? ours.data.history : [];
+  const theirsHistory = Array.isArray(theirs.data.history) ? theirs.data.history : [];
+
+  const mergedById = new Map<string, unknown>();
+  for (const entry of [...baseHistory, ...oursHistory, ...theirsHistory]) {
+    mergedById.set(historyEntryIdentity((entry ?? {}) as HistoryEntryLike), entry);
+  }
+  const mergedHistory = [...mergedById.values()].sort((a, b) => getHistoryTimestamp(a) - getHistoryTimestamp(b));
+
+  // Base: ours (mirrors mergeAppendOnlyHistory's own default), with the fields below overridden.
+  const fields: Record<string, unknown> = { ...theirs.data, ...ours.data };
+  for (const field of PR_GITHUB_OWNED_SCALAR_FIELDS) {
+    if (field in theirs.data) fields[field] = theirs.data[field];
+    else if (field in ours.data) fields[field] = ours.data[field];
+  }
+  fields.swimlane = pickPrSwimlane(ours.data.swimlane, theirs.data.swimlane);
+  fields.status = pickPrStatus(ours.data.status, theirs.data.status, mergedHistory) ?? fields.status;
+  fields.members = unionStringArray(ours.data.members, theirs.data.members);
+  fields.history = mergedHistory;
+
+  // Body is GitHub-owned (the gh PR description, FLUX-751) — prefer remote, falling back to ours
+  // for an add/add where theirs hasn't captured a description yet.
+  const content = theirs.content.trim() ? theirs.content : ours.content;
+
+  return matter.stringify(content, fields);
+}
+
 /**
  * Try the append-only history auto-merge (above) for every conflict git couldn't resolve on its
- * own. Reads each ticket's merge-base version to tell a pure append from a real edit, writes and
- * stages whatever resolves cleanly, and returns whichever conflicts still need a human. A ticket
- * with no merge-base version (created fresh on one side — an add/add conflict) can't be reasoned
- * about this way and is left in the returned list.
+ * own, then the PR-mirror-card resolver (FLUX-1427) as a fallback. Reads each ticket's merge-base
+ * version to tell a pure append from a real edit, writes and stages whatever resolves cleanly,
+ * and returns whichever conflicts still need a human. A ticket file with no merge-base version
+ * (created fresh on one side — an add/add conflict) is resolved against an empty base — the pure
+ * append-only merge will correctly refuse it (unless it happens to genuinely be a pure append),
+ * but the PR-card resolver is explicitly designed to handle this case (add/add on a brand-new
+ * PR-<n> card, e.g. the PR-419/420/421 incident shape).
  */
 async function autoResolveHistoryConflicts(storeDir: string, conflicts: ConflictInfo[]): Promise<ConflictInfo[]> {
   let mergeBase: string;
@@ -415,9 +562,13 @@ async function autoResolveHistoryConflicts(storeDir: string, conflicts: Conflict
 
   const remaining: ConflictInfo[] = [];
   for (const conflict of conflicts) {
+    // Empty when the ticket didn't exist at the merge-base — an add/add conflict.
+    const baseContent = await runGit(['show', `${mergeBase}:${conflict.ticketId}.md`], { cwd: storeDir })
+      .then((r) => r.stdout)
+      .catch(() => '');
     try {
-      const { stdout: baseContent } = await runGit(['show', `${mergeBase}:${conflict.ticketId}.md`], { cwd: storeDir });
-      const merged = mergeAppendOnlyHistory(baseContent, conflict.localContent, conflict.remoteContent);
+      const merged = mergeAppendOnlyHistory(baseContent, conflict.localContent, conflict.remoteContent)
+        ?? mergePrTicketConflict(baseContent, conflict.localContent, conflict.remoteContent);
       if (merged == null) {
         remaining.push(conflict);
         continue;
@@ -425,7 +576,7 @@ async function autoResolveHistoryConflicts(storeDir: string, conflicts: Conflict
       const filePath = path.join(storeDir, `${conflict.ticketId}.md`);
       await fs.writeFile(filePath, merged, 'utf-8');
       await runGit(['add', `${conflict.ticketId}.md`], { cwd: storeDir });
-      log.info(`[sync-watcher] Auto-merged append-only history for ${conflict.ticketId} (FLUX-1076)`);
+      log.info(`[sync-watcher] Auto-merged ${conflict.ticketId} (FLUX-1076/FLUX-1427)`);
     } catch {
       remaining.push(conflict);
     }
@@ -448,6 +599,15 @@ export async function resolveConflicts(
   }
 
   const storeDir = getFluxStoreDir();
+
+  // FLUX-1426: same read-only fence as runSync() — never commit/push a conflict resolution
+  // into a store that requires a newer protocol than this engine supports.
+  const headMarker = await readSyncProtocolMarker(storeDir, 'HEAD');
+  if (headMarker > SUPPORTED_SYNC_PROTOCOL) {
+    reportProtocolMismatch(headMarker);
+    throw new Error(`This flux-data store requires sync protocol ${headMarker}; this engine only supports ${SUPPORTED_SYNC_PROTOCOL}. Upgrade the engine to resolve conflicts.`);
+  }
+
   syncInFlight = true;
   try {
     await applyConflictResolutions(resolutions, storeDir);
@@ -575,6 +735,25 @@ async function hasUnresolvedConflictedPaths(storeDir: string): Promise<boolean> 
   }
 }
 
+// FLUX-1426: read the `sync-protocol` marker at a given ref (`HEAD` for the worktree's current
+// state, `origin/flux-data` right after a fetch). Missing file, unreadable ref, or unparseable
+// content all resolve to `1` (the pre-gate baseline) — a store that predates this feature, or a
+// ref this git can't reach, must never block sync on that basis alone.
+async function readSyncProtocolMarker(storeDir: string, ref: string): Promise<number> {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', storeDir, 'show', `${ref}:${SYNC_PROTOCOL_MARKER_FILE}`]);
+    const parsed = parseInt(stdout.trim(), 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+  } catch {
+    return 1;
+  }
+}
+
+function reportProtocolMismatch(required: number): void {
+  updateStatus({ state: 'protocol-mismatch', required, supported: SUPPORTED_SYNC_PROTOCOL });
+  console.warn(`[sync-watcher] flux-data store requires sync-protocol ${required}, this engine supports ${SUPPORTED_SYNC_PROTOCOL} — sync is read-only until the engine is upgraded.`);
+}
+
 export async function runSync(storeDir: string, onFail?: (retryDelayMs?: number) => void): Promise<void> {
   // FLUX-989: a resolveConflicts() (or another sync tick) is already touching the
   // worktree. Proceeding now would race two git processes on one worktree. No-op — the
@@ -591,6 +770,15 @@ export async function runSync(storeDir: string, onFail?: (retryDelayMs?: number)
   // conflict self-triggers the very tick that commits it.
   if (pendingConflicts && pendingConflicts.length > 0) {
     updateStatus({ state: 'conflict', conflicts: pendingConflicts });
+    return;
+  }
+
+  // FLUX-1426: the store already carries a protocol marker this engine can't handle (e.g. a
+  // prior tick fetched and fast-forwarded it in, or another engine instance bumped it) — fence
+  // out before touching the worktree at all, including the local add/commit in Step 1 below.
+  const headMarker = await readSyncProtocolMarker(storeDir, 'HEAD');
+  if (headMarker > SUPPORTED_SYNC_PROTOCOL) {
+    reportProtocolMismatch(headMarker);
     return;
   }
 
@@ -710,65 +898,109 @@ export async function runSync(storeDir: string, onFail?: (retryDelayMs?: number)
       return;
     }
 
-    // Step 3: integrate remote changes
-    const { stdout: localCommit } = await execFileAsync('git', ['-C', storeDir, 'rev-parse', 'HEAD']);
-    const { stdout: remoteCommit } = await execFileAsync('git', ['-C', storeDir, 'rev-parse', 'origin/flux-data']);
-
-    if (localCommit.trim() !== remoteCommit.trim()) {
-      const { stdout: mergeBase } = await execFileAsync('git', ['-C', storeDir, 'merge-base', 'HEAD', 'origin/flux-data']);
-
-      if (mergeBase.trim() === localCommit.trim()) {
-        // Only remote has new commits — fast-forward
-        await execFileAsync('git', ['-C', storeDir, 'merge', '--ff-only', 'origin/flux-data']);
-        log.info('[sync-watcher] Fast-forwarded to remote');
-      } else if (mergeBase.trim() !== remoteCommit.trim()) {
-        // Both sides have commits — attempt auto-merge
-        log.info('[sync-watcher] Diverged branches, attempting auto-merge...');
-        try {
-          await execFileAsync('git', ['-C', storeDir, 'merge', '--no-edit', '-m', 'flux: sync (merge)', 'origin/flux-data']);
-          log.info('[sync-watcher] Auto-merged remote changes');
-        } catch {
-          // Merge failed — collect git-marked conflict files
-          let conflicts = await detectMergeConflicts(storeDir);
-          if (conflicts.length > 0) {
-            // FLUX-1076: try the same append-only history auto-merge as the entry guard above.
-            conflicts = await autoResolveHistoryConflicts(storeDir, conflicts);
-          }
-          if (conflicts.length > 0) {
-            log.info(`[sync-watcher] Merge conflict in ${conflicts.length} ticket(s). Waiting for user resolution.`);
-            pendingConflicts = conflicts;
-            updateStatus({ state: 'conflict', conflicts });
-            // FLUX-1076: same standing notification as the on-entry guard above, so a
-            // freshly-diverged merge conflict is surfaced the same loud way.
-            notifyConflict(conflicts.length);
-            return;
-          }
-          if (!(await hasUnresolvedConflictedPaths(storeDir))) {
-            // FLUX-1076: every conflict auto-resolved — complete the merge commit ourselves
-            // (the initial `git merge --no-edit` failed before creating one).
-            await runGit(['add', '-A'], { cwd: storeDir });
-            await runGit(['commit', '-m', 'flux: sync (auto-merged history)'], { cwd: storeDir });
-            log.info('[sync-watcher] Auto-merged remote changes via append-only history union');
-          } else {
-            // No conflict markers we could resolve — abort and continue with local state
-            await execFileAsync('git', ['-C', storeDir, 'merge', '--abort']).catch(() => {});
-            console.warn('[sync-watcher] Merge failed with no conflict markers, pushing local state');
-          }
-        }
-      }
-      // If mergeBase === remoteCommit, remote is behind us — just push below
+    // FLUX-1426: re-check against what we just fetched — fetch only updates the remote-tracking
+    // ref, so a marker bump on origin isn't visible in the Step-1 HEAD check above until it's
+    // merged in. Catch it here, before Step 3's merge/ff-only would pull an incompatible
+    // protocol into the worktree or Step 4 pushes on top of it.
+    const remoteMarker = await readSyncProtocolMarker(storeDir, 'origin/flux-data');
+    if (remoteMarker > SUPPORTED_SYNC_PROTOCOL) {
+      reportProtocolMismatch(remoteMarker);
+      return;
     }
 
-    // Step 4: push
-    try {
-      // Push from the worktree directory
-      await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
-      log.info('[sync-watcher] Pushed flux-data to remote');
-      markSynced();
-    } catch (pushErr: unknown) {
-      const errorMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
-      log.info(`[sync-watcher] push failed (${classifyGitError(errorMsg)}): ${errorMsg}`);
-      reportSyncFailure(errorMsg, onFail);
+    // Step 3+4 (FLUX-1428): push-as-CAS + journal replay. This REPLACES the old fetch-merge-push
+    // flow — runSync never invokes `git merge` on origin/flux-data anymore. The remote is the
+    // serialization point: push directly (git itself rejects a non-fast-forward push, which is
+    // exactly a compare-and-swap). A clean push means nobody raced us. A rejected push means the
+    // remote moved since Step 2's fetch — instead of textually merging file content, drop our
+    // local commit entirely (`reset --hard` onto the new remote head) and replay this engine's own
+    // not-yet-pushed mutations through the real handler (task-store's updateTaskWithHistory), so a
+    // duplicate business event (e.g. "advance to Done because PR merged") converges to a no-op
+    // instead of colliding as text. The old merge/conflict machinery below (resolveConflicts,
+    // mergePrTicketConflict, etc.) intentionally stays in this file, unreachable from this path —
+    // removed in a follow-up ticket once this is proven (see FLUX-1428's "delete nothing yet").
+    for (let attempt = 1; attempt <= CAS_MAX_ATTEMPTS; attempt++) {
+      // Snapshot the journal for THIS attempt before pushing — these are the ops the current local
+      // HEAD carries that aren't confirmed on the remote yet. Re-read fresh each attempt (not
+      // hoisted above the loop) so an entry appended mid-retry by a concurrent request is captured
+      // by the attempt that actually pushes it, rather than silently skipped.
+      const journalBatch = await readJournalEntries(storeDir);
+
+      try {
+        await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
+        log.info(`[sync-watcher] Pushed flux-data to remote (CAS, attempt ${attempt})`);
+        markSynced();
+        await dropFlushedJournalEntries(storeDir, journalBatch.length);
+        return;
+      } catch (pushErr: unknown) {
+        const errorMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+
+        if (!isNonFastForwardRejection(errorMsg)) {
+          // Not a lost race (network/auth/unknown) — nothing to reset/replay, surface normally.
+          log.info(`[sync-watcher] push failed (${classifyGitError(errorMsg)}): ${errorMsg}`);
+          reportSyncFailure(errorMsg, onFail);
+          return;
+        }
+
+        if (attempt >= CAS_MAX_ATTEMPTS) {
+          console.error(`[sync-watcher] CAS push rejected ${CAS_MAX_ATTEMPTS} times in a row (remote kept moving) — giving up this tick.`);
+          reportSyncFailure(`Sync could not converge after ${CAS_MAX_ATTEMPTS} attempts — the remote kept moving. It will retry automatically.`, onFail);
+          return;
+        }
+
+        log.info(`[sync-watcher] Push rejected (remote moved) — resetting to origin/flux-data and replaying ${journalBatch.length} local op(s) (attempt ${attempt}/${CAS_MAX_ATTEMPTS})`);
+
+        const { stdout: preResetHead } = await execFileAsync('git', ['-C', storeDir, 'rev-parse', 'HEAD']);
+        await execFileAsync('git', ['-C', storeDir, 'fetch', 'origin', 'flux-data']);
+
+        // FLUX-1426: re-check the freshly-fetched marker before adopting it as our new base — a
+        // losing race against an engine that ALSO bumped the protocol must fence out read-only,
+        // not reset onto (and start replaying against) a head we don't know how to interpret.
+        const postFetchMarker = await readSyncProtocolMarker(storeDir, 'origin/flux-data');
+        if (postFetchMarker > SUPPORTED_SYNC_PROTOCOL) {
+          reportProtocolMismatch(postFetchMarker);
+          return;
+        }
+
+        await execFileAsync('git', ['-C', storeDir, 'reset', '--hard', 'origin/flux-data']);
+
+        // FLUX-1428 test-only hook: fires once per reset, before replay — lets a test deterministically
+        // keep the remote moving (e.g. push another commit) to exercise CAS_MAX_ATTEMPTS exhaustion
+        // without racing real concurrent processes against wall-clock timing. No-op in production.
+        if (_testOnAfterResetHook) await _testOnAfterResetHook();
+
+        // FLUX-1428: nothing journaled this attempt means nothing needs replaying — a raw local
+        // file edit made outside updateTaskWithHistory (not a tracked intent) is, by design, simply
+        // superseded by the remote's version on a lost race. Skip the cache reload + replay
+        // machinery entirely in that case: it exists to give replay accurate state, and there's
+        // nothing to replay. (This also means resetting to the remote head never requires a
+        // replay handler to have been registered unless there's actually journaled work.)
+        if (journalBatch.length > 0) {
+          // Refresh the in-memory cache for exactly what the reset rewrote, BEFORE replay — replay
+          // must see the winning side's fresh state, not a stale in-memory copy of what our now-
+          // discarded local commit thought the ticket looked like.
+          const { stdout: diffOut } = await execFileAsync('git', ['-C', storeDir, 'diff', '--name-only', preResetHead.trim(), 'origin/flux-data']).catch(() => ({ stdout: '' }));
+          const changedPaths = diffOut.split('\n').map((l) => l.trim()).filter(Boolean);
+          await reloadCacheAfterReset(storeDir, changedPaths);
+
+          for (const entry of journalBatch) {
+            try {
+              await replayJournalEntry(entry);
+            } catch (replayErr: unknown) {
+              const replayMsg = replayErr instanceof Error ? replayErr.message : String(replayErr);
+              console.error(`[sync-watcher] Replay failed for ${entry.taskId} (op ${entry.opId}): ${replayMsg}`);
+            }
+          }
+        }
+
+        // Fold the replayed mutations into a fresh local commit and loop back to push again.
+        await execFileAsync('git', ['-C', storeDir, 'add', '-A']);
+        const { stdout: porcelainAfterReplay } = await execFileAsync('git', ['-C', storeDir, 'status', '--porcelain']);
+        if (porcelainAfterReplay.trim()) {
+          await execFileAsync('git', ['-C', storeDir, 'commit', '-m', `flux: sync (replay ${journalBatch.length} op(s))`]);
+        }
+        // loop continues → retry push against the new base
+      }
     }
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);

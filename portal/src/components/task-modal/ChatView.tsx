@@ -228,6 +228,29 @@ export interface ChatViewProps {
  * Radius scale (documented, consistent): bubbles + composer = rounded-2xl, send button
  * + chips = rounded-lg/md. The caller's window owns the outer 2xl.
  */
+/** FLUX-1439: splits the live-turn accrued text into a `committed` prefix (everything through the
+ *  last completed paragraph boundary — always safe to hand to `TaskMarkdown` as-is: an odd count of
+ *  ``` fences just means the trailing code block runs to the end of input, which is standard
+ *  CommonMark behavior, not a special case we need to close ourselves) and a `tail`, the
+ *  currently-growing paragraph. The tail is returned only when it reads as plain inline prose —
+ *  no block-starting marker (heading/list/quote/table/fence) and no unterminated inline construct
+ *  (code span / emphasis / link) — so the per-word fade wrapper below can never visually sever a
+ *  markdown construct from its closing delimiter. When unsafe, the whole text folds into
+ *  `committed` and streams through the ordinary single-parse path instead.
+ */
+function splitLiveTail(text: string): { committed: string; tail: string } {
+  const fenceCount = (text.match(/```/g) ?? []).length;
+  if (fenceCount % 2 === 1) return { committed: text, tail: '' };
+
+  const lastBreak = text.lastIndexOf('\n\n');
+  const paraStart = lastBreak === -1 ? 0 : lastBreak + 2;
+  const tail = text.slice(paraStart);
+  if (/^\s*(#{1,6}\s|[-*+]\s|\d+\.\s|>|```|\|)/.test(tail) || /[`*_[\]]/.test(tail)) {
+    return { committed: text, tail: '' };
+  }
+  return { committed: text.slice(0, paraStart), tail };
+}
+
 export function ChatView({
   messages,
   busy,
@@ -276,14 +299,20 @@ export function ChatView({
   onOpenArtifactRef.current = onOpenArtifact;
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
+  // FLUX-1439: gates the live-turn word-paced reveal + per-word/cursor CSS animation. The blanket
+  // reduced-motion stylesheet override (index.css) already neutralizes the CSS animation durations;
+  // this additionally disables the artificial word-by-word reveal DELAY itself (content still
+  // streams progressively, just committed per-arrival instead of trickled).
+  const prefersReducedMotion = useReducedMotion();
   // FLUX-727: one-shot guard so the "open at the top of the final message" scroll runs only on the
   // first render with messages after (re)mount. ChatView re-mounts on each dock open (keyed in
   // `open.map`), so this naturally resets per open.
   const didInitialScrollRef = useRef(false);
   // FLUX-829: while true, the initial pin keeps re-asserting itself each frame (the re-pin loop
-  // below) because earlier turns are still collapsing post-paint (Clampable capping, ToolGroup
-  // folding) and shrinking the content above the target. Cleared once heights hold steady or the
-  // user takes over the scroll, so it never fights a deliberate scroll.
+  // below) because earlier turns are still collapsing post-paint (ToolGroup folding — FLUX-1439
+  // removed the other collapse source, Clampable capping) and shrinking the content above the
+  // target. Cleared once heights hold steady or the user takes over the scroll, so it never fights
+  // a deliberate scroll.
   const repinActiveRef = useRef(false);
   // FLUX-644: jump-to-bottom pill state — shown while the user has scrolled up; `newCount`
   // tallies messages that arrived since they detached from the bottom.
@@ -355,7 +384,7 @@ export function ChatView({
 
   // FLUX-814: after "Show earlier" prepends rows, keep the previously-visible content in place by
   // pinning the same distance from the bottom. Runs only on a `visibleCount` change (not on new
-  // turns — those keep the existing stick-to-bottom behavior). Child layout effects (Clampable
+  // turns — those keep the existing stick-to-bottom behavior). Child layout effects (ToolGroup
   // measuring) run before this parent effect, so heights are settled when we restore.
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -393,8 +422,8 @@ export function ChatView({
   }
 
   // FLUX-829: the initial pin measures against first-paint heights, but earlier turns shrink in a
-  // LATER commit — `Clampable` caps tall replies (its useLayoutEffect flips needsClamp), `ToolGroup`
-  // folds after mount — so the content above the target collapses and the browser clamps our
+  // LATER commit — `ToolGroup` folds after mount (FLUX-1439 removed the other collapse source,
+  // Clampable capping) — so the content above the target collapses and the browser clamps our
   // now-too-large scrollTop back toward 0, dumping the user at the top of the loaded window. Re-pin
   // every frame until scrollHeight holds steady for a few frames (collapse commits have flushed), or
   // a 1s safety cap, whichever comes first. `cancelRepin` (genuine user input below) stops it early.
@@ -460,15 +489,15 @@ export function ChatView({
   // FLUX-695: an arrival while the surface is unattended (tab hidden/blurred OR scrolled away)
   // drops the unread divider at the boundary; an attended arrival just advances `lastSeen`.
   useEffect(() => {
-    // FLUX-727: on first open (dock window), land at the TOP of the final message — rendered
-    // unclamped (see the rows memo) — instead of snapping to the very bottom. One-shot per mount.
-    // Skipped while a turn is streaming (`working`) so a live chat keeps stick-to-tail. Setting
-    // `atBottomRef=false` (inside pinToLast) also stops `handleScroll` from snapping back /
-    // auto-marking-seen, leaving the unread divider intact.
+    // FLUX-727: on first open (dock window), land at the TOP of the final message — instead of
+    // snapping to the very bottom. One-shot per mount. Skipped while a turn is streaming (`working`)
+    // so a live chat keeps stick-to-tail. Setting `atBottomRef=false` (inside pinToLast) also stops
+    // `handleScroll` from snapping back / auto-marking-seen, leaving the unread divider intact.
     // FLUX-829: the pin set here measures first-paint heights, but earlier turns then collapse in a
-    // LATER commit (Clampable capping, ToolGroup folding) and the browser clamps our scrollTop back
-    // toward 0 — landing the user at the top of the loaded window. So we don't fire once and trust
-    // it: `startRepinLoop` re-asserts the pin every frame until heights settle (or the user scrolls).
+    // LATER commit (ToolGroup folding — FLUX-1439 removed the other collapse source, Clampable
+    // capping) and the browser clamps our scrollTop back toward 0 — landing the user at the top of
+    // the loaded window. So we don't fire once and trust it: `startRepinLoop` re-asserts the pin
+    // every frame until heights settle (or the user scrolls).
     if (openToLastMessage && !didInitialScrollRef.current && messages.length > 0 && !working) {
       // FLUX-824: only burn the one-shot once the scroll ACTUALLY runs. If this first pass fires
       // while a turn streams (`working`) or before `[data-last-msg]` is in the DOM (pinToLast returns
@@ -515,15 +544,110 @@ export function ChatView({
     // guards re-runs so adding them can't double-fire the land-on-final-message behavior.
   }, [messages, openToLastMessage, working]);
 
-  // FLUX-691: keep the streaming live node pinned to the tail while the user is already there, so
-  // token-by-token output stays in view. Deltas don't change `messages`, so the effect above never
-  // fires for them; this one does — but only follows the tail when already at the bottom (never
-  // yanks a user who scrolled up to read), and never touches the unread divider / jump pill.
+  // FLUX-1439: decouples arrival (`liveText`, which may arrive in bursts) from what's actually
+  // painted. `displayedLiveText` is what the live `TaskMarkdown` parses; it trails `liveText` and
+  // catches up word-by-word (interval shrinking as the backlog grows) so the reveal reads as real
+  // typing instead of raw markdown snapping in, while never falling permanently behind a fast
+  // stream. `liveTextPropRef` mirrors the prop so the pump's recursive timer always reads the
+  // freshest arrived text without restarting on every delta or closing over a stale value.
+  const liveTextPropRef = useRef(liveText);
+  useEffect(() => { liveTextPropRef.current = liveText; }, [liveText]);
+  const [displayedLiveText, setDisplayedLiveText] = useState('');
+  const revealedLenRef = useRef(0);
+  const streamingLive = !!liveText;
   useEffect(() => {
-    if (liveText && atBottomRef.current) {
-      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    if (!streamingLive) {
+      // Stream cleared — either the turn committed (FLUX-691 hands off to the memoized `rows`
+      // render) or a fresh turn/conversation reset. Either way, drop all reveal state so the next
+      // stream starts clean.
+      revealedLenRef.current = 0;
+      setDisplayedLiveText('');
+      return;
     }
-  }, [liveText]);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let raf: number | null = null;
+
+    if (prefersReducedMotion) {
+      // Progressive but unanimated: catch the display up to the real text every frame — still
+      // throttled to ~1 re-parse/frame (not 1 per SSE delta) so a flood of tokens can't reintroduce
+      // the FLUX-691 freeze class — with no artificial word-by-word delay.
+      const tick = () => {
+        if (cancelled) return;
+        const text = liveTextPropRef.current ?? '';
+        if (text.length !== revealedLenRef.current) {
+          revealedLenRef.current = text.length;
+          setDisplayedLiveText(text);
+        }
+        raf = requestAnimationFrame(tick);
+      };
+      raf = requestAnimationFrame(tick);
+    } else {
+      // Word-paced typewriter: reveal one whitespace-delimited word (+ its trailing whitespace)
+      // at a time. The per-word delay shrinks as the backlog (unrevealed words already arrived)
+      // grows, so the reveal speeds up exactly when the response floods in — it never decouples
+      // from the real stream rate, just smooths it. This doubles as the FLUX-691 rAF-class
+      // throttle: each tick is at minimum MIN_MS apart, well under a frame's worth of re-parses.
+      const MIN_MS = 12;
+      const MAX_MS = 70;
+      const BACKLOG_FOR_MIN_WORDS = 40;
+      const tick = () => {
+        if (cancelled) return;
+        const text = liveTextPropRef.current ?? '';
+        const pending = text.slice(revealedLenRef.current);
+        if (!pending) {
+          timer = setTimeout(tick, MIN_MS);
+          return;
+        }
+        const m = /^\S+\s*/.exec(pending);
+        const chunk = m ? m[0] : pending;
+        revealedLenRef.current += chunk.length;
+        setDisplayedLiveText(text.slice(0, revealedLenRef.current));
+
+        const backlogWords = (text.slice(revealedLenRef.current).match(/\S+/g) ?? []).length;
+        const delay = Math.max(
+          MIN_MS,
+          MAX_MS - (MAX_MS - MIN_MS) * Math.min(1, backlogWords / BACKLOG_FOR_MIN_WORDS),
+        );
+        timer = setTimeout(tick, delay);
+      };
+      timer = setTimeout(tick, MIN_MS);
+    }
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      if (raf !== null) cancelAnimationFrame(raf);
+    };
+  }, [streamingLive, prefersReducedMotion]);
+
+  // FLUX-691/1439: keep the streaming live node pinned to the tail while the user is already there,
+  // so word-by-word output stays in view. Keyed on `displayedLiveText` (what's actually painted),
+  // not the raw `liveText` prop, so the pin fires after the pump's content lands instead of racing
+  // it. `useLayoutEffect` (not `useEffect`) runs synchronously before the browser paints the new
+  // height, so the corrective scroll lands in the same frame as the content that caused it — the
+  // up/down bounce reported against this surface was the paint-then-correct gap a plain `useEffect`
+  // leaves open. A single deterministic instant write (no `behavior: 'smooth'`, which would stack/
+  // interrupt itself across ticks) — smooth scrolling stays reserved for the explicit "jump to
+  // latest" click (`scrollToBottom` above).
+  useLayoutEffect(() => {
+    if (displayedLiveText && atBottomRef.current) {
+      const el = scrollRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    }
+  }, [displayedLiveText]);
+
+  // FLUX-1439: the committed prefix renders through the real `TaskMarkdown` parse (progressive
+  // markdown, no raw-syntax flash); the tail — the currently-growing paragraph, when safe to
+  // word-split (see `splitLiveTail`) — is tokenized once per reveal tick so each newest word can
+  // mount as its own fresh `<span>` and play its fade-in once (React reuses the DOM node for
+  // already-mounted words, so their animation never replays).
+  const { liveCommitted, liveTail, liveTailTokens } = useMemo(() => {
+    if (!displayedLiveText) return { liveCommitted: '', liveTail: '', liveTailTokens: [] as string[] };
+    if (prefersReducedMotion) return { liveCommitted: displayedLiveText, liveTail: '', liveTailTokens: [] as string[] };
+    const { committed, tail } = splitLiveTail(displayedLiveText);
+    return { liveCommitted: committed, liveTail: tail, liveTailTokens: tail ? tail.split(/(\s+)/).filter(Boolean) : [] };
+  }, [displayedLiveText, prefersReducedMotion]);
 
   // FLUX-639: elapsed timer for the current turn. Starts when `working` flips on, ticks each
   // second, resets when it flips off.
@@ -597,7 +721,7 @@ export function ChatView({
       }
     }
 
-    const renderMessage = (m: TranscriptMessage, i: number, live: boolean) => {
+    const renderMessage = (m: TranscriptMessage, i: number) => {
       if (m.role === 'tool') {
         // FLUX-661: an edit-ish tool row carrying a file path becomes an expandable inline
         // diff (when the chat knows the branch). Other tool rows stay the quiet label.
@@ -660,12 +784,11 @@ export function ChatView({
         return <ContextUpdateChip key={i} text={m.text} ts={m.ts} />;
       }
       // Assistant — no bubble: flowing markdown so code blocks / lists / links breathe.
-      // FLUX-693: a very long turn is clamped with a "Show more/less" toggle so one giant
-      // message can't blow out the scroll. The live trailing row (`live`) is never clamped —
-      // the user must see streaming output as it lands (coordinates with FLUX-691).
-      // FLUX-727: the final assistant message is rendered fully (clamp off) when `openToLastMessage`,
-      // and tagged so the initial-scroll effect can position its top at the viewport top. Earlier
-      // long messages keep the clamp; the live trailing row stays unclamped as before.
+      // FLUX-727: the final assistant message is tagged so the initial-scroll effect can position
+      // its top at the viewport top.
+      // FLUX-1439: committed replies render in full, unclamped — the FLUX-693 "Show more/less"
+      // height cap was removed (explicit user tradeoff: a very long reply can make the transcript
+      // tall; no replacement safeguard is in scope).
       const isLastAssistant = i === lastAssistantIdx;
       return (
         <div
@@ -673,9 +796,7 @@ export function ChatView({
           data-last-msg={openToLastMessage && isLastAssistant ? '' : undefined}
           className="group max-w-full text-[13px] leading-relaxed text-[var(--eh-text-primary)]"
         >
-          <Clampable clamp={!live && !(openToLastMessage && isLastAssistant)}>
-            <TaskMarkdown body={m.text} compact linkifyTickets={linkifyTickets} />
-          </Clampable>
+          <TaskMarkdown body={m.text} compact linkifyTickets={linkifyTickets} />
           {/* FLUX-684/683: quiet hover-revealed footer — timestamp + a copy-message affordance. */}
           <div className="mt-0.5 flex items-center gap-2">
             <MessageTime ts={m.ts} />
@@ -741,9 +862,7 @@ export function ChatView({
         }
         continue;
       }
-      // FLUX-693: the live trailing assistant row (last message while working) is rendered
-      // unclamped so streaming output stays fully visible.
-      out.push(renderMessage(messages[i], i, i === messages.length - 1 && !!working));
+      out.push(renderMessage(messages[i], i));
     }
     // FLUX-1362: markers newer than the last message would append at the tail. Dedupe — when a
     // plan-ready card is also showing we don't need both, so drop the trailing marker(s) then.
@@ -850,15 +969,27 @@ export function ChatView({
               {orchestrationBlock}
             </>
           )}
-          {/* FLUX-691: the live streaming node — the current turn's assistant text rendered
-              token-by-token. It sits OUTSIDE the memoized `rows` (so each delta only re-renders
-              this node, never the markdown-heavy transcript) and is plain text, not markdown (no
-              per-delta re-parse). It clears the instant the committed message lands in the
-              transcript, at which point the memoized list renders the final, markdown-rendered
-              message in its place — no duplicate, no flicker. Never clamped (FLUX-693). */}
-          {liveText && (
-            <div className="group max-w-full whitespace-pre-wrap break-words text-[13px] leading-relaxed text-[var(--eh-text-primary)]">
-              {liveText}
+          {/* FLUX-691/1439: the live streaming node — the current turn's assistant text, rendered
+              as PROGRESSIVE MARKDOWN (word-paced, see the reveal pump above), not raw plain text.
+              It sits OUTSIDE the memoized `rows` (so a delta only re-renders this node, never the
+              markdown-heavy transcript) and its re-parse is throttled by the word pump (≤1 parse
+              per revealed word, timer-paced — never per raw SSE delta), preserving the FLUX-691
+              perf isolation. It clears the instant the committed message lands in the transcript,
+              at which point the memoized list renders the final, markdown-rendered message in its
+              place — no duplicate, no flicker. The trailing cursor is literal-inline (part of the
+              same `<p>` as the last word, never a sibling block) so its removal at stream-end
+              causes no line jump. */}
+          {displayedLiveText && (
+            <div className="group max-w-full text-[13px] leading-relaxed text-[var(--eh-text-primary)]">
+              {liveCommitted && <TaskMarkdown body={liveCommitted} compact linkifyTickets={linkifyTickets} />}
+              {liveTail && (
+                <p className="mb-0 whitespace-pre-wrap break-words">
+                  {liveTailTokens.map((tok, i) =>
+                    /^\s+$/.test(tok) ? tok : <span key={i} className="eh-word-fade">{tok}</span>,
+                  )}
+                  <span className="eh-live-cursor" aria-hidden="true" />
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -1050,68 +1181,6 @@ function splitToolText(text: string): { before: string; path: string | null; aft
   const start = m.index + m[1].length;
   const path = m[2];
   return { before: text.slice(0, start), path, after: text.slice(start + path.length) };
-}
-
-/** FLUX-693: collapsed height past which a turn is clamped (px). Tall enough that most turns are
- *  never clamped; short enough that one giant message can't swallow the scroll. */
-const CLAMP_MAX_PX = 360;
-/** Bottom fade applied to the content itself (background-agnostic — masks the content rather than
- *  painting a gradient over it, so it works on any theme surface) when clamped. */
-const CLAMP_FADE = 'linear-gradient(to bottom, #000 0, #000 calc(100% - 2.5rem), transparent 100%)';
-
-/**
- * FLUX-693: clamps over-tall within-row content (assistant turns) to `maxPx` with a bottom
- * fade + a "Show more / Show less" toggle. Cheap: the cap is pure CSS (`max-height` + overflow
- * hidden + a mask fade); `scrollHeight` is read once per content change in a layout effect to
- * decide whether the toggle is even needed — no per-render measurement loop.
- *
- * Expand state is local (mirrors ToolGroup / InlineEditDiff). Because each row is keyed stably
- * in the transcript, that state survives re-renders during a session without having to thread it
- * through the `rows` useMemo. `clamp={false}` (the live trailing/streaming row) renders the
- * children verbatim — never clamped, never measured.
- */
-function Clampable({ clamp = true, maxPx = CLAMP_MAX_PX, children }: { clamp?: boolean; maxPx?: number; children: ReactNode }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [expanded, setExpanded] = useState(false);
-  const [needsClamp, setNeedsClamp] = useState(false);
-
-  // Measure once after layout, re-running only when the content (children) or cap changes — not
-  // every render. scrollHeight reports the full content height even while the element is capped.
-  useLayoutEffect(() => {
-    if (!clamp) {
-      setNeedsClamp(false); // setState bails when unchanged, so this is a no-op once cleared.
-      return;
-    }
-    const el = ref.current;
-    if (!el) return;
-    setNeedsClamp(el.scrollHeight > maxPx + 8);
-  }, [clamp, maxPx, children]);
-
-  if (!clamp) return <>{children}</>;
-
-  const collapsed = needsClamp && !expanded;
-  return (
-    <div>
-      <div
-        ref={ref}
-        className={collapsed ? 'overflow-hidden' : ''}
-        style={collapsed ? { maxHeight: maxPx, WebkitMaskImage: CLAMP_FADE, maskImage: CLAMP_FADE } : undefined}
-      >
-        {children}
-      </div>
-      {needsClamp && (
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          aria-expanded={expanded}
-          className="mt-0.5 flex items-center gap-1 rounded px-1 py-0.5 text-[11px] font-medium text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-secondary)] dark:hover:bg-white/5"
-        >
-          {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          {expanded ? 'Show less' : 'Show more'}
-        </button>
-      )}
-    </div>
-  );
 }
 
 /** Quiet, uniform tool row — muted wrench + monospace, truncated so long file paths never blow

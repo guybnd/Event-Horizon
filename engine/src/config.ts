@@ -246,6 +246,14 @@ const CONFIG_DEFAULTS: any = {
   agents: {
     honorScheduledWakeups: false,
   },
+  // FLUX-1434: NOT seeded here deliberately — `undefined` means "use the shipped per-role
+  // defaults" (CATEGORY_DENY_DEFAULTS in orchestration-personas.ts). An operator who wants to
+  // tune or disable worker-persona MCP toolset scoping sets `toolScoping.categoryDeny.worker`
+  // (and/or `.lead`/`.flex`) to a full replacement tool-name array for that role — read via
+  // `resolveCategoryDeny` (orchestration-personas.ts). Shape:
+  //   toolScoping: { categoryDeny: { worker: ['tool_a', 'tool_b', ...] } }
+  // Seeding an empty object here would be indistinguishable from "no override" anyway, so it's
+  // left absent rather than adding a no-op key to every board's config.json.
   modules: [],
   terminalCommands: [
     { id: 'restart-dev', label: 'Restart dev server', command: 'npm run dev', runMode: 'current' },

@@ -20,6 +20,30 @@ export function isActiveSession(s: Pick<CliSessionSummary, 'status' | 'endedAt'>
   return !s.endedAt && ACTIVE_SESSION_STATUSES.includes(s.status);
 }
 
+/** FLUX-1456: mirrors the 10-min staleness heuristic in `useCliSession.ts`'s poll-stop guard. */
+export const SESSION_STALE_MS = 10 * 60 * 1000;
+
+/**
+ * FLUX-1456: whether `s` is a live target for routed input (e.g. the `finish` fallback) — distinct
+ * from `isActiveSession`, which `isActiveSession` intentionally keeps broad for dots/pulses/timers
+ * (FLUX-846/1390). A `waiting-input` session is a CLI process that has already exited and parked
+ * (`board-core.ts`); it's only a real input target when it's both resumable and recently active —
+ * otherwise routed input silently vanishes into a dead conversation (the FLUX-719 liveness gap).
+ */
+export function isLiveInputTarget(
+  s: Pick<CliSessionSummary, 'status' | 'endedAt' | 'resumable' | 'lastOutputAt' | 'startedAt'>,
+  nowMs = Date.now(),
+): boolean {
+  if (s.endedAt) return false;
+  if (s.status === 'running' || s.status === 'pending') return true;
+  if (s.status === 'waiting-input') {
+    if (!s.resumable) return false;
+    const last = s.lastOutputAt ?? s.startedAt;
+    return !!last && nowMs - new Date(last).getTime() <= SESSION_STALE_MS;
+  }
+  return false;
+}
+
 /** Strip the multi-session role prefix (e.g. "reviewer:architect" -> "architect"). */
 export function normalizeRoleLabel(role?: string): string | undefined {
   if (!role) return undefined;

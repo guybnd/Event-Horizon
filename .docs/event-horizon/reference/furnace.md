@@ -76,7 +76,9 @@ It is a *conductor* over the existing headless-session machinery (`start_session
 ### Sole-reviewer focus + the verdict-marker nudge (FLUX-1078)
 Every built-in reviewer persona prompt (`engine/src/orchestration-personas.ts`) hedges for multi-reviewer synthesis flows: "do NOT call `change_status` unless your focus instructions explicitly say you are the SOLE reviewer." The Furnace only ever runs **one** reviewer per ticket, so `reviewDispatchOpts()` attaches a `focusComment` to every review-phase dispatch (`review`, `redrive`/`retry-exhausted`/`retry-rate-limited` when the phase is `review`) that states exactly that — without it, a persona would post a correct, well-structured `**APPROVED**` comment and still never call `change_status`, and the ticket would be parked as if the review never happened.
 
-As a second line of defense, if a review session still completes with `reviewState` unset, `lastCommentMatchesVerdictMarker()` checks whether the ticket's most recent comment starts with the known `**APPROVED**`/`**CHANGES NEEDED**` convention. A match (and no nudge already spent this pass — `BatchTicket.reviewNudgeSent`) produces a `review-nudge` action: one corrective follow-up session (`REVIEW_NUDGE_FOCUS`) asked only to read its own last comment and call `change_status` to match — not to re-review the diff. No match, or the nudge already fired once, falls back to the original park.
+As a second line of defense, if a review session still completes with `reviewState` unset, `lastCommentMatchesVerdictMarker()` checks whether the ticket's most recent comment starts with the known `**APPROVED**`/`**CHANGES NEEDED**` convention. A match (and no nudge already spent this pass — `BatchTicket.reviewNudgeSent`) produces a `review-nudge` action: one corrective follow-up session (`REVIEW_NUDGE_FOCUS`) asked only to read its own last comment and call `change_status` to match — not to re-review the diff.
+
+**No verdict AND no marker comment — `review-retry` (FLUX-1437).** A review can also complete with no verdict and nothing that reads like one at all — the real incident that motivated this: a reviewer finished its verification but ended the turn narrating "I'll wait for the monitor notification" instead of calling `change_status` (its background tasks die at process exit, so nothing ever resumes it — see `engine/src/parked-ticket.ts`'s `WAIT_PROMISE_RE`/`wouldPark` and `claude-code.ts`'s `tryResumeStaleWait`, which catches this same shape one layer earlier, at the stalled session's own turn end, before the Stoker/Temper ever see a verdict-less review). If that catch didn't apply or didn't recover it, this is the second line of defense: instead of an immediate park, one fresh review pass (`REVIEW_RETRY_FOCUS`) runs first. It **shares the same `reviewNudgeSent` flag** as the marker-nudge above — a ticket gets at most one re-dispatch per review pass total, whichever shape the anomaly took, never both. Only once that budget is spent does either case fall back to the original park.
 
 ### PR-review mirroring (FLUX-1033)
 The reviewer's verdict is also posted onto the **real GitHub PR** so approval/rejection is visible on the PR itself (a green check / a "changes requested" review), not only inside EH. When the charge leaves `reviewing`, the Stoker computes what to mirror via the pure `pickPrReview` (`furnace-stoker.ts`) and calls `postPrReview` (`branch-manager.ts`) once per verdict: **approved ⇒ `gh pr review --approve`**, **changes-requested ⇒ `gh pr review --request-changes`** (the latter fires per-member whether the charge then re-implements or parks). Both link back to the ticket's EH review comment.
@@ -274,7 +276,7 @@ The background loop that burns each charge. `startStoker()` (booted in `index.ts
 2. **Feeds coal** — starts the next queued charge(s) up to the burn rate.
 3. **Completes** the run when every charge is terminal.
 
-The decision core is a **pure, exhaustively unit-tested** function `decideTicketAction(...)` → `wait | review | reimplement | pr-open | park | redrive | review-nudge`:
+The decision core is a **pure, exhaustively unit-tested** function `decideTicketAction(...)` → `wait | review | reimplement | pr-open | park | redrive | review-nudge | review-retry`:
 
 | Charge state | Session / verdict | Action |
 |---|---|---|
@@ -283,8 +285,9 @@ The decision core is a **pure, exhaustively unit-tested** function `decideTicket
 | reviewing | completed + `reviewState: approved` | `pr-open` — **leave the PR open at Ready; never merge** |
 | reviewing | completed + `changes-requested`, attempts < retryCap | `reimplement` |
 | reviewing | completed + `changes-requested`, attempts = retryCap | `park` |
-| reviewing | completed + no verdict, last comment matches the `**APPROVED**`/`**CHANGES NEEDED**` marker convention, not yet nudged | `review-nudge` — one corrective session told to call `change_status` (FLUX-1078) |
-| reviewing | completed + no verdict, no marker (or already nudged once) | `park` (never falsely approve) |
+| reviewing | completed + no verdict, last comment matches the `**APPROVED**`/`**CHANGES NEEDED**` marker convention, not yet nudged | `review-nudge` — one corrective session told to read its own comment and call `change_status` (FLUX-1078) |
+| reviewing | completed + no verdict, no marker, not yet nudged | `review-retry` — one fresh review pass before parking (FLUX-1437; shares the same one-shot `reviewNudgeSent` budget as `review-nudge` above) |
+| reviewing | completed + no verdict, already nudged/retried once | `park` (never falsely approve) |
 | any active | `failed` + `terminalReason: context-exhausted`, retries left | `retry-exhausted` — re-drive the phase with a fresh session (FLUX-1047) |
 | any active | `failed` + `terminalReason: rate-limited` | `cooldown-rate-limited` — enter `cooling-down`, **not** a park (FLUX-1063) |
 | `cooling-down` | `now < nextRetryAt` | `wait` |

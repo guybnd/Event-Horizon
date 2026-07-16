@@ -355,10 +355,15 @@ export async function createTaskWorktree(
     // something briefly held a handle). Reclaim it instead of refusing — there's
     // no un-pushed work to protect, and `git worktree repair` would fail anyway
     // with no `.git` link file to re-link.
+    //
+    // FLUX-1442 — do NOT delete the husk. `git worktree add` below happily
+    // populates a pre-existing empty directory, and on Windows an open handle
+    // blocks *deleting* a dir but not *writing files inside it* — so leaving the
+    // dir in place and falling through sidesteps the EBUSY-on-rmdir failure mode
+    // entirely (no wait, no kill, no risk to a live handle-holding session).
     const entries = await fs.readdir(target).catch(() => null);
     if (entries !== null && entries.length === 0) {
       console.warn(`[task-worktree] reclaiming empty leftover directory at ${target}`);
-      await fs.rmdir(target);
     } else {
       const attemptRepair = async () => {
         await runner(workspaceRoot, ['worktree', 'repair', target]).catch((err) =>

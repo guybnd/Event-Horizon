@@ -127,6 +127,14 @@ export const PLAN_REVIEW_NUDGE_FOCUS =
   'Your previous plan-review comment on this ticket already reads like a verdict (it started with **APPROVED** or **CHANGES NEEDED**), but `change_status` was never called with `planReviewState` to record it. ' +
   "Read your own last comment, then call `change_status` now (newStatus: \"Grooming\", planReviewState set to match — 'approved' or 'changes-requested'), and end your turn. Do not re-review from scratch.";
 
+/** FLUX-1437: mirrors Temper's `REVIEW_RETRY_FOCUS`, keyed to `planReviewState` instead of `reviewState`
+ *  — the one-shot corrective focus for a plan-review pass that ended with NO verdict AND no
+ *  verdict-shaped comment either (e.g. narrated a dead background/monitor wait instead of calling
+ *  `change_status`). */
+export const PLAN_REVIEW_RETRY_FOCUS =
+  'Your previous plan-review session for this ticket ended without ever calling `change_status` to record a verdict, and without leaving a verdict-shaped comment either — so the ticket was about to be parked for a human over that alone. ' +
+  'Give it a fresh review pass now: assess the plan, then call `change_status` (newStatus: "Grooming", planReviewState set to "approved" or "changes-requested" to match your verdict), and end your turn. If you genuinely cannot decide, use "Require Input" instead of ending the turn without a verdict again.';
+
 // ── Gate spec ─────────────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -150,6 +158,9 @@ interface GateRunSpec {
   reviewFocus: (ticketId: string) => Promise<string>;
   reviseFocus: string;
   reviewNudgeFocus: string;
+  /** FLUX-1437: focus for the one-shot retry when a review pass ends with no verdict AND no
+   *  verdict-shaped comment (mirrors Temper's `REVIEW_RETRY_FOCUS`). */
+  reviewRetryFocus: string;
   /** The gate's terminal-approved action — a parameter, not hardcoded, so a second gate can supply its
    *  own (`plan`: move Grooming -> Todo; `review`: no-op, Temper's `pr-open` already leaves it at Ready). */
   onApproved: (ticketId: string) => Promise<void>;
@@ -213,6 +224,7 @@ const PLAN_GATE_SPEC: GateRunSpec = {
   },
   reviseFocus: PLAN_REVISE_FOCUS,
   reviewNudgeFocus: PLAN_REVIEW_NUDGE_FOCUS,
+  reviewRetryFocus: PLAN_REVIEW_RETRY_FOCUS,
   onApproved: async (ticketId: string) => {
     const todo = nextColumnAfter(GROOMING_STATUS) || 'Todo';
     await updateTaskWithHistory(ticketId, {
@@ -349,6 +361,18 @@ async function advanceGateTicket(ticketId: string, action: TicketAction): Promis
       break;
     }
 
+    case 'review-retry': {
+      // FLUX-1437: no verdict AND no verdict-shaped comment (the FLUX-1434 incident shape, on the plan
+      // gate) — mirrors Temper's/Furnace's `review-retry` handling: one fresh review pass before parking.
+      // Shares `reviewNudgeSent` with `review-nudge` above (one nudge budget per review pass total).
+      ticket.reviewNudgeSent = true;
+      delete ticket.currentSessionId;
+      delete ticket.sessionStartedAt;
+      await spawnGate(entry, 'review', spec.reviewRetryFocus);
+      log.info(`[gate:${spec.gate}] ${ticketId} review completed without a verdict or a verdict-shaped comment — giving it one fresh review pass before parking.`);
+      break;
+    }
+
     case 'reimplement': {
       // FLUX-1288: only a genuine one-pass run never loops — a changes-requested verdict from the
       // single pass just sits recorded, flagged for a human. `loop-confirm` (`auto-then-you`) and
@@ -417,11 +441,20 @@ async function advanceGateTicket(ticketId: string, action: TicketAction): Promis
       break;
     }
 
-    // Never produced (rate-limit/context-exhaustion inputs are omitted below) — ignored defensively.
+    // Never produced (rate-limit/context-exhaustion/auth inputs are omitted below) — ignored defensively.
     case 'retry-exhausted':
     case 'cooldown-rate-limited':
     case 'retry-rate-limited':
+    case 'halt-auth-expired':
       return;
+
+    // FLUX-1437: exhaustiveness guard — a `TicketAction` variant with no case above now fails
+    // `npm run typecheck` instead of silently no-op'ing and wedging the gate run forever (the bug this
+    // ticket fixed for `review-retry`: TypeScript does not flag a non-exhaustive switch on its own).
+    default: {
+      const _exhaustive: never = action;
+      throw new Error(`[gate:${spec.gate}] ${ticketId}: unhandled TicketAction ${JSON.stringify(_exhaustive)}`);
+    }
   }
 }
 
