@@ -304,13 +304,30 @@ export async function saveMcpPhases(mcpServerPhases: Record<string, string[]>): 
 }
 
 export async function updateTask(id: string, updates: Partial<Task> & { skipCommentRequirement?: boolean; appendHistory?: HistoryEntryDraft[] }): Promise<Task> {
-  const res = await fetch(`${API_URL}/tasks/${id}`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(updates)
-  });
+  // FLUX-1485: 15s ceiling matching resolveBoardRebase (api.ts, FLUX-773) so a wedged engine can
+  // never hold this connection open forever — every Approve surface (plan panel, AttentionDock,
+  // chat card) funnels through this one call, and a hung PUT was starving the browser's per-origin
+  // connection pool badly enough to brick the whole portal tab.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/tasks/${id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(updates),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('Timed out waiting for the engine to respond — is it wedged?', { cause: err });
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     let message = 'Failed to update task';
     let code: string | undefined;

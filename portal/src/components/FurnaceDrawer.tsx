@@ -43,6 +43,8 @@ import { useEscapeKey } from '../hooks/useEscapeKey';
 import { useConfirm } from '../hooks/useConfirm';
 
 const POLL_MS = 3000;
+// FLUX-1487: a batch's ticket list collapses behind a "+ N more" row past this many rows.
+const TICKET_PREVIEW_COUNT = 5;
 
 // FLUX-1061: the Furnace's own purple/violet accent, a CONSTANT across themes (see index.css). Used
 // wherever the drawer previously leaked `var(--eh-accent, #7c3aed)` (green under matrix / purple fallback).
@@ -61,9 +63,11 @@ const STATE_META: Record<BatchTicketState, { label: string; dot: string; text: s
   queued:         { label: 'queued',        dot: '#a8a29e', text: 'var(--eh-text-secondary)' },
   implementing:   { label: 'impl',          dot: '#22c55e', text: '#22c55e' },
   reviewing:      { label: 'review',        dot: '#0ea5e9', text: '#0ea5e9' },
-  reimplementing: { label: 're-impl',       dot: '#e05a00', text: '#e05a00' },
+  // FLUX-1487: was `#e05a00` — now sits too close to the fire-orange furnace accent to read as
+  // distinct, so re-impl shifted to the deep-red end of the heat gradient instead.
+  reimplementing: { label: 're-impl',       dot: 'var(--eh-furnace-accent-deep)', text: 'var(--eh-furnace-accent-deep)' },
   'cooling-down': { label: 'cooling',       dot: '#38bdf8', text: '#38bdf8' },
-  'pr-open':      { label: 'PR open',       dot: '#8b5cf6', text: '#8b5cf6' },
+  'pr-open':      { label: 'PR open',       dot: FURNACE_ACCENT, text: FURNACE_ACCENT },
   parked:         { label: 'parked',        dot: '#f59e0b', text: '#f59e0b' },
   failed:         { label: 'failed',        dot: '#ef4444', text: '#ef4444' },
   skipped:        { label: 'skipped',       dot: '#a8a29e', text: 'var(--eh-text-secondary)' },
@@ -71,10 +75,23 @@ const STATE_META: Record<BatchTicketState, { label: string; dot: string; text: s
 
 const STATUS_CHIP: Record<BatchStatus, { label: string; bg: string; fg: string }> = {
   draft:   { label: 'draft',   bg: 'var(--eh-surface-raised)', fg: 'var(--eh-text-secondary)' },
-  burning: { label: 'burning', bg: 'rgba(34,197,94,.14)', fg: '#22c55e' },
-  done:    { label: 'done',    bg: 'rgba(139,92,246,.14)', fg: '#8b5cf6' },
+  // FLUX-1487: burning reads as the furnace identity (orange) — a finished burn is the "success" green.
+  burning: { label: 'burning', bg: FURNACE_ACCENT_GLOW, fg: FURNACE_ACCENT },
+  done:    { label: 'done',    bg: 'rgba(34,197,94,.14)', fg: '#22c55e' },
   parked:  { label: 'parked',  bg: 'rgba(245,158,11,.14)', fg: '#f59e0b' },
 };
+
+// FLUX-1487: per-ticket progress-segments row on a burning batch card. Actively-working states pulse
+// green (matches the board's own running-session language); a finished/PR-open ticket reads accent
+// (the furnace identity); a stuck (parked/failed) ticket reads the deep-red heat-edge color so it
+// doesn't get lost among neutral queued segments; queued stays neutral.
+const TICKET_PROGRESS_ACTIVE = new Set<BatchTicketState>(['implementing', 'reviewing', 'reimplementing', 'cooling-down']);
+function ticketProgressColor(ticket: BatchTicket): string {
+  if (TICKET_PROGRESS_ACTIVE.has(ticket.state)) return '#22c55e';
+  if (ticket.state === 'pr-open') return FURNACE_ACCENT;
+  if (ticket.state === 'parked' || ticket.state === 'failed') return 'var(--eh-furnace-accent-deep)';
+  return 'var(--eh-border)';
+}
 
 interface DrawerProps { embedded?: boolean; onClose?: () => void }
 
@@ -177,15 +194,33 @@ export function FurnaceDrawer({ onClose }: DrawerProps) {
   const drafts = batches.filter((b) => b.status === 'draft');
   const completed = batches.filter((b) => b.status === 'done' || b.status === 'parked');
 
+  // FLUX-1487: pressing Escape while the floating panel is open now closes it — previously only
+  // sub-popovers (TriggerPopover, NoSlotPopup) consumed Escape at all.
+  useEscapeKey(() => onClose?.(), { enabled: !!onClose });
+
   return (
     <div className="flex h-full flex-col text-xs" style={{ color: 'var(--eh-text-primary)', background: 'var(--eh-base)' }}>
       {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b flex-shrink-0" style={{ borderColor: 'var(--eh-border)' }}>
-        <Flame className="h-4 w-4" style={{ color: burning.length ? FURNACE_ACCENT : 'var(--eh-text-secondary)' }} />
-        <span className="text-[13px] font-semibold flex-1">Furnace</span>
-        {burning.length > 0 && <span className="text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>{burning.length} burning</span>}
+      <div className="flex items-center gap-2.5 px-3 py-2.5 border-b flex-shrink-0" style={{ borderColor: 'var(--eh-border)' }}>
+        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl" style={{ background: FURNACE_ACCENT_GLOW }}>
+          <Flame className="h-4 w-4" style={{ color: FURNACE_ACCENT }} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-semibold leading-tight">Furnace</div>
+          <div className="flex items-center gap-1 text-[10px] leading-tight" style={{ color: 'var(--eh-text-secondary)' }}>
+            {burning.length > 0 ? (
+              <>
+                <span className="h-1.5 w-1.5 flex-shrink-0 animate-pulse rounded-full" style={{ background: FURNACE_ACCENT }} />
+                {burning.length} batch{burning.length === 1 ? '' : 'es'} burning
+              </>
+            ) : (
+              'Idle'
+            )}
+          </div>
+        </div>
+        <SlotMeter slots={slots} />
         {onClose && (
-          <button onClick={onClose} title="Close" aria-label="Close the Furnace" className="rounded p-0.5" style={{ color: 'var(--eh-text-secondary)' }}><X className="h-3.5 w-3.5" /></button>
+          <button onClick={onClose} title="Close" aria-label="Close the Furnace" className="rounded p-0.5 flex-shrink-0" style={{ color: 'var(--eh-text-secondary)' }}><X className="h-3.5 w-3.5" /></button>
         )}
       </div>
 
@@ -201,7 +236,7 @@ export function FurnaceDrawer({ onClose }: DrawerProps) {
           disabled={startingSmelter}
           title="Talk to the Furnace Operator — plan a burn or troubleshoot a parked batch"
           className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium disabled:opacity-50"
-          style={{ background: FURNACE_ACCENT, color: '#fff' }}
+          style={{ background: `linear-gradient(135deg, ${FURNACE_ACCENT}, var(--eh-furnace-accent-deep))`, color: '#fff' }}
         >
           <Bot className="h-3.5 w-3.5" /> {startingSmelter ? 'Starting…' : 'Chat with Smelter'}
         </button>
@@ -216,7 +251,6 @@ export function FurnaceDrawer({ onClose }: DrawerProps) {
         </span>
       </div>
 
-      <SlotBar slots={slots} />
       {error && (
         <div className="mx-3 mt-2 rounded px-2 py-1 text-[11px]" style={{ background: 'rgba(239,68,68,.12)', color: '#ef4444' }}>{error}</div>
       )}
@@ -339,6 +373,31 @@ function KindToggle({ kind, onChange, disabled }: { kind: BatchKind; onChange: (
   );
 }
 
+/** FLUX-1487: 1–4 segmented burn-rate stepper (replaces the raw `<input type=range>`) — bar-chart-style,
+ *  filled up to the current value. Each segment commits its value directly on click (no drag/release). */
+function BurnRateStepper({ value, onCommit }: { value: number; onCommit: (v: number) => void }) {
+  return (
+    <div className="flex flex-1 items-center gap-1.5">
+      <span className="text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>Burn</span>
+      <div className="flex flex-1 items-end gap-0.5" role="group" aria-label="Burn rate">
+        {Array.from({ length: MAX_BURN_RATE }, (_, i) => i + 1).map((n) => (
+          <button
+            key={n}
+            type="button"
+            onClick={() => onCommit(n)}
+            title={`Burn rate ${n}`}
+            aria-label={`Set burn rate to ${n}`}
+            aria-pressed={value === n}
+            className="flex-1 rounded-sm transition-colors"
+            style={{ height: `${4 + n * 3}px`, background: n <= value ? FURNACE_ACCENT : 'var(--eh-border)' }}
+          />
+        ))}
+      </div>
+      <span className="w-3 text-center text-[11px] font-bold">{value}</span>
+    </div>
+  );
+}
+
 /** Format a `pr`-type trigger ref for display: a GitHub PR URL collapses to `#123`; a bare number gets a `#`. */
 function formatPrRef(ref: string): string {
   const m = ref.match(/\/pull\/(\d+)\/?$/);
@@ -376,7 +435,7 @@ export function TriggerControl({ batch, allBatches, disabled, onChanged }: { bat
           onClick={() => setOpen((o) => !o)}
           title={clearOnly ? `${resolved.tooltip} Click to clear.` : `${resolved.tooltip} Click to change.`}
           className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px]"
-          style={{ background: 'rgba(167,139,250,.12)', color: '#a78bfa', cursor: 'pointer' }}
+          style={{ background: FURNACE_ACCENT_GLOW, color: 'var(--eh-furnace-accent-soft)', cursor: 'pointer' }}
         >
           <Clock className="h-2.5 w-2.5" /> after: {resolved.label}
         </button>
@@ -527,17 +586,21 @@ function TriggerPopover({ batch, allBatches, clearOnly, onChanged, onClose }: { 
   );
 }
 
-function SlotBar({ slots }: { slots: SlotInfo }) {
+/** FLUX-1487: compact worktree-slots meter folded into the drawer header (was its own bordered row). */
+function SlotMeter({ slots }: { slots: SlotInfo }) {
   const pips = Array.from({ length: slots.max }, (_, i) => i < slots.used);
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 border-b flex-shrink-0" style={{ borderColor: 'var(--eh-border)', background: 'var(--eh-surface)' }}>
-      <span className="text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>Worktree slots</span>
-      <div className="flex gap-1">
+    <div className="flex flex-shrink-0 items-center gap-1.5" title={`${slots.used} / ${slots.max} worktree slots in use`}>
+      <div className="flex gap-0.5">
         {pips.map((used, i) => (
-          <div key={i} className="h-1.5 w-4 rounded-sm" style={{ background: used ? FURNACE_ACCENT : 'var(--eh-border)' }} />
+          <div
+            key={i}
+            className="h-3 w-1.5 rounded-sm"
+            style={{ background: used ? `linear-gradient(180deg, ${FURNACE_ACCENT}, var(--eh-furnace-accent-deep))` : 'var(--eh-border)' }}
+          />
         ))}
       </div>
-      <span className="text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}><b style={{ color: 'var(--eh-text-primary)' }}>{slots.used}</b> / {slots.max} used</span>
+      <span className="text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>{slots.used}/{slots.max}</span>
     </div>
   );
 }
@@ -661,6 +724,11 @@ const BatchCard = memo(function BatchCard({ batch, allBatches, slots, onChanged 
 
   const addResults = useMemo(() => (addQuery.trim() ? searchTasks(tasks, addQuery, 6) : []), [tasks, addQuery]);
   const igniteDisabled = busy || slots.free < 1 || batch.tickets.length === 0;
+  // FLUX-1487: a long ticket list collapses behind a "+ N more" row instead of always rendering
+  // every row — kept as a plain prefix slice so rail numbering (position in batch.tickets) stays stable.
+  const [showAllTickets, setShowAllTickets] = useState(false);
+  const visibleTickets = showAllTickets ? batch.tickets : batch.tickets.slice(0, TICKET_PREVIEW_COUNT);
+  const hiddenTicketCount = batch.tickets.length - visibleTickets.length;
 
   // FLUX-1082: drag-and-drop reorder. Only `queued` tickets may be dragged or targeted — a ticket that
   // has already started (or finished) burning stays fixed in place, in a draft or a burning batch alike.
@@ -682,11 +750,15 @@ const BatchCard = memo(function BatchCard({ batch, allBatches, slots, onChanged 
     void run(() => updateFurnaceBatch(batch.id, { tickets: renumbered }));
   }, [batch.tickets, batch.id, run]);
 
+  // FLUX-1487: quiet by default (drafts/finished cards), only the burning card gets the animated heat
+  // edge — so the eye finds what's actually running instead of every card competing for attention.
+  const rootClassName = `rounded-2xl border transition-colors${isBurning ? ' eh-furnace-burning-glow' : ''}`;
+
   return (
-    <div ref={setNodeRef} className="rounded-lg border transition-colors" style={{ borderColor: isOver ? FURNACE_ACCENT : 'var(--eh-border)', background: isOver ? FURNACE_ACCENT_GLOW : isBurning ? 'rgba(34,197,94,.05)' : 'var(--eh-surface)' }}>
+    <div ref={setNodeRef} className={rootClassName} style={{ borderColor: isOver ? FURNACE_ACCENT : isBurning ? 'var(--eh-furnace-accent-glow)' : 'var(--eh-border)', background: isOver ? FURNACE_ACCENT_GLOW : isBurning ? 'rgba(249,115,22,.04)' : 'var(--eh-surface)' }}>
       {/* Header */}
       <div className="flex items-start gap-2 p-2">
-        <div className="flex h-7 w-7 items-center justify-center rounded flex-shrink-0" style={{ background: 'var(--eh-surface-raised)' }}>
+        <div className="flex h-7 w-7 items-center justify-center rounded-lg flex-shrink-0" style={{ background: 'var(--eh-surface-raised)' }}>
           {createElement(iconFor(batch), { className: 'h-3.5 w-3.5', style: { color: FURNACE_ACCENT } })}
         </div>
         <div className="min-w-0 flex-1">
@@ -727,6 +799,9 @@ const BatchCard = memo(function BatchCard({ batch, allBatches, slots, onChanged 
               <AlertTriangle className="h-2.5 w-2.5" /> The branch name will NOT be renamed — display name only.
             </div>
           )}
+          <div className="mt-0.5 text-[9px] font-semibold uppercase tracking-wider" style={{ color: 'var(--eh-text-muted)' }}>
+            {batch.kind === 'sequential' ? 'Sequential · one shared PR' : 'Parallel · PR per ticket'}
+          </div>
           <div className="mt-0.5 truncate font-mono text-[10px]" style={{ color: 'var(--eh-text-muted)' }} title={batch.branch}>{batch.branch}</div>
           {/* FLUX-1270: display-only provenance — this batch was spun off from a parallel batch to
               pull a same-branch-dependent follow-up + its parent onto their own reused branch. */}
@@ -769,16 +844,41 @@ const BatchCard = memo(function BatchCard({ batch, allBatches, slots, onChanged 
           {fmtDuration(batch.ignitedAt) && <span>{fmtDuration(batch.ignitedAt)} elapsed</span>}
         </div>
       )}
+      {isBurning && batch.tickets.length > 0 && (
+        <div className="flex items-center gap-0.5 px-2 pb-1.5" title="Per-ticket burn progress">
+          {batch.tickets.map((t) => (
+            <div key={t.ticketId} className={`h-1 flex-1 rounded-full${TICKET_PROGRESS_ACTIVE.has(t.state) ? ' animate-pulse' : ''}`} style={{ background: ticketProgressColor(t) }} />
+          ))}
+        </div>
+      )}
 
       {/* Ticket rows — nested DndContext scoped to this batch's own list, independent of the board's. */}
       <div className="border-t" style={{ borderColor: 'var(--eh-border)' }}>
         <DndContext collisionDetection={closestCenter} onDragEnd={onReorderTickets}>
-          <SortableContext items={batch.tickets.map((t) => t.ticketId)} strategy={verticalListSortingStrategy}>
-            {batch.tickets.map((t) => (
-              <TicketRow key={t.ticketId} ticket={t} batchId={batch.id} batchStatus={batch.status} onChanged={onChanged} onRemove={removeTicket} />
+          <SortableContext items={visibleTickets.map((t) => t.ticketId)} strategy={verticalListSortingStrategy}>
+            {visibleTickets.map((t, i) => (
+              <TicketRow
+                key={t.ticketId}
+                ticket={t}
+                batchId={batch.id}
+                batchStatus={batch.status}
+                onChanged={onChanged}
+                onRemove={removeTicket}
+                railIndex={batch.kind === 'sequential' ? i + 1 : undefined}
+                railTotal={batch.kind === 'sequential' ? visibleTickets.length : undefined}
+              />
             ))}
           </SortableContext>
         </DndContext>
+        {hiddenTicketCount > 0 && (
+          <button
+            onClick={() => setShowAllTickets(true)}
+            className="w-full px-2 py-1 text-left text-[10px] hover:underline"
+            style={{ color: 'var(--eh-text-secondary)' }}
+          >
+            + {hiddenTicketCount} more ticket{hiddenTicketCount === 1 ? '' : 's'}…
+          </button>
+        )}
         {batch.tickets.length === 0 && (
           <div className="px-2 py-2 text-[11px]" style={{ color: 'var(--eh-text-secondary)' }}>No tickets — add some (or drag a board card here) before igniting.</div>
         )}
@@ -806,22 +906,17 @@ const BatchCard = memo(function BatchCard({ batch, allBatches, slots, onChanged 
 
       {/* Controls */}
       <div className="flex items-center gap-2 border-t px-2 py-1.5" style={{ borderColor: 'var(--eh-border)' }}>
-        {batch.kind === 'parallel' && !isTerminal && (
-          <>
-            <span className="text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>Burn</span>
-            <input
-              type="range" min={1} max={MAX_BURN_RATE} value={shownBurn}
-              aria-label="Burn rate"
-              onChange={(e) => setBurnDraft(Number(e.target.value))}
-              onPointerUp={(e) => commitBurn(Number((e.target as HTMLInputElement).value))}
-              onKeyUp={(e) => commitBurn(Number((e.target as HTMLInputElement).value))}
-              className="flex-1" style={{ accentColor: FURNACE_ACCENT }}
-            />
-            <span className="w-3 text-center text-[11px] font-bold">{shownBurn}</span>
-          </>
+        {isBurning ? (
+          <span className="flex-1 text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>
+            burning{fmtDuration(batch.ignitedAt) ? ` ${fmtDuration(batch.ignitedAt)}` : ''} · {Math.max(0, counts.total - counts.active - counts.queued)} of {counts.total} done
+          </span>
+        ) : batch.kind === 'parallel' && !isTerminal ? (
+          <BurnRateStepper value={shownBurn} onCommit={commitBurn} />
+        ) : batch.kind === 'sequential' && !isTerminal ? (
+          <span className="flex-1 text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>ordered · one shared PR</span>
+        ) : (
+          <span className="flex-1" />
         )}
-        {batch.kind === 'sequential' && !isTerminal && <span className="flex-1 text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>ordered · one shared PR</span>}
-        {isTerminal && <span className="flex-1" />}
 
         {!isTerminal && !adding && (
           <button onClick={() => setAdding(true)} title="Add ticket" aria-label="Add ticket to batch" className="rounded px-1.5 py-1" style={{ border: '1px solid var(--eh-border)', color: 'var(--eh-text-secondary)' }}>
@@ -847,14 +942,16 @@ const BatchCard = memo(function BatchCard({ batch, allBatches, slots, onChanged 
             )}
             {isDraft && (
               <button disabled={igniteDisabled} onClick={() => void onIgnite()} title={slots.free < 1 ? 'No worktree slots available' : 'Ignite'}
-                className="inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: igniteDisabled ? 'var(--eh-surface-raised)' : FURNACE_ACCENT, color: igniteDisabled ? 'var(--eh-text-muted)' : '#fff', cursor: igniteDisabled ? 'not-allowed' : 'pointer' }}>
+                className="inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-semibold"
+                style={{ background: igniteDisabled ? 'var(--eh-surface-raised)' : `linear-gradient(135deg, ${FURNACE_ACCENT}, var(--eh-furnace-accent-deep))`, color: igniteDisabled ? 'var(--eh-text-muted)' : '#fff', cursor: igniteDisabled ? 'not-allowed' : 'pointer' }}>
                 <Play className="h-3 w-3" /> Ignite
               </button>
             )}
             {/* FLUX-1066: a halted (parked) batch is resumable — reset the breaker + re-burn its remaining work. */}
             {batch.status === 'parked' && (
               <button disabled={busy || slots.free < 1} onClick={() => void onResume()} title={slots.free < 1 ? 'No worktree slots available' : 'Resume — reset the breaker and re-burn'}
-                className="inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: busy || slots.free < 1 ? 'var(--eh-surface-raised)' : FURNACE_ACCENT, color: busy || slots.free < 1 ? 'var(--eh-text-muted)' : '#fff', cursor: busy || slots.free < 1 ? 'not-allowed' : 'pointer' }}>
+                className="inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-semibold"
+                style={{ background: busy || slots.free < 1 ? 'var(--eh-surface-raised)' : `linear-gradient(135deg, ${FURNACE_ACCENT}, var(--eh-furnace-accent-deep))`, color: busy || slots.free < 1 ? 'var(--eh-text-muted)' : '#fff', cursor: busy || slots.free < 1 ? 'not-allowed' : 'pointer' }}>
                 <Play className="h-3 w-3" /> Resume
               </button>
             )}
@@ -882,7 +979,7 @@ const BatchCard = memo(function BatchCard({ batch, allBatches, slots, onChanged 
 // batch reference changes on every write (`mutateFurnaceBatch` structuredClones it), so a `batch`
 // prop would defeat the shallow-prop memo for every row whenever any sibling ticket changed — even
 // with per-ticket identity reuse in `mergeFurnaceBatches`. Primitives keep the memo gating per-ticket.
-export const TicketRow = memo(function TicketRow({ ticket, batchId, batchStatus, onChanged, onRemove }: { ticket: BatchTicket; batchId: string; batchStatus: BatchStatus; onChanged: () => Promise<void>; onRemove: (ticketId: string) => void }) {
+export const TicketRow = memo(function TicketRow({ ticket, batchId, batchStatus, onChanged, onRemove, railIndex, railTotal }: { ticket: BatchTicket; batchId: string; batchStatus: BatchStatus; onChanged: () => Promise<void>; onRemove: (ticketId: string) => void; railIndex?: number; railTotal?: number }) {
   const meta = STATE_META[ticket.state];
   const canRemove = !(batchStatus === 'burning' && ticket.state !== 'queued');
   // FLUX-1082: only a still-queued ticket may be dragged to reorder — one that's started/finished
@@ -920,8 +1017,23 @@ export const TicketRow = memo(function TicketRow({ ticket, batchId, batchStatus,
   return (
     <div ref={setNodeRef} style={dragStyle} className="group flex flex-col gap-0.5 px-2 py-1 text-[11px]">
       <div className="flex items-center gap-1.5">
-        {draggable ? (
-          <button {...attributes} {...listeners} title="Drag to reorder" aria-label={`Reorder ${ticket.ticketId}`} className="flex-shrink-0 cursor-grab touch-none active:cursor-grabbing">
+        {railIndex !== undefined ? (
+          // FLUX-1487: sequential batches get a numbered order rail instead of a plain grip — the
+          // burn order IS the information, so it stays visible (not hover-gated like the parallel grip).
+          // Still the drag handle when the ticket is queued (attributes/listeners attach here too).
+          <div className="relative flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center" {...(draggable ? { ...attributes, ...listeners } : {})}>
+            <span
+              className="flex h-3.5 w-3.5 items-center justify-center rounded-full text-[8px] font-bold leading-none"
+              style={{ background: FURNACE_ACCENT_GLOW, color: FURNACE_ACCENT, border: `1px solid ${FURNACE_ACCENT}`, cursor: draggable ? 'grab' : 'default' }}
+            >
+              {railIndex}
+            </span>
+            {railTotal !== undefined && railIndex < railTotal && (
+              <span className="absolute left-1/2 top-full h-2 w-px -translate-x-1/2" style={{ background: 'var(--eh-border)' }} />
+            )}
+          </div>
+        ) : draggable ? (
+          <button {...attributes} {...listeners} title="Drag to reorder" aria-label={`Reorder ${ticket.ticketId}`} className="flex-shrink-0 cursor-grab touch-none opacity-0 transition-opacity group-hover:opacity-100 active:cursor-grabbing">
             <GripVertical className="h-3 w-3" style={{ color: 'var(--eh-text-muted)' }} />
           </button>
         ) : (
@@ -1008,10 +1120,15 @@ function CompletedSummary({ batch, onOpenTicket, onChanged }: { batch: FurnaceBa
   }, [batch.id, onChanged]);
 
   return (
-    <div className="border-t px-2 py-2" style={{ borderColor: 'var(--eh-border)', background: 'rgba(139,92,246,.04)' }}>
-      <div className="mb-1.5 flex items-center gap-1 text-[10px] font-bold" style={{ color: allMerged ? '#60a5fa' : '#8b5cf6' }}>
-        {allMerged ? <GitMerge className="h-3 w-3" /> : <Check className="h-3 w-3" />} {allMerged ? 'Merged' : `Batch complete — ${batch.prs.length} PR(s)`}
+    <div className="border-t px-2 py-2" style={{ borderColor: 'var(--eh-border)', background: 'rgba(34,197,94,.04)' }}>
+      <div className="mb-1.5 flex items-center gap-1 text-[10px] font-bold" style={{ color: allMerged ? '#60a5fa' : '#22c55e' }}>
+        {allMerged ? <GitMerge className="h-3 w-3" /> : <Check className="h-3 w-3" />} {allMerged ? 'Merged' : `Finished · ${batch.prs.length} PR${batch.prs.length === 1 ? '' : 's'} open at Ready`}
       </div>
+      {fmtDuration(batch.ignitedAt, batch.completedAt) && (
+        <div className="mb-1.5 text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>
+          burned {batch.tickets.length} ticket{batch.tickets.length === 1 ? '' : 's'} in {fmtDuration(batch.ignitedAt, batch.completedAt)}
+        </div>
+      )}
       {batch.prs.map((pr) => {
         const c = prcStyle(pr.reviewState);
         return (

@@ -44,7 +44,7 @@ import { dismissNotificationsForTicket } from '../notifications.js';
 import { resolvePersonaPrompt, getPersonaById } from '../orchestration-personas.js';
 import { ensureTicketIsolation } from '../ticket-isolation.js';
 import { raiseNeedsAction, isDelegatedMember } from '../parked-ticket.js';
-import { buildActivityEntry, buildAgentSessionEntry } from '../history.js';
+import { buildActivityEntry, buildAgentSessionEntry, LAUNCH_FOCUS_PREFIX, buildLaunchFocusSummary } from '../history.js';
 import {
   captureDiffForPrompt,
   getMergeBase,
@@ -970,11 +970,23 @@ router.post('/:id/cli-session/start', async (req, res) => {
     // (FLUX-473 deliberately keeps that blob out of the agent digest).
     // Best-effort: the session already launched, so a failure to record the
     // focus must NOT turn a successful launch into a 500 (FLUX-480 review).
+    // FLUX-1469: the text lives ONCE, in `comment` (behind LAUNCH_FOCUS_PREFIX) — no more
+    // duplicate `launchFocus` metadata field holding the same string a second time in the same
+    // entry. `extractLaunchFocus` (history.ts) reads it back out of `comment`. A large,
+    // pull-backed focus (gate/temper/furnace, names a `read_skill(...)` call) also gets a
+    // `summary` so it collapses to one line in the agent digest once it ages out — a short
+    // ad-hoc focus gets no summary and stays exactly as visible as before.
     if (focusComment) {
       try {
+        const summary = buildLaunchFocusSummary(focusComment);
         await updateTaskWithHistory(id, {
           updatedBy: 'Agent',
-          entries: [buildActivityEntry(`🎯 Launch focus: ${focusComment}`, launchedBy, new Date().toISOString(), { launchFocus: focusComment })],
+          entries: [buildActivityEntry(
+            `${LAUNCH_FOCUS_PREFIX}${focusComment}`,
+            launchedBy,
+            new Date().toISOString(),
+            summary ? { summary } : {},
+          )],
         });
       } catch (focusErr: unknown) {
         console.warn(`[cli-session] Failed to persist launch focus for ${id}: ${focusErr instanceof Error ? focusErr.message : focusErr}`);

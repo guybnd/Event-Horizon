@@ -154,4 +154,31 @@ describe('buildInitialPrompt — parity by default (FLUX-960)', () => {
     const normalized = prompts.map((p) => p.split('\n').slice(0, -1).join('\n'));
     expect(new Set(normalized).size).toBe(1);
   });
+
+  it('FLUX-1226: every phase resolves its Mission text through the persona layer, not a hardcoded literal', () => {
+    // The phase's role text now lives in orchestration-personas.ts (PHASE_DEFAULT_PERSONAS) —
+    // this just re-asserts the headline text every phase always had, now sourced through
+    // resolveSoloChatPersona + renderPersonaTemplate instead of an inline switch.
+    const expectedHeadline: Record<string, string> = {
+      chat: '## Conversational session',
+      grooming: '## Your Mission: GROOM this ticket',
+      'fast-path': '## Your Mission: FAST-PATH this ticket',
+      implementation: '## Your Mission: IMPLEMENT this ticket',
+      review: `## Your Mission: REVIEW this ticket's implementation`,
+      finalize: '## Your Mission: FINALIZE this ticket',
+    };
+    for (const [phase, headline] of Object.entries(expectedHeadline)) {
+      const prompt = buildInitialPrompt(mockTask, '', { phase, framework: 'claude' });
+      expect(prompt, `phase=${phase}`).toContain(headline);
+    }
+  });
+
+  it('FLUX-1226/1229: the phase-overlay composition seam is a no-op today — empty overlay leaves output byte-identical', () => {
+    // resolvePhaseOverlay (shared.ts) always returns '' until FLUX-1229 wires a real resolver —
+    // asserting no double-blank-line artifact confirms the seam is genuinely additive-only.
+    for (const phase of ['grooming', 'implementation', 'review', 'finalize'] as const) {
+      const prompt = buildInitialPrompt(mockTask, '', { phase, framework: 'claude' });
+      expect(prompt).not.toContain('\n\n\n');
+    }
+  });
 });

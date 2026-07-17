@@ -836,6 +836,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setWorkspaceConfigured(configured);
         setWorkspacePath(wp);
         if (configured) {
+          // FLUX-1465: `loadTasks` diffs the fresh fetch against `tasksRef.current` to emit
+          // live events (status-change confetti, column pins, etc). Ticket IDs are workspace-
+          // scoped, so a stale `tasksRef` from the *previous* workspace can collide by ID with
+          // the new workspace's tasks and look like a wave of "moved to Done" transitions —
+          // firing a confetti burst per card and jank-freezing the board on every swap. Clear
+          // the ref (and `hasLoadedTasksRef`) first so the post-switch fetch is treated as an
+          // initial load, which `loadTasks` already skips live-event emission for.
+          tasksRef.current = [];
+          hasLoadedTasksRef.current = false;
+          setTasks([]);
           void loadTasks();
           fetchConfig().then((c) => {
             setConfig(c);

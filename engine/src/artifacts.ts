@@ -579,17 +579,21 @@ export const ARTIFACT_ANNOTATOR_SCRIPT = String.raw`
   // [data-eh-decision]: upgrades to a small decision card (question + optional index/of tag + the
   // child data-eh-opt elements rendered as selectable chips, replacing their raw markup). Picking an
   // option stages a kind:'decision' annotation; picking a different option restages the SAME record.
+  // A host with NO data-eh-opt children is malformed (an agent hand-rendered its own chips, or used
+  // the attribute as an id) — skip it entirely so it degrades to a plain artifact instead of
+  // injecting an empty, option-less card the user can't interact with.
   function upgradeDecisionControls() {
     var hosts = document.querySelectorAll('[data-eh-decision]');
     if (!hosts.length) return;
-    ensureGuidedStyle();
     for (var i = 0; i < hosts.length; i++) {
       (function (host) {
+        var optSrcs = host.querySelectorAll('[data-eh-opt]');
+        if (!optSrcs.length) return;
+        ensureGuidedStyle();
         var question = host.getAttribute('data-eh-question') || 'Decision';
         var idx = host.getAttribute('data-eh-index');
         var of = host.getAttribute('data-eh-of');
         var defOpt = host.getAttribute('data-eh-default');
-        var optSrcs = host.querySelectorAll('[data-eh-opt]');
         var card = el('div', 'eh-guided-card');
         var head = el('div', 'eh-guided-head');
         var q = el('span'); q.textContent = question;
@@ -667,7 +671,11 @@ export const ARTIFACT_ANNOTATOR_SCRIPT = String.raw`
     else if (d.type === 'update-pin') updateAnnotation(d.id, d.note);
   });
   upgradeGuidedControls();
-  var hasGuidedControls = document.querySelectorAll('[data-eh-feel],[data-eh-decision]').length > 0;
+  // Count only controls that actually upgraded into something interactive: any [data-eh-feel]
+  // (a slider is synthesized even when the host is empty), but a [data-eh-decision] only when it
+  // has at least one [data-eh-opt] child — opt-less hosts are skipped by upgradeDecisionControls,
+  // and reporting them here would invite the user to interact with controls that don't exist.
+  var hasGuidedControls = document.querySelectorAll('[data-eh-feel],[data-eh-decision] [data-eh-opt]').length > 0;
   post({ ns: NS, type: 'ready', hasGuidedControls: hasGuidedControls });
 })();
 `;

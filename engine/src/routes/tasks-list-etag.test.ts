@@ -180,4 +180,41 @@ describe('GET /api/tasks — conditional GET / ETag (FLUX-1144)', () => {
     expect(second.status).toBe(200);
     expect(second.headers.get('etag')).not.toBe(etag);
   });
+
+  // FLUX-1460: the mid-activation window used to still serve a cacheable 200 + ETag over a partial
+  // task set — the client would cache that ETag and every later poll would 304 onto it forever
+  // (only a hard refresh, which drops the client's in-memory ETag map, ever recovered). The engine
+  // now refuses to answer at all while activating, mirroring the existing POST guard, so no partial
+  // snapshot is ever cacheable in the first place.
+  it('returns 503 with no ETag while the workspace is activating, for both list variants', async () => {
+    getWorkspace().isActivating = true;
+    try {
+      const full = await fetch(`${baseUrl}/api/tasks`);
+      expect(full.status).toBe(503);
+      expect(full.headers.get('etag')).toBeNull();
+      await full.text();
+
+      const active = await fetch(`${baseUrl}/api/tasks?active=true`);
+      expect(active.status).toBe(503);
+      expect(active.headers.get('etag')).toBeNull();
+      await active.text();
+    } finally {
+      getWorkspace().isActivating = false;
+    }
+  });
+
+  it('serves 200 with a fresh ETag and the full task set once activation completes', async () => {
+    getWorkspace().isActivating = true;
+    const duringActivation = await fetch(`${baseUrl}/api/tasks`);
+    expect(duringActivation.status).toBe(503);
+    await duringActivation.text();
+
+    getWorkspace().isActivating = false;
+    const after = await fetch(`${baseUrl}/api/tasks`);
+    expect(after.status).toBe(200);
+    expect(after.headers.get('etag')).toBeTruthy();
+    const body = await after.json();
+    expect(body).toHaveLength(1);
+    expect(body[0].id).toBe('FLUX-1');
+  });
 });

@@ -1183,25 +1183,48 @@ function splitToolText(text: string): { before: string; path: string | null; aft
   return { before: text.slice(0, start), path, after: text.slice(start + path.length) };
 }
 
+/** FLUX-1473: split a repo-relative path into its directory prefix and basename so `ToolRow` can
+ *  keep the basename fully visible while eliding the directory. The directory span is
+ *  left-truncated (a `direction: rtl` + `text-align: left` reverse-ellipsis, the same trick
+ *  VS Code's own tab labels use) so it drops the *far* end (the repo root) and keeps the segment
+ *  nearest the file — the useful context — rather than a plain end-ellipsis eating the basename. */
+function PathTail({ path }: { path: string }) {
+  const idx = path.lastIndexOf('/');
+  if (idx < 0) return <span className="flex-shrink-0">{path}</span>;
+  const dir = path.slice(0, idx + 1);
+  const base = path.slice(idx + 1);
+  return (
+    <>
+      <span className="min-w-0 flex-shrink truncate opacity-70" style={{ direction: 'rtl', textAlign: 'left' }}>
+        {dir}
+      </span>
+      <span className="flex-shrink-0">{base}</span>
+    </>
+  );
+}
+
 /** Quiet, uniform tool row — muted wrench + monospace, truncated so long file paths never blow
  *  out the width. Shared by the inline single-tool case and the expanded ToolGroup. FLUX-682: a
- *  repo-relative path in the row text is linkified to open in VS Code. */
+ *  repo-relative path in the row text is linkified to open in VS Code. FLUX-1473: the label text
+ *  arrives already repo-relative (the engine strips the worktree root); the row itself only
+ *  elides the *directory* portion when it overflows (via `PathTail`) so the basename — the part a
+ *  reader actually scans for — is never the part that gets clipped. */
 function ToolRow({ text, openRef }: { text: string; openRef?: string | null }) {
   const parts = useMemo(() => splitToolText(text), [text]);
   return (
     <div className="flex min-w-0 items-center gap-1.5 px-0.5 text-[11px] text-[var(--eh-text-muted)]">
       <Wrench className="h-3 w-3 flex-shrink-0" />
-      <span className="truncate font-mono">
-        {parts.path ? (
-          <>
-            {parts.before}
-            <FileLink path={parts.path} openRef={openRef}>{parts.path}</FileLink>
-            {parts.after}
-          </>
-        ) : (
-          text
-        )}
-      </span>
+      {parts.path ? (
+        <span className="flex min-w-0 items-center font-mono">
+          <span className="flex-shrink-0 whitespace-pre">{parts.before}</span>
+          <FileLink path={parts.path} openRef={openRef} className="flex min-w-0 items-center">
+            <PathTail path={parts.path} />
+          </FileLink>
+          {parts.after && <span className="flex-shrink-0 truncate">{parts.after}</span>}
+        </span>
+      ) : (
+        <span className="truncate font-mono">{text}</span>
+      )}
     </div>
   );
 }
@@ -1316,8 +1339,8 @@ const LIFECYCLE_STYLE: Record<
   started: { rail: 'border-l-primary/50', dot: 'bg-primary/60', text: 'text-primary/80' },
   working: { rail: 'border-l-primary', dot: 'bg-primary', text: 'text-primary' },
   completed: {
-    rail: 'border-l-emerald-500',
-    dot: 'bg-emerald-500',
+    rail: 'border-l-[var(--eh-state-success)]',
+    dot: 'bg-[var(--eh-state-success)]',
     text: 'text-emerald-600 dark:text-emerald-400',
     Icon: CheckCircle2,
   },
@@ -1328,10 +1351,10 @@ const LIFECYCLE_STYLE: Record<
     Icon: XCircle,
   },
   'waiting-input': {
-    rail: 'border-l-amber-500',
-    dot: 'bg-amber-500',
+    rail: 'border-l-[var(--eh-state-attention)]',
+    dot: 'bg-[var(--eh-state-attention)]',
     text: 'text-amber-600 dark:text-amber-400',
-    bg: 'bg-amber-500/[0.07]',
+    bg: 'bg-[var(--eh-state-attention)]/[0.07]',
     Icon: PauseCircle,
   },
   cancelled: {
@@ -1561,6 +1584,13 @@ function DispatchChip({
   );
 }
 
+/** FLUX-1473: while a tool group is the live trailing run, cap the expanded list to the last few
+ *  rows plus a "+N earlier · <counts>" summary line — a long tool-heavy turn otherwise dumps 20+
+ *  rows of scrollback into the transcript instead of reading as motion. The summary is itself a
+ *  button that reveals everything; a manually forced-full group (or one that settles once the
+ *  turn ends) shows the full list uncapped, same as before FLUX-1473. */
+const LIVE_TOOL_GROUP_CAP = 4;
+
 /**
  * FLUX-680: a collapsed cluster of consecutive tool calls. Default-collapsed, the header reads
  * "⚙ N tool calls · last: <action>" so you still get a "what did it just do" glance without
@@ -1569,11 +1599,19 @@ function DispatchChip({
  */
 function ToolGroup({ texts, defaultOpen, openRef }: { texts: string[]; defaultOpen: boolean; openRef?: string | null }) {
   const [open, setOpen] = useState(defaultOpen);
+  const [forceFull, setForceFull] = useState(false);
   // FLUX-687: the group's key (`g${start}`) is stable, so React never remounts it to pick up a
   // changed defaultOpen. Drive open from the prop so a group collapses once it stops being the
   // live trailing run, while still letting the user manually toggle within a render cycle.
-  useEffect(() => setOpen(defaultOpen), [defaultOpen]);
+  // FLUX-1473: a manual "show all" resets here too, so the next live-trailing group starts capped.
+  useEffect(() => {
+    setOpen(defaultOpen);
+    setForceFull(false);
+  }, [defaultOpen]);
   const last = texts[texts.length - 1];
+  const capped = open && defaultOpen && !forceFull && texts.length > LIVE_TOOL_GROUP_CAP;
+  const visibleStart = capped ? texts.length - LIVE_TOOL_GROUP_CAP : 0;
+  const visible = capped ? texts.slice(visibleStart) : texts;
   return (
     <div className="min-w-0">
       <button
@@ -1594,8 +1632,20 @@ function ToolGroup({ texts, defaultOpen, openRef }: { texts: string[]; defaultOp
       </button>
       {open && (
         <div className="ml-3.5 flex flex-col gap-1 border-l border-[var(--eh-border)] pl-2">
-          {texts.map((t, i) => (
-            <ToolRow key={i} text={t} openRef={openRef} />
+          {capped && (
+            <button
+              type="button"
+              onClick={() => setForceFull(true)}
+              title="Show all tool calls"
+              className="flex min-w-0 items-center gap-1.5 rounded px-0.5 py-0.5 text-left text-[11px] text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-secondary)]"
+            >
+              <span className="flex-shrink-0 font-medium">+{visibleStart} earlier</span>
+              <span className="flex-shrink-0 opacity-50">·</span>
+              <span className="truncate opacity-80">{summarizeTrail(texts.slice(0, visibleStart).map((t) => t.split(' · ')[0]))}</span>
+            </button>
+          )}
+          {visible.map((t, i) => (
+            <ToolRow key={visibleStart + i} text={t} openRef={openRef} />
           ))}
         </div>
       )}
@@ -2368,6 +2418,10 @@ function ChipSelect({
   const current = options.find((o) => o.value === value) ?? options[0];
   const active = value !== '';
   const danger = current.tone === 'danger';
+  // FLUX-1473: at Default, the trigger reads the dimension name ("Model") rather than the value
+  // ("Default") — three chips all saying "Default" carried no information beyond their 11px icon.
+  // The word "Default" now only shows up inside the open popover's option list.
+  const triggerLabel = active ? current.label : name;
 
   // Close on outside pointer while open.
   useEffect(() => {
@@ -2396,13 +2450,13 @@ function ChipSelect({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        title={`${name}: ${current.label}`}
+        title={active ? `${name}: ${current.label}` : name}
         aria-haspopup="menu"
         aria-expanded={open}
         className={`flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] transition-colors ${triggerTone}`}
       >
         <Icon className="h-3.5 w-3.5 flex-shrink-0" />
-        <span className="max-w-[72px] truncate">{current.label}</span>
+        <span className="max-w-[72px] truncate">{triggerLabel}</span>
         <ChevronDown className={`h-3 w-3 flex-shrink-0 opacity-60 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (

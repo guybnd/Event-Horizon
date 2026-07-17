@@ -573,4 +573,46 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
     await waitFor(() => typeof getWorkspace().tasks['FLUX-1']?.needsAction === 'string');
     expect(getWorkspace().tasks['FLUX-1'].needsAction).toContain('failed to start');
   });
+
+  // FLUX-1469: the launch focus must land as a single copy in the persisted history entry, not
+  // duplicated across `comment` and a separate `launchFocus` metadata field.
+  describe('launch focus persistence (FLUX-1469)', () => {
+    function launchFocusEntry() {
+      const history = getWorkspace().tasks['FLUX-1']?.history ?? [];
+      return history.find((e: { comment?: string }) => typeof e.comment === 'string' && e.comment.startsWith('🎯 Launch focus: '));
+    }
+
+    it('a short focus is stored once, in `comment` only — no separate launchFocus field, no summary', async () => {
+      const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ framework: TEST_FRAMEWORK, focusComment: 'Dynamic Delegation: short focus' }),
+      });
+      expect(res.status).toBe(201);
+
+      const entry = launchFocusEntry();
+      expect(entry).toBeDefined();
+      expect(entry.comment).toBe('🎯 Launch focus: Dynamic Delegation: short focus');
+      expect(entry.launchFocus).toBeUndefined();
+      expect(entry.summary).toBeUndefined();
+    });
+
+    it('a large, pull-backed focus is stored once and gets a compact summary for the agent digest', async () => {
+      const bigFocus = `${'A long plan-review focus body. '.repeat(20)} read_skill('review', 'Plan-review methodology').`;
+      const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ framework: TEST_FRAMEWORK, focusComment: bigFocus }),
+      });
+      expect(res.status).toBe(201);
+
+      const entry = launchFocusEntry();
+      expect(entry).toBeDefined();
+      expect(entry.comment).toBe(`🎯 Launch focus: ${bigFocus}`);
+      expect(entry.launchFocus).toBeUndefined();
+      expect(typeof entry.summary).toBe('string');
+      expect(entry.comment).not.toBe(entry.summary);
+      expect(entry.summary).toContain("read_skill('review', 'Plan-review methodology')");
+    });
+  });
 });

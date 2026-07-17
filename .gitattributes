@@ -1,0 +1,5 @@
+# The engine's workflow installer rewrites these on every run with LF endings
+# (JSON.stringify + '\n'). Pin them to LF so core.autocrlf=true checkouts match
+# what the engine writes — otherwise they show as phantom-modified on every branch.
+.mcp.json text eol=lf
+.gemini/settings.json text eol=lf

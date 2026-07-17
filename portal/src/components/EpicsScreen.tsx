@@ -2,7 +2,6 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { ChevronDown, Target, CheckCircle2, AlertTriangle, MousePointerClick } from 'lucide-react';
 import type { Config, Task } from '../types';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
-import { CardChatButton } from './task-card/CardChatButton';
 import { isEpic, getDoneStatuses, computeEpicRollup, type EpicRollup } from '../lib/epics';
 import { getArchiveStatus, normalizeStatus } from '../workflow';
 import { getStatusColorClass } from '../statusStyles';
@@ -263,7 +262,7 @@ function EpicCard({
         tabIndex={0}
         aria-expanded={!isCollapsed}
         aria-controls={`epic-drill-${epic.id}`}
-        className="relative flex items-center gap-3 p-4 cursor-pointer select-none rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400 dark:focus-visible:ring-indigo-500"
+        className="flex items-center gap-3 p-4 cursor-pointer select-none rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400 dark:focus-visible:ring-indigo-500"
         onClick={onToggle}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -308,8 +307,6 @@ function EpicCard({
             )}
           </div>
         </div>
-
-        <CardChatButton task={epic} />
 
         {/* Completion bar — clicks fall through to the header toggle (no own action).
             Fill colour is completion-driven on this surface (at-risk signal). The

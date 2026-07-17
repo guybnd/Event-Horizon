@@ -54,6 +54,15 @@ deny = categoryDeny[persona.role]      // the cost lever, config-overridable
 - **Deprecated fallback:** a focus comment carrying the old sole-reviewer signal (`/\b(sole|only)\s+reviewer\b/i`) still restores a legacy write set — kept only so an in-flight pre-upgrade session (dispatched before this shipped, no `enableTools` stamped) doesn't lose access mid-run. Slated for deletion the release after this ships.
 - **Capability caveat:** like the chat file-edit gate below, this is Claude-only — Copilot and Gemini expose no `--disallowed-tools`-equivalent flag, so a worker persona launched on either framework still gets the full toolset regardless of role.
 
+### Tool-description diet — contract stays, lore is pullable (FLUX-1468)
+
+Every session that connects (regardless of role scoping above) pays for the **full schema** — `name` + `description` + `inputSchema` — of every tool it isn't denied, measured in-process by `probeSelfMcpSchema()` ([`engine/src/mcp-schema-probe.ts`](../../../engine/src/mcp-schema-probe.ts)). FLUX-1468 measured this at ~37.4KB / 31 tools (2026-07-17 baseline) and found roughly two-thirds of it was description text — much of it FLUX-numbered history, rationale, and edge-case walkthroughs rather than what an agent needs to call the tool correctly.
+
+- **What stays in the schema:** the behavioral contract only — required/refused conditions, side effects, safety/irreversibility warnings, and enum/shape constraints. If a sentence is ever ambiguous between "contract" and "lore," it stays in the schema (the schema is the only guaranteed-read surface).
+- **What moved:** rationale, FLUX-history, rare edge-case detail, and cross-tool disambiguation now live in **`event-horizon-tools.md`** — one `## <tool-name>` section per registered tool, pulled on demand via `read_skill('tools', '<tool-name>')` (see the `read_skill` entry above; `tools` is a canonical `SKILL_MODULES` stem). A description that had meaningfully more moved out ends with a pointer sentence naming that exact call (e.g. `change_status`, `start_session`, `publish_artifact`, `furnace_build`).
+- **Budget regression test:** [`mcp-schema-probe.test.ts`](../../../engine/src/mcp-schema-probe.test.ts) asserts `probeSelfMcpSchema().toolsBytes` stays at or below the post-diet baseline plus slack, so descriptions can't silently regrow.
+- **Result (2026-07-17):** ~37,369 → ~29,476 bytes, a real ~21% cut. The ticket's own ≥40% target was not reachable while keeping every kept sentence genuinely contract-shaped: roughly 14.3KB of the baseline is JSON-schema *structure* (property names, types, enums, required arrays across ~180 fields, `outputSchema` shapes) rather than description text, and is not reducible by a description-only diet without deleting contract or schema shape — out of scope for this ticket. See FLUX-1468's completion comment for the full before/after breakdown.
+
 ## Server instructions & tool annotations (FLUX-948)
 
 Beyond the tool list, `buildMcpServer()` exposes two pieces of standard MCP metadata so the server behaves well with **any** client, not just a Claude Code harness that loads [`.claude/rules/event-horizon.md`](../../../.claude/rules/event-horizon.md):
@@ -63,7 +72,7 @@ Beyond the tool list, `buildMcpServer()` exposes two pieces of standard MCP meta
 
 | Annotation | Tools |
 |------------|-------|
-| `readOnlyHint: true` (+ `openWorldHint: false`) | `get_ticket`, `get_session_log`, `list_tickets`, `get_board_config`, `get_project_group`, `list_available_agents`, `get_board_state`, `permission_prompt` |
+| `readOnlyHint: true` (+ `openWorldHint: false`) | `get_ticket`, `get_session_log`, `read_skill`, `list_tickets`, `get_board_config`, `get_project_group`, `list_available_agents`, `get_board_state`, `permission_prompt` |
 | `destructiveHint: true` | `archive`, `merge_tickets`, `finish_ticket` (also `openWorldHint: true` — it merges/pushes via `gh`) |
 
 Multiplexed tools whose actions span read and mutation (`branch`, `group_doc`) are left without a blanket read-only/destructive hint this pass, since no single hint is accurate for all of their actions.
@@ -145,6 +154,7 @@ Coverage (list, get, frontmatter-stripping, fallback-free grounding, completion 
 |------|----------|----------|
 | [`get_ticket`](#get_ticket) | Read | — |
 | [`get_session_log`](#get_session_log) | Read | — |
+| [`read_skill`](#read_skill) | Read | — |
 | [`list_tickets`](#list_tickets) | Read | — |
 | [`get_board_config`](#get_board_config) | Read | — |
 | [`get_board_state`](#get_board_state) | Read | — |
@@ -197,7 +207,7 @@ Read a ticket by ID. Returns an **agent digest**, not the raw file: history is d
 - **Oversized `body` truncation** (FLUX-879, AXI #3): the `body` is returned whole until it exceeds a generous limit (`AGENT_BODY_LIMIT`, 12k chars in [`task-store.ts`](../../../engine/src/task-store.ts) — normal plan/AC bodies are never touched). Beyond that, the head is kept and a recoverable size hint is appended (`…[N of M body chars omitted … pass fullBody:true …]`), with `bodyTruncated: true` and `bodyOmittedChars: <count>` signalled top-level. Pass `fullBody: true` to get the whole body. Targets only pathological bodies that would otherwise dominate the payload on every read.
 - Attached `cliSession`/`cliSessions` summaries are the list-scoped set with `liveOutput` truncated to a short tail, and slimmed for agents: `args` (which embeds the full launch prompt — i.e. the ticket body again), `command`, and `pid` are dropped; `argsChars` preserves a size hint.
 - **Recent user comments are always surfaced** (FLUX-480): a top-level `recentUserComments` array holds the last `commentDigest.recentUserComments` (config, default 3) **user-authored** `comment` entries — scanned from the *full* history, so a user comment that aged past the window is never silently dropped. Authorship is heuristic: agents write `user: 'Agent'` (the canonical marker) or a model/framework display name; everything else is treated as a user (the bias is to never hide user intent). Cheap flags `hasUserComments` (always present) and `lastUserCommentAt` accompany it so routing/preview consumers can read them without pulling history.
-- **Launch focus persists across sessions** (FLUX-480): when a session is launched with a `focusComment`, the engine records a small `activity` entry carrying a `launchFocus` field (the clean focus text only — never the full launch prompt, which FLUX-473 keeps out of the digest). The digest surfaces the most recent one as top-level `launchFocus`, with `hasLaunchFocus: true`.
+- **Launch focus persists across sessions** (FLUX-480): when a session is launched with a `focusComment`, the engine records a small `activity` entry whose `comment` carries the clean focus text (never the full launch prompt, which FLUX-473 keeps out of the digest) behind a well-known `🎯 Launch focus: ` prefix. The digest surfaces the most recent one as top-level `launchFocus`, with `hasLaunchFocus: true`. FLUX-1469: the text is stored once — earlier entries also duplicated it into a separate `launchFocus` field (still supported for backward compatibility, `extractLaunchFocus` reads either shape); a large, pull-backed focus (one that names a `read_skill(...)` call for its methodology detail, e.g. the plan-review gate) additionally carries a `summary`, so it collapses to one line in the digest once it ages past the recent window instead of re-accumulating its full text on every pass.
 
 The REST detail endpoint (`GET /api/tasks/:id`) is unaffected and still returns the full history for the portal.
 
@@ -221,6 +231,32 @@ Read the full progress log of **one** past agent session on a ticket. This is th
 **Output:** the full `agent_session` history entry including `progress[]`. With `tail`, `progress` holds the last N entries and `omittedProgressEntries` reports how many were skipped. Sessions finished after progress compaction shipped store milestones + a `finalMessage` field rather than raw output chunks (`originalProgressCount` shows the pre-compaction length) — see [Ticket Schema](ticket-schema.md).
 
 **Errors:** `Ticket <id> not found`; `Session <sessionId> not found on <id>. Known sessions: …` (lists valid session IDs).
+
+### `read_skill`
+
+**FLUX-1466.** Agent-callable pull for a skill module's full text (or one `##` section), served live from the engine's own skill root (`resolveSkillSourceRoot()`) — never a bare file path. This exists because an injected phase module's "see the orchestrator skill's X section" pointer assumes the reader can `Read` `.docs/skills/event-horizon-*.md`; that's true in this repo but false in every installed **user** repo, where only the engine install carries those files (the reachability class behind PR #580, which fixed only one instance by inlining a copy). Every load-bearing cross-module pointer in the six skill modules and the installed core now calls this tool instead of naming a module/file in prose (locked shut by a regression test — [`skill-core.test.ts`](../../../engine/src/skill-core.test.ts)).
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `module` | string | yes | One of the seven canonical modules — `orchestrator`, `grooming`, `implementation`, `review`, `release`, `mapping`, `tools` (the single allowlist is `SKILL_MODULES`, [`workflow-installer.ts`](../../../engine/src/workflow-installer.ts), exported for FLUX-1466). **Validated at runtime, not a closed schema enum** — an unrecognized value returns a fallback string rather than a schema rejection, so the allowlist can grow without a wire break. |
+| `section` | string | no | A `##` heading (case-insensitive; exact match preferred, falls back to substring containment so a caller need not quote a heading's full trailing qualifier, e.g. `"Rich Artifacts"` matches `"Rich Artifacts (\`publish_artifact\`) — shared mechanics"`). No match returns the full body plus the list of available headings. |
+
+**`tools` module (FLUX-1468).** The five phase/orchestrator/release/mapping modules carry workflow guidance; `tools` instead carries per-**MCP-tool** guidance — one `## <tool-name>` section per registered tool (`event-horizon-tools.md`), heading = the exact registered name. This is where the FLUX-1468 tool-description diet moved: MCP tool schemas (`mcp-server.ts`) now keep only the behavioral contract (required/refused/shape) in their `description`/`.describe()` text; rationale, edge cases, and FLUX history live here instead, one pull away via `read_skill('tools', '<tool-name>')`. A slimmed tool's schema ends with a pointer sentence naming that exact call when there's meaningfully more to read.
+
+**`delivery:` frontmatter (FLUX-1480).** Every module also declares HOW it reaches an agent, as a `delivery:` array in its own frontmatter (not part of the `read_skill` wire contract, but load-bearing for anyone editing a module's content): `injected:<phase>` (grooming/implementation/review — auto-appended to that phase's Claude session prompt at spawn, `isInjectablePhaseModule`/`loadSkillModuleBodySync` in [`skill-modules.ts`](../../../engine/src/skill-modules.ts)), `pull-only` (orchestrator/release/mapping/tools — Claude reaches these only via `read_skill`, never injected), `concatenated` (folded into the single always-on file gemini/cursor/antigravity/windsurf/generic install — every module except `tools`, `PULL_ONLY_MODULES` in `workflow-installer.ts`), and `modular` (installed as its own on-disk file for copilot/cline, read on demand rather than force-loaded — all seven modules). [`skill-delivery.test.ts`](../../../engine/src/skill-delivery.test.ts) asserts every module's label agrees with these engine constants, so editing content into the wrong-delivery module (the PR #584 defect class) fails CI instead of shipping silently.
+
+**Output:** `structuredContent` — `{ module, section, body, availableSections? }`. `section` is `null` when the full body was returned (no section requested, or no match); `availableSections` is present only on a no-match fallback.
+
+**Search roots:** reads through an ordered list, closest-wins — currently just `resolveSkillSourceRoot()`. The leading slot is a deliberate seam for a future project-local skill root (e.g. `.flux/skills/`, FLUX-261) so user-custom skills later are a resolver addition, not a reader rewrite.
+
+**Never throws.** An unknown `module`, a missing file, or an empty body all return the same graceful fallback string (`skillModuleFallback`) instead of an error result.
+
+**Logging (FLUX-1470 data gate):** every call logs `module`, `section`, the calling session's ticket/`phase`/`pattern` at `info` level — this is the pull-compliance signal FLUX-1470 needs before converting conditional phase-module sections to triggered pulls.
+
+```jsonc
+// example call
+{ "tool": "read_skill", "input": { "module": "orchestrator", "section": "Rich Artifacts" } }
+```
 
 ### `list_tickets`
 

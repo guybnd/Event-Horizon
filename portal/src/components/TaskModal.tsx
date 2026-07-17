@@ -342,7 +342,7 @@ export const TaskModal = memo(function TaskModal() {
     {showStartPrompt && modalTask && (
       <StartTaskPrompt
         task={modalTask as Task}
-        onConfirm={() => void handleStartPromptConfirm()}
+        onConfirm={(selection) => void handleStartPromptConfirm(selection)}
         onCancel={() => setShowStartPrompt(false)}
       />
     )}

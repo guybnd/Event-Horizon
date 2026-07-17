@@ -37,7 +37,8 @@ import { log } from './log.js';
 import { buildActivityEntry, buildCommentEntry } from './history.js';
 import { nextColumnAfter, getConfig } from './config.js';
 import { updateTaskWithHistory } from './task-store.js';
-import { generateNeedsActionNotification } from './notifications.js';
+import { broadcastEvent } from './events.js';
+import { generateNeedsActionNotification, generatePlanAutoApprovedNotification } from './notifications.js';
 import { cliSessionsById, getActiveSessionsForTask } from './session-store.js';
 import { isActiveTicketState, DEFAULT_RETRY_CAP, type BatchTicket, type FurnacePhase } from './models/furnace.js';
 import { planBodyHash, planGateModeForRevise, resolveGateValue, resolvePlanReviewDepth, type PlanReviewDepth } from './models/gate-policy.js';
@@ -68,21 +69,38 @@ const PLAN_REVIEW_BASE =
   'You are reviewing a TICKET PLAN, not committed code — this ticket is still in Grooming and has no diff. ' +
   "Read its full description (title, body, `## Acceptance criteria`) and its latest published artifact (if any) as the plan under review.";
 
-const ANCHOR_CHECK =
-  "Anchor check: for every file/symbol/line the plan cites, verify with Serena/grep that it still exists and still means what the plan says. " +
-  "Re-derive this fresh from the CURRENT code every pass — never trust a prior pass's citations, even your own.";
+// FLUX-1469: these five checks used to carry their full methodology paragraph inline — pushed
+// into every gate dispatch AND re-persisted verbatim into ticket history on every pass (the
+// "~2.4KB static launch-focus" this ticket fixes). Each is now a one-line imperative stub; the
+// full method lives in the ORCHESTRATOR module's "## Plan-review methodology" section, pulled on
+// demand via `read_skill('orchestrator', 'Plan-review methodology')` — named once, up front, in
+// `planReviewFocus` below rather than repeated on every stub. Deliberately NOT the review module:
+// review-phase sessions (including the gate's own — spawnGate dispatches phase 'review') get that
+// module INJECTED at spawn, so parking the methodology there would push it into every code-review
+// prelude instead of keeping it a genuine on-demand pull.
 
-const REGROUND_CHECK =
-  'Reground (FLUX-1048): check `.docs/release-notes/INDEX.md` plus recently Done/Released and sibling tickets (same parent) for work that already landed part or all of this plan.';
+/** Exported for tests (FLUX-1469): assert each one-line stub survives the split (stub integrity). */
+export const ANCHOR_CHECK =
+  'Anchor check: verify every cited file/symbol/line still exists and means what the plan says — re-derive fresh every pass, never trust a prior citation.';
 
-const AC_COVERAGE_CHECK =
-  'Acceptance-criteria coverage: confirm the `## Acceptance criteria` checklist (if present) is concrete/testable and that the Implementation Plan actually addresses every item — flag any item the plan leaves uncovered.';
+export const REGROUND_CHECK =
+  'Reground (FLUX-1048): check `.docs/release-notes/INDEX.md` + sibling/recently-Done tickets for work that already landed part of this plan.';
 
-const DUPLICATE_CHECK =
-  'Duplicate check: search open/groomed tickets for one that already covers this same change (a duplicate or near-duplicate scope) and flag it if found.';
+export const AC_COVERAGE_CHECK =
+  'Acceptance-criteria coverage: confirm the AC checklist is testable and every item is addressed by the plan.';
 
-const ADVERSARIAL_CHECK =
-  "Adversarial self-review (Plan Discipline item 4): read the plan as its harshest critic — find what's weak, missing, or wrong: an unanchored step, an implicit hard-to-reverse decision left unstated, a menu of options where the plan should commit to one, an obvious missing decision. A clear-cut fixable gap is Minor; a genuine judgment call the plan ducked is Major/Blocker.";
+export const DUPLICATE_CHECK =
+  'Duplicate check: search open/groomed tickets for one that already covers this same scope.';
+
+/** FLUX-1480: PR #584's two Majors (methodology parked in an INJECTED module; `tools` added to the
+ *  concatenated constant) both planted at ticket-writing time and survived four consistency-checking
+ *  stages because every stage checked "does X match the stage before?" — none re-derived who actually
+ *  consumes the plan's chosen destination. This check forces that re-derivation at review time. */
+export const CONSEQUENCE_CHECK =
+  "Consequence tracing: for every destination this plan moves content/config into, name who consumes it and confirm the move still serves the plan's goal.";
+
+export const ADVERSARIAL_CHECK =
+  "Adversarial self-review: read the plan as its harshest critic — flag weak/missing/wrong steps, unstated hard-to-reverse decisions, and judgment calls the plan ducked.";
 
 /** FLUX-1379: `hasArtifact` is now a deterministic fact injected by the lint pass (`listArtifactRevisionsOnDisk`),
  *  not something the reviewer has to go check itself — the check keeps its "flag, not a blocker" judgment
@@ -93,7 +111,9 @@ function artifactCheckText(hasArtifact: boolean): string {
     : 'Artifact check (FLUX-1313): no `publish_artifact` revision exists for this ticket (confirmed deterministically by the pre-gate lint). If this plan is UI/UX-shaped (visual layout, a new component, an interaction change), flag it in the review comment as a gap — do not approve silently. This is a flag, not a blocker: note it and still record your verdict on the plan\'s own merits.';
 }
 
-const PLAN_VERDICT_CONTRACT =
+/** Exported for tests (FLUX-1469): assert this exact string is present verbatim in every dispatched
+ *  plan-review focus at every depth — the hard constraint that must never move behind a pull. */
+export const PLAN_VERDICT_CONTRACT =
   'Record your verdict via `change_status` — leave `newStatus` as "Grooming" (do NOT move the ticket) and set `planReviewState` to "approved" or "changes-requested" (never `reviewState`; that is a different field for the post-Todo code-review gate). ' +
   'Posting a comment that starts with **APPROVED** or **CHANGES NEEDED** is not enough by itself — without the `change_status` call the ticket will be parked for a human over an unrecorded verdict.';
 
@@ -105,15 +125,22 @@ function lintFocusBlock(warnFindingsText: string): string {
   return ` Deterministic lint already ran and flagged this (non-blocking — already reflected in the artifact check above where applicable):\n${warnFindingsText}`;
 }
 
+/** Named once, up front, so every stub below can say "detail above" instead of each repeating the
+ *  same pull call (FLUX-1469). Exported for tests: assert the exact pull call the stubs promise. */
+export const METHODOLOGY_PULL_POINTER = "Full method for each check below: `read_skill('orchestrator', 'Plan-review methodology')`.";
+
 /** The focus handed to a plan-review session, scaled to the resolved depth (Quick/Standard/Thorough)
  *  and the deterministic lint's findings (FLUX-1379) — `hasArtifact` reworks the artifact check from a
  *  reviewer chore into a consumed fact; `warnFindingsText` (pre-formatted via `formatLintFindings`) is
- *  appended verbatim so the reviewer doesn't re-derive what the lint already found. */
+ *  appended verbatim so the reviewer doesn't re-derive what the lint already found. FLUX-1469: the
+ *  checks themselves are now one-line stubs — full methodology is pulled via `read_skill`, not pushed
+ *  (and re-persisted into history) on every pass; only the verdict contract and the dynamic facts
+ *  (depth, artifact fact, lint findings) stay pushed verbatim. */
 export function planReviewFocus(depth: PlanReviewDepth, hasArtifact: boolean, warnFindingsText = ''): string {
   const checks = [ANCHOR_CHECK, artifactCheckText(hasArtifact)];
-  if (depth === 'standard' || depth === 'thorough') checks.push(REGROUND_CHECK, AC_COVERAGE_CHECK);
+  if (depth === 'standard' || depth === 'thorough') checks.push(REGROUND_CHECK, AC_COVERAGE_CHECK, CONSEQUENCE_CHECK);
   if (depth === 'thorough') checks.push(DUPLICATE_CHECK, ADVERSARIAL_CHECK);
-  return `${PLAN_REVIEW_BASE} Depth: ${depth}. ${checks.join(' ')} ${PLAN_VERDICT_CONTRACT}${lintFocusBlock(warnFindingsText)}`;
+  return `${PLAN_REVIEW_BASE} Depth: ${depth}. ${METHODOLOGY_PULL_POINTER} ${checks.join(' ')} ${PLAN_VERDICT_CONTRACT}${lintFocusBlock(warnFindingsText)}`;
 }
 
 /** The focus for a "revise the plan" pass after a plan-review pass requested changes. */
@@ -227,6 +254,7 @@ const PLAN_GATE_SPEC: GateRunSpec = {
   reviewRetryFocus: PLAN_REVIEW_RETRY_FOCUS,
   onApproved: async (ticketId: string) => {
     const todo = nextColumnAfter(GROOMING_STATUS) || 'Todo';
+    const title = getWorkspace().tasks[ticketId]?.title;
     await updateTaskWithHistory(ticketId, {
       nextStatus: todo,
       // FLUX-1306: null the reviewed-body hash alongside the verdict — every other verdict-clearing
@@ -242,6 +270,15 @@ const PLAN_GATE_SPEC: GateRunSpec = {
       }],
       updatedBy: 'Plan Gate',
     });
+    // FLUX-1485: unlike the portal PUT route and MCP change_status, updateTaskWithHistory itself
+    // never broadcasts — the caller owns it. This auto-consume path had none, so a still-rendered
+    // Approve card (dock/chat/panel) never learned its verdict was consumed until an unrelated
+    // mutation happened to bump tasksVersion; clicking it in the meantime hit the FLUX-1485 hang.
+    broadcastEvent('taskUpdated', { id: ticketId });
+    // FLUX-1363: `loop-auto` is the only gate mode that never surfaces the plan to the user (the
+    // `one-pass`/`loop-confirm` branches in `advanceGateTicket`'s 'pr-open' case both raise a 'prompt'
+    // notification asking for confirmation) — give it a passive FYI instead.
+    generatePlanAutoApprovedNotification(ticketId, title || ticketId);
   },
   parkStatus: () => GROOMING_STATUS,
 };

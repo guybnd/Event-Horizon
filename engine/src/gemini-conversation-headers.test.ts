@@ -49,7 +49,10 @@ describe('buildGeminiMcpServerEntry / installMcpConfig — Gemini HITL header ro
   it('builds a Gemini-schema entry: httpUrl (streamable HTTP) + env-placeholder headers, no Claude-isms', () => {
     const entry = buildGeminiMcpServerEntry();
     // `httpUrl` is Gemini CLI's key for the streamable-HTTP transport the engine's /mcp mount
-    // speaks; a bare `url` would mean SSE to Gemini and fail to connect.
+    // speaks. FLUX-1329: verified against gemini-cli v0.42.0 — `httpUrl` is deprecated there
+    // (in favor of `url` + `type:'http'`) but still the only spelling that resolves to
+    // streamable HTTP on both old and new builds; see buildGeminiMcpServerEntry's docblock in
+    // workflow-installer.ts for the full per-version transport matrix.
     expect(entry.httpUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
     expect(entry.headers).toEqual({
       'x-eh-conversation-id': '${EH_CONVERSATION_ID}',

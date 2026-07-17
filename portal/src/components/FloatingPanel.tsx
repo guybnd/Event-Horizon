@@ -42,6 +42,10 @@ function saveGeometry(key: string, g: Geometry, max?: boolean) {
 /** Margin kept between the panel and the viewport edge (matches the old inline drag margin). */
 const VIEWPORT_MARGIN = 8;
 
+/** FLUX-1461: mirrors the `minWidth`/`minHeight` inline style below — shared with the resize handles. */
+const MIN_PANEL_WIDTH = 280;
+const MIN_PANEL_HEIGHT = 160;
+
 /**
  * FLUX-809: clamp a geometry fully within the viewport. Size is capped first (95vw × 90vh —
  * mirrors the `maxWidth`/`maxHeight` on the element), then position is pinned so the whole panel
@@ -352,6 +356,74 @@ export function FloatingPanel({
     persist();
   };
 
+  // FLUX-1461: generalized resize — 4 corners + 4 edges, replacing the native bottom-right-only
+  // `resize: both` (native CSS offers no other corners). Mirrors ChatDock's handler but the anchor
+  // flips: this panel is TOP-left positioned (`pos.x/y`), so right/bottom handles only grow w/h,
+  // while left/top handles must also move x/y to keep the OPPOSITE corner fixed on screen — clamp
+  // the moving x/y first and derive w/h from it so the anchor can't drift under clamping. Width/
+  // height are written straight to the DOM (as the native handle used to do), so the existing
+  // ResizeObserver captures + persists them without any changes there.
+  const startResize = (e: React.PointerEvent, handle: 'tl' | 'tr' | 'bl' | 'br' | 't' | 'b' | 'l' | 'r') => {
+    if (maximizedRef.current || minimizedRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const el = panelRef.current;
+    if (!el) return;
+    const doTop = handle === 'tl' || handle === 'tr' || handle === 't';
+    const doBottomEdge = handle === 'bl' || handle === 'br' || handle === 'b';
+    const doLeft = handle === 'tl' || handle === 'bl' || handle === 'l';
+    const doRight = handle === 'tr' || handle === 'br' || handle === 'r';
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startW = sizeRef.current.w;
+    const startH = sizeRef.current.h;
+    const startPosX = posRef.current.x;
+    const startPosY = posRef.current.y;
+    const rightEdge = startPosX + startW; // anchor when dragging the left edge
+    const bottomEdge = startPosY + startH; // anchor when dragging the top edge
+    const { w: bw, h: bh } = getBounds();
+    const maxW = containerRef ? bw : Math.round(bw * 0.95);
+    const maxH = containerRef ? bh : Math.round(bh * 0.9);
+    const onMove = (ev: PointerEvent) => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      let w = startW;
+      let h = startH;
+      let nx = startPosX;
+      let ny = startPosY;
+      if (doRight) {
+        w = Math.max(MIN_PANEL_WIDTH, Math.min(startW + dx, maxW));
+      } else if (doLeft) {
+        const minX = Math.max(VIEWPORT_MARGIN, rightEdge - maxW);
+        const maxX = rightEdge - MIN_PANEL_WIDTH;
+        nx = Math.max(minX, Math.min(startPosX + dx, maxX));
+        w = rightEdge - nx;
+      }
+      if (doBottomEdge) {
+        h = Math.max(MIN_PANEL_HEIGHT, Math.min(startH + dy, maxH));
+      } else if (doTop) {
+        const minY = Math.max(VIEWPORT_MARGIN, bottomEdge - maxH);
+        const maxY = bottomEdge - MIN_PANEL_HEIGHT;
+        ny = Math.max(minY, Math.min(startPosY + dy, maxY));
+        h = bottomEdge - ny;
+      }
+      sizeRef.current = { w, h };
+      el.style.width = `${w}px`;
+      el.style.height = `${h}px`;
+      if (doLeft || doTop) {
+        posRef.current = { x: nx, y: ny };
+        setPos({ x: nx, y: ny });
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      persist();
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
   const attention = tone === 'attention';
   // FLUX-809: an attention window reads as a loud amber surface (accent border + header + optional
   // pulse) instead of the neutral chat/dock surface; the default tone is unchanged.
@@ -396,17 +468,73 @@ export function FloatingPanel({
           : {
               left: pos.x,
               top: pos.y,
-              // FLUX-832: while minimized, disable the native resize handle and let the panel collapse
-              // to its header (minHeight 0); both are restored on expand.
-              resize: minimized ? ('none' as const) : ('both' as const),
-              minWidth: 280,
-              minHeight: minimized ? 0 : 160,
+              // FLUX-1461: the native handle only offered bottom-right — replaced by the 4-corner/
+              // 4-edge pointer handles below (rendered when not minimized), so native resize is
+              // always off now to avoid a double resize affordance in the corner.
+              resize: 'none' as const,
+              minWidth: MIN_PANEL_WIDTH,
+              minHeight: minimized ? 0 : MIN_PANEL_HEIGHT,
               // FLUX-1339: a container-anchored panel is capped to its host box, not the viewport.
               maxWidth: containerRef ? '100%' : '95vw',
               maxHeight: containerRef ? '100%' : '90vh',
             }),
       }}
     >
+      {/* FLUX-1461: resize handles — 4 corners (subtle brackets) + 4 edges (thin strips), each
+          keeping the opposite corner anchored. Hidden while maximized (nothing to resize) or
+          minimized (collapsed to the header). */}
+      {!maximized && !minimized && (
+        <>
+          <div
+            onPointerDown={(e) => startResize(e, 'tl')}
+            title="Drag to resize"
+            className="group/resize absolute left-0 top-0 z-10 flex h-5 w-5 cursor-nwse-resize items-start justify-start p-1"
+          >
+            <span className="h-2.5 w-2.5 rounded-tl border-l-2 border-t-2 border-[var(--eh-text-muted)] opacity-40 transition-opacity group-hover/resize:opacity-90" />
+          </div>
+          <div
+            onPointerDown={(e) => startResize(e, 'tr')}
+            title="Drag to resize"
+            className="group/resize absolute right-0 top-0 z-10 flex h-5 w-5 cursor-nesw-resize items-start justify-end p-1"
+          >
+            <span className="h-2.5 w-2.5 rounded-tr border-r-2 border-t-2 border-[var(--eh-text-muted)] opacity-40 transition-opacity group-hover/resize:opacity-90" />
+          </div>
+          <div
+            onPointerDown={(e) => startResize(e, 'bl')}
+            title="Drag to resize"
+            className="group/resize absolute bottom-0 left-0 z-10 flex h-5 w-5 cursor-nesw-resize items-end justify-start p-1"
+          >
+            <span className="h-2.5 w-2.5 rounded-bl border-b-2 border-l-2 border-[var(--eh-text-muted)] opacity-40 transition-opacity group-hover/resize:opacity-90" />
+          </div>
+          <div
+            onPointerDown={(e) => startResize(e, 'br')}
+            title="Drag to resize"
+            className="group/resize absolute bottom-0 right-0 z-10 flex h-5 w-5 cursor-nwse-resize items-end justify-end p-1"
+          >
+            <span className="h-2.5 w-2.5 rounded-br border-b-2 border-r-2 border-[var(--eh-text-muted)] opacity-40 transition-opacity group-hover/resize:opacity-90" />
+          </div>
+          <div
+            onPointerDown={(e) => startResize(e, 't')}
+            title="Drag to resize"
+            className="absolute left-5 right-5 top-0 z-10 h-1.5 cursor-ns-resize"
+          />
+          <div
+            onPointerDown={(e) => startResize(e, 'b')}
+            title="Drag to resize"
+            className="absolute bottom-0 left-5 right-5 z-10 h-1.5 cursor-ns-resize"
+          />
+          <div
+            onPointerDown={(e) => startResize(e, 'l')}
+            title="Drag to resize"
+            className="absolute bottom-5 left-0 top-5 z-10 w-1.5 cursor-ew-resize"
+          />
+          <div
+            onPointerDown={(e) => startResize(e, 'r')}
+            title="Drag to resize"
+            className="absolute bottom-5 right-0 top-5 z-10 w-1.5 cursor-ew-resize"
+          />
+        </>
+      )}
       <div
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -418,7 +546,10 @@ export function FloatingPanel({
           <GripHorizontal className="h-3.5 w-3.5 shrink-0" />
           <span id={titleId} className="truncate">{title}</span>
         </div>
-        <div className="flex shrink-0 items-center gap-0.5">
+        {/* FLUX-1461: relative z-20 lifts the control cluster above the z-10 resize handles — without
+            it the `tr` corner handle (top-right, over the close button) swallows the pointerdown and
+            starts a resize instead of firing the button's onClick. */}
+        <div className="relative z-20 flex shrink-0 items-center gap-0.5">
           {maximizable && (
             <button
               type="button"

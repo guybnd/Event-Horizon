@@ -227,6 +227,35 @@ export function generateReviewNotification(ticketId: string, ticketTitle: string
   });
 }
 
+/**
+ * FLUX-1363 — the `loop-auto` (`Auto`) plan-gate policy silently auto-approves a groomed plan and
+ * moves the ticket Grooming -> Todo with zero user-facing signal (contrast `one-pass`/`loop-confirm`,
+ * which both raise a 'prompt' notification asking the user to confirm the move). This gives passive
+ * visibility that a plan exists to review, without making it an action item — type 'info' routes it to
+ * the Updates bucket (see `portal/src/components/notificationCategory.ts`), not "Action needed".
+ * Title-scoped dedup like the other generators above: a dismissed entry never matches, so a later
+ * re-auto-approval (e.g. after the plan was revised) creates a fresh notification instead of
+ * un-dismissing the old one.
+ */
+export function generatePlanAutoApprovedNotification(ticketId: string, ticketTitle: string): void {
+  const title = `Plan ready to review — ${ticketTitle || ticketId}`;
+  const message = 'A plan was auto-approved and the ticket moved to Todo. Review it when you like — no action needed.';
+
+  const existing = notifications.find(
+    n => n.type === 'info' && n.ticketId === ticketId && n.title.startsWith('Plan ready to review') && !n.dismissed
+  );
+  if (existing) {
+    existing.title = title;
+    existing.message = message;
+    existing.read = false;
+    existing.createdAt = new Date().toISOString();
+    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount() });
+    return;
+  }
+
+  addNotification({ type: 'info', title, message, ticketId, actions: [{ label: 'View', actionId: 'view' }] });
+}
+
 export function generateCompletionNotification(ticketId: string, ticketTitle: string): void {
   addNotification({
     type: 'completion',

@@ -1,6 +1,8 @@
 ---
 title: Event Horizon Review
 order: 4
+delivery: [injected:review, concatenated, modular]
+deliveryNote: "🚚 INJECTED into every Claude review-phase session at spawn (including the plan-review gate's own review pass) — content added here is paid by every review session · concatenated into gemini/cursor/antigravity/windsurf/generic installs · installed per-file for copilot/cline (modular, on-demand)."
 ---
 > ⚠️ DO NOT DELETE — This file is required for the Event Horizon agent workflow. Deleting it will break review behaviour.
 
@@ -11,11 +13,11 @@ Scope: Judge a diff against the ticket's intent and record a machine-readable ve
 
 # Event Horizon Agent — Review Skill
 
-Version: 1.2.0
+Version: 1.5.0
 
 ## When This Skill Applies
 
-Load this skill when you are reviewing a ticket's diff — a review-phase session launched against a `Ready` ticket, or any session where your focus instructions cast you as a reviewer. This is distinct from the implementation skill (`Todo`/`In Progress`, writing the code) even though review often follows it on the same ticket. Refer to the orchestrator skill for the ticket model, APIs, and end-to-end checklist.
+Load this skill when you are reviewing a ticket's diff — a review-phase session launched against a `Ready` ticket, or any session where your focus instructions cast you as a reviewer. This is distinct from the implementation skill (`Todo`/`In Progress`, writing the code) even though review often follows it on the same ticket.
 
 Reviewer sessions are triggered manually by the user — never automatically when a ticket reaches `Ready`. When a reviewer sends a ticket back to `In Progress`, read that structured comment before making any changes; it explains what needs fixing. The review conversation lives on the ticket; the GitHub PR is the diff artifact, not the source of truth for what to change.
 
@@ -31,7 +33,11 @@ Tag every finding with one of these three levels — normalize on this scale eve
 - **Major** — should fix. Real problems that don't block merging today but will bite soon (missing error handling on a reachable path, a real perf regression, a gap in test coverage for new logic).
 - **Minor** — nice to have. Style, naming, small simplifications, non-blocking polish.
 
-Lead findings with Blockers first. When synthesizing multiple reviewers' findings, resolve disagreements on the merits of the argument, not a raw vote count.
+**Synthesizing multiple reviewers' findings** (orchestrator/supervisor leads): merge overlapping findings and remove duplicates — if multiple reviewers raised the same issue, state it once and note the consensus instead of repeating it per-reviewer. Lead the consolidated list with Blockers first, and resolve any disagreements on the merits of the argument, not a raw vote count.
+
+## Test Coverage — the "tested leaf, untested glue" flag
+
+When a change extracts a pure helper "for testability," the **caller that sequences it** needs coverage too — a tested leaf with an untested orchestrator is a red flag, not a green check. Prefer a test that drives the assembled behavior through the caller's seam, not only the leaf in isolation. Grade a gap here at **Major** (per the taxonomy above), not Minor.
 
 ## Acceptance Criteria Checklist (FLUX-1148)
 
@@ -58,4 +64,4 @@ When you are reviewing a ticket inside a **Furnace batch**, your launch focus na
 
 Keep it scoped: a genuine next step directly related to this diff, not a dumping ground. Tangential ideas still go through the normal board/backlog path. If your focus doesn't name a batch id, you aren't in a burn — use the ordinary ticket tools instead.
 
-All persistence uses MCP tools — see the orchestrator skill's "Persisting Changes" section.
+All persistence uses MCP tools — never write ticket files directly.

@@ -2,7 +2,7 @@ import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useR
 import { AlertCircle, Bot, Zap } from 'lucide-react';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { createTask, deleteTask, fetchTask, sendTaskCliInput, updateTask } from '../api';
-import { runAgentAction, launchOrchestration, launchPhaseDefault, getOrchestrationMode, phaseCombiner, phaseLaunchStatus, type LaunchPhase } from '../agentActions';
+import { runAgentAction, launchOrchestration, launchPhaseDefault, getOrchestrationMode, phaseCombiner, phaseLaunchStatus, applyStartSelection, type LaunchPhase, type StartSelection } from '../agentActions';
 import { type OrchestrationLaunchPlan } from '../components/OrchestrationLauncher';
 import { TaskMarkdown } from '../components/TaskMarkdown';
 import { isAgentSession } from '../types';
@@ -824,10 +824,19 @@ export function useTaskModalController() {
     await launchSession();
   }, [modalTask, status, launchSession]);
 
-  const handleStartPromptConfirm = useCallback(async () => {
+  const handleStartPromptConfirm = useCallback(async (selection: StartSelection) => {
     setShowStartPrompt(false);
-    await launchSession();
-  }, [launchSession]);
+    if (!modalTask?.id) return;
+    setCliSessionBusy(true);
+    setCliSessionError('');
+    try {
+      await applyStartSelection(modalTask.id, selection);
+      await launchSession();
+    } catch (error) {
+      setCliSessionError(error instanceof Error ? error.message : 'Failed to start.');
+      setCliSessionBusy(false);
+    }
+  }, [modalTask?.id, launchSession, setCliSessionBusy, setCliSessionError]);
 
   const handleGrooming = useCallback(async () => {
     if (!modalTask?.id) return;

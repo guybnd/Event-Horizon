@@ -4,14 +4,16 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
-import { ClipboardCheck, ClipboardX, ExternalLink, Check, Loader2, Undo2, X } from 'lucide-react';
+import { BellRing, ChevronDown, ChevronUp, ClipboardCheck, ClipboardX, ExternalLink, Check, Loader2, Play, Undo2, X } from 'lucide-react';
 import { useAppActions, useAppSelector, useTaskById, shallowEqual } from '../store/useAppSelector';
 import type { Task, CliSessionStatus, GateValue, Config } from '../types';
 import {
   answerQuestion,
+  createBranch,
   fetchPendingApprovals,
   fetchPendingBoardRebases,
   fetchPendingQuestions,
@@ -24,11 +26,16 @@ import {
   type PendingQuestion,
   type BoardRebaseFailure,
 } from '../api';
+import { launchPhaseDefault } from '../agentActions';
+import { isActiveSession } from '../orchestration';
+import { resolveEffectiveAgent, frameworkSupports } from '../utils';
 import { buildStatusChangeHistory, statusAfterGrooming } from '../lib/ticketActions';
 import { useDockActions } from './DockProvider';
 import { ChatApprovalPanel } from './ApprovalPrompts';
 import { ChatQuestionPicker } from './AskQuestionPrompts';
 import { ChatBoardRebasePanel } from './BoardRebasePanel';
+import { Button } from './ui/Button';
+import { useNotify, type NotifyApi } from '../hooks/useNotify';
 
 /**
  * FLUX-720 / FLUX-898: the data layer for every "the agent is waiting on you" prompt.
@@ -234,6 +241,20 @@ export async function revisePlan(taskId: string, currentUser: string, notes?: st
   await startPlanRevise(taskId, { ...(notes?.trim() ? { notes: notes.trim() } : {}), user: currentUser });
 }
 
+/** FLUX-1303/FLUX-1369: the one "Approve → Todo" update shape — status + verdict clear + history —
+ *  shared by `approvePlanToTodo` and `approvePlanAndStart` so the two can never drift on what
+ *  "approved" actually writes. */
+function buildPlanApprovalUpdate(task: Task, config: Config | null | undefined, currentUser: string) {
+  const todoStatus = statusAfterGrooming((config?.columns ?? []).map((s) => s.name));
+  return {
+    status: todoStatus,
+    appendHistory: buildStatusChangeHistory(task, todoStatus, currentUser),
+    planReviewState: null,
+    planReviewBodyHash: null,
+    updatedBy: currentUser,
+  };
+}
+
 /**
  * FLUX-1303: shared "Approve → Todo" for a pending plan verdict (quick Approve on an `approved`
  * verdict; the explicit "Approve anyway" override on `changes-requested`). Clears the verdict and
@@ -242,14 +263,75 @@ export async function revisePlan(taskId: string, currentUser: string, notes?: st
  */
 // eslint-disable-next-line react-refresh/only-export-components -- action helper colocated with the pending-interactions model it operates on (FLUX-1303); shared across the dock/chat-card surfaces.
 export async function approvePlanToTodo(task: Task, config: Config | null | undefined, currentUser: string): Promise<void> {
-  const todoStatus = statusAfterGrooming((config?.columns ?? []).map((s) => s.name));
-  await updateTask(task.id, {
-    status: todoStatus,
-    appendHistory: buildStatusChangeHistory(task, todoStatus, currentUser),
-    planReviewState: null,
-    planReviewBodyHash: null,
-    updatedBy: currentUser,
-  });
+  await updateTask(task.id, buildPlanApprovalUpdate(task, config, currentUser));
+}
+
+/**
+ * FLUX-1294/FLUX-1369: the post-approval half of "Approve & start" — create a branch/worktree
+ * (skipped for `XS` effort, per `config.worktreeByDefault`), then launch the default implementation
+ * session, guarded against double-starting when a session is already active. `updated` is the
+ * ALREADY-approved task (the caller's own commit already landed it in Todo) — this never touches
+ * ticket status itself, only what happens after.
+ *
+ * Extracted from `PlanApprovalPanel`'s original `handleApproveAndStart` (FLUX-1294) so every
+ * plan-review surface — the panel, the in-chat card, the "Needs You" dock prompt — shares this exact
+ * dispatch instead of three copies drifting apart (the panel had it, the other two didn't, which is
+ * the gap FLUX-1369 closes). This is deliberately a SEPARATE step from the approve commit: once that
+ * commit succeeds the ticket IS correctly in Todo, so a dispatch failure here must never look like
+ * the approval itself failed — it surfaces via `notify.error`/`notify.info` instead of whatever
+ * inline error state the caller uses for its own commit step.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- action helper colocated with the pending-interactions model it operates on (FLUX-1369); shared across the dock/chat-card/panel surfaces.
+export async function dispatchApprovedImplementation(
+  updated: Task,
+  config: Config | null | undefined,
+  currentUser: string,
+  notify: NotifyApi,
+  focusComment?: string,
+): Promise<void> {
+  if (updated.cliSession && isActiveSession(updated.cliSession)) {
+    notify.info(`${updated.id} approved, but a session is already running on it — no new session was started.`);
+    return;
+  }
+
+  try {
+    if (updated.effort !== 'XS') {
+      await createBranch(updated.id, { worktree: !!config?.worktreeByDefault });
+    }
+    const framework = resolveEffectiveAgent(undefined, config?.defaultFramework);
+    const result = await launchPhaseDefault({
+      taskId: updated.id,
+      framework,
+      phase: 'implementation',
+      currentUser,
+      phaseDefaults: config?.phaseDefaults,
+      supervisorCapable: frameworkSupports(config, framework, 'supervisor'),
+      focusComment: focusComment ?? 'Plan approved via "Approve & start."',
+    });
+    if (!result) {
+      notify.info(`${updated.id} approved, but no default implementation persona is configured — start it manually.`);
+    }
+  } catch (err) {
+    notify.error(`${updated.id} approved, but couldn't auto-start implementation: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * FLUX-1369: "Approve & start" for the compact surfaces (`PlanReviewActions` — the in-chat card and
+ * the "Needs You" dock prompt) — the plain `approvePlanToTodo` commit, then
+ * `dispatchApprovedImplementation`. `PlanApprovalPanel` does its OWN commit (it also persists staged
+ * header edits and folds in annotation notes the compact cards don't have) and calls
+ * `dispatchApprovedImplementation` directly instead of this wrapper.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- action helper colocated with the pending-interactions model it operates on (FLUX-1369); shared with PlanReviewActions.
+export async function approvePlanAndStart(
+  task: Task,
+  config: Config | null | undefined,
+  currentUser: string,
+  notify: NotifyApi,
+): Promise<void> {
+  const updated = await updateTask(task.id, buildPlanApprovalUpdate(task, config, currentUser));
+  await dispatchApprovedImplementation(updated, config, currentUser, notify);
 }
 
 /**
@@ -586,10 +668,16 @@ export function PlanReviewFeedbackBlock({ task, clip = 300 }: { task: Task; clip
           <div className="text-[12px] text-gray-600 dark:text-gray-300">Changes requested — open the plan to read the full review.</div>
         )
       )}
-      {tldr && (
+      {tldr ? (
         <div className="text-[11.5px] leading-snug text-gray-500 dark:text-gray-400">
           <span className="font-semibold text-gray-600 dark:text-gray-300">Plan TL;DR:</span> {tldr}
         </div>
+      ) : (
+        // FLUX-1472: an approved plan with no TL;DR line would otherwise leave the card body
+        // empty now that the verdict moved into the title.
+        !changesRequested && (
+          <div className="text-[12px] text-gray-600 dark:text-gray-300">Auto-reviewed and approved — open the plan to review.</div>
+        )
       )}
     </div>
   );
@@ -622,6 +710,7 @@ export function PlanReviewActions({ task, onOpenFull, openLabel, onSetAside, set
   const config = useAppSelector((s) => s.config);
   const currentUser = useAppSelector((s) => s.currentUser);
   const { triggerRefresh } = useAppActions();
+  const notify = useNotify();
   const [busy, setBusy] = useState(false);
   const [composing, setComposing] = useState(false);
   const [notes, setNotes] = useState('');
@@ -657,23 +746,20 @@ export function PlanReviewActions({ task, onOpenFull, openLabel, onSetAside, set
           <Loader2 className="h-3.5 w-3.5 animate-spin" /> Revising — a grooming session is addressing the feedback…
         </span>
         {onOpenFull && (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            intent="neutral"
+            size="sm"
+            icon={<ExternalLink className="h-3.5 w-3.5" />}
             onClick={onOpenFull}
-            className="flex items-center gap-1 rounded-lg px-2 py-1 text-[12px] font-semibold text-gray-500 underline-offset-2 hover:underline dark:text-gray-400"
+            className="underline-offset-2 hover:underline"
           >
-            <ExternalLink className="h-3.5 w-3.5" /> {openLabel ?? 'Open full plan'}
-          </button>
+            {openLabel ?? 'Open full plan'}
+          </Button>
         )}
       </div>
     );
   }
-
-  const regroomBtn = 'flex items-center gap-1 rounded-lg px-3 py-1 text-[12px] font-semibold transition-colors disabled:opacity-40';
-  const primaryAmber = `${regroomBtn} bg-amber-500 text-white hover:bg-amber-600`;
-  const quietAmber = `${regroomBtn} border border-amber-500/40 text-amber-700 hover:bg-amber-500/10 dark:text-amber-300`;
-  const primaryGreen = `${regroomBtn} bg-emerald-600 text-white hover:bg-emerald-500`;
-  const quietGreen = `${regroomBtn} border border-emerald-500/40 text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300`;
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -684,66 +770,101 @@ export function PlanReviewActions({ task, onOpenFull, openLabel, onSetAside, set
           onChange={(e) => setNotes(e.target.value)}
           placeholder={changesRequested ? 'Notes for the re-groom (optional — the reviewer feedback is included automatically)…' : 'What should change? Your notes become the re-groom instructions (required)…'}
           rows={2}
-          className="w-full resize-none rounded-lg border border-black/10 bg-white/70 px-2.5 py-1.5 text-[12.5px] outline-none focus:border-amber-500 dark:border-white/10 dark:bg-black/20 dark:text-gray-100"
+          className="w-full resize-none rounded-lg border border-black/10 bg-white/70 px-2.5 py-1.5 text-[12.5px] outline-none focus:border-[var(--eh-state-attention)] dark:border-white/10 dark:bg-black/20 dark:text-gray-100"
         />
       )}
       <div className="flex flex-wrap items-center gap-1.5">
+        {/* FLUX-1472: the open action is the filled primary and leads the row — the content it
+            confirms isn't on screen yet, so reading the plan is the safe-forward action here. Both
+            commit verbs (Approve, Send for re-grooming) stay quiet in this compact card context;
+            they earn the fill only in `PlanApprovalPanel`, where the plan is actually visible. */}
+        {!composing && onOpenFull && (
+          <Button
+            variant="filled"
+            intent="accent"
+            icon={<ExternalLink className="h-3.5 w-3.5" />}
+            onClick={onOpenFull}
+            disabled={busy}
+          >
+            {openLabel ?? 'Open full plan'}
+          </Button>
+        )}
         {!composing ? (
-          <button type="button" onClick={() => setComposing(true)} disabled={busy} className={changesRequested ? primaryAmber : quietAmber}>
-            <Undo2 className="h-3.5 w-3.5" /> Send for re-grooming
-          </button>
+          <Button
+            variant="quiet"
+            intent="warn"
+            icon={<Undo2 className="h-3.5 w-3.5" />}
+            onClick={() => setComposing(true)}
+            disabled={busy}
+          >
+            Send for re-grooming
+          </Button>
         ) : (
           <>
-            <button
-              type="button"
+            <Button
+              variant="filled"
+              intent="warn"
+              icon={<Undo2 className="h-3.5 w-3.5" />}
+              busy={busy}
               onClick={() => void run(() => revisePlan(task.id, currentUser, notes))}
               disabled={busy || (notesRequired && !notes.trim())}
               title={notesRequired && !notes.trim() ? 'Add notes — overriding an approved plan needs a stated reason' : undefined}
-              className={primaryAmber}
             >
-              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />} Send for re-grooming
-            </button>
-            <button
-              type="button"
+              Send for re-grooming
+            </Button>
+            <Button
+              variant="ghost"
+              intent="neutral"
+              size="sm"
               onClick={() => { setComposing(false); setError(null); }}
               disabled={busy}
-              className="rounded-lg px-2 py-1 text-[12px] font-semibold text-gray-500 hover:bg-black/5 dark:text-gray-400 dark:hover:bg-white/5"
             >
               Cancel
-            </button>
+            </Button>
           </>
         )}
+        {/* FLUX-1369: parity with `PlanApprovalPanel`'s "Approve & start" (FLUX-1294) — only offered
+            on an `approved` verdict, matching the panel (an explicit "Approve anyway" override on
+            changes-requested stays a plain approve; auto-dispatching implementation on a plan the
+            reviewer flagged is not the safe default). */}
+        {!composing && !changesRequested && (
+          <Button
+            variant="quiet"
+            intent="approve"
+            icon={<Play className="h-3.5 w-3.5" />}
+            busy={busy}
+            onClick={() => void run(() => approvePlanAndStart(task, config, currentUser, notify))}
+            disabled={busy}
+            title="Approve into Todo, then immediately create a branch/worktree and dispatch an implementation session"
+          >
+            Approve & start
+          </Button>
+        )}
         {!composing && (
-          <button
-            type="button"
+          <Button
+            variant="quiet"
+            intent="approve"
+            icon={<Check className="h-3.5 w-3.5" />}
+            busy={busy}
             onClick={() => void run(() => approvePlanToTodo(task, config, currentUser))}
             disabled={busy}
             title={changesRequested ? 'Explicit override — moves to Todo despite the changes-requested verdict' : 'Move to Todo'}
-            className={changesRequested ? quietGreen : primaryGreen}
           >
-            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />} {changesRequested ? 'Approve anyway' : 'Approve'}
-          </button>
-        )}
-        {!composing && onOpenFull && (
-          <button
-            type="button"
-            onClick={onOpenFull}
-            disabled={busy}
-            className="flex items-center gap-1 rounded-lg px-2 py-1 text-[12px] font-semibold text-gray-500 underline-offset-2 hover:underline dark:text-gray-400"
-          >
-            <ExternalLink className="h-3.5 w-3.5" /> {openLabel ?? 'Open full plan'}
-          </button>
+            {changesRequested ? 'Approve anyway' : 'Approve'}
+          </Button>
         )}
         {!composing && onSetAside && (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            intent="neutral"
+            size="icon"
             onClick={() => void run(async () => { await onSetAside(); })}
             disabled={busy}
             title={setAsideTitle ?? 'Set aside — clears the pending verdict everywhere; the review comment stays in history'}
-            className="ml-auto rounded p-1 text-gray-400 transition-colors hover:bg-black/5 hover:text-gray-600 dark:hover:bg-white/5 dark:hover:text-gray-200"
+            className="ml-auto"
           >
             <X className="h-3.5 w-3.5" />
-          </button>
+          </Button>
         )}
       </div>
       {error && <div className="text-[11.5px] font-medium text-red-600 dark:text-red-400">{error}</div>}
@@ -772,16 +893,12 @@ function ChatPlanApprovalCard({ conversationId }: { conversationId: string }) {
     <div className={`rounded-xl border p-3 shadow-sm ${changesRequested ? 'border-amber-300 bg-amber-50 dark:border-amber-500/40 dark:bg-amber-950/50' : 'border-sky-300 bg-sky-50 dark:border-sky-500/40 dark:bg-sky-950/50'}`}>
       <div className={`mb-1.5 flex items-center gap-1.5 text-xs font-bold ${changesRequested ? 'text-amber-700 dark:text-amber-300' : 'text-sky-700 dark:text-sky-300'}`}>
         {changesRequested ? <ClipboardX className="h-3.5 w-3.5" /> : <ClipboardCheck className="h-3.5 w-3.5" />}
-        {changesRequested ? 'Plan review requested changes' : 'Plan ready for your approval'}
+        {changesRequested ? 'Plan review requested changes' : 'Plan approved by auto-review — confirm'}
       </div>
+      {/* FLUX-1472: the verdict now lives in the title above — spend the body line on the plan's
+          TL;DR (PlanReviewFeedbackBlock renders it unconditionally) instead of restating it. */}
       <div className="mb-2">
-        {changesRequested
-          ? <PlanReviewFeedbackBlock task={task} clip={400} />
-          : (
-            <div className="text-[12px] text-gray-700 dark:text-gray-200">
-              Auto-reviewed — verdict: <span className="font-semibold">approved</span>. Confirm to continue.
-            </div>
-          )}
+        <PlanReviewFeedbackBlock task={task} clip={400} />
       </div>
       {/* FLUX-1306: keyed on the verdict — mirrors the AttentionDock tray item's
           `plan-approval:${id}:${verdict}` key — so a verdict flip while the user is mid-compose
@@ -804,15 +921,81 @@ function ChatPlanApprovalCard({ conversationId }: { conversationId: string }) {
  * for approvals, questions, and board-rebase batches alike. The same prompt also mirrors in the
  * unified attention surface (FLUX-898); resolution is single-flight via SSE, so there is no
  * double-submit even when both surfaces are mounted.
+ *
+ * The whole region is user-minimizable: prompt cards can eat most of a chat's height, hiding the
+ * transcript the user may need to read before answering. "Hide" collapses every pending card to a
+ * one-line count strip (nothing is dismissed or resolved); the strip — or a NEW prompt arriving —
+ * restores the cards.
  */
 export function ChatPendingInteractions({ conversationId }: { conversationId: string }) {
+  const { approvals, questions, rebases, rebaseFailures, singleActiveConversationId } = usePendingInteractions();
+  const task = useTaskById(conversationId);
+  const config = useAppSelector((s) => s.config);
+  // Minimized = the whole prompt region collapses to a one-line strip so the user can read the
+  // transcript these cards were covering. Prompts are NOT dismissed — they stay pending (and keep
+  // mirroring in the AttentionDock); the strip restores them on click.
+  const [minimized, setMinimized] = useState(false);
+
+  // What the four children below will actually render — mirrors their own per-conversation filters
+  // (including ChatQuestionPicker's unrouted single-active claim and ChatPlanApprovalCard's
+  // isPlanApprovalPending gate) so the minimize strip knows whether anything is pending and can
+  // label itself with a live count.
+  const count =
+    approvals.filter((p) => p.conversationId === conversationId).length +
+    rebases.filter((p) => p.conversationId === conversationId).length +
+    rebaseFailures.filter((f) => f.conversationId === conversationId).length +
+    questions.filter(
+      (p) =>
+        p.conversationId === conversationId ||
+        (p.conversationId == null && singleActiveConversationId === conversationId),
+    ).length +
+    (task && isPlanApprovalPending(task, config) ? 1 : 0);
+
+  // A NEW prompt arriving while minimized re-expands the region — minimize means "get these out of
+  // my way for now", never "silence future prompts" (a fresh question hidden behind a strip the
+  // user collapsed an hour ago would strand the agent).
+  const prevCountRef = useRef(count);
+  useEffect(() => {
+    if (count > prevCountRef.current) setMinimized(false);
+    prevCountRef.current = count;
+  }, [count]);
+
+  if (count === 0) return null;
+
+  if (minimized) {
+    return (
+      <button
+        type="button"
+        onClick={() => setMinimized(false)}
+        title="Show the pending prompts"
+        className="flex w-full shrink-0 items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-2.5 py-1.5 text-[11.5px] font-semibold text-primary transition-colors hover:bg-primary/10"
+      >
+        <BellRing className="h-3.5 w-3.5" />
+        {count} pending prompt{count === 1 ? '' : 's'}
+        <ChevronUp className="ml-auto h-3.5 w-3.5" />
+      </button>
+    );
+  }
+
   return (
-    <>
+    // `min-h-0 flex-1` keeps the FLUX-1413 bounded-height chain intact now that this wrapper div
+    // sits between ChatView's questionPicker slot and ChatQuestionPicker's own flex-1 root.
+    <div className="flex min-h-0 flex-1 flex-col gap-1.5">
+      <div className="flex shrink-0 items-center justify-end">
+        <button
+          type="button"
+          onClick={() => setMinimized(true)}
+          title="Minimize these prompts to a slim strip so you can read the chat behind them — nothing is dismissed, and a new prompt reopens them"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-secondary)] dark:hover:bg-white/5"
+        >
+          <ChevronDown className="h-3 w-3" /> Hide
+        </button>
+      </div>
       <ChatApprovalPanel conversationId={conversationId} />
       <ChatBoardRebasePanel conversationId={conversationId} />
       <ChatQuestionPicker conversationId={conversationId} />
       <ChatPlanApprovalCard conversationId={conversationId} />
-    </>
+    </div>
   );
 }
 

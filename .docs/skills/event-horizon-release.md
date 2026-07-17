@@ -1,6 +1,8 @@
 ---
 title: Event Horizon Release
 order: 5
+delivery: [pull-only, concatenated, modular]
+deliveryNote: "🚚 pull-only for Claude — reached only via read_skill('release'), never auto-injected · concatenated into gemini/cursor/antigravity/windsurf/generic installs · installed per-file for copilot/cline (modular, on-demand)."
 ---
 > ⚠️ DO NOT DELETE — Required for release orchestration.
 

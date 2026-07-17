@@ -4,7 +4,6 @@ import { motion } from 'framer-motion';
 import type { Task, Config } from '../types';
 import { TaskCard } from './TaskCard';
 import { ContextMenu } from './ContextMenu';
-import { CardChatButton } from './task-card/CardChatButton';
 import { useAppSelector } from '../store/useAppSelector';
 import { getStatusColorClass } from '../statusStyles';
 import { normalizeStatus } from '../workflow';
@@ -183,7 +182,7 @@ function EpicGhostCard({
   const pct = progress && progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
   const [ctxPos, setCtxPos] = useState<{ x: number; y: number } | null>(null);
   return (
-    <div className="relative">
+    <>
       <button
         type="button"
         onClick={(e) => { e.stopPropagation(); openEpic?.(epic); }}
@@ -216,7 +215,6 @@ function EpicGhostCard({
           </div>
         </div>
       </button>
-      <CardChatButton task={epic} />
       {ctxPos && (
         // Right-click acts on the real epic (status, priority, assignee, archive, …); "launch" routes
         // to opening the epic, where the inline launcher lives (FLUX-699).
@@ -227,7 +225,7 @@ function EpicGhostCard({
           onLaunchAgent={() => { setCtxPos(null); openEpic?.(epic); }}
         />
       )}
-    </div>
+    </>
   );
 }
 

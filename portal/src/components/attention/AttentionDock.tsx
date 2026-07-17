@@ -38,6 +38,7 @@ import { FloatingPanel } from '../FloatingPanel';
 import { NotificationPanel } from '../NotificationPanel';
 import { TicketRefChip } from '../TicketRefChip';
 import { ActivityPanel } from '../ActivityPanel';
+import { Button } from '../ui/Button';
 import { ParseErrorBanner } from '../ParseErrorBanner';
 import { useAttentionAck, usePlanReviewDockDismiss, deriveDockLabel, type AttentionTab } from './attentionAck';
 import { DOCK_REVEAL_LABEL, DOCK_ICON_SLOT } from '../dockReveal';
@@ -177,13 +178,15 @@ function RequireInputBody({ ticketId, onOpen, label = 'Open to answer' }: { tick
   return (
     <>
       <div className="whitespace-pre-wrap break-words text-[12px] leading-snug text-[var(--eh-text-secondary)]">{clipped}</div>
-      <button
-        type="button"
+      <Button
+        variant="filled"
+        intent="accent"
+        icon={<ExternalLink className="h-3.5 w-3.5" />}
         onClick={() => onOpen(ticketId)}
-        className="mt-2 inline-flex items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-primary-hover"
+        className="mt-2"
       >
-        <ExternalLink className="h-3.5 w-3.5" /> {label}
-      </button>
+        {label}
+      </Button>
     </>
   );
 }
@@ -210,21 +213,18 @@ function PlanApprovalBody({
 }) {
   const task = useTaskById(ticketId);
   if (!task) return null;
-  const changesRequested = task.planReviewState === 'changes-requested';
 
   return (
     <>
+      {/* FLUX-1472: the verdict is folded into the item's title (see list-item construction below)
+          — spend this body line on the plan's TL;DR instead of restating it. */}
       <div className="mb-2 text-[12px] leading-snug text-[var(--eh-text-secondary)]">
-        {changesRequested ? (
-          <PlanReviewFeedbackBlock task={task} clip={220} />
-        ) : (
-          <>Auto-reviewed — verdict: <span className="font-semibold text-[var(--eh-text-primary)]">approved</span>. Confirm to continue.</>
-        )}
+        <PlanReviewFeedbackBlock task={task} clip={220} />
       </div>
       <PlanReviewActions
         task={task}
         onOpenFull={() => onOpen(ticketId)}
-        openLabel="Open to confirm"
+        openLabel="Review plan"
         onSetAside={onDockHide}
         setAsideTitle="Hide from this list for now — keeps the verdict on the ticket; reappears on a new review pass"
       />
@@ -256,22 +256,19 @@ export function GateParkedBody({ ticketId, onOpen }: { ticketId: string; onOpen:
     <>
       <div className="whitespace-pre-wrap break-words text-[12px] leading-snug text-[var(--eh-text-secondary)]">{clipped}</div>
       <div className="mt-2 flex items-center gap-1.5">
-        <button
-          type="button"
-          onClick={() => onOpen(ticketId)}
-          className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-primary-hover"
-        >
-          <ExternalLink className="h-3.5 w-3.5" /> Open to resolve
-        </button>
-        <button
-          type="button"
+        <Button variant="filled" intent="accent" icon={<ExternalLink className="h-3.5 w-3.5" />} onClick={() => onOpen(ticketId)}>
+          Open to resolve
+        </Button>
+        <Button
+          variant="quiet"
+          intent="neutral"
+          icon={<Check className="h-3.5 w-3.5" />}
           onClick={() => void dismiss()}
           disabled={busy}
           title="Dismiss — I've got this"
-          className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-[var(--eh-border)] px-3 py-1.5 text-[12px] font-semibold text-[var(--eh-text-secondary)] transition-colors hover:bg-black/5 disabled:opacity-40 dark:hover:bg-white/5"
         >
-          <Check className="h-3.5 w-3.5" /> Dismiss
-        </button>
+          Dismiss
+        </Button>
       </div>
     </>
   );
@@ -285,16 +282,18 @@ function RestartBody() {
         {restarting ? 'Restarting…' : 'Engine files changed — active sessions will finish first.'}
       </span>
       {!restarting && (
-        <button
-          type="button"
+        <Button
+          variant="filled"
+          intent="warn"
+          size="sm"
+          className="shrink-0"
           onClick={async () => {
             setRestarting(true);
             try { await fetch(`${API_URL}/restart`, { method: 'POST' }); } catch { /* connection drops on restart */ }
           }}
-          className="shrink-0 rounded-lg bg-amber-500 px-3 py-1 text-[12px] font-semibold text-white transition-colors hover:bg-amber-600"
         >
           Restart now
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -418,7 +417,7 @@ export function AttentionDock() {
         createdAt: t.historyDigest?.lastActivityAt || '',
         Icon: changesRequested ? ClipboardX : ClipboardCheck,
         iconClass: changesRequested ? 'text-amber-500' : 'text-sky-500',
-        title: changesRequested ? 'Plan review requested changes' : 'Plan ready for your approval',
+        title: changesRequested ? 'Plan review requested changes' : 'Plan approved by auto-review — confirm',
         kindLabel: 'plan', summary: changesRequested ? 'Changes requested — review feedback' : 'Auto-reviewed — approved', peekStyle: 'open',
         body: <PlanApprovalBody ticketId={t.id} onOpen={openToApprovePlan} onDockHide={() => dockDismiss.dockDismiss(t.id, verdict)} />,
       });
@@ -618,7 +617,7 @@ export function AttentionDock() {
         <span className={`${DOCK_REVEAL_LABEL} text-xs font-semibold leading-none tracking-tight`}>{label.label}</span>
         {label.count != null && (
           <span
-            className={`absolute -right-1.5 -top-1.5 flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-bold leading-none text-white shadow ring-2 ring-[var(--eh-base)] ${tone ? 'bg-amber-500' : 'bg-sky-500'}`}
+            className={`absolute -right-1.5 -top-1.5 flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-bold leading-none text-white shadow ring-2 ring-[var(--eh-base)] ${tone ? 'bg-[var(--eh-state-attention)]' : 'bg-[var(--eh-state-working)]'}`}
           >
             {label.count}
           </span>
@@ -646,7 +645,7 @@ export function AttentionDock() {
             <span className="min-w-0 flex-1 truncate text-xs text-[var(--eh-text-secondary)]">{peekItem.summary}</span>
             {peekItem.peekStyle === 'allow-deny' && peekItem.approvalId ? (
               <>
-                <button type="button" onClick={() => peekAllow(peekItem.approvalId as string, 'allow')} className="shrink-0 rounded border border-emerald-500/30 bg-emerald-500/20 px-2 py-0.5 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-emerald-500/30 dark:text-emerald-300">Allow</button>
+                <button type="button" onClick={() => peekAllow(peekItem.approvalId as string, 'allow')} className="shrink-0 rounded border border-[var(--eh-state-success)]/30 bg-[var(--eh-state-success)]/20 px-2 py-0.5 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-[var(--eh-state-success)]/30 dark:text-emerald-300">Allow</button>
                 <button type="button" onClick={() => peekAllow(peekItem.approvalId as string, 'deny')} className="shrink-0 rounded border border-rose-500/25 bg-rose-500/15 px-2 py-0.5 text-[11px] font-medium text-rose-700 transition-colors hover:bg-rose-500/25 dark:text-rose-300">Deny</button>
               </>
             ) : null}

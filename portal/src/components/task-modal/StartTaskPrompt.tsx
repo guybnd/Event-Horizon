@@ -2,15 +2,16 @@ import { useEffect, useState } from 'react';
 import { Play, FolderGit2, Check } from 'lucide-react';
 import type { Task } from '../../types';
 import {
-  createBranch, fetchHealth, fetchConfig, openWorktreeWindow,
+  fetchHealth, fetchConfig, openWorktreeWindow,
   fetchWorktrees, joinWorktree, type WorktreeInfo,
 } from '../../api';
 import { BranchSection, type StartMode } from './BranchSection';
 import { useEscapeKey } from '../../hooks/useEscapeKey';
+import type { StartSelection } from '../../agentActions';
 
 interface StartTaskPromptProps {
   task: Task;
-  onConfirm: (branch: string | null) => void;
+  onConfirm: (selection: StartSelection) => void;
   onCancel: () => void;
 }
 
@@ -36,26 +37,16 @@ export function StartTaskPrompt({ task, onConfirm, onCancel }: StartTaskPromptPr
   }, [isXs]);
 
   // Pick up this ticket — either in the portal (Start) or a new window (New window).
-  // Both are TERMINAL: on success the modal closes (Start via onConfirm; New window
-  // via the confirmation state), so there's no "did it start?" ambiguity.
-  const resolveBranch = async (): Promise<string | null> => {
-    if (mode === 'current') return null;
-    if (mode === 'join') {
-      if (!joinBranch) throw new Error('Pick a worktree to join.');
-      return (await joinWorktree(task.id, joinBranch)).branch;
+  // Start closes immediately (FLUX-1464): branch/worktree creation is slow (several seconds for a
+  // worktree), so it happens after the picker is gone, not in front of it — the parent shows its
+  // own busy/error state while resolving the selection and launching. New window stays open and
+  // resolves the branch itself since it has its own confirmation state to show.
+  const handleStart = () => {
+    if (mode === 'join' && !joinBranch) {
+      setError('Pick a worktree to join.');
+      return;
     }
-    return (await createBranch(task.id, { worktree: mode === 'worktree' })).branch;
-  };
-
-  const handleStart = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      onConfirm(await resolveBranch()); // parent closes the modal
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start');
-      setBusy(false);
-    }
+    onConfirm({ mode, joinBranch: mode === 'join' ? joinBranch : null });
   };
 
   const handleOpenWindow = async () => {
@@ -142,12 +133,12 @@ export function StartTaskPrompt({ task, onConfirm, onCancel }: StartTaskPromptPr
                 </button>
               )}
               <button
-                onClick={() => void handleStart()}
+                onClick={handleStart}
                 disabled={busy}
                 className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary-hover disabled:opacity-50"
               >
                 <Play className="h-3 w-3" />
-                {busy ? 'Starting…' : 'Start'}
+                Start
               </button>
             </div>
           </>

@@ -231,6 +231,14 @@ describe('grooming artifacts (FLUX-873)', () => {
       expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('data-eh-anno-id');
     });
 
+    // A data-eh-decision host with no data-eh-opt children is malformed (e.g. an agent hand-rendered
+    // its own chips or used the attribute as an id — seen in the wild): skip it instead of injecting
+    // an empty, option-less card the user can't interact with.
+    it('skips malformed decision hosts that declare no data-eh-opt options', () => {
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain("var optSrcs = host.querySelectorAll('[data-eh-opt]');");
+      expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('if (!optSrcs.length) return;');
+    });
+
     // FLUX-1440: raw right-click on a slider/input previously carried no value — elementInfo() now
     // captures .value (or an opt-in data-eh-value) and threads it through add/update/live-mirror.
     it('captures a control value (.value or data-eh-value) and threads it through the annotation record', () => {
@@ -247,8 +255,10 @@ describe('grooming artifacts (FLUX-873)', () => {
     it('signals hasGuidedControls as a single boolean on the existing ready post', () => {
       expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain("type: 'ready'");
       expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain('hasGuidedControls: hasGuidedControls');
+      // Only USABLE controls count: any feel host, but a decision host only via a data-eh-opt
+      // descendant — a malformed opt-less decision host must not trigger the host's invitation.
       expect(ARTIFACT_ANNOTATOR_SCRIPT).toContain(
-        "querySelectorAll('[data-eh-feel],[data-eh-decision]')"
+        "querySelectorAll('[data-eh-feel],[data-eh-decision] [data-eh-opt]')"
       );
       // Still one, single ready post — no new message type/channel introduced for this signal.
       expect((ARTIFACT_ANNOTATOR_SCRIPT.match(/type: 'ready'/g) || []).length).toBe(1);

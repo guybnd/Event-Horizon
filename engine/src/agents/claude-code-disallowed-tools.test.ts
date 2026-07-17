@@ -189,3 +189,29 @@ describe('disallowedToolsArgs scopes the event-horizon MCP toolset via the deny-
     expect(args).not.toEqual(expect.arrayContaining(['mcp__event-horizon__permission_prompt']));
   });
 });
+
+// FLUX-1226 (C2) — the second byte-compat surface for the Mission-block -> persona migration.
+// Phase B resolves each launch phase's role TEXT through the persona catalog
+// (`resolveSoloChatPersona`), but never stamps the resolved default persona's id onto
+// `session.personaId` — so this tool-scoping computation (keyed on `session.personaId`, not on
+// prompt text) must be completely untouched by the migration, for every phase, by construction.
+// A dispatched solo/standalone session still carries no `personaId` and a chat/scratch session is
+// still hard-skipped — exactly as before FLUX-1226.
+describe('disallowedToolsArgs / disallowedEhToolsForPersona stay untouched by the FLUX-1226 persona migration (C2)', () => {
+  const DISPATCHED_PHASES = ['grooming', 'fast-path', 'implementation', 'review', 'finalize'] as const;
+
+  it('a no-personaId dispatched session stays un-scoped for every phase (byte-identical to pre-FLUX-1226)', () => {
+    for (const phase of DISPATCHED_PHASES) {
+      const args = disallowedToolsArgs({ phase }, { status: 'In Progress' });
+      expect(args, `phase=${phase}`).not.toEqual(expect.arrayContaining([expect.stringContaining('mcp__event-horizon__')]));
+    }
+  });
+
+  it('a chat session (incl. scratch) stays hard-skipped for EH scoping regardless of any stray personaId', () => {
+    const chatArgs = disallowedToolsArgs({ phase: 'chat' }, { status: 'In Progress' });
+    expect(chatArgs).not.toEqual(expect.arrayContaining([expect.stringContaining('mcp__event-horizon__')]));
+
+    const scratchArgs = disallowedToolsArgs({ phase: 'chat' }, { status: 'In Progress', kind: 'scratch' });
+    expect(scratchArgs).not.toEqual(expect.arrayContaining([expect.stringContaining('mcp__event-horizon__')]));
+  });
+});

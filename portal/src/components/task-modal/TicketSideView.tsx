@@ -141,35 +141,49 @@ function ArtifactSection({ c, onSendToChat }: { c: SideViewController; onSendToC
   const isRecap = latestRev ? /recap/i.test(`${latestRev.title ?? ''} ${latestRev.note ?? ''}`) : false;
   const label = isRecap ? 'Visual Recap' : 'Artifact';
   return (
-    <section className="eh-border shrink-0 overflow-hidden rounded-xl border bg-[var(--eh-input-bg)]">
-      <div className="flex w-full items-center gap-2 px-3 py-2">
-        <button
-          type="button"
-          onClick={() => setSectionOpen('artifact', !open)}
-          aria-expanded={open}
-          className="flex flex-1 items-center gap-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-secondary)]"
-        >
-          {open ? <ChevronDown className="h-3.5 w-3.5 flex-shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 flex-shrink-0" />}
-          <LayoutTemplate className="h-3.5 w-3.5 flex-shrink-0" />
-          <span>{label}</span>
-        </button>
-        {/* FLUX-1273: the plan-approval panel stays reachable long after the flagged moment resolves —
-            mirrors this section's own always-on-when-an-artifact-exists precedent (no status gate). */}
-        <button
-          type="button"
-          onClick={() => openPlanApproval(c.task.id)}
-          title="Open the full plan-review panel — view, annotate, and (if unresolved) approve or send it back"
-          className="flex flex-shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-secondary)] dark:hover:bg-white/5"
-        >
-          <ClipboardCheck className="h-3 w-3 flex-shrink-0" /> View Plan
-        </button>
-      </div>
-      {/* FLUX-1136: stay mounted while collapsed (display:none, not unmounted) — an instant unmount
-          would eat an in-progress annotation batch living inside the iframe. ArtifactPanel itself
-          stops paying any reload/compile cost while `visible` is false; a genuinely long collapse
-          drops the iframe on its own grace timer. */}
-      <div className="px-3 pb-3" style={open ? undefined : { display: 'none' }}>
-        <ArtifactPanel task={c.task} onSendToChat={onSendToChat} visible={open} />
+    // FLUX-1474: was a two-strip header (this section's own collapse/identity row stacked above
+    // ArtifactPanel's title/rev/warnings/rev-picker/fullscreen row) — now ONE row: the collapse
+    // toggle + identity (`headerStart`) and "View Plan" (`headerEnd`) are handed to ArtifactPanel to
+    // render inline with its own controls. When open, `h-[62vh]` gives this section a DEFINITE height
+    // (not just a cap — `flex-1`/`fillHeight` need a bounded box to fill, not merely a max-height, to
+    // actually stretch the iframe) in place of the old open-ended header+58vh+tip+pill stack, so the
+    // iframe is the ONLY thing that can scroll inside the pane; the side-view host's own
+    // `overflow-y-auto` no longer has to compete with a second, nearly-touching scrollbar right next
+    // to it. Collapsed, no height class is set — the section shrinks to its header's natural size.
+    <section className={`eh-border flex shrink-0 flex-col overflow-hidden rounded-xl border bg-[var(--eh-input-bg)] ${open ? 'h-[62vh]' : ''}`}>
+      <div className="flex min-h-0 flex-1 flex-col px-3 pb-3 pt-2">
+        <ArtifactPanel
+          task={c.task}
+          onSendToChat={onSendToChat}
+          visible={open}
+          collapsed={!open}
+          fillHeight
+          headerStart={
+            <button
+              type="button"
+              onClick={() => setSectionOpen('artifact', !open)}
+              aria-expanded={open}
+              className="flex flex-shrink-0 items-center gap-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-secondary)]"
+            >
+              {open ? <ChevronDown className="h-3.5 w-3.5 flex-shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 flex-shrink-0" />}
+              <LayoutTemplate className="h-3.5 w-3.5 flex-shrink-0" />
+              <span>{label}</span>
+            </button>
+          }
+          headerEnd={
+            // FLUX-1273: the plan-approval panel stays reachable long after the flagged moment
+            // resolves — mirrors this section's own always-on-when-an-artifact-exists precedent
+            // (no status gate).
+            <button
+              type="button"
+              onClick={() => openPlanApproval(c.task.id)}
+              title="Open the full plan-review panel — view, annotate, and (if unresolved) approve or send it back"
+              className="flex flex-shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-secondary)] dark:hover:bg-white/5"
+            >
+              <ClipboardCheck className="h-3 w-3 flex-shrink-0" /> View Plan
+            </button>
+          }
+        />
       </div>
     </section>
   );

@@ -28,6 +28,30 @@ router.put('/:id', async (req, res) => {
 
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
+  // FLUX-1485: fast-fail idempotent no-op for an already-consumed plan-approval verdict. Every
+  // Approve/dismiss surface (approvePlanToTodo, dismissPlanReview, PlanApprovalPanel.commit) sends
+  // `planReviewState: null` to clear the verdict — if it was already consumed by another path (MCP
+  // `change_status`, the plan gate's auto-approve, or a stale duplicate click) there is nothing left
+  // to do. Short-circuit BEFORE the per-ticket write-serialization chain (`updateTaskWithHistory`,
+  // task-store.ts) so a wedged prior write on this ticket can never hang a stale Approve click
+  // (the FLUX-1485 hang). Returning the current task with a 200 (not an error) lets the existing
+  // success path close the card and refresh in place.
+  //
+  // Once the ticket has left Grooming entirely, plan-approval is moot regardless of what else the
+  // payload asks for — these fields are only ever sent by the plan-approval surfaces.
+  const alreadyLeftGrooming = task.status !== 'Grooming';
+  // FLUX-1339: a Grooming ticket with a plan body but NO verdict yet (`planReviewState == null`)
+  // is a legitimate, common "standing approve" state (`canApprovePlan`) — not an already-consumed
+  // one. Only treat `planReviewState == null` as "nothing pending" when the request ISN'T also the
+  // standing approve itself (i.e. it doesn't move the ticket out of Grooming), and isn't clearing a
+  // still-set `needsAction` a dismiss would otherwise leave stranded.
+  const requestsGroomingExit = !alreadyLeftGrooming && typeof updates.status === 'string' && updates.status !== 'Grooming';
+  const wouldDropNeedsActionClear = updates.needsAction === null && task.needsAction != null;
+  const nothingPendingToConsume = task.planReviewState == null && !requestsGroomingExit && !wouldDropNeedsActionClear;
+  if (updates.planReviewState === null && (alreadyLeftGrooming || nothingPendingToConsume)) {
+    return res.json(serializeTaskForApi(task));
+  }
+
   const actor = updatedBy || task.updatedBy || 'Unknown';
 
   const appendHistoryEntries: HistoryEntry[] = Array.isArray(updates.appendHistory) ? updates.appendHistory : [];

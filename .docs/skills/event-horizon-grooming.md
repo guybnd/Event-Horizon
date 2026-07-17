@@ -1,6 +1,8 @@
 ---
 title: Event Horizon Grooming
 order: 2
+delivery: [injected:grooming, concatenated, modular]
+deliveryNote: "🚚 INJECTED into every Claude grooming-phase session at spawn — content added here is paid by every grooming session · concatenated into gemini/cursor/antigravity/windsurf/generic installs · installed per-file for copilot/cline (modular, on-demand)."
 ---
 > ⚠️ DO NOT DELETE — This file is required for the Event Horizon agent workflow. Deleting it will break grooming behaviour.
 
@@ -11,16 +13,15 @@ Scope: Interpret requirements, update frontmatter, and handle `.flux` metadata d
 
 # Event Horizon Agent — Grooming Skill
 
-Version: 2.16.1
+Version: 2.17.0
 
 ## When This Skill Applies
 
 Load this skill when a ticket's status is `Grooming` or `Require Input`.
-Refer to the orchestrator skill for the ticket model, APIs, and end-to-end checklist.
 
 ## End-of-Turn Action Contract (FLUX-651/826)
 
-Full contract lives in the orchestrator skill's "End-of-Turn Action Contract" section — read it there. For grooming specifically: complete → `change_status` to `Todo`; an implementation-critical choice unresolved → `change_status` to `Require Input` with the question + a proposed default. Never leave the ticket parked in `Grooming` with only a chat summary.
+Full contract: `read_skill('orchestrator', 'End-of-Turn Action Contract')`. For grooming specifically: complete → `change_status` to `Todo`; an implementation-critical choice unresolved → `change_status` to `Require Input` with the question + a proposed default. Never leave the ticket parked in `Grooming` with only a chat summary.
 
 ## Grooming Workflow
 
@@ -30,13 +31,13 @@ Full contract lives in the orchestrator skill's "End-of-Turn Action Contract" se
 4. If implementation-critical choices are unresolved, use `change_status` with `newStatus: 'Require Input'` and a `comment` containing one question + proposed defaults, then wait. For ambiguity that *isn't* blocking, see Plan Discipline item 3 below instead — don't flip status for something you can resolve with a stated default.
 5. **Decide the artifact call, and record it (FLUX-1313).** Per the "Rich Artifacts" section below, decide whether this ticket needs a published mockup/diagram/prototype — then either call `publish_artifact`, or note in the plan why one wasn't warranted. Treat this as a checkbox in the workflow, not a standalone judgment call that's easy to forget: under `## Dynamic Delegation` launch focus (grooming split across specialist sessions — Context Scout, Requirements, Plan Review, …), the artifact decision belongs to whichever session finalizes the plan — the one that calls `change_status` to `Todo` in step 7 — not to any narrower-scoped delegate. Don't assume an earlier or later session in the chain already made the call.
 6. Once resolved, use `update_ticket` to rewrite `body` with, in this order:
-   - **TL;DR** (FIRST, always): a 1–3 sentence plain-language / ELI5 summary as a leading `> **TL;DR** — …` blockquote, so the user grasps the ticket at a glance without reading the full plan (see the orchestrator skill's "Body convention").
+   - **TL;DR** (FIRST, always): a 1–3 sentence plain-language / ELI5 summary as a leading `> **TL;DR** — …` blockquote, so the user grasps the ticket at a glance without reading the full plan.
    - **Problem / Motivation** (1–3 sentences): what problem, who benefits, why prioritised.
-   - **Implementation plan**: concrete steps so another agent could pick up without re-discovery. Apply the Plan Discipline items below, scaled to the ticket's size and risk. Scale ceremony to effort generally — see the orchestrator skill's "Ceremony by effort" table.
+   - **Implementation plan**: concrete steps so another agent could pick up without re-discovery. Apply the Plan Discipline items below, scaled to the ticket's size and risk. Scale ceremony to effort generally — see `read_skill('orchestrator', 'Ceremony by effort')`.
 7. Use `change_status` with `newStatus: 'Todo'`. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.** If the board's `plan` gate policy is `Auto` or `Auto→You` (FLUX-1263), this call may not move the ticket immediately — it instead kicks off an automated plan-review pass and the tool's response explains what happened. That's expected: stop the same way regardless of whether the move applied directly or the gate took over.
    - **Exception — fast-path sessions (FLUX-1380).** This "stop at Todo" instruction is the default grooming contract, not an absolute rule. When the launch mission text explicitly identifies this session as `fast-path` (a combined groom-and-implement session dispatched via `phase:'fast-path'`), that mission overrides this step for this launch only: continue straight into implementation per the fast-path mission's own instructions instead of stopping at Todo. This is a launch-time override, not a change to what a normally-dispatched grooming session does — absent an explicit fast-path mission, stop at Todo as written above.
 
-All persistence uses MCP tools — see the orchestrator skill's "Persisting Changes" section.
+All persistence uses MCP tools (see "Editing & Safety" below).
 
 ## Plan-reviewer Agent Handoff
 
@@ -61,6 +62,8 @@ Borrowed from Builder.io's `agent-native` `/visual-plan` skill. Like the artifac
    - *Skip for:* XS/S-effort tickets and tickets with no Ready/PR review flow (pure discussion, read-only, spikes).
 6. **Recommended Tests, for tickets with a non-obvious testing approach (FLUX-1273).** Write a `## Recommended Tests` section in the body — a short list or prose naming what layer to test and the key scenarios, especially anything a reviewer wouldn't guess from the Acceptance Criteria alone. The plan-approval panel's Tests tab parses a `## Recommended Tests` or `## Test plan` heading (case-insensitive) and renders it alongside Acceptance Criteria; without one, it just shows an empty state.
    - *Skip for:* XS/S-effort tickets, UI-only tickets, and tickets where the test approach is self-evident from the Acceptance Criteria (e.g. "existing suite covers this," "run `npm run check`").
+7. **Consequence tracing, when the plan moves content/config into a destination (FLUX-1480).** For every file, constant, list, or module the plan says to move something INTO, name who actually consumes that destination and confirm the move still achieves the plan's goal — don't stop at "the destination exists and the plan reads consistently." The gate's own Standard-and-above check (`CONSEQUENCE_CHECK` in `gate-runner.ts`) re-asks this at review time; asking it yourself first catches the mistake before a review pass has to.
+   - *Skip for:* plans that don't move anything into a shared destination (most bug fixes, UI tweaks, single-file additions).
 
 ## "Reground before starting" — tickets filed from point-in-time analysis (FLUX-1048)
 
@@ -77,7 +80,7 @@ See epic **FLUX-1043** and its subtasks **FLUX-1044/1045/1046** for the referenc
 
 ## Rich Artifacts (`publish_artifact`) — default ON for plan proposals
 
-Shared mechanics — lifecycle framing, sandbox rules, CDN policy, revisions, the annotation round-trip, the layout-audit gate, and richer artifact kinds (Mermaid/SVG/charts/prototypes, plus live React/TSX component previews) — live in the orchestrator skill's "Rich Artifacts" section; read it there before your first emit. This section covers only grooming's emit/skip judgment.
+Shared mechanics — lifecycle framing, sandbox rules, CDN policy, revisions, the annotation round-trip, the layout-audit gate, and richer artifact kinds (Mermaid/SVG/charts/prototypes, plus live React/TSX component previews) — live in `read_skill('orchestrator', 'Rich Artifacts')`; pull it before your first emit. This section covers only grooming's emit/skip judgment.
 
 For grooming: a plan proposal is far cleaner for the user to work with — and to **annotate their change requirements onto** (the annotation round-trip) — as a rendered artifact than as prose. So **default to publishing a self-contained HTML artifact** the user reasons *against* — a rendered mockup, an architecture/flow diagram, an interactive prototype, or acceptance criteria laid out visually — catching misunderstanding *before* code is written. Use the `publish_artifact` MCP tool; the artifact renders in the ticket's artifact panel.
 
@@ -88,7 +91,11 @@ This is a **default-ON** rule, not the old "exception, not the norm" — **almos
 
 When in doubt on a plan proposal, emit one.
 
-A plan with a genuinely open-ended "feel" variable (no right answer on paper — scroll speed, easing, spacing) or several pivotal choices buried in prose is a strong signal to emit — and to use the `data-eh-feel`/`data-eh-decision` guided-annotation controls (see the orchestrator skill's "Rich Artifacts" section) so the user settles them directly on the rendering instead of guessing in a comment. This reinforces the UI-or-M+ rule above; it doesn't replace it.
+A plan with a genuinely open-ended "feel" variable (no right answer on paper — scroll speed, easing, spacing) or several pivotal choices buried in prose is a strong signal to emit — and to use the `data-eh-feel`/`data-eh-decision` guided-annotation controls so the user settles them directly on the rendering instead of guessing in a comment. This reinforces the UI-or-M+ rule above; it doesn't replace it.
+
+**Guided-control markup contract (FLUX-1440).** The viewer script upgrades two declarative attributes — `data-eh-feel` (an open-ended value the user dials in on a slider) and `data-eh-decision` (a pivotal either/or, rendered as a decision card) — into live, auto-staging controls; you write plain markup, the viewer injects the interactive UI. **Do not hand-render your own chips, sliders, or option buttons** (they'd be dead pixels — only the injected controls stage annotations). Pull the exact markup shapes via `read_skill('orchestrator', 'Rich Artifacts')` before using either one.
+
+Interacting stages the annotation into the same "N changes" pill as manual select/right-click annotations; the user still sends the batch explicitly (auto-stage ≠ auto-send). Opt-in, not ceremony: cap around 3-4 decisions per plan, and don't sprout controls on a plan that doesn't call for them.
 
 This judgment call is workflow step 5, not just a section to remember on your own (FLUX-1313) — see the ownership note there for Dynamic Delegation. The plan-review gate also checks for this: a UI/UX-shaped plan with no artifact gets flagged in the review comment as a gap rather than silently approved, so a missed decision here surfaces there too — but that's a backstop, not a substitute for making the call at grooming time.
 

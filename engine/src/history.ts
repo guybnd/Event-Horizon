@@ -405,20 +405,57 @@ export function extractRecentUserComments(history: unknown[] = [], limit = 3): R
   }));
 }
 
+/** The well-known prefix a launch-focus activity entry's `comment` always carries
+ *  (routes/cli-session.ts). Shared so the persist site and the reader below can never drift. */
+export const LAUNCH_FOCUS_PREFIX = '🎯 Launch focus: ';
+
 /**
- * The most recent persisted launch-focus instruction, if any. Persisted as a
- * `launchFocus` field on a launch activity entry (routes/cli-session.ts). Only
- * the clean focus text is ever stored — never the full launch-prompt blob,
- * which FLUX-473 deliberately stripped from the agent digest.
+ * The most recent persisted launch-focus instruction, if any. Only the clean focus text is ever
+ * stored — never the full launch-prompt blob, which FLUX-473 deliberately stripped from the agent
+ * digest. Two persisted shapes, both read here:
+ *  - **Legacy entries:** carry a separate `launchFocus` metadata field holding the same text as
+ *    `comment` (a same-entry duplication FLUX-1469 stopped writing, but old history still has it).
+ *  - **Current entries (FLUX-1469):** no `launchFocus` field — `comment` (behind the prefix above)
+ *    is the single source of truth, so the text is never held twice in one entry.
  */
 export function extractLaunchFocus(history: unknown[] = []): { launchFocus: string; date: string } | undefined {
   for (let i = history.length - 1; i >= 0; i--) {
     const e = asEntry(history[i]);
-    if (e && typeof e.launchFocus === 'string' && e.launchFocus.trim()) {
+    if (!e) continue;
+    if (typeof e.launchFocus === 'string' && e.launchFocus.trim()) {
       return { launchFocus: e.launchFocus.trim(), date: e.date ?? '' };
+    }
+    if (typeof e.comment === 'string' && e.comment.startsWith(LAUNCH_FOCUS_PREFIX)) {
+      const text = e.comment.slice(LAUNCH_FOCUS_PREFIX.length).trim();
+      if (text) return { launchFocus: text, date: e.date ?? '' };
     }
   }
   return undefined;
+}
+
+/** Below this length a launch focus is left alone in the agent digest forever (never collapsed —
+ *  `digestHistoryForAgent` only collapses entries carrying a `summary`). Matches the Open Question
+ *  default: only pull-backed, meaningfully-sized focuses (gate/temper/furnace) get summarized;
+ *  a short ad-hoc/Dynamic-Delegation focus is unaffected. */
+const LAUNCH_FOCUS_SUMMARY_THRESHOLD = 400;
+
+const READ_SKILL_CALL_RE = /read_skill\(\s*'([^']+)'(?:\s*,\s*'([^']+)')?\s*\)/;
+
+/**
+ * FLUX-1469: a compact, digest-friendly summary for a large, pull-backed launch focus (one that
+ * names a `read_skill(...)` call for its methodology detail, e.g. the plan-review gate's focus).
+ * Passed as the persisted entry's `summary` so the EXISTING digest-collapse mechanism
+ * (`digestHistoryForAgent`, already used for `add_note` summaries) shows just this line once the
+ * entry ages past the recent window — instead of the full ~2.4KB focus text re-accumulating in the
+ * agent digest on every gate/review pass. Returns `undefined` for anything below the threshold or
+ * with no pull to name — those entries are never collapsed (no `summary` → always kept full).
+ */
+export function buildLaunchFocusSummary(focusComment: string): string | undefined {
+  if (focusComment.length <= LAUNCH_FOCUS_SUMMARY_THRESHOLD) return undefined;
+  const match = READ_SKILL_CALL_RE.exec(focusComment);
+  if (!match) return undefined;
+  const [, module, section] = match;
+  return `Launch focus recorded (${focusComment.length} chars) — methodology detail via read_skill('${module}'${section ? `, '${section}'` : ''}). Full text recoverable via expand.`;
 }
 
 /**

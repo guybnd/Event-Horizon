@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ChevronLeft, ChevronRight, Loader2, Maximize2, Minimize2, Send } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { AlertTriangle, ChevronLeft, ChevronRight, Info, Loader2, Maximize2, Minimize2, Send } from 'lucide-react';
 import { useAppActions, useAppSelector } from '../../store/useAppSelector';
 import { useDebouncedArtifactReload } from '../../hooks/useDebouncedArtifactReload';
 import { triggerEscape, useEscapeKey } from '../../hooks/useEscapeKey';
@@ -145,6 +145,9 @@ export function ArtifactPanel({
   artifactAnnotations,
   onArtifactAnnotationsChange,
   onHasGuidedControlsChange,
+  collapsed = false,
+  headerStart,
+  headerEnd,
 }: {
   task: Task;
   onSendToChat?: (text: string) => void;
@@ -166,6 +169,18 @@ export function ArtifactPanel({
    *  annotations). Only needed in CONTROLLED mode, where the caller renders its own pill and needs the
    *  signal to drive that pill's empty state; the standalone view reads its own local state instead. */
   onHasGuidedControlsChange?: (value: boolean) => void;
+  /** FLUX-1474: true when the CALLER's own section chrome is collapsed. Renders only the compact
+   *  header row (`headerStart` + `headerEnd`, no title/rev/warnings/rev-picker/fullscreen) and keeps
+   *  the iframe body hidden via `display:none` (still mounted, per FLUX-1136) rather than unmounted —
+   *  distinct from `visible`, which governs iframe reload/compile throttling, not layout. */
+  collapsed?: boolean;
+  /** FLUX-1474: rendered first in the single header row — the sideview's collapse-toggle + identity
+   *  label ("Artifact" / "Visual Recap"), so that toggle and the artifact's own controls share ONE
+   *  strip instead of stacking two. Omitted by the plan-review panel, which has no collapse state. */
+  headerStart?: ReactNode;
+  /** FLUX-1474: appended to the header's action cluster, before the fullscreen toggle — the
+   *  sideview's "View Plan" entry point. */
+  headerEnd?: ReactNode;
 }) {
   const { subscribeToEvent } = useAppActions();
   const isWindowVisible = useAppSelector((s) => s.isWindowVisible);
@@ -416,20 +431,33 @@ export function ArtifactPanel({
             : 'flex flex-col gap-2'
       }
     >
-      {/* Header: title + (FLUX-1362) layout-warning icon + revision picker + full-screen toggle. */}
-      <div className="flex items-center justify-between gap-2 text-[11px] text-[var(--eh-text-muted)]">
-        <span className="min-w-0 truncate">
-          {current?.title || 'Artifact'} · rev {rev}{rev === latest ? ' (latest)' : ''}
-          {sentCount > 0 && (
-            <span role="status" aria-live="polite" className="ml-2 text-emerald-500">
-              ✓ Sent {sentCount} annotation{sentCount === 1 ? '' : 's'} to agent
-            </span>
-          )}
-        </span>
-        <div className="flex flex-shrink-0 items-center gap-1">
+      {/* FLUX-1474: ONE header row — the caller's collapse-toggle/identity (`headerStart`) and
+          "View Plan" (`headerEnd`) are composed in alongside this panel's own title/rev caption,
+          layout-warning pill, revision picker, and full-screen toggle, so a section wrapper never
+          has to stack a second header strip beneath this one. `collapsed` (distinct from `visible`,
+          which only throttles iframe reload) hides everything but the two caller slots. */}
+      <div className="flex items-center gap-2 text-[11px] text-[var(--eh-text-muted)]">
+        {headerStart}
+        {!collapsed && (
+          <span className="min-w-0 flex-1 truncate">
+            {current?.title || 'Artifact'} · rev {rev}{rev === latest ? ' (latest)' : ''}
+            {/* FLUX-1475: the revision caption folds into this one-line truncating header span
+                instead of a permanent paragraph below the iframe — same "no dedicated real estate"
+                treatment FLUX-1474 already gave the rest of this row. */}
+            {current?.note ? ` — ${current.note}` : ''}
+            {sentCount > 0 && (
+              <span role="status" aria-live="polite" className="ml-2 text-emerald-500">
+                ✓ Sent {sentCount} annotation{sentCount === 1 ? '' : 's'} to agent
+              </span>
+            )}
+          </span>
+        )}
+        <div className="ml-auto flex flex-shrink-0 items-center gap-1">
           {/* FLUX-1362: non-blocking layout-audit indicator. Hover describes the warnings; click copies
-              the fix prompt to the clipboard. The artifact itself renders regardless. */}
-          {audit.status === 'warnings' && (
+              the fix prompt to the clipboard. The artifact itself renders regardless. FLUX-1474:
+              labeled ("N warnings") so the highest-signal element in the header reads at a glance
+              instead of requiring a hover to decode a bare count. */}
+          {!collapsed && audit.status === 'warnings' && (
             <div
               className="relative"
               onMouseEnter={() => setWarnOpen(true)}
@@ -439,10 +467,12 @@ export function ArtifactPanel({
                 type="button"
                 onClick={copyAuditFix}
                 title="Layout warnings — click to copy the fix prompt"
-                className="flex items-center gap-0.5 rounded p-0.5 text-amber-500 hover:text-amber-600"
+                className="flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
               >
                 <AlertTriangle className="h-3.5 w-3.5" />
-                <span className="text-[10px] font-semibold">{audit.warnings.length}</span>
+                <span className="text-[10px] font-semibold">
+                  {audit.warnings.length} warning{audit.warnings.length === 1 ? '' : 's'}
+                </span>
               </button>
               {warnOpen && (
                 <div className="eh-surface eh-border absolute right-0 top-full z-[130] mt-1 flex w-72 max-w-[calc(100vw-2rem)] flex-col gap-2 rounded-lg border p-2.5 text-left shadow-2xl">
@@ -482,7 +512,7 @@ export function ArtifactPanel({
               )}
             </div>
           )}
-          {revisions.length > 1 && (
+          {!collapsed && revisions.length > 1 && (
             <>
               <button
                 type="button"
@@ -518,74 +548,92 @@ export function ArtifactPanel({
               </button>
             </>
           )}
-          <button
-            type="button"
-            onClick={() => setFullscreen((v) => !v)}
-            title={fullscreen ? 'Exit full screen (Esc)' : 'Open full screen'}
-            className="rounded p-0.5 hover:text-[var(--eh-text-secondary)]"
-          >
-            {fullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
-          </button>
+          {headerEnd}
+          {/* FLUX-1475: the permanent "Tip: select text…" paragraph used to sit between the artifact
+              and the composer on every render — now an info-glyph with the same text as a native
+              tooltip, so it costs no vertical space until someone actually wants it. */}
+          {!collapsed && (
+            <button
+              type="button"
+              title={`Select text — or right-click any element (toggle, button, chart bar) — in the artifact to annotate it. Your changes collect in the "${items.length} change${items.length === 1 ? '' : 's'}" pill; click a pin to edit its note.`}
+              className="rounded p-0.5 text-[var(--eh-text-muted)] hover:text-[var(--eh-text-secondary)]"
+            >
+              <Info className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {!collapsed && (
+            <button
+              type="button"
+              onClick={() => setFullscreen((v) => !v)}
+              title={fullscreen ? 'Exit full screen (Esc)' : 'Open full screen'}
+              className="rounded p-0.5 hover:text-[var(--eh-text-secondary)]"
+            >
+              {fullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+            </button>
+          )}
         </div>
       </div>
 
-      {/* The iframe (with its in-document pin/composer UI). FLUX-1362: no mask — the artifact renders
-          immediately; a brief non-blocking spinner in the corner shows while the layout audit runs. */}
-      <div className={fullscreen || fillHeight ? 'relative min-h-0 flex-1' : 'relative'}>
-        {iframeMounted ? (
-          <iframe
-            key={src}
-            ref={iframeRef}
-            title={`Artifact for ${task.id}`}
-            src={src}
-            sandbox="allow-scripts"
-            referrerPolicy="no-referrer"
-            className={`eh-border w-full rounded-lg border bg-white ${iframeSizeClass}`}
-          />
-        ) : (
-          <div className={`eh-border w-full rounded-lg border bg-white ${iframeSizeClass}`} />
-        )}
+      {/* FLUX-1474: the body (iframe + note/tip + pill) — hidden via `display:none` rather than
+          unmounted when the caller's section is collapsed, preserving FLUX-1136's "stay mounted"
+          contract (an instant unmount would eat an in-progress annotation batch living inside the
+          iframe). FLUX-1474: also the pane's SOLE vertical scroller — `fillHeight` callers bound this
+          block's height via their own flex/height context (see `TicketSideView`'s `ArtifactSection`),
+          so the iframe's own internal scrollbar is the only one that can appear within it; the host
+          never grows a second, competing scrollbar around it. */}
+      <div
+        style={collapsed ? { display: 'none' } : undefined}
+        className={fullscreen || fillHeight ? 'flex min-h-0 flex-1 flex-col gap-2' : 'flex flex-col gap-2'}
+      >
+        {/* The iframe (with its in-document pin/composer UI). FLUX-1362: no mask — the artifact renders
+            immediately; a brief non-blocking spinner in the corner shows while the layout audit runs. */}
+        <div className={fullscreen || fillHeight ? 'relative min-h-0 flex-1' : 'relative'}>
+          {iframeMounted ? (
+            <iframe
+              key={src}
+              ref={iframeRef}
+              title={`Artifact for ${task.id}`}
+              src={src}
+              sandbox="allow-scripts"
+              referrerPolicy="no-referrer"
+              className={`eh-border w-full rounded-lg border bg-white ${iframeSizeClass}`}
+            />
+          ) : (
+            <div className={`eh-border w-full rounded-lg border bg-white ${iframeSizeClass}`} />
+          )}
 
-        {iframeMounted && audit.status === 'pending' && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="pointer-events-none absolute right-2 top-2 flex items-center gap-1.5 rounded-full bg-black/60 px-2 py-1 text-[10px] font-medium text-white"
-          >
-            <Loader2 className="h-3 w-3 animate-spin" /> Checking layout…
-          </div>
-        )}
+          {iframeMounted && audit.status === 'pending' && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="pointer-events-none absolute right-2 top-2 flex items-center gap-1.5 rounded-full bg-black/60 px-2 py-1 text-[10px] font-medium text-white"
+            >
+              <Loader2 className="h-3 w-3 animate-spin" /> Checking layout…
+            </div>
+          )}
+
+          {/* FLUX-1362: the floating unified list. Standalone (artifact-only) view owns + renders it
+              with a Send action; in controlled mode the plan-review panel renders the pill (with
+              plan-text items merged in), so this panel only bridges the iframe. Lives INSIDE this
+              `relative` iframe wrapper so it floats at the artifact's own bottom-right — not (as the
+              old body-portaled fixed pill did) at the viewport corner over unrelated UI, and not
+              visible while a stay-mounted owner has this panel `display:none` hidden. */}
+          {!controlled && (
+            <AnnotationPill
+              artifactItems={items}
+              onEditArtifact={(id, note) => applyItems(items.map((a) => (a.id === id ? { ...a, note } : a)))}
+              onRemoveArtifact={(id) => applyItems(items.filter((a) => a.id !== id))}
+              onSend={onSendToChat ? () => {
+                const message = formatArtifactAnnotations(items);
+                if (message) { onSendToChat(message); setSentCount(items.length); applyItems([]); }
+              } : undefined}
+              sendDisabled={items.length === 0}
+              sentConfirm={sentCount > 0 ? `✓ Sent ${sentCount}` : undefined}
+              hasGuidedControls={hasGuidedControls}
+            />
+          )}
+        </div>
       </div>
-
-      {current?.note && !fullscreen ? (
-        <p className="px-1 text-[11px] text-[var(--eh-text-muted)]">{current.note}</p>
-      ) : null}
-
-      {!fullscreen && (
-        <p className="px-1 text-[10px] text-[var(--eh-text-muted)]">
-          Tip: select text — or right-click any element (toggle, button, chart bar) — in the artifact to
-          annotate it. Your changes collect in the “{items.length} change{items.length === 1 ? '' : 's'}”
-          pill; click a pin to edit its note.
-        </p>
-      )}
-
-      {/* FLUX-1362: the floating unified list. Standalone (artifact-only) view owns + renders it with a
-          Send action; in controlled mode the plan-review panel renders the pill (with plan-text items
-          merged in), so this panel only bridges the iframe. */}
-      {!controlled && (
-        <AnnotationPill
-          artifactItems={items}
-          onEditArtifact={(id, note) => applyItems(items.map((a) => (a.id === id ? { ...a, note } : a)))}
-          onRemoveArtifact={(id) => applyItems(items.filter((a) => a.id !== id))}
-          onSend={onSendToChat ? () => {
-            const message = formatArtifactAnnotations(items);
-            if (message) { onSendToChat(message); setSentCount(items.length); applyItems([]); }
-          } : undefined}
-          sendDisabled={items.length === 0}
-          sentConfirm={sentCount > 0 ? `✓ Sent ${sentCount}` : undefined}
-          hasGuidedControls={hasGuidedControls}
-        />
-      )}
     </div>
   );
 }

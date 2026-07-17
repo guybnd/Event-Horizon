@@ -70,6 +70,9 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [releaseModalTasks, setReleaseModalTasks] = useState<Task[] | null>(null);
   const [showBootstrap, setShowBootstrap] = useState(false);
+  // FLUX-1487: drives the floating Furnace panel's slide-in-from-right entrance transition —
+  // starts false so the first paint is the pre-transition state, then flips true next frame.
+  const [furnacePanelMounted, setFurnacePanelMounted] = useState(false);
   const { triggerRefresh, openTaskModal } = useAppActions();
   const currentProject = useAppSelector((s) => s.currentProject);
   const [bootstrapping, setBootstrapping] = useState(false);
@@ -202,6 +205,17 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
       });
     }
   }, [liveTasks, optimisticTasks, movingTaskIds]);
+
+  // FLUX-1487: reset to the pre-transition state whenever the panel closes, then flip to
+  // "mounted" on the next frame while it's open so the slide-in transition has a starting frame.
+  useEffect(() => {
+    if (!furnaceOpen) {
+      setFurnacePanelMounted(false);
+      return;
+    }
+    const raf = requestAnimationFrame(() => setFurnacePanelMounted(true));
+    return () => cancelAnimationFrame(raf);
+  }, [furnaceOpen]);
 
   useEffect(() => {
     const fn = (e: Event) => {
@@ -621,7 +635,7 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
             </div>
           )}
           <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd} collisionDetection={pointerWithin}>
-            <div className="flex h-full min-h-0">
+            <div className="relative flex h-full min-h-0">
             <div ref={scrollerRef} className="flex min-h-full flex-1 gap-2 pb-4 items-stretch overflow-x-auto">
               {allColumns.map((columnId, idx) => {
                 const prevCol = idx > 0 ? allColumns[idx - 1] : null;
@@ -653,7 +667,15 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
               })}
             </div>
             {furnaceOpen && (
-              <div className="w-[380px] shrink-0 h-full overflow-hidden border-l" style={{ borderColor: 'var(--eh-border)' }}>
+              <div
+                className={`absolute inset-y-2 right-2 w-[404px] z-30 overflow-hidden rounded-2xl border transition-all duration-[280ms] ease-out ${
+                  furnacePanelMounted ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-4'
+                }`}
+                style={{
+                  borderColor: 'var(--eh-border)',
+                  boxShadow: '0 20px 48px -12px rgba(0, 0, 0, 0.35), 0 0 32px -4px var(--eh-furnace-accent-glow)',
+                }}
+              >
                 <FurnaceDrawer onClose={onCloseFurnace} />
               </div>
             )}

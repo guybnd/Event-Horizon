@@ -70,6 +70,7 @@ import { __resetFurnaceStoreForTests, createFurnaceBatch, mutateFurnaceBatch } f
 import { newBatchTicket, DEFAULT_RETRY_CAP } from './models/furnace.js';
 import { getConfig } from './config.js';
 import { startPlanGateNow, startPlanReviseNow, resolvePlanVerdictNow, gateRunnerTick, isGateRunning, rehydrateGateRunner, __resetGateRunnerForTests } from './gate-runner.js';
+import { getNotifications, clearNotifications, dismissNotification } from './notifications.js';
 
 function putSession(id: string, phase: string, status: CliSessionStatus): void {
   cliSessionsById.set(id, { id, phase, status } as unknown as ReturnType<typeof cliSessionsById.get> & object);
@@ -92,6 +93,7 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     parkTicketOnBoard.mockClear();
     sessionSeq = 0;
     forceYieldFor = null;
+    clearNotifications();
     getConfig().gatePolicy = { boardDefault: { plan: 'auto', review: 'you' } };
     getConfig().requireInputStatus = 'Require Input';
     getConfig().columns = [
@@ -162,6 +164,33 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     expect(getWorkspace().tasks['AP-1'].planGateRunning).toBeUndefined();
   });
 
+  it('FLUX-1363: approved under `auto` (loop-auto) raises a dismissable info notification (no notification for one-pass/loop-confirm, which already flag a prompt)', async () => {
+    seedGrooming('AP-NOTIFY-1');
+    await startPlanGateNow('AP-NOTIFY-1', { mode: 'loop-auto' });
+    putSession('sess-1', 'review', 'completed');
+    getWorkspace().tasks['AP-NOTIFY-1'].planReviewState = 'approved';
+    await gateRunnerTick();
+
+    const notes = getNotifications().filter(n => n.ticketId === 'AP-NOTIFY-1');
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.type).toBe('info');
+    expect(notes[0]!.title).toContain('AP-NOTIFY-1');
+    expect(notes[0]!.dismissed).toBe(false);
+
+    // Re-approving after a dismiss re-fires a fresh notification (re-arm on plan revision). Simulate
+    // the ticket being sent back to Grooming for a revision (as `startPlanReviseNow` would do) before
+    // it loops through the gate and gets auto-approved again.
+    expect(dismissNotification(notes[0]!.id)).toBe(true);
+    getWorkspace().tasks['AP-NOTIFY-1'].status = 'Grooming';
+    await startPlanGateNow('AP-NOTIFY-1', { mode: 'loop-auto' });
+    putSession('sess-2', 'review', 'completed');
+    getWorkspace().tasks['AP-NOTIFY-1'].planReviewState = 'approved';
+    await gateRunnerTick();
+    const notesAfterRearm = getNotifications().filter(n => n.ticketId === 'AP-NOTIFY-1');
+    expect(notesAfterRearm).toHaveLength(1);
+    expect(notesAfterRearm[0]!.id).not.toBe(notes[0]!.id);
+  });
+
   it('approved under a one-shot pass stops WITHOUT moving status — never auto-confirms', async () => {
     seedGrooming('OS-AP-1');
     await startPlanGateNow('OS-AP-1', { mode: 'one-pass' });
@@ -175,6 +204,9 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     // FLUX-1273: an accurate, plan-specific needsAction — not left to the generic FLUX-651 backstop's
     // "ended its turn without a board action" message, which reads as if the agent did nothing.
     expect(getWorkspace().tasks['OS-AP-1'].needsAction).toMatch(/verdict: approved/i);
+    // FLUX-1363: one-pass already flags the user via a 'prompt' needsAction notification — the passive
+    // 'info' plan-auto-approved notification is loop-auto-only and must not also fire here.
+    expect(getNotifications().some(n => n.ticketId === 'OS-AP-1' && n.type === 'info')).toBe(false);
   });
 
   it('dispatches a `grooming`-phase revise pass on changes-requested within the retry cap, under `auto` (loop-auto)', async () => {

@@ -34,7 +34,8 @@ import { ensureTicketIsolation } from './ticket-isolation.js';
 import { cleanupMergedBranch, isWorktreeReclaimable } from './pr-cleanup.js';
 import { sharedNonDoneSiblings, prTicketsOnBranch } from './pr-tickets.js';
 import { existsSync } from 'fs';
-import { getActiveSessionsForTask, getLiveStandaloneSessionForTask, stopAllSessionsForTask, reapStaleParkedSessions } from './session-store.js';
+import { getActiveSessionsForTask, getLiveStandaloneSessionForTask, stopAllSessionsForTask, reapStaleParkedSessions, getCliSessionSummaryForTask } from './session-store.js';
+import { SKILL_MODULES, type SkillModule } from './workflow-installer.js';
 import { generatePromptNotification, generateReviewNotification, dismissNotificationsForTicket, addNotification } from './notifications.js';
 import { getGroupContext, getMemberBinding, groupDocsLabel, summarizeGroup, groupDocPathToStoreRelative, activeGroupDocsLabel } from './group.js';
 import { submitGroupEdit } from './group-edit.js';
@@ -265,7 +266,7 @@ export function resolvePlanGateMode(gateValue: 'auto' | 'auto-then-you' | 'you')
 
 const SAFE_PERMISSION_TOOLS = new Set([
   'get_ticket', 'list_tickets', 'get_board_config', 'get_project_group', 'get_board_state',
-  'list_available_agents', 'get_session_log',
+  'list_available_agents', 'get_session_log', 'read_skill',
   // The proposal path is always safe — it parks a batch for human approval, never mutates.
   'propose_board_rebase',
   'Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebSearch', 'TodoWrite', 'NotebookRead',
@@ -704,8 +705,75 @@ async function loadSkillModuleBody(module: PromptSkillModule): Promise<string | 
   }
 }
 
-function skillModuleFallback(module: PromptSkillModule): string {
+function skillModuleFallback(module: string): string {
   return `(The Event Horizon ${module} skill module could not be read on this install. Proceed with the server instructions and tool descriptions — they carry the core workflow rules: get_ticket before acting, change_status for column moves, end the turn on a board action.)`;
+}
+
+// ─── read_skill tool sourcing (FLUX-1466) ────────────────────────────────────
+// Agent-callable pull for the FULL six-module set (not just the three above, which are
+// scoped to MCP *prompts*). Fixes the class of dangling cross-module pointer behind PR #580:
+// injected phase modules say "see the orchestrator skill's X section" assuming the reader can
+// Read `.docs/skills/*.md` — true in this repo, false in every installed user repo, where only
+// the engine's own install carries those files. `read_skill` serves the body live from the
+// engine's skill root instead, so the pointer resolves everywhere.
+
+/** Separate from `skillModuleBodyMemo` above (which is keyed to the narrower `PromptSkillModule`
+ * union) — this one is keyed by the full canonical `SKILL_MODULES` set. Not memoized on failure,
+ * so a repaired file is picked up on the next call. */
+const readSkillBodyMemo = new Map<string, string>();
+
+/** Ordered search roots for `read_skill`, closest-wins (first readable hit). Currently just the
+ * engine's own `.docs/skills/` — the leading slot is a deliberate seam for a future project-local
+ * skill root (e.g. `.flux/skills/`, see `hasCwdFlux()` in workspace.ts) so adding user-custom
+ * skills later (FLUX-261) is a resolver addition here, not a reader rewrite. */
+function skillSearchRoots(): string[] {
+  return [resolveSkillSourceRoot()];
+}
+
+/** Read a skill module body (frontmatter stripped) for `read_skill`, trying each search root in
+ * order. Unlike `loadSkillModuleBody`, `module` is a plain string — the caller (the tool handler)
+ * validates it against `SKILL_MODULES` before calling this, so an unknown value never reaches
+ * here; a module IN the allowlist that's still unreadable (missing file, empty body) returns
+ * null and the caller falls back. */
+async function loadRawSkillModule(module: string): Promise<string | null> {
+  const memoized = readSkillBodyMemo.get(module);
+  if (memoized !== undefined) return memoized;
+  for (const root of skillSearchRoots()) {
+    const file = path.join(root, '.docs', 'skills', `event-horizon-${module}.md`);
+    try {
+      const raw = await fs.readFile(file, 'utf8');
+      const body = matter(raw).content.trim();
+      if (!body) continue;
+      readSkillBodyMemo.set(module, body);
+      return body;
+    } catch {
+      // Try the next root; a missing file at one root is not an error.
+    }
+  }
+  log.warn(`read_skill: module '${module}' unreadable across all search roots`);
+  return null;
+}
+
+/** Split a module body on `^## ` headings (case-insensitive match on lookup, not split) into
+ * ordered `{heading, text}` blocks. Content before the first `##` heading is kept under a null
+ * heading (never matched by a `section` lookup, but still part of the full-body fallback). */
+function splitSkillSections(body: string): Array<{ heading: string | null; text: string }> {
+  const lines = body.split('\n');
+  const sections: Array<{ heading: string | null; text: string }> = [];
+  let heading: string | null = null;
+  let buf: string[] = [];
+  for (const line of lines) {
+    const match = /^##\s+(.+?)\s*$/.exec(line);
+    if (match) {
+      sections.push({ heading, text: buf.join('\n').trim() });
+      heading = match[1]!;
+      buf = [];
+    } else {
+      buf.push(line);
+    }
+  }
+  sections.push({ heading, text: buf.join('\n').trim() });
+  return sections;
 }
 
 /** Prompt-argument completion for `ticketId`: active (non-terminal, non-scratch)
@@ -770,13 +838,13 @@ export function buildMcpServer(): McpServer {
     'get_ticket',
     {
       title: 'Get ticket',
-      description: 'Read a ticket by ID — returns frontmatter, body, and a digested history (agent_session entries collapsed to summaries; older summarized entries shown collapsed with an id; windowed to recent entries). Pass `expand:[ids]` to un-collapse specific entries (prefer this over `fullHistory:true`).',
+      description: 'Read a ticket by ID — returns frontmatter, body, and a digested history (older entries collapsed to summaries). Pass `expand:[ids]` to un-collapse specific entries; prefer over `fullHistory:true`.',
       inputSchema: {
       ticketId: z.string().describe('Ticket ID, e.g. FLUX-42'),
       historyLimit: z.number().int().positive().optional().describe('Max history entries to return (default 20)'),
-      expand: z.array(z.string()).optional().describe('History entry ids to return in FULL (un-collapse). Pass the `id` shown on a collapsed entry when its summary is not enough.'),
-      fullHistory: z.boolean().optional().describe('Return all history uncollapsed. Discouraged — defeats the digest and re-inflates context; prefer expand:[ids].'),
-      fullBody: z.boolean().optional().describe('Return the full ticket body even when it is oversized. By default a very large body is truncated with a recoverable size hint to save context; normal bodies are never truncated.'),
+      expand: z.array(z.string()).optional().describe('History entry ids to return in FULL. Pass the `id` shown on a collapsed entry.'),
+      fullHistory: z.boolean().optional().describe('Return all history uncollapsed. Discouraged — prefer expand:[ids].'),
+      fullBody: z.boolean().optional().describe('Return the full body even if oversized (normally truncated with a recoverable size hint).'),
       },
       // FLUX-950: permissive/shallow output schema — every field optional so the
       // SDK's structuredContent validation never throws on payload variation (a
@@ -801,8 +869,8 @@ export function buildMcpServer(): McpServer {
         assignee: z.string().nullish(),
         tags: z.array(z.string()).nullish(),
         parentId: z.string().nullish(),
-        body: z.string().nullish().describe('Markdown body — may be truncated with a recoverable size hint when oversized (AXI #3 / FLUX-879)'),
-        history: z.array(z.unknown()).optional().describe('Digested history (agent_session entries collapsed to summaries; windowed to recent entries)'),
+        body: z.string().nullish().describe('Markdown body — may be truncated with a recoverable size hint when oversized'),
+        history: z.array(z.unknown()).optional().describe('Digested history (older entries collapsed to summaries)'),
         collapsedCount: z.number().optional(),
         olderHistoryEntries: z.number().optional(),
       }).catchall(z.unknown()),
@@ -818,7 +886,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'get_session_log',
-    'Read the full progress log of one past agent session on a ticket. Use only when investigating what a specific prior session did — get_ticket already returns a digest of every session (sessionId + progressCount). Pass tail to fetch just the last N progress entries.',
+    'Read the full progress log of one past agent session on a ticket. Use only when investigating a specific prior session — get_ticket already returns a digest. Pass tail for just the last N entries.',
     {
       ticketId: z.string().describe('Ticket ID, e.g. FLUX-42'),
       sessionId: z.string().describe('Session ID from a get_ticket agent_session history entry'),
@@ -849,19 +917,72 @@ export function buildMcpServer(): McpServer {
   );
 
   server.registerTool(
+    'read_skill',
+    {
+      title: 'Read skill module',
+      description: 'Pull an Event Horizon skill module\'s full text, or one `##` section, live from the engine. Unknown module/section or unreadable file returns a fallback string, not an error.',
+      inputSchema: {
+        module: z.string().describe(`Skill module name — one of: ${SKILL_MODULES.join(', ')}. An unrecognized value returns a fallback string rather than a schema error.`),
+        section: z.string().optional().describe('Optional `##` heading (case-insensitive, without the leading `##`) to return just that section. No match returns the full body plus a list of available headings.'),
+      },
+      outputSchema: z.object({
+        module: z.string(),
+        section: z.string().nullish().describe('The section actually returned — null when the full body was returned (no section requested, or no match).'),
+        body: z.string(),
+        availableSections: z.array(z.string()).optional().describe('Present only when a requested section did not match — the `##` headings you can ask for instead.'),
+      }).catchall(z.unknown()),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ module, section }) => {
+      const bound = getBoundConversation();
+      const callingTask = bound.id ? getWorkspace().tasks[bound.id] : undefined;
+      const callingSession = callingTask ? getCliSessionSummaryForTask(callingTask.id) : undefined;
+      log.info(
+        `read_skill: module=${module} section=${section ?? '(none)'} ticket=${bound.id ?? '(unbound)'} ` +
+        `phase=${callingSession?.phase ?? '?'} pattern=${callingSession?.pattern ?? '?'}`,
+      );
+
+      const known = (SKILL_MODULES as readonly string[]).includes(module);
+      if (!known) return structuredResult({ module, section: null, body: skillModuleFallback(module) });
+
+      const body = await loadRawSkillModule(module as SkillModule);
+      if (!body) return structuredResult({ module, section: null, body: skillModuleFallback(module) });
+      if (!section) return structuredResult({ module, section: null, body });
+
+      const sections = splitSkillSections(body);
+      const needle = section.trim().toLowerCase();
+      // Exact match first, then substring containment — headings routinely carry a trailing
+      // ticket/qualifier (e.g. "Rich Artifacts (`publish_artifact`) — shared mechanics"), so a
+      // caller quoting just the plain title ("Rich Artifacts") should still resolve.
+      const match =
+        sections.find((s) => s.heading && s.heading.toLowerCase() === needle) ??
+        sections.find((s) => s.heading && s.heading.toLowerCase().includes(needle));
+      if (match) return structuredResult({ module, section: match.heading, body: match.text });
+
+      const availableSections = sections.map((s) => s.heading).filter((h): h is string => !!h);
+      return structuredResult({
+        module,
+        section: null,
+        body: `${body}\n\n---\n(No section titled "${section}" — available \`##\` headings: ${availableSections.join(', ')})`,
+        availableSections,
+      });
+    },
+  );
+
+  server.registerTool(
     'list_tickets',
     {
       title: 'List tickets',
-      description: 'List tickets with optional filtering by status, assignee, tag, or priority. Active-by-default and bounded (FLUX-489): with no explicit status it returns only non-terminal tickets (excludes Done/Released/Archived) and caps at 40 rows. Use search to substring-match id+title, raise limit, or pass includeAll:true to see everything.',
+      description: 'List tickets, filterable by status/assignee/tag/priority. Active-by-default: no status → non-terminal only, capped at 40. Use search, limit, or includeAll:true.',
       inputSchema: {
-      status: z.string().optional().describe('Filter by status (e.g. "In Progress", "Todo"). An explicit status overrides the active-by-default screen (so you CAN list Done/Released/Archived by naming the status).'),
+      status: z.string().optional().describe('Filter by status (e.g. "In Progress", "Todo"). Overrides the active-by-default screen.'),
       assignee: z.string().optional().describe('Filter by assignee'),
       tag: z.string().optional().describe('Filter by tag name'),
       priority: z.string().optional().describe('Filter by priority (Critical, High, Medium, Low, None)'),
       search: z.string().optional().describe('Case-insensitive substring match over ticket id + title.'),
-      active: z.boolean().optional().describe('Default true: when no explicit status is given, return only NON-terminal tickets (exclude Done, Released, Archived). Set false to include terminal statuses.'),
+      active: z.boolean().optional().describe('Default true: hide terminal tickets (Done/Released/Archived) when no explicit status given.'),
       limit: z.number().int().positive().optional().describe('Max rows to return (default 40). Ignored when includeAll is true.'),
-      includeAll: z.boolean().optional().describe('Escape hatch: return every matched row, ignoring the active-default screen AND the limit.'),
+      includeAll: z.boolean().optional().describe('Escape hatch: ignore the active screen and limit, return every match.'),
       },
       // FLUX-950: structuredContent must be an object, so the result is always the
       // `{ tickets, note? }` envelope (never a bare array). Rows are permissive/partial
@@ -876,8 +997,8 @@ export function buildMcpServer(): McpServer {
           effort: z.string(),
           assignee: z.string(),
           tags: z.array(z.string()),
-        }).partial()).optional().describe('Matching ticket rows (bounded; see `note` when a screen or limit omitted rows)'),
-        note: z.string().optional().describe('Disclosure note when the result was bounded or empty (FLUX-489 / FLUX-878)'),
+        }).partial()).optional().describe('Matching ticket rows (bounded; see `note` for omissions)'),
+        note: z.string().optional().describe('Disclosure note when the result was bounded or empty'),
       }).catchall(z.unknown()),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -935,7 +1056,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'get_project_group',
-    'Read the multi-repo group (if configured): group name + member repos (name, role, git remote, resolved local path, test command, registration state). Also reports `membership` when the current workspace is the parent or a bound member of a group. Returns a clear notice when no group is configured.',
+    'Read the multi-repo group (if configured): name + member repos, plus `membership` when this workspace is a parent/member. Clear notice when no group is configured.',
     {},
     { title: 'Get project group', readOnlyHint: true, openWorldHint: false },
     async () => {
@@ -1035,7 +1156,7 @@ export function buildMcpServer(): McpServer {
   // remains (FLUX-1249).
   server.tool(
     'extract_ticket',
-    'Carve a topic-slice out of a conversation stream into a NEW ticket by seq range — the promotion gate. Source turns are never moved or copied; the new card re-derives the slice. Promoting a scratch chat consumes it instead. Human-approved only (CONFIRM gate / board-rebase proposal).',
+    'Carve a topic-slice out of a stream into a NEW ticket by seq range. Turns are never moved/copied (a scratch source is consumed). Human-approved only (board-rebase promote).',
     {
       from: z.string().optional().describe('Source stream id to carve from (default: __board__, the orchestrator thread).'),
       fromSeq: z.number().int().describe('Inclusive start seq of the topic-slice on the source stream.'),
@@ -1072,10 +1193,10 @@ export function buildMcpServer(): McpServer {
   // turns are never moved, and each source is tombstoned + archived (not deleted).
   server.tool(
     'merge_tickets',
-    'Fold several tickets/chat-streams into ONE survivor effort — the inverse of extract. The survivor re-derives as the chronological union of its own turns plus every source stream\'s turns; each source is tombstoned and archived, never deleted. Additive and reversible. Human-approved only (CONFIRM gate / board-rebase `fold` proposal).',
+    'Fold several tickets/streams into ONE survivor — the inverse of extract. Sources are tombstoned + archived, never deleted. Additive and reversible. Human-approved only (board-rebase fold).',
     {
       into: z.string().describe('Survivor ticket id the sources fold into.'),
-      from: z.array(z.string()).describe('Source ticket/stream ids to fold into the survivor (each gets tombstoned + archived). Must be non-empty and exclude `into`.'),
+      from: z.array(z.string()).describe('Source ticket/stream ids to fold in (tombstoned + archived). Non-empty; must exclude `into`.'),
     },
     { title: 'Merge tickets', readOnlyHint: false, destructiveHint: true },
     async ({ into, from }) => {
@@ -1091,7 +1212,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'update_ticket',
-    'Update ticket metadata ONLY — title, priority, effort, tags, assignee, body, implementationLink, or parentId. Does NOT move status (use change_status for that). Pass parentId to (re)link this ticket under a parent (updates the parent\'s subtasks and detaches it from any old parent); pass parentId:null to detach it entirely.',
+    'Update ticket metadata ONLY (title, priority, effort, tags, assignee, body, implementationLink, parentId). Does NOT move status — use change_status. parentId (re)links under a parent (syncs both parents\' subtasks); null detaches.',
     {
       ticketId: z.string().describe('Ticket ID'),
       title: z.string().optional().describe('New title'),
@@ -1198,16 +1319,16 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'change_status',
-    'Move a ticket to a new status (the board state machine) — this is the ONLY tool that changes status; update_ticket never does. A comment is REQUIRED when moving to Require Input or Ready. Set callerRole to your role (e.g. "orchestrator") when calling from a multi-session context.',
+    'Move a ticket to a new status — the ONLY status-changing tool. Comment REQUIRED for Require Input/Ready. Full lore: read_skill(\'tools\', \'change_status\').',
     {
       ticketId: z.string().describe('Ticket ID'),
       newStatus: z.string().describe('Target status'),
       comment: z.string().optional().describe('Required for Require Input/Ready transitions. Provide the question or completion summary.'),
-      callerRole: z.string().optional().describe('Role of the calling session (e.g. "orchestrator"). Required to change status when scatter-gather sessions are active.'),
-      reviewState: z.enum(['approved', 'changes-requested']).nullable().optional().describe('The EH review verdict to record on the card. Set "approved" when concluding a review to Ready, "changes-requested" when sending back to In Progress. Pass null to clear. Surfaces a review badge; distinct from the GitHub-synced reviewDecision.'),
-      planReviewState: z.enum(['approved', 'changes-requested']).nullable().optional().describe('FLUX-1263: the plan-review gate\'s verdict, parallel to `reviewState` but for the Grooming -> Todo gate (never overloads `reviewState`). Set by a plan-review session while leaving `newStatus` as "Grooming". Pass null to clear.'),
+      callerRole: z.string().optional().describe('Role of the calling session (e.g. "orchestrator"); required when scatter-gather sessions are active.'),
+      reviewState: z.enum(['approved', 'changes-requested']).nullable().optional().describe('Review verdict: "approved" (→Ready) or "changes-requested" (→In Progress); null clears. Distinct from GitHub reviewDecision.'),
+      planReviewState: z.enum(['approved', 'changes-requested']).nullable().optional().describe('Like `reviewState` but for the Grooming→Todo gate; set while `newStatus` stays "Grooming". null clears.'),
       completion: completionInputSchema,
-      noDiffExpected: z.boolean().optional().describe('Ready transitions only. Set true ONLY when this ticket\'s scope genuinely produces no code diff (a verification/investigation/spike ticket that confirmed there was nothing to change) — lifts the FLUX-730 commit-before-Ready refusal for a worktree branch with 0 commits ahead of base, and skips opening a PR since there is nothing to merge. Still refused if the worktree has uncommitted changes sitting in it (that contradicts a zero-diff claim). Do NOT set this to route around forgotten/uncommitted work.'),
+      noDiffExpected: z.boolean().optional().describe('Ready only — true when this ticket genuinely has no code diff. Lifts the commit-before-Ready refusal (still refused if the worktree has uncommitted changes). Not for skipping forgotten work.'),
     },
     async ({ ticketId, newStatus, comment, callerRole, reviewState, planReviewState, completion, noDiffExpected }) => {
       const task = getWorkspace().tasks[ticketId];
@@ -1578,7 +1699,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'start_plan_review',
-    'Manually trigger ONE plan-review pass on a Grooming ticket — the plan gate\'s explicit human-invoked entry point. Use under the "you" gate value or any time before moving Grooming to Todo. Runs exactly one pass and records its verdict to `planReviewState`; does not move the ticket itself.',
+    'Manually trigger ONE plan-review pass on a Grooming ticket — the plan gate\'s human-invoked entry point. Records its verdict to `planReviewState`; does not move the ticket.',
     {
       ticketId: z.string().describe('Ticket ID (must currently be in Grooming).'),
     },
@@ -1606,7 +1727,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'archive',
-    'Archive or unarchive a ticket. action: "archive" moves it to the Archived status (the reversible alternative to deletion — history is preserved; there is no hard-delete tool); "unarchive" brings it back to the active board (default Todo, or pass toStatus). comment applies to "archive"; toStatus applies to "unarchive".',
+    'Archive/unarchive a ticket. "archive" → Archived (reversible; no hard-delete tool). "unarchive" → active board (default Todo, or toStatus).',
     {
       ticketId: z.string().describe('Ticket ID'),
       action: z.enum(['archive', 'unarchive']).describe('Whether to archive or unarchive the ticket.'),
@@ -1680,7 +1801,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'swimlane',
-    'Set or clear a swimlane on a ticket (the ticket stays in its status column but is visually flagged). action: "set" applies a swimlane (needs swimlane id; a comment is required for swimlanes with commentRequired, e.g. "require-input"); "clear" removes the active swimlane.',
+    'Set or clear a swimlane on a ticket (stays in its column, visually flagged). "set" applies a swimlane id (comment required for commentRequired swimlanes). "clear" removes the active swimlane.',
     {
       ticketId: z.string().describe('Ticket ID'),
       action: z.enum(['set', 'clear']).describe('Whether to set or clear a swimlane.'),
@@ -1764,15 +1885,15 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'add_note',
-    'Append a note to a ticket\'s history. type "comment" records a human-facing comment; "activity" logs an agent progress update. summary/pin/supersedes apply to both: summarize substantial notes, pin to keep one visible, supersedes to retire an earlier now-wrong entry.',
+    'Append a note to a ticket\'s history. type "comment" = human-facing; "activity" = agent progress. summary/pin/supersedes apply to both — see param docs.',
     {
       ticketId: z.string().describe('Ticket ID'),
       type: z.enum(['comment', 'activity']).describe('"comment" = a human-facing comment; "activity" = an agent progress/activity update.'),
       message: z.string().describe('The note text (comment body or progress message).'),
       user: z.string().optional().describe('Author (default: Agent). Honored for type "comment"; activity is always attributed to Agent.'),
-      summary: z.string().optional().describe('Faithful summary shown in the agent digest once this note ages past the recent window (full text fetchable on demand). Write it for a substantial/long note; concise but NOT lossy. Skip for short ones.'),
+      summary: z.string().optional().describe('Faithful summary shown in the agent digest once this note ages out (full text still fetchable). Write for long/substantial notes; skip for short ones.'),
       pin: z.boolean().optional().describe('Pin so this note is NEVER collapsed in the agent digest (review handoffs / key decisions).'),
-      supersedes: z.array(z.string()).optional().describe('History entry id(s) this note makes obsolete (it reverses/replaces an earlier decision). The superseded entries collapse to a one-line marker in the agent digest, still recoverable via get_ticket expand. Set ONLY when genuinely retiring a now-wrong entry; a pinned or user-authored target is advisory-only (kept full).'),
+      supersedes: z.array(z.string()).optional().describe('History entry id(s) this note supersedes. Superseded entries collapse to a one-line marker (recoverable via expand). Pinned/user-authored targets are advisory-only.'),
     },
     async ({ ticketId, type, message, user, summary, pin, supersedes }) => {
       const task = getWorkspace().tasks[ticketId];
@@ -1809,10 +1930,10 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'publish_artifact',
-    'Publish a self-contained HTML artifact — a concrete rendering instead of prose — for plan-time mockups or Ready-time diff recaps. Each call adds a new revision, never overwrites. Must be self-contained (inline CSS/JS), rendering sandboxed with no network access. Emit for UI/architecture work; skip bug fixes, XS/S tickets, backend plumbing.',
+    'Publish a self-contained HTML artifact — plan-time mockups or Ready-time diff recaps. New revision each call; sandboxed, no network. Skip for bug fixes/XS/S. Full guidance: read_skill(\'tools\', \'publish_artifact\').',
     {
       ticketId: z.string().describe('Ticket ID, e.g. FLUX-42'),
-      html: z.string().describe('Complete, self-contained HTML document (inline styles/scripts — default to hand-written inline CSS; Mermaid via CDN script tag is allowed for diagrams; the Tailwind Play CDN is allowed but a heavy last resort, not the default). Rendered in a sandboxed opaque-origin iframe — it cannot reach the portal, cookies, or storage, and cannot make network requests (connect-src is blocked), so everything it needs must be inlined or loaded from the allowed CDNs.'),
+      html: z.string().describe('Self-contained HTML (inline styles/scripts; Mermaid/Tailwind CDN allowed). Rendered sandboxed with no network access — everything must be inlined or CDN-loaded.'),
       title: z.string().optional().describe('Short label for this artifact/revision (shown above the viewer).'),
       note: z.string().optional().describe('Optional note about what changed in this revision or what to look at.'),
     },
@@ -1858,7 +1979,7 @@ export function buildMcpServer(): McpServer {
       ticketId: z.string().describe('Ticket ID'),
       implementationLink: z.string().describe('PR URL or commit hash'),
       completionComment: z.string().describe('Summary of what was implemented'),
-      force: z.boolean().optional().describe('Override the shared-PR guard: merge even though the branch is shared by non-Done sibling tickets (their work merges + they advance to Done too).'),
+      force: z.boolean().optional().describe('Override the shared-PR guard — merge even though the branch is shared by non-Done siblings (they advance to Done too).'),
       completion: completionInputSchema,
     },
     { title: 'Finish ticket (merge + Done)', readOnlyHint: false, destructiveHint: true, openWorldHint: true },
@@ -2077,12 +2198,12 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'branch',
-    'Manage the git branch for a ticket. action: "create" makes a feature branch (and worktree by default); "status" reports name + existence + ahead/behind counts; "delete" removes the branch (refuses unmerged unless force=true). baseBranch/worktree apply only to create; force only to delete.',
+    'Manage the git branch for a ticket. "create" makes a feature branch (worktree by default); "status" reports name + existence + ahead/behind; "delete" removes it (refuses unmerged unless force=true).',
     {
       ticketId: z.string().describe('Ticket ID'),
       action: z.enum(['create', 'status', 'delete']).describe('Which branch operation to run.'),
       baseBranch: z.string().optional().describe('create only — base branch (default: master).'),
-      worktree: z.boolean().optional().describe('create only — create a dedicated git worktree. Agent branch sessions are worktree-isolated BY DEFAULT so parallel ticket sessions never share a checkout; pass false to run in the shared main tree (single-checkout / human-manual escape). Implies a branch.'),
+      worktree: z.boolean().optional().describe('create only — create a dedicated git worktree (default true — parallel sessions never share a checkout). Pass false for the shared main tree. Implies a branch.'),
       force: z.boolean().optional().describe('delete only — force delete even if unmerged (default: false). Invalid for other actions.'),
     },
     async ({ ticketId, action, baseBranch, worktree, force }) => {
@@ -2205,7 +2326,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'delegate',
-    'Delegate one or more tasks to specialist agents and wait for them to finish. One delegation runs serially; multiple run in parallel (Promise.allSettled). Always returns a JSON array, one entry per delegation: { persona, succeeded, status, output }. Use when specialist knowledge produces better results than doing the work yourself.',
+    'Delegate task(s) to specialist agents and wait for them to finish (one=serial, multiple=parallel). Returns a JSON array: { persona, succeeded, status, output } per delegation.',
     {
       ticketId: z.string().describe('Ticket ID the delegations are for'),
       delegations: z.array(z.object({
@@ -2213,7 +2334,7 @@ export function buildMcpServer(): McpServer {
         task: z.string().describe('What this delegate should do — be specific about files, scope, and expected output format.'),
         effort: z.string().optional().describe('Effort level: low, medium, high (default: medium).'),
         model: z.string().optional().describe('Optional model override for this delegate.'),
-        enableTools: z.array(z.string()).optional().describe('Optional extra event-horizon MCP tool names (bare, e.g. "furnace_ticket") to grant this delegate beyond its persona\'s normal toolset — for a delegate that genuinely needs a specific tool its worker role otherwise denies.'),
+        enableTools: z.array(z.string()).optional().describe('Extra event-horizon MCP tool names to grant beyond the persona\'s normal toolset, for a delegate that genuinely needs a tool its worker role denies.'),
       })).min(1).describe('One or more delegation specs. Length 1 = serial; >1 = parallel.'),
       timeout: z.number().optional().describe('Timeout in seconds for ALL delegations (default: 300, max: 600).'),
     },
@@ -2261,13 +2382,13 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'start_session',
-    'Start an agent work session ON a ticket and return IMMEDIATELY (fire-and-forget). Use to DISPATCH work: when the user asks to groom/implement/review/finalize a ticket, start the phase session instead of doing it yourself. phase:\'fast-path\' grooms+implements a small ticket in one session. Unlike delegate, doesn\'t wait for completion.',
+    'Start an agent session on a ticket, return IMMEDIATELY (dispatch, don\'t do it yourself). phase:\'fast-path\' grooms+implements small tickets in one session. Full lore: read_skill(\'tools\', \'start_session\').',
     {
       ticketId: z.string().describe('Ticket ID to start the session on'),
-      phase: z.enum(['grooming', 'implementation', 'review', 'finalize', 'fast-path']).optional().describe('Work phase — drives the session mission. If omitted, the engine derives it from the ticket status. \'fast-path\' (FLUX-1380) grooms AND implements an XS/S ticket in one session (Grooming → In Progress → Ready), structurally skipping the plan gate — refused server-side for L/XL-effort tickets or tickets with their own subtasks.'),
+      phase: z.enum(['grooming', 'implementation', 'review', 'finalize', 'fast-path']).optional().describe('Work phase (omit to derive from ticket status). \'fast-path\' grooms+implements an XS/S ticket in one session, skipping the plan gate (refused for L/XL effort or tickets with subtasks).'),
       personaId: z.string().optional().describe('Optional persona to lead the session (from list_available_agents). Default: the phase\'s solo lead.'),
       effort: z.string().optional().describe('Effort level: low, medium, high, xhigh.'),
-      worktree: z.boolean().optional().describe('Isolate the session in a dedicated git worktree. Defaults to TRUE: agent dispatch is unattended and often concurrent, so it must never share a checkout with another session. NOTE (FLUX-1018): a branch-bearing agent session is ALWAYS worktree-isolated at spawn — `worktree:false` only skips creating the worktree up front; the spawn still creates one (a branch on the shared main checkout let a single-shot agent commit to master). To run in the shared main tree, start the session branchless instead of passing worktree:false. NOTE (FLUX-1214): ignored entirely for phase:"grooming" — grooming never writes code or opens a PR, so it always runs branchless in the shared checkout regardless of this flag.'),
+      worktree: z.boolean().optional().describe('Isolate the session in a dedicated git worktree (default true). A branch-bearing session is always worktree-isolated regardless of this flag. Ignored for phase:"grooming".'),
     },
     async ({ ticketId, phase, personaId, effort, worktree }) => {
       try {
@@ -2307,7 +2428,7 @@ export function buildMcpServer(): McpServer {
   //   parallel   — each ticket its own worktree + PR, at burnRate (1–4) concurrency.
   server.tool(
     'furnace_get',
-    'Read Furnace batch(es). Pass `batchId` for one batch (tickets + config + PRs + burn report); omit to list every batch (optionally filter by `status`). A batch is a named bucket the Furnace burns unattended — implement → review → re-implement → leave the PR open at Ready, never merging.',
+    'Read Furnace batch(es). `batchId` for one; omit to list all (filter by `status`). A batch burns unattended and leaves its PR open at Ready, never merging.',
     {
       batchId: z.string().optional().describe('A specific batch id; omit to list all batches.'),
       status: z.enum(['draft', 'burning', 'done', 'parked']).optional().describe('When listing, only batches in this status.'),
@@ -2339,7 +2460,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'furnace_update',
-    'Live-adjust a Furnace batch — title, burn rate, kind, retry cap, circuit breaker, auto-trigger. Changes apply on the next stoke tick. A title rename while burning updates the display name only, not the branch. `kind`/`branch` are changeable only while draft. Does NOT ignite or stop a batch.',
+    'Live-adjust a Furnace batch (title, burn rate, kind, retry cap, circuit breaker, auto-trigger). Applies on the next stoke tick. `kind` changeable only while draft. Does NOT ignite or stop a batch.',
     {
       batchId: z.string().describe('The batch to update.'),
       title: z.string().optional().describe('Display name. Safe to change while burning (branch unchanged).'),
@@ -2347,8 +2468,8 @@ export function buildMcpServer(): McpServer {
       burnRate: z.number().int().positive().optional().describe('Parallel concurrency, 1–4 (clamped). Ignored for sequential (forced to 1).'),
       retryCap: z.number().int().min(0).optional().describe('Re-implementation attempts before parking a ticket (default 2).'),
       maxConsecutiveFailures: z.number().int().positive().optional().describe('Circuit breaker: halt the batch after N consecutive parks/failures.'),
-      rateLimitRetryIntervalMs: z.number().int().positive().optional().describe('FLUX-1063: how often (ms) a rate-limited (cooling-down) ticket auto-retries. Default 20m.'),
-      rateLimitMaxWaitMs: z.number().int().positive().optional().describe('FLUX-1063: max time (ms) a ticket may cool down after a rate limit before failing outright. Default 5h.'),
+      rateLimitRetryIntervalMs: z.number().int().positive().optional().describe('How often (ms) a rate-limited (cooling-down) ticket auto-retries. Default 20m.'),
+      rateLimitMaxWaitMs: z.number().int().positive().optional().describe('Max time (ms) a ticket may cool down after a rate limit before failing outright. Default 5h.'),
       trigger: z.object({
         type: z.enum(['batch', 'pr']).describe('Auto-ignite after a batch or a PR is merged.'),
         ref: z.string().describe('A batch id (type "batch") or a PR url/#number (type "pr").'),
@@ -2384,7 +2505,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'furnace_build',
-    'Build a Furnace batch from the groomed backlog as an editable draft. Requires explicit selector — `tag` or `tickets` — nothing pools the whole backlog. Reasons about independence (excludes parent/child pairs, flags file overlaps), enforces one-active-batch. Defaults to parallel (per-ticket branch+PR); pass kind:\'sequential\' to stack tickets on one shared branch+PR.',
+    'Build a Furnace batch from the groomed backlog (editable draft). Requires `tag` or `tickets`. Defaults parallel (per-ticket branch+PR); kind:\'sequential\' stacks on one branch+PR. Full lore: read_skill(\'tools\', \'furnace_build\').',
     {
       tag: z.string().optional().describe('Only load tickets carrying this tag (a furnace opt-in hint). Required if `tickets` is omitted.'),
       tickets: z.array(z.string()).optional().describe('Explicit ticket ids to include — the other selector, usable instead of or alongside `tag`. Required if `tag` is omitted.'),
@@ -2393,8 +2514,8 @@ export function buildMcpServer(): McpServer {
       kind: z.enum(['sequential', 'parallel']).optional().describe('Batch kind (default parallel).'),
       burnRate: z.number().int().positive().optional().describe('Parallel concurrency, 1–4 (default 1). Ignored for sequential.'),
       title: z.string().optional().describe('Human label for the batch.'),
-      adoptBranchFrom: z.string().optional().describe('FLUX-1270: reuse this ticket\'s existing branch as the new batch\'s shared branch instead of minting one — for pulling a same-branch-dependent follow-up + its parent out of a parallel batch into a standalone sequential batch. The named ticket must already have a `branch` with an OPEN PR on it (i.e. an existing `kind:"pr"` card for that branch with `prState:"OPEN"`); forces `kind` to `sequential` (refused if `kind:"parallel"` was explicitly passed).'),
-      spawnedFrom: z.object({ batchId: z.string(), ticketId: z.string() }).optional().describe('Display-only provenance: stamp this batch as spun off from `batchId` (the origin batch) / `ticketId` (the parent ticket whose branch was adopted). Purely informational — rendered as a subtitle in the Furnace drawer; no lifecycle behavior reads it.'),
+      adoptBranchFrom: z.string().optional().describe('Reuse this ticket\'s existing open-PR branch as the batch\'s shared branch. Requires an OPEN PR on that branch; forces `kind` to `sequential`. Full lore: read_skill(\'tools\', \'furnace_build\').'),
+      spawnedFrom: z.object({ batchId: z.string(), ticketId: z.string() }).optional().describe('Display-only provenance — stamps this batch as spun off from `batchId`/`ticketId`. Purely informational; no lifecycle behavior reads it.'),
     },
     async ({ tag, tickets, statuses, limit, kind, burnRate, title, adoptBranchFrom, spawnedFrom }) => {
       try {
@@ -2482,7 +2603,7 @@ export function buildMcpServer(): McpServer {
   // exactly the tradeoff the investigation ticket flagged, so those three stay separate tools.
   server.tool(
     'furnace_batch',
-    'Transition a Furnace batch\'s lifecycle. ignite: draft→burning, claims a worktree slot, burns each ticket unattended (never merges). stop: halt it — graceful by default, or `hard: true` for an immediate cutoff. resume: parked/finished → burning, re-queues skipped tickets. discard: permanently delete a draft or terminal batch (refuses burning).',
+    'Transition a Furnace batch\'s lifecycle. ignite: draft→burning (never merges). stop: halt (hard:true = immediate). resume: parked/finished→burning. discard: delete draft/terminal batch (refuses burning).',
     {
       action: z.enum(['ignite', 'stop', 'resume', 'discard']).describe('Which batch-lifecycle transition to apply.'),
       batchId: z.string().describe('The batch to transition.'),
@@ -2563,12 +2684,12 @@ export function buildMcpServer(): McpServer {
   // the batch-lifecycle group above (which still needed stop-only params).
   server.tool(
     'furnace_ticket',
-    'Act on one ticket in a Furnace batch. retry: reset parked/failed to queued with a fresh budget. dismiss: clear the Require-Input flag without re-queuing. takeover: hand control to a human. handback: return control to the Furnace. add: append a Todo ticket. remove: drop a ticket (not while burning).',
+    'Act on one ticket in a Furnace batch. retry: reset to queued. dismiss: clear Require-Input flag. takeover: hand to human. handback: return to Furnace. add: append Todo ticket. remove: drop (not while burning).',
     {
       action: z.enum(['retry', 'dismiss', 'takeover', 'handback', 'add', 'remove']).describe('Which per-ticket operation to run.'),
       batchId: z.string().describe('The batch containing the ticket.'),
       ticketId: z.string().describe('The ticket to act on.'),
-      allowedStatuses: z.array(z.string()).optional().describe('action:"add" only (ignored otherwise): board statuses the ticket is allowed to be in (default ["Todo"]). FLUX-1270: pass e.g. ["In Progress"] to pull a follow-up ticket that is mid-implementation (branch-adopting a same-branch-dependent parent) into a batch — normally only groomed Todo tickets may be added.'),
+      allowedStatuses: z.array(z.string()).optional().describe('action:"add" only: allowed board statuses (default ["Todo"]). Pass e.g. ["In Progress"] to add a mid-implementation follow-up ticket.'),
     },
     async ({ action, batchId, ticketId, allowedStatuses }) => {
       if (action === 'retry') {
@@ -2667,7 +2788,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'get_board_state',
-    'Live snapshot of board activity: which tickets have ACTIVE agent sessions right now and what each is doing, plus ticket counts by status. Use this to see the field before dispatching work or to check on running sessions.',
+    'Live snapshot of board activity: tickets with ACTIVE agent sessions + what each is doing, plus counts by status.',
     {},
     { title: 'Get board state', readOnlyHint: true, openWorldHint: false },
     async () => {
@@ -2792,10 +2913,10 @@ export function buildMcpServer(): McpServer {
   // which blocks). "Propose, never silently restructure."
   server.tool(
     'propose_board_rebase',
-    'Propose a BATCH of board restructurings for the human to approve in one pass — the board-rebase ritual. Use when triaging / "rebase the board" or at end-of-session, INSTEAD of mutating the board directly. NEVER call extract_ticket/merge_tickets/archive/change_status directly to reorganize — emit them here. Returns immediately and parks for approval.',
+    'Propose a BATCH of board restructurings for human approval — never mutate the board directly. NEVER call extract_ticket/merge_tickets/archive/change_status directly; emit them here. Parks for approval.',
     {
       items: z.array(z.object({
-        kind: z.enum(['promote', 'fold', 'archive', 'dispatch', 'status', 'leave']).describe('promote = extract a chat/turns into a new card; fold = merge one stream into another; archive = retire the ticket(s); dispatch = start a phase session; status = move a ticket to a new status; leave = keep it in the orchestrator thread (the safe default — never drop an item, leave it).'),
+        kind: z.enum(['promote', 'fold', 'archive', 'dispatch', 'status', 'leave']).describe('promote=new card from turns; fold=merge streams; archive=retire ticket(s); dispatch=start a phase session; status=move to new status; leave=keep in orchestrator thread (safe default).'),
         targets: z.array(z.string()).describe('Ticket id(s) the item acts on, e.g. ["FLUX-123"]. For fold, the source stream(s) being merged.'),
         summary: z.string().describe('One-line human-readable description of the proposed action.'),
         rationale: z.string().optional().describe('Why you propose this — shown under the summary and recorded as a comment when applied.'),
@@ -2828,7 +2949,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'permission_prompt',
-    'Internal — a gated agent CLI calls this via its permission-prompt hook to decide if a tool call is permitted. Returns {behavior:"allow",updatedInput} or {behavior:"deny",message}. Reads auto-allow; destructive ops (change_status, finish_ticket, archive, branch delete, furnace_batch discard, group_doc delete, Bash) require human approval via the EH portal.',
+    'Internal — a gated agent CLI\'s permission-prompt hook calls this to decide if a tool call is permitted. Returns {behavior:"allow"|"deny", ...}. Destructive ops require human approval via the EH portal.',
     { tool_name: z.string(), input: z.any().optional() },
     { title: 'Permission decision', readOnlyHint: true, openWorldHint: false },
     async ({ tool_name, input }) => {
@@ -2867,7 +2988,7 @@ export function buildMcpServer(): McpServer {
   // headersTimeout so the held-open fetch doesn't abort before the park resolves).
   server.tool(
     'ask_user_question',
-    'Ask the user a structured multiple-choice question and BLOCK until they answer. Renders an interactive picker (single/multi-select, optional free-text "Other"). Use whenever you need a decision or to resolve ambiguity — never assume; ask. Returns { answers, notes? }; on timeout, proceed with your best judgment.',
+    'Ask the user a structured multiple-choice question and BLOCK until they answer. Use whenever you need a decision. Returns { answers, notes? }; on timeout, use best judgment.',
     {
       questions: z.array(z.object({
         question: z.string().describe('The full question to ask the user.'),
@@ -2902,10 +3023,10 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'group_doc',
-    'Read or write shared group docs (cross-project knowledge base). Works from any workspace — parent or bound member. list: all docs by path+title. read: one doc body (needs path). submit: creates/updates a doc and fans out to all members (needs path+title+body). delete: removes a doc and fans out (needs path).',
+    'Read/write shared group docs (cross-project KB). list: all docs by path+title. read: one doc body. submit: create/update, fans out to members. delete: removes, fans out.',
     {
       action: z.enum(['list', 'read', 'submit', 'delete']).describe('Which group-doc operation to run.'),
-      path: z.string().optional().describe('read/delete: full doc path as returned by list (e.g. "Product/features/payments"). submit: store-relative path WITHOUT the group prefix and WITHOUT .md (e.g. "features/payments-api"); single safe segment, no ".." or absolute paths.'),
+      path: z.string().optional().describe('read/delete: full doc path from list. submit: store-relative path w/o group prefix or .md; single safe segment, no ".." or absolute paths.'),
       title: z.string().optional().describe('submit only — document title (written as the first H1 heading).'),
       body: z.string().optional().describe('submit only — full markdown body (title heading prepended automatically).'),
       message: z.string().optional().describe('submit only — optional git commit message. Defaults to an auto-generated message.'),

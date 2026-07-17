@@ -122,7 +122,7 @@ export function TicketActionsLaunchers({ ctl }: { ctl: UseTicketActions }) {
       )}
       {ctl.startPromptOpen &&
         createPortal(
-          <StartTaskPrompt task={task} onConfirm={(branch) => void ctl.confirmStartPrompt(branch)} onCancel={ctl.cancelStartPrompt} />,
+          <StartTaskPrompt task={task} onConfirm={(selection) => void ctl.confirmStartPrompt(selection)} onCancel={ctl.cancelStartPrompt} />,
           document.body,
         )}
       {ctl.finishMergeState &&

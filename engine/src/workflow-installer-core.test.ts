@@ -19,7 +19,7 @@ describe('installWorkspaceWorkflow — core vs. concatenation branching (FLUX-13
   let sourceRoot: string;
   let targetDir: string;
 
-  const MODULES = ['orchestrator', 'grooming', 'implementation', 'review', 'release', 'mapping'];
+  const MODULES = ['orchestrator', 'grooming', 'implementation', 'review', 'release', 'mapping', 'tools'];
 
   beforeEach(async () => {
     sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-core-install-src-'));
@@ -49,14 +49,17 @@ describe('installWorkspaceWorkflow — core vs. concatenation branching (FLUX-13
     expect(installed).not.toContain('<skill_module');
   });
 
-  it('gemini still gets the full 6-module concatenation (unchanged)', async () => {
+  it('gemini still gets the six-module concatenation — but NEVER the pull-only tools module (FLUX-1468)', async () => {
     await fs.mkdir(path.join(targetDir, '.gemini'), { recursive: true });
     const result = await installWorkspaceWorkflow({ sourceRoot, targetDir, framework: 'gemini' });
     const installed = await fs.readFile(result.skillInstalledPath, 'utf-8');
-    for (const m of MODULES) {
+    for (const m of MODULES.filter((m) => m !== 'tools')) {
       expect(installed).toContain(`<skill_module name="event-horizon-${m}">`);
       expect(installed).toContain('module fixture body');
     }
+    // The tools module is pull-only (read_skill) — concatenating it back in would re-push the
+    // exact lore the FLUX-1468 description diet removed from every always-on schema.
+    expect(installed).not.toContain('<skill_module name="event-horizon-tools">');
   });
 
   it('copilot still gets one file per module (Option B, unchanged)', async () => {

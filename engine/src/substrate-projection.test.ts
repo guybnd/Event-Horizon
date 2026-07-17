@@ -305,10 +305,12 @@ describe('substrate vs projection (FLUX-658)', () => {
 
     const msgs = projectTranscript(turns);
     // All three are edit rows under the workspace root, so they carry both tool/path and counts.
+    // FLUX-1473: the label text is also repo-relative now (not the raw absolute path sliced to
+    // 48 chars) — same relativization the `path`/inline-diff field already used.
     expect(msgs).toEqual([
-      { role: 'tool', text: 'Edit · ' + editFile.replace(/\s+/g, ' ').slice(0, 48), ts: '', added: 1, removed: 1, tool: 'Edit', path: 'a.ts' },
-      { role: 'tool', text: 'Write · ' + writeFile.replace(/\s+/g, ' ').slice(0, 48), ts: '', added: 3, removed: 0, tool: 'Write', path: 'b.ts' },
-      { role: 'tool', text: 'MultiEdit · ' + multiFile.replace(/\s+/g, ' ').slice(0, 48), ts: '', added: 2, removed: 1, tool: 'MultiEdit', path: 'c.ts' },
+      { role: 'tool', text: 'Edit · a.ts', ts: '', added: 1, removed: 1, tool: 'Edit', path: 'a.ts' },
+      { role: 'tool', text: 'Write · b.ts', ts: '', added: 3, removed: 0, tool: 'Write', path: 'b.ts' },
+      { role: 'tool', text: 'MultiEdit · c.ts', ts: '', added: 2, removed: 1, tool: 'MultiEdit', path: 'c.ts' },
     ]);
   });
 

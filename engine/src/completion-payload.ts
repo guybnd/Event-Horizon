@@ -37,7 +37,7 @@ export const COMPLETION_MAX_SERIALIZED_BYTES = 8 * 1024;
  * schema validation and block the status move / finish.
  */
 export const completionInputSchema = z.unknown().optional().describe(
-  'Optional structured completion summary (changed files, validation commands run, decisions, residual risk, docs updated) attached to the comment history entry (NOT frontmatter) alongside the required prose comment — for downstream readers (reviewers, Furnace, the next implementer, the portal) to consume as fields instead of re-parsing prose. Shape: { changedFiles?: string[], validation?: {command, passed}[], decisions?: string[], residualRisk?: string, docsUpdated?: string[] | boolean }. Best-effort: malformed or oversized fields are silently dropped/truncated, never rejected. Never a substitute for the required prose comment.'
+  'Optional structured completion summary (changedFiles, validation, decisions, residualRisk, docsUpdated) alongside the required comment. Malformed fields are dropped, never rejected.'
 );
 
 function truncate(value: string, max: number): string {

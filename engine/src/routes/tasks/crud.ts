@@ -31,6 +31,17 @@ function hashWorkspaceKey(root: string | null): string {
 }
 
 router.get('/', (req, res) => {
+  // FLUX-1460: refuse to serve a partial task list while the cold-boot/workspace-switch scan
+  // (doActivateWorkspace -> initDir) is still populating getWorkspace().tasks. Mirrors the
+  // existing POST guard below. Returning before the ETag is set is essential: a 503 is never
+  // cached by fetchTasks (it throws before reading headers), whereas a 200 here would hand out a
+  // cacheable ETag for a partial snapshot that later polls would 304 onto forever. Written via raw
+  // res.end() rather than res.json() so Express's own auto-ETag (generated for any JSON body by
+  // default, independent of the version-keyed ETag below) never lands on this response either.
+  if (getWorkspace().isActivating) {
+    res.status(503).type('application/json');
+    return res.end(JSON.stringify({ error: 'Workspace is activating, please retry' }));
+  }
   const activeOnly = req.query.active === 'true';
   // FLUX-846: self-heal any session stuck 'running' after a missed terminal event BEFORE computing
   // the ETag. This must run unconditionally, ahead of the If-None-Match check below: a missed exit

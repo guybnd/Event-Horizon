@@ -28,8 +28,11 @@ export function buildCoreInstructionsBlock(): string {
 
 /** Bump when CORE_INVARIANTS or the document body below changes, so
  * `checkSkillVersionStaleness` (workflow-installer.ts) flags existing Claude installs (still
- * carrying the old 6-module concatenation) as stale and refreshes them to the trimmed core. */
-export const CORE_SKILL_VERSION = '2.11.0';
+ * carrying the old 6-module concatenation) as stale and refreshes them to the trimmed core.
+ * MUST stay in lockstep with the orchestrator module's `Version:` line — staleness compares the
+ * SOURCE orchestrator version against the INSTALLED file's stamp (this constant), so a mismatch
+ * makes every refreshed install immediately stale again (perpetual reinstall loop). */
+export const CORE_SKILL_VERSION = '2.14.0';
 
 /**
  * The document installed to `.claude/rules/event-horizon.md` for the `claude` framework
@@ -51,19 +54,21 @@ Version: ${CORE_SKILL_VERSION}
 
 Event Horizon is a local-first ticket board backed by markdown files (\`.flux/\` in-repo, or \`.flux-store/\` in orphan mode). Agents interact exclusively through MCP tools — never touch ticket files directly.
 
-This is the always-on core (invariants + routing). Phase-specific guidance (grooming/implementation/review/release/mapping workflow detail) lives in the module files below and is NOT loaded here — agent-spawned grooming/implementation/review sessions get their phase module injected automatically; everyone else reads it on demand.
+This is the always-on core (invariants + routing). Phase-specific guidance (grooming/implementation/review/release/mapping workflow detail) lives in the module bodies below and is NOT loaded here — agent-spawned grooming/implementation/review sessions get their phase module injected automatically; everyone else pulls it on demand via the \`read_skill\` MCP tool (\`read_skill(module, section?)\` — never a file path, which may not exist outside the engine install).
 
-## Phase Routing — read the matching module before acting
+## Phase Routing — pull the matching module before acting
 
-| Ticket Status | Module to Read |
+| Ticket Status | Module to Pull |
 |---|---|
-| \`Grooming\`, \`Require Input\` | \`.docs/skills/event-horizon-grooming.md\` |
-| \`Todo\`, \`In Progress\` | \`.docs/skills/event-horizon-implementation.md\` |
-| \`Ready\` — review-phase / reviewer-of-record sessions | \`.docs/skills/event-horizon-review.md\` |
-| Release orchestration | \`.docs/skills/event-horizon-release.md\` |
-| Cross-project mapping (multi-repo group) | \`.docs/skills/event-horizon-mapping.md\` |
+| \`Grooming\`, \`Require Input\` | \`read_skill('grooming')\` |
+| \`Todo\`, \`In Progress\` | \`read_skill('implementation')\` |
+| \`Ready\` — review-phase / reviewer-of-record sessions | \`read_skill('review')\` |
+| Release orchestration | \`read_skill('release')\` |
+| Cross-project mapping (multi-repo group) | \`read_skill('mapping')\` |
 
-Read-only tasks (explanation, search, discussion) need no phase module.
+\`read_skill('orchestrator')\` carries the fuller ticket model, REST API table, and end-to-end checklist referenced below; pass a \`section\` (e.g. \`'Rich Artifacts'\`, \`'Persisting Changes'\`) to pull just that part. Read-only tasks (explanation, search, discussion) need no phase module.
+
+MCP tool schemas carry only the behavioral contract (required/refused/shape) — rationale, edge cases, and disambiguation for a specific tool live in \`read_skill('tools', '<tool-name>')\`, one section per registered tool name.
 
 ## Ticket Model (essentials)
 
@@ -88,6 +93,7 @@ ${invariantBullets}
 | Tool | Use When |
 |---|---|
 | \`get_ticket\` / \`list_tickets\` / \`get_board_config\` | Reading a ticket / finding tickets / checking valid statuses+tags |
+| \`read_skill\` | Pulling a skill module's (or one \`##\` section's) full text on demand |
 | \`create_ticket\` | Creating a new ticket — pass \`parentId\` for a linked subtask |
 | \`update_ticket\` | Changing metadata ONLY (title, priority, effort, tags, assignee, body) — does NOT move status |
 | \`change_status\` | Moving to a new status (comment required for Require Input/Ready) |
@@ -110,6 +116,6 @@ There is **no** \`switch_branch\` tool — stay on the ticket's branch for the f
 - Treat ticket files as schema-sensitive. The engine validates and rejects malformed writes.
 - Do not delete ticket history; append only.
 - The \`finish <ticket>\` handoff is required before committing. Commit creation, \`implementationLink\` update, and status → \`Done\` happen as one atomic step.
-- **Reference docs (\`.docs/event-horizon/reference/*\`) are kept in sync with code.** If a ticket changes ticket-schema, MCP tools, REST endpoints, realtime channels, or the agent-adapter contract, update the matching reference page in the same ticket.
+- **If this repo keeps a \`.docs/event-horizon/reference/*\` doc set, keep it in sync with code** — a ticket that changes ticket-schema, MCP tools, REST endpoints, realtime channels, or the agent-adapter contract updates the matching reference page in the same ticket. This is an Event Horizon-repo-specific convention, not every project's — if no such directory exists here, there is nothing to do for this rule.
 `;
 }

@@ -105,10 +105,10 @@ const STATE_ANIM: Record<CardState, string> = {
  *  of the per-state glyph below (the box-shadow glow animations still carry the live
  *  "working"/attention emphasis on top of this). */
 const STATE_DOT: Record<CardState, string> = {
-  working: 'bg-blue-500',
-  'needs-input': 'bg-amber-500',
-  finished: 'bg-emerald-500',
-  error: 'bg-red-500',
+  working: 'bg-[var(--eh-state-working)]',
+  'needs-input': 'bg-[var(--eh-state-attention)]',
+  finished: 'bg-[var(--eh-state-success)]',
+  error: 'bg-[var(--eh-state-danger)]',
   available: 'bg-slate-400',
   idle: 'bg-gray-300 dark:bg-gray-600',
 };
@@ -551,6 +551,28 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
   if (titleWidth < 40) titleWidth = 0; // too tight to be worth a truncated sliver
   const compactId = labelRoom < 44; // extremely crowded → show just the trailing number
 
+  // FLUX-1476: edge fades signal clipped chip-strip content in place of the (now-hidden)
+  // horizontal scrollbar. Tracks which side(s) currently overflow so each fade only shows
+  // when there's really more content to reveal on that side.
+  const [scrollEdges, setScrollEdges] = useState({ left: false, right: false });
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const update = () => {
+      const left = el.scrollLeft > 1;
+      const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+      setScrollEdges((prev) => (prev.left === left && prev.right === right ? prev : { left, right }));
+    };
+    update();
+    el.addEventListener('scroll', update, { passive: true });
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => {
+      el.removeEventListener('scroll', update);
+      observer.disconnect();
+    };
+  }, [orderedTickets.length, titleWidth]);
+
   // History: explicitly-retired chats (most recent first) plus any cancelled sessions.
   const cancelledIds = allTasks.filter((t) => t.cliSession?.status === 'cancelled').map((t) => t.id);
   const historyIds = dedupe([...dismissed, ...cancelledIds]).slice(0, HISTORY_CAP);
@@ -794,7 +816,11 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
               aria-expanded={furnaceFlyoutOpen}
               aria-haspopup="menu"
               title="Furnace options"
-              className="eh-border eh-surface absolute -bottom-1 -right-1 z-10 flex h-3.5 w-3.5 items-center justify-center rounded-full border text-[var(--eh-text-muted)] shadow-sm transition-colors hover:text-[var(--eh-text-primary)]"
+              // FLUX-1337: visual glyph stays 14x14 (rev-3 mockup), but that's below the WCAG 2.5.8
+              // 24x24 touch-target minimum — and it's the touch/no-hover fallback (FLUX-1212), so hit
+              // area matters most here. `before:` pseudo-element pads the hit area without resizing
+              // the visible circle.
+              className="eh-border eh-surface before:content-[''] absolute -bottom-1 -right-1 z-10 flex h-3.5 w-3.5 items-center justify-center rounded-full border text-[var(--eh-text-muted)] shadow-sm transition-colors before:absolute before:-inset-2 hover:text-[var(--eh-text-primary)]"
             >
               <ChevronDown className="h-2.5 w-2.5" />
             </button>
@@ -856,47 +882,66 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
 
         {/* FLUX-727: drag-to-reorder strip. `autoScroll={false}` so dnd-kit's drag auto-scroll
             doesn't fight the wheel-scroll listener on this overflow-x container. The orchestrator
-            (above) stays outside the SortableContext — pinned home, never draggable. */}
-        <div ref={stripRef} className="flex items-center gap-1.5 overflow-x-auto px-1.5 py-2 -mx-1.5 -my-2">
-          <DndContext sensors={sensors} collisionDetection={closestCenter} autoScroll={false} onDragEnd={onDragEnd}>
-            <SortableContext items={orderedIds} strategy={horizontalListSortingStrategy}>
-              {orderedTickets.map((t) => {
-                // A require-input swimlane gets the SAME persistent tab badge as a parked prompt — it
-                // stays until answered. FLUX-923: but gate the tab GLOW on the window being minimized/
-                // closed — while the chat is OPEN the prompt is shown inline there, so the tab must stay
-                // quiet (no double-demand); minimizing re-asserts the glow so the prompt is never lost.
-                // The badge still re-appears the moment the window is minimized.
-                const pendingPrompt =
-                  (pendingPromptConversationIds.has(t.id) || requireInputConversationIds.has(t.id)) && !open.includes(t.id);
-                // FLUX-720 hard-close gate keys off PROMPTS ONLY — require-input tabs keep the badge but
-                // stay closeable (they're dismissible by design), matching the context-menu close below.
-                const hardClose = pendingPromptConversationIds.has(t.id);
-                return (
-                  <SortableChatTab
-                    key={t.id}
-                    id={t.id}
-                    title={t.title}
-                    orchestrator={false}
-                    open={open.includes(t.id)}
-                    state={cardState(t.cliSession?.status, acked.includes(t.id), t.status === 'Require Input' || t.swimlane === 'require-input')}
-                    pendingPrompt={pendingPrompt}
-                    statusTint={getStatusTint(config, t.status)}
-                    status={t.status}
-                    sessionPhase={t.cliSession?.phase}
-                    activity={t.cliSession?.currentActivity ?? null}
-                    unread={unreadOf(t.id)}
-                    titleWidth={titleWidth}
-                    compactId={compactId}
-                    onOpen={(el) => toggle(t.id, el)}
-                    // FLUX-720: hard-gate close while a prompt is pending — the tab can't be retired
-                    // until the user resolves it (minimize still works; resolve controls stay usable).
-                    onClose={hardClose ? undefined : () => closeCard(t.id)}
-                    onContextMenu={(e) => setMenu({ id: t.id, x: e.clientX, y: e.clientY })}
-                  />
-                );
-              })}
-            </SortableContext>
-          </DndContext>
+            (above) stays outside the SortableContext — pinned home, never draggable.
+            FLUX-1476: `min-w-0` lets this wrapper shrink inside the outer flex bar (matching the
+            old scroll div's own shrink-to-zero via overflow-x-auto) so the edge fades below stay
+            anchored to the true clipped boundary instead of the strip's unclipped content width. */}
+        <div className="relative flex min-w-0 flex-1 items-center">
+          <div
+            ref={stripRef}
+            className="eh-scrollbar-none flex items-center gap-1.5 overflow-x-auto px-1.5 py-2 -mx-1.5 -my-2"
+          >
+            <DndContext sensors={sensors} collisionDetection={closestCenter} autoScroll={false} onDragEnd={onDragEnd}>
+              <SortableContext items={orderedIds} strategy={horizontalListSortingStrategy}>
+                {orderedTickets.map((t) => {
+                  // A require-input swimlane gets the SAME persistent tab badge as a parked prompt — it
+                  // stays until answered. FLUX-923: but gate the tab GLOW on the window being minimized/
+                  // closed — while the chat is OPEN the prompt is shown inline there, so the tab must stay
+                  // quiet (no double-demand); minimizing re-asserts the glow so the prompt is never lost.
+                  // The badge still re-appears the moment the window is minimized.
+                  const pendingPrompt =
+                    (pendingPromptConversationIds.has(t.id) || requireInputConversationIds.has(t.id)) && !open.includes(t.id);
+                  // FLUX-720 hard-close gate keys off PROMPTS ONLY — require-input tabs keep the badge but
+                  // stay closeable (they're dismissible by design), matching the context-menu close below.
+                  const hardClose = pendingPromptConversationIds.has(t.id);
+                  return (
+                    <SortableChatTab
+                      key={t.id}
+                      id={t.id}
+                      title={t.title}
+                      orchestrator={false}
+                      open={open.includes(t.id)}
+                      state={cardState(t.cliSession?.status, acked.includes(t.id), t.status === 'Require Input' || t.swimlane === 'require-input')}
+                      pendingPrompt={pendingPrompt}
+                      statusTint={getStatusTint(config, t.status)}
+                      status={t.status}
+                      sessionPhase={t.cliSession?.phase}
+                      activity={t.cliSession?.currentActivity ?? null}
+                      unread={unreadOf(t.id)}
+                      titleWidth={titleWidth}
+                      compactId={compactId}
+                      onOpen={(el) => toggle(t.id, el)}
+                      // FLUX-720: hard-gate close while a prompt is pending — the tab can't be retired
+                      // until the user resolves it (minimize still works; resolve controls stay usable).
+                      onClose={hardClose ? undefined : () => closeCard(t.id)}
+                      onContextMenu={(e) => setMenu({ id: t.id, x: e.clientX, y: e.clientY })}
+                    />
+                  );
+                })}
+              </SortableContext>
+            </DndContext>
+          </div>
+          {/* FLUX-1476: edge fades replace the (now-hidden) horizontal scrollbar as the overflow
+              signal — only visible on the side(s) that actually clip content, and `pointer-events-none`
+              so they never steal wheel-scroll or drag-reorder input from the strip beneath. */}
+          <div
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-y-0 left-0 w-6 bg-gradient-to-r from-[var(--eh-surface-overlay)] to-transparent transition-opacity duration-150 ${scrollEdges.left ? 'opacity-100' : 'opacity-0'}`}
+          />
+          <div
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-[var(--eh-surface-overlay)] to-transparent transition-opacity duration-150 ${scrollEdges.right ? 'opacity-100' : 'opacity-0'}`}
+          />
         </div>
 
         {/* History — always available (so it's discoverable even before anything is closed).
@@ -910,7 +955,9 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
             aria-label="Recent chats"
             aria-expanded={showHistory}
             title="Recent chats"
-            className="eh-border eh-surface-overlay flex h-5 w-8 items-center justify-center rounded-t-lg border border-b-0 pb-0.5 text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-primary)]"
+            // FLUX-1337: visible tab stays 20x32 (rev-3 mockup), but its short dimension is under the
+            // WCAG 2.5.8 24x24 touch-target minimum. `before:` pseudo-element pads the hit area only.
+            className="eh-border eh-surface-overlay before:content-[''] relative flex h-5 w-8 items-center justify-center rounded-t-lg border border-b-0 pb-0.5 text-[var(--eh-text-muted)] transition-colors before:absolute before:-inset-2 hover:text-[var(--eh-text-primary)]"
           >
             <History className="h-3 w-3" />
           </button>
@@ -1228,7 +1275,7 @@ function ChatTab({
           aria-hidden="true"
           className={`pointer-events-none absolute bottom-0 left-1/2 h-[2px] -translate-x-1/2 rounded-full transition-all ${
             open ? 'w-3/4' : 'w-3'
-          } ${orchestrator ? (open ? 'bg-white/90' : 'bg-white/70') : open ? 'bg-primary' : 'bg-blue-500'}`}
+          } ${orchestrator ? (open ? 'bg-white/90' : 'bg-white/70') : open ? 'bg-primary' : 'bg-[var(--eh-state-working)]'}`}
         />
       )}
 
@@ -1254,7 +1301,7 @@ function ChatTab({
         <span
           aria-hidden="true"
           className={`absolute -left-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full text-white shadow ring-2 ring-[var(--eh-surface)] ${
-            state === 'finished' ? 'bg-emerald-500' : 'bg-red-500'
+            state === 'finished' ? 'bg-[var(--eh-state-success)]' : 'bg-[var(--eh-state-danger)]'
           }`}
         >
           {state === 'finished' ? <Check className="h-2.5 w-2.5" /> : <TriangleAlert className="h-2.5 w-2.5" />}
@@ -2452,35 +2499,81 @@ const ChatWindow = memo(function ChatWindow({
     window.addEventListener('pointerup', onUp);
   }
 
-  // Drag the top-right grip to resize. Bottom edge stays pinned, so dragging up grows
-  // height and dragging right grows width — both axes track the cursor.
-  function startResize(e: React.PointerEvent) {
+  // FLUX-1461: generalized resize — drag any of the 4 corners or 4 edges. The window is
+  // bottom-left pinned (`left`/`bottom`), so whichever edge(s) the handle does NOT touch stay
+  // anchored: dragging the right/top edges only grows w/h (as the original top-right grip did);
+  // dragging the left/bottom edges also has to move `left`/`bottom` to keep the OPPOSITE corner
+  // anchored. To avoid the anchored corner drifting under clamping, we clamp the moving `left`/
+  // `bottom` value first (against the fixed opposite edge + the min/max bounds) and *derive* w/h
+  // from that clamped position, rather than clamping w/h and left/bottom independently.
+  function startResize(e: React.PointerEvent, handle: 'tl' | 'tr' | 'bl' | 'br' | 't' | 'b' | 'l' | 'r') {
     e.preventDefault();
     e.stopPropagation();
+    const doTop = handle === 'tl' || handle === 'tr' || handle === 't';
+    const doBottom = handle === 'bl' || handle === 'br' || handle === 'b';
+    const doLeft = handle === 'tl' || handle === 'bl' || handle === 'l';
+    const doRight = handle === 'tr' || handle === 'br' || handle === 'r';
     const startX = e.clientX;
     const startY = e.clientY;
     const startW = size.w;
     const startH = size.h;
+    const startLeft = left;
+    const startBottom = bottom;
+    const rightEdge = startLeft + startW; // anchor when dragging the left edge
+    const topFromBottom = startBottom + startH; // anchor (top edge) when dragging the bottom edge
     const maxW = (typeof window !== 'undefined' ? window.innerWidth : 1280) - 16 - (showSideView ? sideviewWidth : 0);
     const maxH = (typeof window !== 'undefined' ? window.innerHeight : 800) - 100;
-    // FLUX-920: track the last committed size so we can persist it on pointer-up (and only when the
-    // grip actually moved, so a no-op click on the grip doesn't write).
+    // FLUX-920: track the last committed geometry so we can persist it on pointer-up (and only
+    // when the handle actually moved, so a no-op click doesn't write).
     let lastW = startW;
     let lastH = startH;
+    let lastLeft = startLeft;
+    let lastBottom = startBottom;
     let moved = false;
     const onMove = (ev: PointerEvent) => {
-      const w = Math.max(MIN_WINDOW_WIDTH, Math.min(startW + (ev.clientX - startX), maxW));
-      const h = Math.max(MIN_WINDOW_HEIGHT, Math.min(startH - (ev.clientY - startY), maxH));
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      let w = startW;
+      let h = startH;
+      let nLeft = startLeft;
+      let nBottom = startBottom;
+      if (doRight) {
+        w = Math.max(MIN_WINDOW_WIDTH, Math.min(startW + dx, maxW));
+      } else if (doLeft) {
+        const minLeft = Math.max(8, rightEdge - maxW);
+        const maxLeft = rightEdge - MIN_WINDOW_WIDTH;
+        nLeft = Math.max(minLeft, Math.min(startLeft + dx, maxLeft));
+        w = rightEdge - nLeft;
+      }
+      if (doTop) {
+        h = Math.max(MIN_WINDOW_HEIGHT, Math.min(startH - dy, maxH));
+      } else if (doBottom) {
+        const minBottom = Math.max(8, topFromBottom - maxH);
+        const maxBottom = topFromBottom - MIN_WINDOW_HEIGHT;
+        nBottom = Math.max(minBottom, Math.min(startBottom - dy, maxBottom));
+        h = topFromBottom - nBottom;
+      }
       lastW = w;
       lastH = h;
+      lastLeft = nLeft;
+      lastBottom = nBottom;
       moved = true;
       setSize({ w, h });
+      if (doLeft || doBottom) setPos({ left: nLeft, bottom: nBottom });
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
-      // FLUX-920: persist the resized footprint so it survives minimize/reopen + reload.
-      if (moved) onGeometryChange?.(id, { w: lastW, h: lastH });
+      // FLUX-920: persist the resized footprint (and any position shift) so it survives
+      // minimize/reopen + reload.
+      if (moved) {
+        const patch: Partial<WindowGeometry> = { w: lastW, h: lastH };
+        if (doLeft || doBottom) {
+          patch.left = lastLeft;
+          patch.bottom = lastBottom;
+        }
+        onGeometryChange?.(id, patch);
+      }
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -2642,8 +2735,8 @@ const ChatWindow = memo(function ChatWindow({
         {planStripStatus === 'idle' && <>idle</>}
       </span>
       {unsentPlanCount > 0 && (
-        <span className="ml-auto flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500" />
+        <span className="ml-auto flex items-center gap-1 rounded-full bg-[var(--eh-state-attention)]/15 px-2 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-[var(--eh-state-attention)]" />
           {unsentPlanCount} unsent
         </span>
       )}
@@ -2744,14 +2837,58 @@ const ChatWindow = memo(function ChatWindow({
         ...(animateWindow ? { willChange: 'transform' } : {}),
       }}
     >
-      {/* Resize grip — top-right corner; subtle bracket, grabs to grow up + right. */}
+      {/* FLUX-1461: resize handles — 4 corners (subtle brackets) + 4 edges (thin strips), each
+          keeping the opposite corner anchored. All are direct children of this `fixed` outer
+          frame so they ride the outer edge (chat + sideview when open), matching the original
+          top-right grip's behavior. */}
       <div
-        onPointerDown={startResize}
+        onPointerDown={(e) => startResize(e, 'tl')}
+        title="Drag to resize"
+        className="group/resize absolute left-0 top-0 z-10 flex h-5 w-5 cursor-nwse-resize items-start justify-start p-1"
+      >
+        <span className="h-2.5 w-2.5 rounded-tl border-l-2 border-t-2 border-[var(--eh-text-muted)] opacity-40 transition-opacity group-hover/resize:opacity-90" />
+      </div>
+      <div
+        onPointerDown={(e) => startResize(e, 'tr')}
         title="Drag to resize"
         className="group/resize absolute right-0 top-0 z-10 flex h-5 w-5 cursor-nesw-resize items-start justify-end p-1"
       >
         <span className="h-2.5 w-2.5 rounded-tr border-r-2 border-t-2 border-[var(--eh-text-muted)] opacity-40 transition-opacity group-hover/resize:opacity-90" />
       </div>
+      <div
+        onPointerDown={(e) => startResize(e, 'bl')}
+        title="Drag to resize"
+        className="group/resize absolute bottom-0 left-0 z-10 flex h-5 w-5 cursor-nesw-resize items-end justify-start p-1"
+      >
+        <span className="h-2.5 w-2.5 rounded-bl border-b-2 border-l-2 border-[var(--eh-text-muted)] opacity-40 transition-opacity group-hover/resize:opacity-90" />
+      </div>
+      <div
+        onPointerDown={(e) => startResize(e, 'br')}
+        title="Drag to resize"
+        className="group/resize absolute bottom-0 right-0 z-10 flex h-5 w-5 cursor-nwse-resize items-end justify-end p-1"
+      >
+        <span className="h-2.5 w-2.5 rounded-br border-b-2 border-r-2 border-[var(--eh-text-muted)] opacity-40 transition-opacity group-hover/resize:opacity-90" />
+      </div>
+      <div
+        onPointerDown={(e) => startResize(e, 't')}
+        title="Drag to resize"
+        className="absolute left-5 right-5 top-0 z-10 h-1.5 cursor-ns-resize"
+      />
+      <div
+        onPointerDown={(e) => startResize(e, 'b')}
+        title="Drag to resize"
+        className="absolute bottom-0 left-5 right-5 z-10 h-1.5 cursor-ns-resize"
+      />
+      <div
+        onPointerDown={(e) => startResize(e, 'l')}
+        title="Drag to resize"
+        className="absolute bottom-5 left-0 top-5 z-10 w-1.5 cursor-ew-resize"
+      />
+      <div
+        onPointerDown={(e) => startResize(e, 'r')}
+        title="Drag to resize"
+        className="absolute bottom-5 right-0 top-5 z-10 w-1.5 cursor-ew-resize"
+      />
 
       {/* FLUX-734/740/1283: chat column on the left; the ticket sideview docks on the right when open. For
           ticket windows the shared controller is lifted (TicketControllerScope) so the editable header

@@ -522,8 +522,7 @@ Steps:
    - If delegation tools are genuinely unavailable, fall back to reviewing solo as above before synthesizing.
 3. Synthesize all review findings:
    - Count approvals vs change requests.
-   - **Merge overlapping findings and remove duplicates** — if multiple reviewers raised the same issue, state it once and note the consensus.
-   - **Normalize severity** into: **Blocker** (must fix before Ready), **Major** (should fix), **Minor** (nice to have). Resolve disagreements by taking the most credible argument, not the loudest.
+   - Merge, dedupe, and normalize severity — see \`read_skill('review', 'Severity Taxonomy')\` for the full technique (severity definitions, how to merge overlapping findings, how to resolve disagreements).
    - Produce a single prioritized action item list, Blockers first.
 4. Post your synthesis using \`add_note\` with:
    - **REVIEW SYNTHESIS** header
@@ -571,7 +570,7 @@ You have two delegation MCP tools available:
 7. Post your synthesis using \`add_note\` and make the status decision:
    - No blockers → \`change_status\` to "Ready"
    - Blockers found → \`change_status\` to "In Progress" with required changes
-   - **If you are concluding a code review**, also pass the \`reviewState\` param to \`change_status\` (FLUX-816) so the card shows the verdict badge: \`"approved"\` when moving to Ready, \`"changes-requested"\` when moving to In Progress.
+   - **If you are concluding a code review**, merge/dedupe/normalize severity per \`read_skill('review', 'Severity Taxonomy')\`, then also pass the \`reviewState\` param to \`change_status\` (FLUX-816) so the card shows the verdict badge: \`"approved"\` when moving to Ready, \`"changes-requested"\` when moving to In Progress.
 
 ## Delegation best practices:
 
@@ -652,14 +651,199 @@ Batch and ticket status changes underneath you — a human merges a PR, takes a 
 Furnace batches burn unattended — your planning quality is the only thing standing between a clean run and a pile of parked tickets tomorrow morning. Right-size batches (S/M tickets, not epics), order sequential batches so a later ticket never depends on an earlier one still being mid-flight, and flag file-overlap risk between tickets you're about to run in parallel.`,
 };
 
+/**
+ * FLUX-1226: default built-in "role text" persona for each launch phase — the single source of
+ * Mission-block text for solo chats and dispatched sessions. Before this migration, every launch
+ * phase's role text was a hardcoded literal inside `buildInitialPrompt`'s `switch(opts.phase)`
+ * (shared.ts) — a second, undiscoverable copy of "what does this phase's agent get told to do"
+ * alongside this persona catalog (which, until now, only ever powered DELEGATED runs). These six
+ * personas are that text, moved here verbatim — only the per-session dynamic bits (ticket id, the
+ * configured ready-for-merge status label, the one-shot no-defer note, the MCP-tools note, the
+ * FLUX-926 edit-gate note, the ORCHESTRATION PROPOSALS paragraph) became `{{placeholder}}` tokens,
+ * substituted by `renderPersonaTemplate` at `buildInitialPrompt` render time — those are genuinely
+ * per-session/per-framework/per-config, not role text, so they stay computed in shared.ts.
+ *
+ * Declared `role: 'lead'` deliberately (FLUX-1434 interaction): `disallowedEhToolsForPersona`
+ * only ever scopes `role: 'worker'` personas, and `resolvePersonaPrompt` only composes
+ * `PHASE_CONTRACTS` onto non-lead personas — `lead` keeps these byte-compatible with the solo
+ * path's prior behavior (never EH-tool-scoped, never contract-composed) by construction.
+ * `resolveSoloChatPersona` resolves these for PROMPT TEXT ONLY — their id is never stamped onto
+ * `session.personaId`, so the FLUX-1434 tool-scoping path (keyed on `session.personaId`) is
+ * untouched by this migration; see `disallowedToolsArgs`/`stampDisallowedEhTools` in claude-code.ts.
+ *
+ * Hidden from every persona picker by design (excluded from `getSelectablePersonas` /
+ * `listSelectablePersonaMeta`, the same pattern `SMELTER_PERSONA` already uses above) — not meant
+ * to be delegated to or forked from; only reachable via `resolveSoloChatPersona`/`getPersonaById`.
+ */
+const CHAT_PHASE_PERSONA: OrchestrationPersona = {
+  id: 'phase-default-chat',
+  label: 'Chat (phase default)',
+  description: 'Default role text for a free-form ticket chat session',
+  role: 'lead',
+  phases: [],
+  requiredCapabilities: [],
+  prompt:
+    `## Conversational session\n\n` +
+    `This is a free-form chat about ticket {{taskId}}. Respond conversationally to the user's message above — answer questions, discuss, and help.\n` +
+    `For pure discussion or Q&A, do NOT change the ticket status, edit files, or commit unless asked — the user drives. Read-only tools (get_ticket, list_tickets, get_board_config) and add_note are always fine.\n\n` +
+    `END-OF-TURN ACTION CONTRACT (FLUX-651): if in THIS turn you actually performed grooming, implementation, or review work on the ticket, you MUST end the turn by taking the board action that reflects the outcome — do not finish the work and merely summarize it in chat:\n` +
+    `- Groomed it → change_status to "Todo" (or "Require Input" with your question).\n` +
+    `- Implemented it → change_status to "{{readyStatus}}" with a completion summary (or "Require Input" if blocked).\n` +
+    `- Reviewed it → change_status to "{{readyStatus}}", or back to "In Progress" with what to fix, or create_ticket with parentId for follow-ups, or "Require Input".\n` +
+    `Leaving the ticket parked in a working status with only a chat summary is a defect: the board flags it "Needs Action" and the user is notified. If you genuinely cannot decide, that itself is a "Require Input" — raise it, don't sit on it.\n\n` +
+    `To ask the user a structured question mid-turn, call the ask_user_question tool — it shows an interactive picker in this chat and returns their choice so you continue immediately. Never assume when a quick question would resolve ambiguity; ask.\n` +
+    `This holds REGARDLESS of the ticket's status (FLUX-826): even on a Done/Ready/closed ticket, any decision ("file a ticket / commit / leave it?") goes through ask_user_question — never as chat prose. A decision typed only into chat on a resting ticket has no picker, no notification, and no board flag, so it is lost if the user isn't watching live. (If ask_user_question times out unanswered on a ticket, the engine now leaves a persistent "Needs Action" flag as a backstop — but route it structurally, don't rely on the backstop.)` +
+    `{{editGateBlock}}{{orchestrationProposalsParagraph}}\n\n{{mcpNote}}`,
+};
+
+const GROOMING_PHASE_PERSONA: OrchestrationPersona = {
+  id: 'phase-default-grooming',
+  label: 'Grooming (phase default)',
+  description: 'Default role text for a grooming session',
+  role: 'lead',
+  phases: ['grooming'],
+  requiredCapabilities: [],
+  prompt:
+    `## Your Mission: GROOM this ticket\n\n` +
+    `1. Use update_ticket to fill metadata (priority, effort, tags) and rewrite the body with a Problem/Motivation section and Implementation Plan.\n` +
+    `2. If questions are unresolved, use change_status to move to "Require Input" with a comment containing your question.\n` +
+    `3. When grooming is complete, use change_status to move to "Todo".\n\n` +
+    `{{mcpNote}}`,
+};
+
+const FAST_PATH_PHASE_PERSONA: OrchestrationPersona = {
+  id: 'phase-default-fast-path',
+  label: 'Fast-path (phase default)',
+  description: 'Default role text for a fast-path (groom + implement in one session) launch',
+  role: 'lead',
+  phases: [],
+  requiredCapabilities: [],
+  prompt:
+    `## Your Mission: FAST-PATH this ticket (groom + implement in one session)\n\n` +
+    `This ticket is small enough to skip the normal Grooming -> Todo handoff. Do the following, in order, in this one session:\n` +
+    `1. GROOM IT INLINE: use update_ticket to fill in effort/priority/tags and write a tight TL;DR + a short implementation plan into the body.\n` +
+    `2. ELIGIBILITY CHECK (bail-out contract): if it turns out this needs M+ effort, touches a UI artifact, or spans many unrelated surfaces, STOP here — finish writing the full plan, then use change_status to move to "Todo" (this fires the normal plan-review gate) and end your turn. Do not implement.\n` +
+    `3. Otherwise, use change_status to move to "In Progress".\n` +
+    `4. Implement the plan.\n` +
+    `5. Validate it (typecheck/tests).\n` +
+    `6. Commit your changes — a branch with 0 commits ahead of base cannot open a PR, and change_status to "{{readyStatus}}" is refused in that state (FLUX-730).\n` +
+    `7. Use change_status to move to "{{readyStatus}}" with a completion summary of what you implemented and validated.\n\n` +
+    `{{mcpNote}}`,
+};
+
+const IMPLEMENTATION_PHASE_PERSONA: OrchestrationPersona = {
+  id: 'phase-default-implementation',
+  label: 'Implementation (phase default)',
+  description: 'Default role text for an implementation session',
+  role: 'lead',
+  phases: ['implementation'],
+  requiredCapabilities: [],
+  prompt:
+    `## Your Mission: IMPLEMENT this ticket\n\n` +
+    `Write code to fulfill the ticket's plan. Move to "In Progress" if not already, complete the work, validate it, then use change_status to move to "{{readyStatus}}" with a completion summary.\n` +
+    `Do not exit without updating the ticket status.\n\n` +
+    `{{noDeferNote}}\n\n` +
+    `{{mcpNote}}`,
+};
+
+const REVIEW_PHASE_PERSONA: OrchestrationPersona = {
+  id: 'phase-default-review',
+  label: 'Review (phase default)',
+  description: 'Default role text for a review session',
+  role: 'lead',
+  phases: ['review'],
+  requiredCapabilities: [],
+  prompt:
+    `## Your Mission: REVIEW this ticket's implementation\n\n` +
+    `Assess the code changes for correctness, quality, edge cases, and alignment with the ticket's requirements. ` +
+    `Delegate to specialist reviewers if you are a supervisor — do NOT skip the review just because the work looks done.\n\n` +
+    `If you find issues:\n` +
+    `- Minor issues that don't block merging: create a follow-up ticket as a subtask using create_ticket with parentId set to this ticket (do NOT just suggest one — actually create it), then note the subtask ID in your review summary.\n` +
+    `- Blocking issues: use change_status to move back to "In Progress" with a comment explaining what needs fixing.\n\n` +
+    `If the implementation passes review, use change_status to move to "{{readyStatus}}" with a summary of what you reviewed and your findings.\n\n` +
+    `{{noDeferNote}}\n\n` +
+    `{{mcpNote}}`,
+};
+
+const FINALIZE_PHASE_PERSONA: OrchestrationPersona = {
+  id: 'phase-default-finalize',
+  label: 'Finalize (phase default)',
+  description: 'Default role text for a finalize session',
+  role: 'lead',
+  phases: ['finalize'],
+  requiredCapabilities: [],
+  prompt:
+    `## Your Mission: FINALIZE this ticket\n\n` +
+    `Stage all relevant files (code + docs), create a focused commit, then use finish_ticket with the commit hash or PR URL as implementationLink. ` +
+    `The ticket will be moved to Done atomically. If the ticket has a branch, the engine will push and create a PR automatically.\n\n` +
+    `{{mcpNote}}`,
+};
+
+const ALL_PHASE_DEFAULT_PERSONAS: OrchestrationPersona[] = [
+  CHAT_PHASE_PERSONA,
+  GROOMING_PHASE_PERSONA,
+  FAST_PATH_PHASE_PERSONA,
+  IMPLEMENTATION_PHASE_PERSONA,
+  REVIEW_PHASE_PERSONA,
+  FINALIZE_PHASE_PERSONA,
+];
+
+/**
+ * Phase → default built-in persona. An internal map, NOT derived from any persona's `phases`
+ * field membership — that field stays delegation-selection-only (see `getSelectablePersonas`,
+ * and the FLUX-1226 "no user phase-override tier" decision). Deliberately not `VALID_PHASES`-keyed
+ * either: `VALID_PHASES` only covers the four grooming/implementation/review/finalize workflow
+ * phases (custom-persona validation), while this map covers all six `LaunchPhase` values,
+ * including `chat` and `fast-path`.
+ */
+const PHASE_DEFAULT_PERSONAS: Partial<Record<LaunchPhase, OrchestrationPersona>> = {
+  chat: CHAT_PHASE_PERSONA,
+  grooming: GROOMING_PHASE_PERSONA,
+  'fast-path': FAST_PATH_PHASE_PERSONA,
+  implementation: IMPLEMENTATION_PHASE_PERSONA,
+  review: REVIEW_PHASE_PERSONA,
+  finalize: FINALIZE_PHASE_PERSONA,
+};
+
+/**
+ * Resolve the persona that should supply a solo/dispatched session's role text for `phase`.
+ * Precedence (FLUX-1226, amended 2026-07-17 — no user phase-override tier): an explicit
+ * `personaId` wins when it resolves to a real persona; otherwise the phase's built-in default.
+ * `explicitPersonaId` has no caller today (no solo/dispatched launch path passes one) — the
+ * parameter exists so the precedence contract is real code, not just a written rule, ready for a
+ * future caller (e.g. FLUX-1229/1462) without another signature change.
+ */
+export function resolveSoloChatPersona(phase: LaunchPhase | undefined, explicitPersonaId?: string): OrchestrationPersona | undefined {
+  if (explicitPersonaId) {
+    const persona = getPersonaById(explicitPersonaId);
+    if (persona) return persona;
+  }
+  return phase ? PHASE_DEFAULT_PERSONAS[phase] : undefined;
+}
+
+/**
+ * Substitute `{{key}}` tokens in a persona template with per-session values the caller computes
+ * (ticket id, ready-for-merge status label, cross-cutting mechanic paragraphs — see
+ * `PHASE_DEFAULT_PERSONAS` above for why these stay out of the persona text itself). A token with
+ * no matching key is left untouched rather than erroring — mirrors `resolvePersonaPrompt`'s own
+ * fail-open posture.
+ */
+export function renderPersonaTemplate(template: string, vars: Record<string, string>): string {
+  return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) => {
+    const value = vars[key];
+    return value === undefined ? match : value;
+  });
+}
+
 // Stamp built-in personas so the client can tell them apart from custom ones.
 for (const p of ORCHESTRATION_PERSONAS) p.builtIn = true;
 ORCHESTRATOR_PERSONA.builtIn = true;
 SUPERVISOR_PERSONA.builtIn = true;
 DEV_LEAD_PERSONA.builtIn = true;
 SMELTER_PERSONA.builtIn = true;
+for (const p of ALL_PHASE_DEFAULT_PERSONAS) p.builtIn = true;
 
-const ALL_BUILT_IN: OrchestrationPersona[] = [...ORCHESTRATION_PERSONAS, ORCHESTRATOR_PERSONA, SUPERVISOR_PERSONA, DEV_LEAD_PERSONA, SMELTER_PERSONA];
+const ALL_BUILT_IN: OrchestrationPersona[] = [...ORCHESTRATION_PERSONAS, ORCHESTRATOR_PERSONA, SUPERVISOR_PERSONA, DEV_LEAD_PERSONA, SMELTER_PERSONA, ...ALL_PHASE_DEFAULT_PERSONAS];
 
 // ── Custom persona persistence ───────────────────────────────────────────────
 // User-authored personas live as JSON files under <fluxDir>/personas/ and are

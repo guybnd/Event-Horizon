@@ -501,13 +501,15 @@ export function useTaskCardController({
   // background/border-color as unlayered rules that beat Tailwind utilities.
   // The inline stripe overrides the epic indigo className border on-board (epics
   // still get the column hue, and stay marked by the "Epic" badge); off-board no
-  // tint is passed so the indigo border still shows. Active-session cards keep
-  // their emerald border as a live-state signal, so defer the stripe only there.
+  // tint is passed so the indigo border still shows. Actively-running cards keep
+  // their emerald border as a live-state signal, so defer the stripe only there —
+  // parked sessions (FLUX-1415) don't get that emerald border and must fall back
+  // to the normal column-tint stripe like any calm card.
   const showColumnTint = !!columnTint && !isOverlay;
   const columnTintStyle: CSSProperties = showColumnTint
     ? {
         backgroundImage: tintFill(columnTint!, 0.04),
-        ...(!hasActiveCliSession
+        ...(!isSessionRunning
           ? { borderLeft: `3px solid rgba(${columnTint!.rgb}, 0.4)` }
           : {}),
       }

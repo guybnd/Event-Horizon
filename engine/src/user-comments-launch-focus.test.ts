@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isAgentAuthor, extractRecentUserComments, extractLaunchFocus } from './history.js';
+import { isAgentAuthor, extractRecentUserComments, extractLaunchFocus, buildLaunchFocusSummary, LAUNCH_FOCUS_PREFIX } from './history.js';
 
 // FLUX-480: recent user comments must never fall out of the agent's view just
 // because they aged past the history window, and the launch focus must persist
@@ -84,5 +84,51 @@ describe('extractLaunchFocus', () => {
   it('ignores blank launchFocus values', () => {
     const history = [{ type: 'activity', user: 'User', date: 'd', comment: 'x', launchFocus: '   ' }];
     expect(extractLaunchFocus(history)).toBeUndefined();
+  });
+
+  // FLUX-1469: new-format entries stop duplicating the text into a separate `launchFocus` field —
+  // `comment` (behind the well-known prefix) is the single source of truth.
+  it('falls back to stripping the prefix from `comment` when no launchFocus field is present (new format)', () => {
+    const history = [
+      { type: 'activity', user: 'Furnace', date: '2026-07-17T09:00:00.000Z', comment: `${LAUNCH_FOCUS_PREFIX}new-format focus text` },
+    ];
+    expect(extractLaunchFocus(history)).toEqual({ launchFocus: 'new-format focus text', date: '2026-07-17T09:00:00.000Z' });
+  });
+
+  it('picks the most recent entry across a mix of old-format (launchFocus field) and new-format (comment-only) entries', () => {
+    const history = [
+      { type: 'activity', user: 'User', date: '2026-07-16T09:00:00.000Z', comment: `${LAUNCH_FOCUS_PREFIX}old`, launchFocus: 'old' },
+      { type: 'activity', user: 'Furnace', date: '2026-07-17T09:00:00.000Z', comment: `${LAUNCH_FOCUS_PREFIX}newest` },
+    ];
+    expect(extractLaunchFocus(history)).toEqual({ launchFocus: 'newest', date: '2026-07-17T09:00:00.000Z' });
+  });
+
+  it('does not mistake an unrelated activity comment for a launch focus', () => {
+    const history = [{ type: 'activity', user: 'Agent', date: 'd', comment: 'Created ticket.' }];
+    expect(extractLaunchFocus(history)).toBeUndefined();
+  });
+});
+
+describe('buildLaunchFocusSummary', () => {
+  it('returns undefined for a short focus (below the threshold) even with a read_skill call', () => {
+    expect(buildLaunchFocusSummary("short. read_skill('review', 'x')")).toBeUndefined();
+  });
+
+  it('returns undefined for a long focus with no read_skill pull to name', () => {
+    expect(buildLaunchFocusSummary('x'.repeat(500))).toBeUndefined();
+  });
+
+  it('summarizes a long, pull-backed focus with the module + section named', () => {
+    const focus = `${'x'.repeat(450)} read_skill('review', 'Plan-review methodology')`;
+    const summary = buildLaunchFocusSummary(focus);
+    expect(summary).toBeDefined();
+    expect(summary).toContain("read_skill('review', 'Plan-review methodology')");
+    expect(summary).toContain(String(focus.length));
+  });
+
+  it('summarizes a long, pull-backed focus with no section (module-only pull)', () => {
+    const focus = `${'x'.repeat(450)} read_skill('tools')`;
+    const summary = buildLaunchFocusSummary(focus);
+    expect(summary).toContain("read_skill('tools')");
   });
 });

@@ -1,6 +1,29 @@
-import { startTaskCliSessionEx, updateTask, registerDeferredCombiner, unregisterDeferredCombiner, registerRelayChain, unregisterRelayChain, fetchWorkflows, workflowPhaseMembers, type OrchestrationPersonaMeta } from './api';
+import { startTaskCliSessionEx, updateTask, registerDeferredCombiner, unregisterDeferredCombiner, registerRelayChain, unregisterRelayChain, fetchWorkflows, workflowPhaseMembers, createBranch, joinWorktree, type OrchestrationPersonaMeta } from './api';
 import type { CliFramework, CliSessionSummary, ExecutionPattern, GroupVariant, PatternPosition } from './types';
 import type { TopologyShape } from './orchestration';
+import type { StartMode } from './components/task-modal/BranchSection';
+
+/** The Todo "start" prompt's branch/worktree choice, resolved after the picker closes. */
+export interface StartSelection {
+  mode: StartMode;
+  joinBranch: string | null;
+}
+
+/**
+ * FLUX-1464: create/join the chosen branch or worktree for a ticket's first launch. Kept as its
+ * own async step (separate from the picker's onConfirm) so the picker can close the instant the
+ * user clicks Start instead of hanging on this network call — the worktree path in particular
+ * takes several seconds (git worktree add + node_modules linking).
+ */
+export async function applyStartSelection(taskId: string, selection: StartSelection): Promise<void> {
+  if (selection.mode === 'join') {
+    if (selection.joinBranch) await joinWorktree(taskId, selection.joinBranch);
+    return;
+  }
+  if (selection.mode !== 'current') {
+    await createBranch(taskId, { worktree: selection.mode === 'worktree' });
+  }
+}
 
 /**
  * Persona metadata only. Prompt text lives engine-side (orchestration-personas.ts)

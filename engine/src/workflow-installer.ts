@@ -32,9 +32,11 @@ const SKILL_INSTALL_STRATEGY: Record<ResolvedFramework, 'modular' | 'core' | 'co
   generic: 'concatenated',
 };
 
-/** Ordered skill module names sourced from .docs/skills/. */
-const SKILL_MODULES = ['orchestrator', 'grooming', 'implementation', 'review', 'release', 'mapping'] as const;
-type SkillModule = typeof SKILL_MODULES[number];
+/** Ordered skill module names sourced from .docs/skills/. Exported (FLUX-1466) as the single
+ * canonical allowlist — `read_skill` (mcp-server.ts) validates its `module` arg against this
+ * same array at runtime rather than forking its own enum. */
+export const SKILL_MODULES = ['orchestrator', 'grooming', 'implementation', 'review', 'release', 'mapping', 'tools'] as const;
+export type SkillModule = typeof SKILL_MODULES[number];
 
 interface WorkflowInstallerOptions {
   sourceRoot: string;
@@ -267,11 +269,26 @@ function getSourcePaths(sourceRoot: string) {
   };
 }
 
-/** Concatenates skill modules into one file, wrapping each in XML tags for LLM navigation. */
+/** Modules that are pull-only: served live via the `read_skill` MCP tool, never part of any
+ * always-on install prelude. Excluded from Option-A concatenation — the FLUX-1468 tool-description
+ * diet's whole point is that this lore is NOT always-on, and concatenated frameworks (gemini,
+ * cursor, generic) reach `read_skill` the same way Claude does (it's an event-horizon MCP tool),
+ * so re-concatenating it would push back the ~10KB the diet just removed. Still installed
+ * per-file by MODULAR frameworks (copilot/cline), where an on-disk module is read on demand,
+ * not force-loaded into every session.
+ *
+ * Exported (FLUX-1480) as the single source of truth for each module's `delivery:` frontmatter
+ * label — `skill-delivery.test.ts` asserts the frontmatter agrees with this constant instead of
+ * hand-duplicating the list, so drift between the two fails CI rather than silently misleading. */
+export const PULL_ONLY_MODULES: readonly SkillModule[] = ['tools'];
+
+/** Concatenates skill modules into one file, wrapping each in XML tags for LLM navigation.
+ * Skips PULL_ONLY_MODULES — see above. */
 async function buildConcatenatedSkill(skillSourcePaths: readonly string[]): Promise<string> {
   const parts: string[] = [];
   for (const [index, sourcePath] of skillSourcePaths.entries()) {
-    const module = SKILL_MODULES[index];
+    const module = SKILL_MODULES[index]!;
+    if (PULL_ONLY_MODULES.includes(module)) continue;
     const content = await fs.readFile(sourcePath, 'utf-8');
     parts.push(`<skill_module name="event-horizon-${module}">
 ${content.trim()}
@@ -526,8 +543,17 @@ export function buildMcpServerEntry(conversationId?: string) {
  * FLUX-1222: the Gemini-CLI-schema variant of buildMcpServerEntry, for the `.gemini/settings.json`
  * targets (gemini + antigravity). Two deliberate differences from the Claude shape:
  *
- * - `httpUrl` (not `type:'http', url:`): Gemini CLI's documented key for the streamable-HTTP
- *   transport, which is what the engine's `/mcp` mount speaks. A bare `url` means SSE to Gemini.
+ * - `httpUrl` (not `type:'http', url:`): Gemini CLI's key for the streamable-HTTP transport,
+ *   which is what the engine's `/mcp` mount speaks. FLUX-1329: verified against installed
+ *   gemini-cli v0.42.0 (`createUrlTransport`) — the per-version transport matrix is NOT what an
+ *   older comment here claimed ("bare `url` means SSE"). As of v0.42.0: `httpUrl` still resolves
+ *   to streamable HTTP but is DEPRECATED (the CLI warns to migrate to `url` + `type:'http'` when
+ *   both keys are present — never emit both); a bare `url` (no `type`) now ALSO resolves to
+ *   streamable HTTP (only older builds treated a bare `url` as SSE); `url` + `type:'sse'` is SSE.
+ *   `httpUrl` remains the right key today — it's the only spelling that yields streamable HTTP on
+ *   both old and new gemini-cli builds. Revisit once EH's minimum supported gemini-cli is
+ *   comfortably ≥ the version that introduced `type:'http'`, and switch to `url` + `type:'http'`
+ *   (here and in the committed `.gemini/settings.json`) before gemini-cli removes `httpUrl`.
  * - `headers` carry `${EH_CONVERSATION_ID}`/`${EH_CONVERSATION_TOKEN}` PLACEHOLDERS, not values.
  *   Gemini has no `--mcp-config`-style per-spawn injection flag (see CLI_CAPABILITIES.gemini
  *   .spawnTimeMcpConfig), so FLUX-1213's spawn-time header override can't be ported directly.

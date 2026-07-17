@@ -14,17 +14,20 @@
   --eh-accent: #e05a00;
   --eh-accent-hover: #c24d00;
   --eh-accent-glow: rgba(224, 90, 0, 0.12);
-  /* Furnace purple/violet identity (FLUX-1061): a CONSTANT, theme-independent accent for the Furnace so it
-     never inherits the per-theme `--eh-accent` (teal-green under matrix, etc). Matches the approved
-     mockup (image-12.png). Defined once here in :root and deliberately NOT overridden in any
-     [data-theme] block, so it cascades unchanged. */
-  --eh-furnace-accent: #7c3aed;
-  --eh-furnace-accent-hover: #6d28d9;
-  --eh-furnace-accent-glow: rgba(124, 58, 237, 0.12);
+  /* Furnace fire-orange identity (FLUX-1487; supersedes FLUX-1061's purple/violet): a CONSTANT,
+     theme-independent accent for the Furnace so it never inherits the per-theme `--eh-accent`
+     (teal-green under matrix, etc). Defined once here in :root and deliberately NOT overridden in
+     any [data-theme] block, so it cascades unchanged. */
+  --eh-furnace-accent: #f97316;
+  --eh-furnace-accent-hover: #ea580c;
+  --eh-furnace-accent-glow: rgba(249, 115, 22, .14);
+  --eh-furnace-accent-deep: #dc2626;
+  --eh-furnace-accent-soft: #fdba74;
   /* FLUX-1050: the Furnace toggle's orange treatment (ChatDock flame button — open/burning states).
      A CONSTANT, theme-independent accent so the toggle stays "Furnace orange" regardless of the active
-     theme's `--eh-accent` (teal-green under matrix, etc). Distinct from the drawer's purple identity
-     above. Defined once here in :root and deliberately NOT overridden in any [data-theme] block. */
+     theme's `--eh-accent` (teal-green under matrix, etc). A distinct (deeper) shade from the drawer's
+     fire-orange identity above — kept separate rather than merged. Defined once here in :root and
+     deliberately NOT overridden in any [data-theme] block. */
   --eh-furnace-orange: #e05a00;
   --eh-base: #fafaf9;
   --eh-surface: #ffffff;
@@ -47,6 +50,27 @@
   --eh-glow-color: rgba(224, 90, 0, 0.06);
   --eh-shadow-color: rgba(28, 25, 23, 0.06);
   --eh-texture: none;
+  /* FLUX-1478: semantic run-state tokens — one color language for "working" (blue, live/in-progress),
+     "attention" (amber, needs input), "success" (emerald, done) and "danger" (red, error), shared by
+     ChatDock's STATE_DOT + glow keyframes, AttentionDock's badges, PlanReviewActions' button families
+     and ChatView's dispatch chips. Semantic state color is NOT accent — new run-state surfaces must
+     consume these tokens, never raw Tailwind palette classes. Defined once here in :root (not
+     duplicated per [data-theme] block) so every theme shares them via the cascade by default; a theme
+     MAY still override an individual state token to retint (the dock color-language rework, if
+     revisited, rides on these). `-rgb` variants exist for box-shadow/glow alpha compositing where a
+     bare var() can't carry opacity. */
+  --eh-state-working: #3b82f6;
+  --eh-state-working-hover: #2563eb;
+  --eh-state-working-rgb: 59, 130, 246;
+  --eh-state-attention: #f59e0b;
+  --eh-state-attention-hover: #d97706;
+  --eh-state-attention-rgb: 245, 158, 11;
+  --eh-state-success: #10b981;
+  --eh-state-success-hover: #059669;
+  --eh-state-success-rgb: 16, 185, 129;
+  --eh-state-danger: #ef4444;
+  --eh-state-danger-hover: #dc2626;
+  --eh-state-danger-rgb: 239, 68, 68;
 }
 
 /* ─── Light (explicit, same as :root defaults) ───────────────────── */
@@ -729,6 +753,16 @@ button:not(:disabled):active {
   @apply bg-gray-400 dark:bg-white/20;
 }
 
+/* FLUX-1476: opt out of the scrollbar entirely (e.g. the chat dock chip strip, which signals
+   overflow via edge fades instead). */
+.eh-scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.eh-scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
 /* ─── Animations ─────────────────────────────────────────────────── */
 @keyframes task-materialize {
   0% {
@@ -1053,14 +1087,14 @@ button:not(:disabled):active {
   animation-duration: 1.8s;
 }
 .eh-taskcard-needs-input::after {
-  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.55), 0 0 14px 2px rgba(245, 158, 11, 0.3);
+  box-shadow: 0 0 0 2px rgba(var(--eh-state-attention-rgb), 0.55), 0 0 14px 2px rgba(var(--eh-state-attention-rgb), 0.3);
 }
 .eh-taskcard-finished::after {
-  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.5), 0 0 14px 2px rgba(16, 185, 129, 0.28);
+  box-shadow: 0 0 0 2px rgba(var(--eh-state-success-rgb), 0.5), 0 0 14px 2px rgba(var(--eh-state-success-rgb), 0.28);
   animation-duration: 2.4s;
 }
 .eh-taskcard-error::after {
-  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.55), 0 0 14px 2px rgba(239, 68, 68, 0.3);
+  box-shadow: 0 0 0 2px rgba(var(--eh-state-danger-rgb), 0.55), 0 0 14px 2px rgba(var(--eh-state-danger-rgb), 0.3);
 }
 
 /* FLUX-1419: FloatingPanel's attention pulse (FLUX-809) used to reuse eh-taskcard-needs-input,
@@ -1534,6 +1568,17 @@ button:not(:disabled):active {
 @keyframes eh-chip-drain {
   from { transform: scaleX(1); }
   to   { transform: scaleX(0); }
+}
+
+/* ─── FLUX-1487: Furnace burning-batch heat edge — a slow ambient pulse on a burning
+   BatchCard's glow so it reads as "alive" at a glance next to quiet draft/finished cards.
+   Neutralized by the blanket reduced-motion rule below. */
+@keyframes eh-furnace-heat-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px var(--eh-furnace-accent-glow), 0 0 10px 0 rgba(249, 115, 22, .18); }
+  50%      { box-shadow: 0 0 0 1px var(--eh-furnace-accent-glow), 0 0 18px 2px rgba(220, 38, 38, .3); }
+}
+.eh-furnace-burning-glow {
+  animation: eh-furnace-heat-pulse 3s ease-in-out infinite;
 }
 
 /* ─── FLUX-790: blanket reduced-motion fallback ──────────────────────────────

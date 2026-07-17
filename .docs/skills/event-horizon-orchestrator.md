@@ -1,6 +1,8 @@
 ---
 title: Event Horizon Orchestrator
 order: 1
+delivery: [pull-only, concatenated, modular]
+deliveryNote: "🚚 pull-only for Claude — reached only via read_skill('orchestrator'), never auto-injected · concatenated into gemini/cursor/antigravity/windsurf/generic installs (always-on there) · installed per-file for copilot/cline (modular, on-demand)."
 ---
 > ⚠️ DO NOT DELETE — Required for Event Horizon agent workflow.
 
@@ -12,7 +14,7 @@ Scope: Route the agent to the correct phase-specific skill based on ticket statu
 
 # Event Horizon Agent — Orchestrator
 
-Version: 2.12.0
+Version: 2.14.0
 
 ## Overview
 
@@ -66,26 +68,10 @@ Older entries that carry an agent `summary` are shown **collapsed** — `{ type,
 
 - Ticket storage: `.flux/` (in-repo) or `.flux-store/` (orphan mode) — agents NEVER access these directly
 - Board config: `config.json` in the active flux directory
-- Project docs: `.docs/**/*.md`
-- Engine source: `engine/src/`
-- Portal source: `portal/src/`
-- Skill sources: `.docs/skills/*.md`
-- Skill templates: `.flux/skills/*.md`
+- Skill templates, if installed: `.flux/skills/*.md`
+- Everything else is this project's own source tree and doc conventions — Event Horizon does not prescribe a layout for it
 
-## APIs
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /api/tasks` | List all tickets |
-| `POST /api/tasks` | Create a ticket |
-| `PUT /api/tasks/:id` | Update a ticket |
-| `DELETE /api/tasks/:id` | Delete a ticket |
-| `POST /api/tasks/:parentId/subtasks` | Create a linked subtask |
-| `GET /api/config` | Get board config |
-| `PUT /api/config` | Update board config |
-| `POST /api/bulk-rename` | Bulk rename statuses/tags |
-
-Portal: `localhost:5167` — Engine: `localhost:3067`
+The REST API table below covers the full endpoint surface (agents should reach it exclusively through MCP tools, never directly — see "REST API (last-resort fallback)").
 
 ## User Input Routing
 
@@ -145,10 +131,15 @@ REST base: `http://localhost:3067`
 
 | Method | Endpoint | Purpose |
 |---|---|---|
+| `GET` | `/api/tasks` | List all tickets |
 | `GET` | `/api/tasks/:id?view=agent` | Read a ticket — ALWAYS pass `view=agent` (digested surface; omitting it returns the full portal payload incl. raw session logs) |
 | `POST` | `/api/tasks` | Create a ticket |
 | `PUT` | `/api/tasks/:id` | Update a ticket (use `appendHistory` for comments) |
+| `DELETE` | `/api/tasks/:id` | Delete a ticket |
 | `POST` | `/api/tasks/:parentId/subtasks` | Create a linked subtask |
+| `GET` | `/api/config` | Get board config |
+| `PUT` | `/api/config` | Update board config |
+| `POST` | `/api/bulk-rename` | Bulk rename statuses/tags |
 
 If neither MCP tools nor the API are reachable, surface the problem to the user and wait. Do not edit files directly under any circumstances.
 
@@ -163,9 +154,9 @@ This is the authoritative text — phase skills (grooming, implementation) each 
 
 ## Rich Artifacts (`publish_artifact`) — shared mechanics
 
-`publish_artifact` spans **both ends of the lifecycle** — it is not grooming-exclusive. In grooming it publishes a plan-time **mockup / diagram / prototype** the user reasons *against* before code is written; at `Ready` the implementation skill uses the same tool to publish a **visual recap** of the diff. Same tool, same sandboxed viewer, same revision history — only the timing, content, and phase-specific emit/skip judgment differ (see the grooming and implementation skills for those).
+`publish_artifact` spans **both ends of the lifecycle** — it is not grooming-exclusive. In grooming it publishes a plan-time **mockup / diagram / prototype** the user reasons *against* before code is written; at `Ready` the implementation skill uses the same tool to publish a **visual recap** of the diff. Same tool, same sandboxed viewer, same revision history — only the timing, content, and phase-specific emit/skip judgment differ (pull `read_skill('grooming', 'Rich Artifacts')` / `read_skill('implementation', 'Visual Recap Artifact')` for those).
 
-**Whether to emit is calibrated per phase — there is no tag gate.** For **grooming plan proposals** the default is **ON** (almost always — see the grooming skill's UI-or-M+ rule), because a rendered plan is far easier for the user to react to and annotate than prose. For **implementation visual recaps** it stays a judgment call — the exception, not ceremony; default OFF when unsure. Either way, never emit an artifact for something with no visual or structural shape to react to.
+**Whether to emit is calibrated per phase — there is no tag gate.** For **grooming plan proposals** the default is **ON** (almost always — see `read_skill('grooming', 'Rich Artifacts')` for the UI-or-M+ rule), because a rendered plan is far easier for the user to react to and annotate than prose. For **implementation visual recaps** it stays a judgment call — the exception, not ceremony; default OFF when unsure. Either way, never emit an artifact for something with no visual or structural shape to react to.
 
 **How to emit — shared mechanics for both phases:**
 - Pass a **complete, self-contained HTML document** as `html`: inline `<style>`/`<script>`. **Default to hand-written inline CSS** — an artifact is a single document, so a small `<style>` block is enough and renders instantly. Mermaid (`https://cdn.jsdelivr.net`) is loadable via `<script>` tag for diagrams. The Tailwind Play CDN (`https://cdn.tailwindcss.com`) is still allowed but is a **heavy last resort, not the default**: it's an in-browser compiler that recompiles on every DOM mutation and has measured 1-2s+ main-thread freezes per load — reach for it only when a utility framework meaningfully speeds up a complex prototype. Lean on the **`frontend-design`** skill for high-quality markup.
@@ -188,7 +179,7 @@ This is the authoritative text — phase skills (grooming, implementation) each 
       <button data-eh-opt>text-only</button>
     </div>
     ```
-    The viewer renders a consistent decision card (question + index/of tag + options); picking an option auto-stages `{kind:'decision', value: chosenOption}`, restaging in place on a different pick.
+    The viewer renders a consistent decision card (question + index/of tag + options); picking an option auto-stages `{kind:'decision', value: chosenOption}`, restaging in place on a different pick. The options MUST be child elements carrying `data-eh-opt` — a `data-eh-decision` host with no `data-eh-opt` children is malformed and gets skipped entirely (no card, not counted as a guided control). Never hand-render your own chips/sliders in place of the injected controls: they'd be dead pixels that stage nothing.
   - Both auto-stage into the **same** `annotations[]` set and **same** `postLive()` preview pill as manual annotations — staging is automatic, but the staged set is **only** transmitted back to you via the user's explicit Send action (auto-stage ≠ auto-send). When it lands in a `🎯 Artifact annotations` message, a feel pick renders its dialed value and a decision renders the chosen option alongside the usual anchor/note. These are **opt-in conventions, not required templates** — reach for them when a plan genuinely has an open-ended variable or a handful of pivotal choices (cap around 3-4 decisions per plan); don't sprout sliders and decision forms on a plan that doesn't call for them.
 
 ### Richer artifact kinds (FLUX-875) — diagrams, mockups, charts, prototypes
@@ -262,7 +253,7 @@ Read this before your **first emit** on a ticket and before every **revision**. 
 - **Open with a chip-list of locked decisions** so reviews don't relitigate settled points.
 - **Show interaction states** (pressed, sheet open, hover reveal) — not just a static layout.
 - **Every revision answers annotations explicitly** — show the annotated element before → after at the top, and state in the `note` what changed and why. Never silently redesign elements the user already approved.
-- **Style-guide lookup** — if `.docs/design/style-guide.md` exists, derive mockup tokens from it rather than re-deriving from source; if it's missing on a UI/UX ticket, see the grooming skill's "Design Style Guide" section for the non-blocking bootstrap offer.
+- **Style-guide lookup** — if `.docs/design/style-guide.md` exists, derive mockup tokens from it rather than re-deriving from source; if it's missing on a UI/UX ticket, pull `read_skill('grooming', 'Design Style Guide')` for the non-blocking bootstrap offer.
 
 ## Ceremony by effort — scale mandated writing to ticket size (FLUX-1382)
 
@@ -280,7 +271,7 @@ Output tokens bill roughly 5x input, so an XS one-line fix paying full L-ticket 
 
 **Load-bearing at every size — never diet, regardless of effort:**
 - `Require Input` questions (with proposed defaults)
-- Review verdict + `reviewState` + changes-requested handoff (see the review skill's "reviewState Contract")
+- Review verdict + `reviewState` + changes-requested handoff (see `read_skill('review', 'reviewState Contract')`)
 - Pinned review/key-decision handoffs
 - The End-of-Turn Action Contract (a board action every turn)
 
@@ -293,7 +284,21 @@ These four are marked here precisely because they are the ones a diet-minded age
 - Treat ticket files as schema-sensitive. The engine validates and rejects malformed writes.
 - Do not delete ticket history; append only.
 - The `finish <ticket>` handoff is required before committing. Commit creation, `implementationLink` update, and status → `Done` happen as one atomic step.
-- **Reference docs (`.docs/event-horizon/reference/*`) are kept in sync with code.** If the ticket changes ticket-schema, MCP tools, REST endpoints, realtime channels, or the agent-adapter contract, the matching reference page MUST be updated in the same ticket. Fix the drift; do not file a follow-up.
+- **If this repo keeps a `.docs/event-horizon/reference/*` doc set, keep it in sync with code.** If the ticket changes ticket-schema, MCP tools, REST endpoints, realtime channels, or the agent-adapter contract, update the matching reference page in the same ticket. This is an Event Horizon-repo-specific convention, not every project's — if no such directory exists here, there is nothing to do for this rule.
+
+## Plan-review methodology (FLUX-1469)
+
+This section is for the **plan-review gate** (`gate-runner.ts`) — it fires on a `Grooming` ticket that has no diff yet, judging the ticket's plan text (title, body, `## Acceptance criteria`, latest artifact) instead of a PR. The gate session's launch focus names each check with a one-line headline and points here (`read_skill('orchestrator', 'Plan-review methodology')`) for the full method — pulled on demand instead of pushed into every dispatch and re-persisted into ticket history on every pass (FLUX-1469). It lives in THIS module (never injected into any phase's prelude) rather than the review module, which review-phase sessions — including the gate's own — receive injected at spawn: parking it there would push the methodology into every code-review session's prelude, the exact cost the pull design avoids.
+
+- **Anchor check.** For every file/symbol/line the plan cites, verify with Serena/grep that it still exists and still means what the plan says. Re-derive this fresh from the CURRENT code every pass — never trust a prior pass's citations, even your own. A plan is written against a snapshot of the code; by the time it's reviewed (or re-reviewed after a revise), the snapshot may have drifted.
+- **Reground (FLUX-1048).** Check `.docs/release-notes/INDEX.md` plus recently Done/Released and sibling tickets (same parent) for work that already landed part or all of this plan. A plan that duplicates already-shipped work should be flagged, not approved as if the gap still exists.
+- **Acceptance-criteria coverage.** If the ticket body has a `## Acceptance criteria` section, confirm it's concrete/testable and that the Implementation Plan actually addresses every item — flag any item the plan leaves uncovered. An untestable or unaddressed AC item is a real gap, not a formality.
+- **Consequence tracing** (standard depth+, FLUX-1480). For every destination the plan moves content or config INTO (a file, a constant, a list, another module), name who actually consumes that destination and confirm the move still achieves the plan's stated goal — don't just check that the destination exists or that the plan is internally consistent. This is the check PR #584 was missing: its plan said "move the methodology into the review module," which is internally consistent and cites a real file, but nobody asked "review-phase sessions get that module INJECTED at spawn — does pushing content there still serve the goal of keeping it a pull?" The answer was no. Re-derive the consuming code path fresh (Serena/grep) — don't trust the plan's own description of what a destination does.
+- **Duplicate check** (thorough depth only). Search open/groomed tickets for one that already covers this same change (a duplicate or near-duplicate scope) and flag it if found.
+- **Adversarial self-review** (thorough depth only; Plan Discipline item 4). Read the plan as its harshest critic: find what's weak, missing, or wrong — an unanchored step, an implicit hard-to-reverse decision left unstated, a menu of options where the plan should commit to one, an obvious missing decision. A clear-cut fixable gap is Minor; a genuine judgment call the plan ducked is Major/Blocker.
+- **Artifact check** (FLUX-1313) — context only; the fact itself (`hasArtifact`) is injected into your launch focus verbatim by the deterministic pre-gate lint, not something you need to re-derive. When no artifact exists and the plan is UI/UX-shaped (visual layout, a new component, an interaction change), flag it in your review comment as a gap — a flag, not a blocker; still record your verdict on the plan's own merits.
+
+The verdict contract (how to record `approved`/`changes-requested` via `change_status` and `planReviewState`) is **not** in this pulled section — it stays pushed verbatim in every dispatch (a hard constraint: a skipped pull must never break the gate). Follow the contract text in your launch focus exactly.
 
 ## End-to-End Checklist
 

@@ -31,7 +31,9 @@ import {
   phaseLaunchStatus,
   resolvePhaseDefaultId,
   statusToPhase,
+  applyStartSelection,
   type LaunchPhase,
+  type StartSelection,
 } from '../agentActions';
 import { type OrchestrationLaunchPlan } from '../components/OrchestrationLauncher';
 import {
@@ -110,7 +112,7 @@ export interface UseTicketActions {
   onLaunch: (plan: OrchestrationLaunchPlan) => Promise<void>;
   // ── Todo "start" prompt (branch choice before first launch) ──
   startPromptOpen: boolean;
-  confirmStartPrompt: (branch: string | null) => Promise<void>;
+  confirmStartPrompt: (selection: StartSelection) => Promise<void>;
   cancelStartPrompt: () => void;
   // ── Finish-via-merge confirm/decision modal (FLUX-815) — replaces native confirm/alert ──
   finishMergeState: FinishMergeState | null;
@@ -357,12 +359,15 @@ export function useTicketActions(task: Task): UseTicketActions {
     triggerRefresh();
   };
 
-  const confirmStartPrompt = async (_branch: string | null) => {
+  const confirmStartPrompt = async (selection: StartSelection) => {
     setStartPromptOpen(false);
     setBusyKey('implement');
     try {
+      await applyStartSelection(task.id, selection);
       await launchPhaseSession('implementation');
       triggerRefresh();
+    } catch (err) {
+      notifyError(`Failed to start ${task.id}`, err instanceof Error ? err.message : String(err));
     } finally {
       setBusyKey(null);
     }

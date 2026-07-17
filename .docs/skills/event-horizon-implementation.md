@@ -1,6 +1,8 @@
 ---
 title: Event Horizon Implementation
 order: 3
+delivery: [injected:implementation, concatenated, modular]
+deliveryNote: "🚚 INJECTED into every Claude implementation-phase session at spawn — content added here is paid by every implementation session · concatenated into gemini/cursor/antigravity/windsurf/generic installs · installed per-file for copilot/cline (modular, on-demand)."
 ---
 > ⚠️ DO NOT DELETE — This file is required for the Event Horizon agent workflow. Deleting it will break implementation behaviour.
 
@@ -11,12 +13,11 @@ Scope: Write code, validate logic, format commits, and close tickets during the 
 
 # Event Horizon Agent — Implementation Skill
 
-Version: 2.14.1
+Version: 2.16.0
 
 ## When This Skill Applies
 
 Load this skill when a ticket's status is `Todo` or `In Progress`.
-Refer to the orchestrator skill for the ticket model, APIs, and end-to-end checklist.
 
 **Fast-path sessions (FLUX-1380).** A ticket can also reach implementation from `Grooming` in the same session, with no `Todo` handoff, when it was dispatched with `phase:'fast-path'` — one session grooms an XS/S ticket inline and then continues straight into this skill's workflow, per the grooming skill's matching "stop at Todo" exception. This combined groom-then-implement contract is sanctioned only when the launch mission says fast-path; a normally-dispatched implementation session still expects a ticket that already went through a separate grooming pass and reached `Todo`/`In Progress` on its own.
 
@@ -30,28 +31,28 @@ Refer to the orchestrator skill for the ticket model, APIs, and end-to-end check
 
 ## End-of-Turn Action Contract (FLUX-651/826)
 
-Full contract lives in the orchestrator skill's "End-of-Turn Action Contract" section — read it there. For implementation specifically: complete and validated → `change_status` to `Ready` with a completion summary; blocked on a decision → `change_status` to `Require Input` with the question + a proposed default. "Cannot decide whether to proceed" is itself a `Require Input` — raise it, don't leave it only in your final chat message. This applies just as much on a ticket that's already **Done / Ready / Todo / Backlog / Released / Archived** (a PR follow-up, a backfill, a "should I commit this / file a ticket / leave it?" call) — raise it via `ask_user_question`, not chat prose.
+Full contract: `read_skill('orchestrator', 'End-of-Turn Action Contract')`. For implementation specifically: complete and validated → `change_status` to `Ready` with a completion summary; blocked on a decision → `change_status` to `Require Input` with the question + a proposed default. "Cannot decide whether to proceed" is itself a `Require Input` — raise it, don't leave it only in your final chat message. This applies just as much on a ticket that's already **Done / Ready / Todo / Backlog / Released / Archived** (a PR follow-up, a backfill, a "should I commit this / file a ticket / leave it?" call) — raise it via `ask_user_question`, not chat prose.
 
 ## Implementation Workflow
 
 1. Use `get_ticket` to read the full ticket, including all history, before touching any file. If the body carries a `## ⚠️ Reground before starting` section, **execute it before any code change** — see "Reground Before Coding" below.
 2. **Check for a branch.** Call `branch` with `action: 'status'` on the ticket. If `branch` is set, run `git fetch origin <branch>` then `git checkout <branch>` before making any changes (the branch is created remotely via the portal and may not exist locally yet). If no branch is set, proceed on the current branch (the user chose "start normally" at task start). **Exception — dedicated worktree:** if your working directory is already inside `.eh-worktrees/` (an Event Horizon task worktree), you are ALREADY checked out on the ticket branch in an isolated tree — do **not** `git checkout` (it's unnecessary, and you must never switch the worktree's branch). Just work in place — and remember you **MUST `git commit` in the worktree before `Ready`** (the engine refuses the `Ready` move otherwise — see "Commit-Before-Ready" above).
 3. For M+ effort tickets, check `.docs/INDEX.md` for relevant docs. Read nearby implementation files. Prefer the smallest owning surface.
-4. Use `add_note` (`type: 'comment'`) to post your implementation plan before substantial work. **XS/S carve-out:** skip the standalone plan comment — fold a one-line plan into your first activity note or the completion summary instead. Scale ceremony to effort — see the orchestrator skill's "Ceremony by effort" table for the full breakdown.
+4. Use `add_note` (`type: 'comment'`) to post your implementation plan before substantial work. **XS/S carve-out:** skip the standalone plan comment — fold a one-line plan into your first activity note or the completion summary instead. Scale ceremony to effort — see `read_skill('orchestrator', 'Ceremony by effort')` for the full breakdown.
 5. Use `change_status` with `newStatus: 'In Progress'` before the first substantive code change.
-6. Make small, local changes and validate immediately after the first edit.
+6. Make small, local changes and validate immediately after the first edit. If you extract a pure helper "for testability," also cover the **caller that sequences it** — a tested leaf with an untested orchestrator isn't done. Drive the assembled behavior through the caller's seam, not only the leaf.
 7. Use `add_note` (`type: 'activity'`) to record progress when scope changes, validation fails, or the user redirects.
 8. If clarification is needed, use `change_status` with `newStatus: 'Require Input'` and a `comment` — do not ask only in chat.
-9. When moving to `Ready`: use `change_status` with `newStatus: 'Ready'` and a `comment` summarizing what was implemented, validated, and any caveats. Scale the completion summary and the two judgment calls below to effort — see the orchestrator skill's "Ceremony by effort" table.
+9. When moving to `Ready`: use `change_status` with `newStatus: 'Ready'` and a `comment` summarizing what was implemented, validated, and any caveats. Scale the completion summary and the two judgment calls below to effort — see `read_skill('orchestrator', 'Ceremony by effort')`.
    - **Branch / worktree tickets (PR flow):** **commit your work BEFORE moving to `Ready`** — see "Commit-Before-Ready" above. For a worktree branch the engine **refuses** the `Ready` move with 0 commits ahead (status unchanged); commit, then retry. Moving to `Ready` then opens the PR for review.
    - **Branchless tickets (direct flow):** keep code files uncommitted at this stage; the commit happens at `finish`.
    - **Visual Recap (judgment call, FLUX-976):** for a UI/UX or structurally interesting change, consider publishing a visual recap of the diff *before* the `Ready` move so the reviewer scans "what changed" instead of only the raw PR diff — see "Visual Recap Artifact" below. Skip it for bug fixes, XS/S effort, and trivial diffs.
    - **Structured completion payload (judgment call, FLUX-1147):** for a non-trivial change, also pass a `completion` object to `change_status` alongside the `comment` — `changedFiles` (repo-relative paths), `validation` (the commands you ran + whether each passed), `decisions` (non-obvious calls worth flagging), `residualRisk`, `docsUpdated` — so the reviewer/next agent/Furnace read fields instead of re-parsing your prose. It's persisted on the comment entry, not frontmatter, and is purely additive (never required). Skip it for the same bar as Visual Recap: bug fixes, XS/S effort, trivial diffs.
-10. **Before `Ready` or `Done`, update `.docs/` so the docs match the new behavior.** This is part of the ticket, not a follow-up. Check first:
-    - `.docs/event-horizon/reference/*` — if you changed ticket schema, MCP tools, REST endpoints, realtime channels, or the agent-adapter contract, the matching reference page MUST be updated.
-    - `.docs/event-horizon/architecture/code-map.md` — add an entry when a new module becomes the right "land here first" file for future agents.
-    - `.docs/event-horizon/agent-integrations.md`, `workflow/*.md`, root `README.md`, and `.flux/skills/` templates when user-facing or agent-facing behavior changes.
-    - `.docs/design/style-guide.md` (if present) — if the ticket changes the visual system (palette, type scale, spacing/radius, component vocabulary, interaction conventions), update the guide in the same ticket. See the grooming skill's "Design Style Guide" section for the convention and the bootstrap flow if the guide doesn't exist yet.
+10. **Before `Ready` or `Done`, update any project docs the behavior change touches.** This is part of the ticket, not a follow-up. Check first:
+    - Reference docs for schema/tool/API/contract changes — e.g. this repo keeps its own at `.docs/event-horizon/reference/*` (a MUST-update in *this* repo when a ticket changes ticket schema, MCP tools, REST endpoints, realtime channels, or the agent-adapter contract); apply the equivalent convention if this project has one, skip if it doesn't.
+    - An architecture/code-map doc, if this project keeps one — add an entry when a new module becomes the right "land here first" file for future agents (this repo's copy: `.docs/event-horizon/architecture/code-map.md`).
+    - Root `README.md`, integration guides, and any installed skill templates, when user-facing or agent-facing behavior changes.
+    - `.docs/design/style-guide.md` (if present) — if the ticket changes the visual system (palette, type scale, spacing/radius, component vocabulary, interaction conventions), update the guide in the same ticket. See `read_skill('grooming', 'Design Style Guide')` for the convention and the bootstrap flow if the guide doesn't exist yet.
     - If nothing needs updating, say so explicitly in the completion comment ("no docs needed because …") instead of skipping the check silently.
 11. On `finish <ticket>`:
     - **Branchless tickets:** stage all relevant files (code + docs), create the commit, then use `finish_ticket` with `implementationLink` (commit hash) and `completionComment`. Status moves to Done atomically. If you skipped the `completion` payload at `Ready` (or the ticket has no `Ready` step at all), `finish_ticket` accepts the same `completion` param — same judgment call as step 9.
@@ -60,7 +61,7 @@ Full contract lives in the orchestrator skill's "End-of-Turn Action Contract" se
 12. **Never end a session with a blocking decision only in your final chat message — on any status.** If you cannot safely finish (e.g. the branch bundles other tickets' work / an integration PR, or the merge is an irreversible one-way door you're unsure about), move the ticket to **Require Input** with the decision + options and stop — a question left only in your final message is invisible on the board and will be missed (FLUX-570). This applies just as much when the ticket is already **Done/Ready/closed**: route the decision through `ask_user_question` (the status-independent picker), not chat prose, so it's caught even if the user isn't watching the live chat (FLUX-826).
 13. **Shared-PR finish guard (FLUX-569).** `finish_ticket` **refuses** to finish a member ticket whose branch is shared by **non-Done sibling tickets** — merging would advance them all to Done as a one-way door (the FLUX-556/PR#6 incident). When you hit this: either finish/close the siblings first, merge the whole branch via the **PR ticket's** Merge action, or — only if you genuinely intend to land the entire shared PR — re-run with `force: true`. Don't reflexively force; if it's a real decision, route it through Require Input (per #12). PR tickets (`kind:'pr'`) are exempt — merging one to advance its members is the sanctioned shared-merge surface.
 
-**Body convention (FLUX-953):** whenever you rewrite or extend a ticket `body`, keep a plain-language **TL;DR** blockquote as its first line — add one if it's missing, refresh it if the gist changed. The user reads that TL;DR instead of the whole body (see the orchestrator skill's "Body convention").
+**Body convention (FLUX-953):** whenever you rewrite or extend a ticket `body`, keep a plain-language **TL;DR** blockquote as its first line — add one if it's missing, refresh it if the gist changed. The user reads that TL;DR instead of the whole body.
 
 ## Reground Before Coding — tickets with a "⚠️ Reground before starting" section (FLUX-1048)
 
@@ -75,7 +76,7 @@ Skipping the reground because "the plan still looks plausible" is exactly the fa
 
 ## Visual Recap Artifact (`publish_artifact`) — the exception, not the norm
 
-The grooming skill publishes a plan-time **"before"** artifact (a mockup/diagram the user reasons against before code is written). This is the **"after"** half: at `Ready`, publish a **visual recap** of the diff so the reviewer reviews a scannable rendering of *what changed* instead of only the raw PR diff — inspired by Builder.io's agent-native `/visual-recap`. Shared mechanics (sandbox rules, CDN policy, revisions, annotation round-trip, layout-audit gate, richer artifact kinds) live in the orchestrator skill's "Rich Artifacts" section — read it there before your first emit.
+The grooming skill publishes a plan-time **"before"** artifact (a mockup/diagram the user reasons against before code is written). This is the **"after"** half: at `Ready`, publish a **visual recap** of the diff so the reviewer reviews a scannable rendering of *what changed* instead of only the raw PR diff — inspired by Builder.io's agent-native `/visual-recap`. Shared mechanics (sandbox rules, CDN policy, revisions, annotation round-trip, layout-audit gate, richer artifact kinds) live in `read_skill('orchestrator', 'Rich Artifacts')` — pull it before your first emit.
 
 Not required for every `Ready` move — keep it the exception, not ceremony. Default OFF when unsure.
 
@@ -97,9 +98,9 @@ Not required for every `Ready` move — keep it the exception, not ceremony. Def
 
 ## Reviewer Agent Handoff
 
-When a reviewer sends a ticket back to `In Progress`, read that structured comment before making any changes — it explains what needs fixing. For the reviewer's side of this handoff (the reviewState contract, severity taxonomy, diff scoping, and the acceptance-criteria checklist convention from FLUX-1148), see the review skill.
+When a reviewer sends a ticket back to `In Progress`, read that structured comment before making any changes — it explains what needs fixing. For the reviewer's side of this handoff (the reviewState contract, severity taxonomy, diff scoping, and the acceptance-criteria checklist convention from FLUX-1148), pull `read_skill('review')`.
 
-All persistence uses MCP tools — see the orchestrator skill's "Persisting Changes" section.
+All persistence uses MCP tools (see "File Boundaries" below).
 
 ## File Boundaries
 

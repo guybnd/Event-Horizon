@@ -140,13 +140,16 @@ export function PayloadSizePanel({ taskId }: { taskId: string }) {
               <GroupHeading label={`launch prompt${budget.launchPrompt.phase ? ` (${budget.launchPrompt.phase})` : ''}`} tokens={budget.launchPrompt.totalTokensEst} />
               <Bars sections={budget.launchPrompt.sections} />
 
-              <GroupHeading label="skill modules · core + phase" tokens={budget.skillModules.totalTokensEst} />
-              {budget.skillModules.modules.map((m) => (
+              <GroupHeading label="skill modules · core (installed, every session)" tokens={budget.skillModules.coreTokensEst} />
+              {budget.skillModules.modules.filter((m) => !m.name.includes('injected')).map((m) => (
                 <div key={m.name} className="flex items-center justify-between text-gray-600 dark:text-gray-300">
                   <span>{m.name}{m.missing ? ' (missing)' : ''}</span>
                   <span>~{fmtTokens(m.tokensEst)} tok</span>
                 </div>
               ))}
+              {budget.skillModules.modules.some((m) => m.name.includes('injected')) && (
+                <div className="pl-2 text-gray-400">The phase module is injected into the launch prompt above, not loaded separately — counted there only.</div>
+              )}
 
               <button
                 type="button"

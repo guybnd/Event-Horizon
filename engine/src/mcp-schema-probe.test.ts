@@ -73,4 +73,23 @@ describe('probeSelfMcpSchema', () => {
     const disallowed = disallowedEhToolsForPersona({ personaId: 'context-scout', patternPosition: 'assistant' }) ?? [];
     expect(disallowed.length).toBeGreaterThanOrEqual(20);
   });
+
+  it('FLUX-1468 description-diet budget: toolsBytes stays at or below the post-diet baseline + slack', async () => {
+    // Locks in the FLUX-1468 tool-description diet so schema text can't silently regrow.
+    // Pre-diet baseline (measured 2026-07-17, before this ticket): 37,369 bytes / 31 tools.
+    // Post-diet (this ticket): 29,476 bytes — a real 21% cut of lore/rationale text out of tool
+    // descriptions and param `.describe()` calls, moved to `read_skill('tools', '<tool>')`
+    // (event-horizon-tools.md). The remaining ~14.3k bytes is JSON-schema STRUCTURE (property
+    // names, types, enums, required arrays across ~180 fields) — not description text — and is
+    // NOT reducible by this diet without deleting behavioral contract or schema shape, which the
+    // ticket's own risk control forbids. That structural floor is why the ticket's ≥40% target
+    // (which would require cutting ~65% of all description text, including single-clause params
+    // like "Ticket ID") was not reachable while keeping every kept sentence genuinely contract-
+    // shaped — see the FLUX-1468 completion comment for the full before/after breakdown.
+    const POST_DIET_BASELINE_BYTES = 29_476;
+    const SLACK_BYTES = 1_500; // headroom for legitimate new param/tool additions before this fails.
+    const r = await probeSelfMcpSchema();
+    expect(r.ok).toBe(true);
+    expect(r.toolsBytes).toBeLessThanOrEqual(POST_DIET_BASELINE_BYTES + SLACK_BYTES);
+  });
 });

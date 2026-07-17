@@ -1,6 +1,6 @@
 {
   "name": "engine",
-  "version": "1.6.5",
+  "version": "1.7.0",
   "description": "Event Horizon engine — Express + TypeScript API, MCP server, and agent orchestration for the local-first ticket board.",
   "main": "dist/index.js",
   "bin": "dist/index.js",

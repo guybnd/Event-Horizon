@@ -22,10 +22,11 @@ import { updateAgentSession, updateTaskWithHistory } from '../task-store.js';
 import { getWorkspace } from '../workspace-context.js';
 import { buildActivityEntry } from '../history.js';
 import { raiseNeedsAction } from '../parked-ticket.js';
-import type { CliSessionRecord, CliFramework, TaskKey, Tier, PatternPosition } from './types.js';
+import type { CliSessionRecord, CliFramework, TaskKey, Tier, PatternPosition, LaunchPhase } from './types.js';
 import { CLI_CAPABILITIES, INTEGRATION_CONFIG_KEYS } from './types.js';
 import type { ChatAttachment } from '../projection.js';
 import { isInjectablePhaseModule, loadSkillModuleBodySync, skillModuleFallback } from '../skill-modules.js';
+import { resolveSoloChatPersona, renderPersonaTemplate } from '../orchestration-personas.js';
 
 // ---- FLUX-1373: resolveModel — the one shared task-tier -> concrete-model resolver ----
 // Minimal structural shape of the pieces of `Config` (config.ts, kept `any` there) this needs —
@@ -482,6 +483,18 @@ export function prependEditGateNote(
   return isChatEditGated(session, task) ? `${chatEditGateNote(framework)}\n\n---\n\n${message}` : message;
 }
 
+/**
+ * FLUX-1226 composition seam for FLUX-1229 ("per-phase project prompt overlay"): a single named
+ * hook, applied after role+module assembly and before session mechanics (`requireInputStopInstruction`
+ * etc. in `buildInitialPrompt`'s `lines` array below), where 1229 can inject an additive,
+ * per-project per-phase overlay. Deliberately a no-op today (always '') — 1229 replaces this body
+ * with the real resolver; every other caller only ever sees `phaseOverlay` omitted from `lines`
+ * when it's empty, so today's byte-compat gates (FLUX-1226 C1/C2) hold unchanged.
+ */
+function resolvePhaseOverlay(_task: CliTask, _phase: string | undefined): string {
+  return '';
+}
+
 export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: BuildInitialPromptOptions): string {
   const framework = opts?.framework ?? 'claude';
   const caps = CLI_CAPABILITIES[framework];
@@ -512,67 +525,34 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
     // Phase-aware instructions take priority when the caller tells us the intent — every
     // framework's caller computes this identically, so every framework uses it identically.
     if (opts?.phase) {
-      switch (opts.phase) {
-        case 'chat':
-          // FLUX-602: free-form conversational session bound to a ticket. The user's
-          // message arrives via appendPrompt above — do NOT inject a mission.
-          // FLUX-651: but if the user asks for WORK (groom/implement/review/fix) and you DO it,
-          // you must end the turn on a board action — never finish work and just narrate it.
-          return `## Conversational session\n\n` +
-            `This is a free-form chat about ticket ${task.id}. Respond conversationally to the user's message above — answer questions, discuss, and help.\n` +
-            `For pure discussion or Q&A, do NOT change the ticket status, edit files, or commit unless asked — the user drives. Read-only tools (get_ticket, list_tickets, get_board_config) and add_note are always fine.\n\n` +
-            `END-OF-TURN ACTION CONTRACT (FLUX-651): if in THIS turn you actually performed grooming, implementation, or review work on the ticket, you MUST end the turn by taking the board action that reflects the outcome — do not finish the work and merely summarize it in chat:\n` +
-            `- Groomed it → change_status to "Todo" (or "Require Input" with your question).\n` +
-            `- Implemented it → change_status to "${readyStatus}" with a completion summary (or "Require Input" if blocked).\n` +
-            `- Reviewed it → change_status to "${readyStatus}", or back to "In Progress" with what to fix, or create_ticket with parentId for follow-ups, or "Require Input".\n` +
-            `Leaving the ticket parked in a working status with only a chat summary is a defect: the board flags it "Needs Action" and the user is notified. If you genuinely cannot decide, that itself is a "Require Input" — raise it, don't sit on it.\n\n` +
-            `To ask the user a structured question mid-turn, call the ask_user_question tool — it shows an interactive picker in this chat and returns their choice so you continue immediately. Never assume when a quick question would resolve ambiguity; ask.\n` +
-            `This holds REGARDLESS of the ticket's status (FLUX-826): even on a Done/Ready/closed ticket, any decision ("file a ticket / commit / leave it?") goes through ask_user_question — never as chat prose. A decision typed only into chat on a resting ticket has no picker, no notification, and no board flag, so it is lost if the user isn't watching live. (If ask_user_question times out unanswered on a ticket, the engine now leaves a persistent "Needs Action" flag as a backstop — but route it structurally, don't rely on the backstop.)` +
-            (opts?.editsGated ? `\n\n${chatEditGateNote(framework, isScratchSession(task) ? 'scratch' : 'status')}` : '') +
-            orchestrationProposalsParagraph + `\n\n` +
-            mcpNote;
-        case 'grooming':
-          return `## Your Mission: GROOM this ticket\n\n` +
-            `1. Use update_ticket to fill metadata (priority, effort, tags) and rewrite the body with a Problem/Motivation section and Implementation Plan.\n` +
-            `2. If questions are unresolved, use change_status to move to "Require Input" with a comment containing your question.\n` +
-            `3. When grooming is complete, use change_status to move to "Todo".\n\n` +
-            mcpNote;
-        case 'fast-path':
-          // FLUX-1380: one session grooms AND implements an XS/S ticket in one pass, skipping
-          // the separate Grooming -> Todo handoff (and the plan gate that only fires on it)
-          // entirely. The route layer has already refused this phase for L/XL-effort tickets
-          // and tickets with their own subtasks (epic parents) — see routes/cli-session.ts.
-          return `## Your Mission: FAST-PATH this ticket (groom + implement in one session)\n\n` +
-            `This ticket is small enough to skip the normal Grooming -> Todo handoff. Do the following, in order, in this one session:\n` +
-            `1. GROOM IT INLINE: use update_ticket to fill in effort/priority/tags and write a tight TL;DR + a short implementation plan into the body.\n` +
-            `2. ELIGIBILITY CHECK (bail-out contract): if it turns out this needs M+ effort, touches a UI artifact, or spans many unrelated surfaces, STOP here — finish writing the full plan, then use change_status to move to "Todo" (this fires the normal plan-review gate) and end your turn. Do not implement.\n` +
-            `3. Otherwise, use change_status to move to "In Progress".\n` +
-            `4. Implement the plan.\n` +
-            `5. Validate it (typecheck/tests).\n` +
-            `6. Commit your changes — a branch with 0 commits ahead of base cannot open a PR, and change_status to "${readyStatus}" is refused in that state (FLUX-730).\n` +
-            `7. Use change_status to move to "${readyStatus}" with a completion summary of what you implemented and validated.\n\n` +
-            mcpNote;
-        case 'implementation':
-          return `## Your Mission: IMPLEMENT this ticket\n\n` +
-            `Write code to fulfill the ticket's plan. Move to "In Progress" if not already, complete the work, validate it, then use change_status to move to "${readyStatus}" with a completion summary.\n` +
-            `Do not exit without updating the ticket status.\n\n` +
-            `${noDeferNote}\n\n` +
-            mcpNote;
-        case 'review':
-          return `## Your Mission: REVIEW this ticket's implementation\n\n` +
-            `Assess the code changes for correctness, quality, edge cases, and alignment with the ticket's requirements. ` +
-            `Delegate to specialist reviewers if you are a supervisor — do NOT skip the review just because the work looks done.\n\n` +
-            `If you find issues:\n` +
-            `- Minor issues that don't block merging: create a follow-up ticket as a subtask using create_ticket with parentId set to this ticket (do NOT just suggest one — actually create it), then note the subtask ID in your review summary.\n` +
-            `- Blocking issues: use change_status to move back to "In Progress" with a comment explaining what needs fixing.\n\n` +
-            `If the implementation passes review, use change_status to move to "${readyStatus}" with a summary of what you reviewed and your findings.\n\n` +
-            `${noDeferNote}\n\n` +
-            mcpNote;
-        case 'finalize':
-          return `## Your Mission: FINALIZE this ticket\n\n` +
-            `Stage all relevant files (code + docs), create a focused commit, then use finish_ticket with the commit hash or PR URL as implementationLink. ` +
-            `The ticket will be moved to Done atomically. If the ticket has a branch, the engine will push and create a PR automatically.\n\n` +
-            mcpNote;
+      // FLUX-1226: role text for every launch phase now lives in the persona catalog
+      // (orchestration-personas.ts, `PHASE_DEFAULT_PERSONAS`) as that phase's default built-in
+      // persona — this used to be a hardcoded `switch (opts.phase)` of Mission-block literals
+      // right here, a second, undiscoverable copy of "what does this phase's agent get told to
+      // do" alongside the persona catalog (which, until now, only ever powered DELEGATED runs).
+      // Only the Mission-block TEXT migrated: cross-cutting mechanics (this whole function's
+      // other locals — mcpNote, noDeferNote, requireInputStopInstruction,
+      // orchestrationProposalsParagraph, the FLUX-926 edit gate, the get_ticket/history/
+      // moduleFragments scaffolding below) stay computed here and are substituted into the
+      // resolved template's `{{placeholder}}` tokens — never folded into a persona.
+      //
+      // The resolved persona's id is deliberately never stamped onto `session.personaId` — that
+      // would thread it into the FLUX-1434 EH tool-scoping path (disallowedEhToolsForPersona,
+      // keyed on session.personaId), which must stay byte-identical to before this migration.
+      // Role resolution here is prompt-text-only, so that path is untouched by construction.
+      const phasePersona = resolveSoloChatPersona(opts.phase as LaunchPhase);
+      if (phasePersona) {
+        const editGateBlock = opts?.editsGated
+          ? `\n\n${chatEditGateNote(framework, isScratchSession(task) ? 'scratch' : 'status')}`
+          : '';
+        return renderPersonaTemplate(phasePersona.prompt, {
+          taskId: String(task.id),
+          readyStatus,
+          mcpNote,
+          noDeferNote,
+          editGateBlock,
+          orchestrationProposalsParagraph,
+        });
       }
     }
     // Fallback: derive intent from ticket status (backwards compat for direct API / child sessions).
@@ -596,6 +576,7 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
   })();
 
   const moduleFragments = getModulePromptFragments(opts?.phase, Array.isArray(task.tags) ? task.tags : undefined);
+  const phaseOverlay = resolvePhaseOverlay(task, opts?.phase);
 
   // FLUX-1377: Claude agent spawns get their phase's skill module appended here instead of
   // relying on the (now-trimmed) installed .claude/rules/event-horizon.md core to carry every
@@ -634,6 +615,8 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
     ...(moduleFragments ? [moduleFragments, ''] : []),
     ...(phaseSkillModule ? [`## Phase Skill: ${injectablePhase}`, '', phaseSkillModule, ''] : []),
     actionInstruction,
+    // FLUX-1229 seam (see resolvePhaseOverlay above) — empty today, so this never adds a line.
+    ...(phaseOverlay ? ['', phaseOverlay] : []),
     '',
     requireInputStopInstruction,
   ];

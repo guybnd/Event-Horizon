@@ -530,3 +530,86 @@ describe('CI lint — persona prompts never reference a tool their own scoping d
     }
   });
 });
+
+describe('resolveSoloChatPersona — phase-default resolution (FLUX-1226)', () => {
+  it('resolves the phase-default built-in persona for every launch phase', async () => {
+    const { resolveSoloChatPersona } = await import('./orchestration-personas.js');
+    const expectedIds: Record<string, string> = {
+      chat: 'phase-default-chat',
+      grooming: 'phase-default-grooming',
+      'fast-path': 'phase-default-fast-path',
+      implementation: 'phase-default-implementation',
+      review: 'phase-default-review',
+      finalize: 'phase-default-finalize',
+    };
+    for (const [phase, id] of Object.entries(expectedIds)) {
+      const persona = resolveSoloChatPersona(phase as never);
+      expect(persona?.id, `phase=${phase}`).toBe(id);
+      expect(persona?.role, `phase=${phase}`).toBe('lead');
+    }
+  });
+
+  it('returns undefined for no phase and for an unrecognized phase', async () => {
+    const { resolveSoloChatPersona } = await import('./orchestration-personas.js');
+    expect(resolveSoloChatPersona(undefined)).toBeUndefined();
+    expect(resolveSoloChatPersona('not-a-real-phase' as never)).toBeUndefined();
+  });
+
+  it('an explicit personaId wins over the phase default when it resolves', async () => {
+    const { resolveSoloChatPersona } = await import('./orchestration-personas.js');
+    const persona = resolveSoloChatPersona('implementation', 'dev-lead');
+    expect(persona?.id).toBe('dev-lead');
+  });
+
+  it('falls back to the phase default when the explicit personaId does not resolve', async () => {
+    const { resolveSoloChatPersona } = await import('./orchestration-personas.js');
+    const persona = resolveSoloChatPersona('implementation', 'no-such-persona');
+    expect(persona?.id).toBe('phase-default-implementation');
+  });
+
+  it('a custom worker persona listing the phase in `phases` does NOT take over solo resolution (no user phase-override tier)', async () => {
+    const { resolveSoloChatPersona, saveCustomPersona, deleteCustomPersona } = await import('./orchestration-personas.js');
+    await saveCustomPersona({
+      id: 'custom-grooming-worker',
+      label: 'Custom Grooming Worker',
+      description: 'test-only persona for the no-override-tier guard',
+      role: 'worker',
+      phases: ['grooming'],
+      requiredCapabilities: [],
+      prompt: 'You are a custom grooming worker.',
+    });
+    try {
+      const persona = resolveSoloChatPersona('grooming');
+      expect(persona?.id).toBe('phase-default-grooming');
+      expect(persona?.role).toBe('lead');
+    } finally {
+      await deleteCustomPersona('custom-grooming-worker');
+    }
+  });
+
+  it('phase-default personas are hidden from every persona picker, like the Smelter', async () => {
+    const { listSelectablePersonaMeta } = await import('./orchestration-personas.js');
+    const hiddenIds = ['phase-default-chat', 'phase-default-grooming', 'phase-default-fast-path', 'phase-default-implementation', 'phase-default-review', 'phase-default-finalize'];
+    for (const phase of ['grooming', 'implementation', 'review', 'finalize'] as const) {
+      const ids = listSelectablePersonaMeta(phase).map((p) => p.id);
+      for (const hidden of hiddenIds) expect(ids).not.toContain(hidden);
+    }
+    const allIds = listSelectablePersonaMeta().map((p) => p.id);
+    for (const hidden of hiddenIds) expect(allIds).not.toContain(hidden);
+  });
+
+  it('phase-default personas are role:lead and stay PHASE_CONTRACTS-exempt (no auto-composed contract)', async () => {
+    const { resolvePersonaPrompt } = await import('./orchestration-personas.js');
+    const prompt = resolvePersonaPrompt('phase-default-review', undefined, 'review') ?? '';
+    expect(prompt).not.toContain('Status decision');
+    expect(prompt).not.toContain('Diff scoping');
+  });
+
+  it('phase-default personas are never EH-tool-scoped (role:lead ⇒ disallowedEhToolsForPersona is undefined)', async () => {
+    const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+    for (const personaId of ['phase-default-grooming', 'phase-default-implementation', 'phase-default-review', 'phase-default-finalize']) {
+      const denied = disallowedEhToolsForPersona({ personaId, phase: 'implementation' });
+      expect(denied, personaId).toBeUndefined();
+    }
+  });
+});

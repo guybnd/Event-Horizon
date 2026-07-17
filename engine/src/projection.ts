@@ -178,14 +178,16 @@ function normalizeToolName(block: ToolUseBlock | undefined): string {
 }
 
 /**
- * FLUX-661: resolve the absolute `file_path` Claude Code passes to an edit tool into a
- * repo-relative POSIX path (the shape `fetchDiffFile` / git expect). Edits land in either
- * the main worktree or the ticket's task worktree; both mirror the same tree, so the
- * relative path is identical regardless of which root the session ran in. We match the
- * absolute path against both candidate roots (longest prefix wins) and relativize. Returns
- * undefined when the path is empty or sits under neither root (then the row stays label-only).
+ * FLUX-661/1473: resolve an absolute path a tool_use block carries (edit-tool `file_path`, but
+ * also the `file_path`/`path`/`notebook_path` any other tool reports) into a repo-relative POSIX
+ * path (the shape `fetchDiffFile` / git expect, and what the portal renders instead of the raw
+ * absolute worktree prefix). Edits land in either the main worktree or the ticket's task
+ * worktree; both mirror the same tree, so the relative path is identical regardless of which root
+ * the session ran in. We match the absolute path against both candidate roots (longest prefix
+ * wins) and relativize. Returns undefined when the path is empty or sits under neither root (then
+ * the caller falls back to the raw string).
  */
-function relativizeEditPath(filePath: unknown, taskId: string): string | undefined {
+function relativizePath(filePath: unknown, taskId: string): string | undefined {
   if (typeof filePath !== 'string' || !filePath.trim()) return undefined;
   const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return undefined;
@@ -299,11 +301,21 @@ export function classifyRole(raw: unknown): TurnRole {
 }
 
 /** Friendly one-line label for a tool_use block ("watch it work"). */
-function toolLabel(block: ToolUseBlock | undefined): string {
+function toolLabel(block: ToolUseBlock | undefined, taskId: string): string {
   const name = normalizeToolName(block);
   const input = block?.input || {};
-  const hint = input.ticketId ?? input.id ?? input.newStatus ?? input.file_path ?? input.command ?? input.query;
-  const hintStr = hint != null ? String(hint).replace(/\s+/g, ' ').slice(0, 48) : '';
+  const pathHint = input.file_path ?? input.notebook_path ?? input.path;
+  const hint = input.ticketId ?? input.id ?? input.newStatus ?? pathHint ?? input.command ?? input.query;
+  let hintStr = '';
+  if (hint != null) {
+    // FLUX-1473: when the hint IS one of the path fields, render it repo-relative instead of
+    // the raw absolute worktree path — the portal renders this text directly (`ToolRow`), so an
+    // absolute `C:\GitHub\.eh-worktrees\...` prefix otherwise eats the whole truncated row.
+    // Uncapped (unlike the generic 48-char slice below): the portal elides long paths itself
+    // while keeping the basename intact, so a hard server-side cut would defeat that.
+    const rel = hint === pathHint && typeof hint === 'string' ? relativizePath(hint, taskId) : undefined;
+    hintStr = rel ?? String(hint).replace(/\s+/g, ' ').slice(0, 48);
+  }
   return hintStr ? `${name} · ${hintStr}` : name;
 }
 
@@ -481,7 +493,7 @@ export function projectTranscript(
         if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
           out.push(tag({ role: 'assistant', text: b.text, ts: turn.ts }, turn));
         } else if (b?.type === 'tool_use') {
-          const msg: TranscriptMessage = { role: 'tool', text: toolLabel(b), ts: turn.ts };
+          const msg: TranscriptMessage = { role: 'tool', text: toolLabel(b, turn.streamId), ts: turn.ts };
           // FLUX-661: for edit-ish tools, attach the normalized name + repo-relative path so
           // the portal can render an expandable inline diff for that file. Other tools stay
           // label-only. The turn's streamId is the taskId the session ran under.
@@ -492,7 +504,7 @@ export function projectTranscript(
             const { added, removed } = editLineStat(b);
             msg.added = added;
             msg.removed = removed;
-            const rel = relativizeEditPath(b?.input?.file_path ?? b?.input?.notebook_path, turn.streamId);
+            const rel = relativizePath(b?.input?.file_path ?? b?.input?.notebook_path, turn.streamId);
             if (rel) {
               msg.tool = name;
               msg.path = rel;
