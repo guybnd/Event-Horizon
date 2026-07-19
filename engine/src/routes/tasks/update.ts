@@ -2,7 +2,6 @@
 // the REST twin of MCP's update_ticket/change_status — the comment gates, schema validation and
 // tag auto-registration all route through the FLUX-1044 shared status-transition service, and this
 // handler is where that seam lives on the REST side.
-import { getWorkspace } from '../../workspace-context.js';
 import express from 'express';
 import { getConfig } from '../../config.js';
 import {
@@ -10,21 +9,24 @@ import {
   summarizeFieldChanges, findEarliestHistoryDate,
   reconcileNovelHistoryEntries,
 } from '../../history.js';
-import { serializeTaskForApi, updateTaskWithHistory, syncParentSubtaskLinks, validateParentLink, subtaskIds } from '../../task-store.js';
+import { serializeTaskForApi, updateTaskWithHistory, syncParentSubtaskLinks, validateParentLink, subtaskIds, StaleBodyError } from '../../task-store.js';
 // FLUX-1044: the status-transition rulebook shared with the MCP tools — comment gates and the
 // schema-validation + tag-registration sequencing live there (one seam for both write paths).
 import { evaluateCommentGate, resolveTransitionStatusNames, validateAndRegisterTicketWrite } from '../../status-transition-service.js';
 import { stopAllSessionsForTask } from '../../session-store.js';
 import { broadcastEvent } from '../../events.js';
+import { reqWorkspace } from './helpers.js';
 import type { HistoryEntry } from './helpers.js';
 
 const router = express.Router();
 
 router.put('/:id', async (req, res) => {
-  if (getWorkspace().isActivating) return res.status(503).json({ error: 'Workspace is activating, please retry' });
+  if (reqWorkspace(req).isActivating) return res.status(503).json({ error: 'Workspace is activating, please retry' });
   const { id } = req.params;
-  const { updatedBy, ...updates } = req.body;
-  const task = getWorkspace().tasks[id];
+  // FLUX-1550: pulled out alongside updatedBy — a request-only CAS token, never a frontmatter
+  // field, so it must never flow into mergedFrontmatter/extraFields below.
+  const { updatedBy, baseBodyVersion, ...updates } = req.body;
+  const task = reqWorkspace(req).tasks[id];
 
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
@@ -261,7 +263,8 @@ router.put('/:id', async (req, res) => {
       ...(deleteFields.length > 0 ? { deleteFields } : {}),
       ...(updates.title !== undefined ? { newTitle: updates.title } : {}),
       ...(updates.body !== undefined ? { newBody: updates.body } : {}),
-    });
+      ...(updates.body !== undefined && baseBodyVersion !== undefined ? { baseBodyVersion } : {}),
+    }, req.workspace);
     if (!result) {
       return res.status(500).json({ error: 'Failed to save task' });
     }
@@ -275,11 +278,20 @@ router.put('/:id', async (req, res) => {
       oldSubtasks: subtaskIds(task.subtasks),
       newSubtasks: subtaskIds(mergedFrontmatter.subtasks),
       actor,
-    });
+    }, req.workspace);
 
     broadcastEvent('taskUpdated', { id });
-    res.json(serializeTaskForApi(getWorkspace().tasks[id]));
+    res.json(serializeTaskForApi(reqWorkspace(req).tasks[id]));
   } catch (err) {
+    // FLUX-1550: a stale baseBodyVersion is a conflict, not a server failure — 409 with the
+    // current on-disk version so the caller can re-read and retry instead of the generic 500.
+    if (err instanceof StaleBodyError) {
+      return res.status(409).json({
+        error: 'stale_body',
+        currentBodyVersion: err.currentBodyVersion,
+        message: 'This ticket changed since you last read it.',
+      });
+    }
     console.error('Failed to update task:', err);
     res.status(500).json({ error: 'Failed to save task' });
   }

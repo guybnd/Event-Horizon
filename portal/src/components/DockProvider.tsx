@@ -23,6 +23,13 @@ const SIDEVIEW_WIDTH_KEY = 'eh-dock-sideview-width';
 const SIDEVIEW_WIDTH_USERSET_KEY = 'eh-dock-sideview-width-userset';
 /** FLUX-740: localStorage key for the per-section sideview open/collapsed map (by section id). */
 const SECTION_OPEN_KEY = 'eh-dock-section-open';
+/** FLUX-1515: localStorage key for the per-ticket sideview tab selection map (by ticket id). */
+const SELECTED_TAB_KEY = 'eh-dock-sideview-tab';
+/** FLUX-1515: cap on the selected-tab map — unlike `sectionOpen` (a handful of fixed section ids),
+ *  this is keyed per TICKET, so it can grow unboundedly across a long-lived board. Applied to the
+ *  localStorage write only (mirrors `WINDOW_GEOM_CAP`); the in-memory map stays unbounded since a
+ *  read only ever touches the current ticket's key. */
+const SELECTED_TAB_CAP = 200;
 /** FLUX-920: localStorage key for the per-conversation chat-window geometry (size + dragged position). */
 const WINDOW_GEOM_KEY = 'eh-dock-window-geom';
 /** FLUX-920: cap on the geometry map — applied to the localStorage write so stored ids for chats that
@@ -83,6 +90,21 @@ function readBoolRecord(key: string): Record<string, boolean> {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
     const out: Record<string, boolean> = {};
     for (const [k, v] of Object.entries(parsed)) if (typeof v === 'boolean') out[k] = v;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** FLUX-1515: rehydrate a persisted Record<string, string>, tolerating missing/corrupt values. */
+function readStringRecord(key: string): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed)) if (typeof v === 'string') out[k] = v;
     return out;
   } catch {
     return {};
@@ -216,6 +238,9 @@ export interface DockActions {
   /** FLUX-740: persist a sideview section's open/collapsed state, keyed by section id, so a user's
    *  collapse choices survive remount / reload. */
   setSectionOpen: (sectionId: string, open: boolean) => void;
+  /** FLUX-1515: persist a ticket's manually-selected sideview tab, keyed by ticket id. Once set, the
+   *  sideview honors this over its own computed default tab for that ticket. */
+  setSelectedTab: (taskId: string, tabId: string) => void;
   /** FLUX-920: persist a chat window's footprint, keyed per conversation id, so a manual resize/drag
    *  survives minimize/reopen (which unmounts the window) and a full reload. Merge-patched: a size-only
    *  update (`{w,h}`) keeps any stored position and vice-versa. Pruned in `closeCard`. */
@@ -258,6 +283,11 @@ export interface DockState {
   /** FLUX-740: per-section open/collapsed state for the sideview, keyed by section id. A section
    *  with no entry uses its registry default; an entry is the user's explicit override. Persisted. */
   sectionOpen: Record<string, boolean>;
+  /** FLUX-1515: per-ticket sideview tab selection, keyed by ticket id. A ticket with no entry uses
+   *  the sideview's computed default (artifact/plan-flagged → Plan, live/unread → Activity, else
+   *  Description); an entry is the user's explicit override, which then wins on every later open.
+   *  Persisted. */
+  selectedTab: Record<string, string>;
   /** FLUX-623: per-conversation unsent composer text. In-memory (resets on full reload, like
    *  `seenRef` baselines in ChatDock); survives minimize/reopen + view switches because the dock
    *  state is app-root-scoped. Pruned in `closeCard` when a chat is retired to History. */
@@ -306,6 +336,8 @@ export function DockProvider({ children }: { children: ReactNode }) {
     () => readBool(SIDEVIEW_WIDTH_USERSET_KEY, false),
   );
   const [sectionOpen, setSectionOpenState] = useState<Record<string, boolean>>(() => readBoolRecord(SECTION_OPEN_KEY));
+  // FLUX-1515: rehydrate the per-ticket sideview tab selection so a manually-chosen tab survives a reload.
+  const [selectedTab, setSelectedTabState] = useState<Record<string, string>>(() => readStringRecord(SELECTED_TAB_KEY));
   // FLUX-1252: rehydrate the manually-opened tab set so a Scratch Chat (or any manually-opened chat
   // with no SURFACE_STATUSES-qualifying session) doesn't lose its only tab-bar surface on reload.
   const [manuallyOpened, setManuallyOpened] = useState<string[]>(() => readStringArray(MANUALLY_OPENED_KEY));
@@ -390,6 +422,17 @@ export function DockProvider({ children }: { children: ReactNode }) {
       /* quota exceeded / private mode — section state just won't persist this load */
     }
   }, [sectionOpen]);
+
+  // FLUX-1515: persist the per-ticket sideview tab selection. Capped (like `windowGeometry`) so ids
+  // for tickets never revisited can't grow the stored map unboundedly.
+  useEffect(() => {
+    try {
+      const entries = Object.entries(selectedTab).slice(0, SELECTED_TAB_CAP);
+      localStorage.setItem(SELECTED_TAB_KEY, JSON.stringify(Object.fromEntries(entries)));
+    } catch {
+      /* quota exceeded / private mode — tab selection just won't persist this load */
+    }
+  }, [selectedTab]);
 
   // FLUX-920: persist the per-conversation window geometry. Capped (like the order map) so ids for
   // chats never retired through `closeCard` can't grow the stored map unboundedly.
@@ -557,6 +600,10 @@ export function DockProvider({ children }: { children: ReactNode }) {
       // FLUX-740: record a section's explicit open/collapsed override (keyed by section id).
       setSectionOpen: (sectionId, openState) =>
         setSectionOpenState((prev) => (prev[sectionId] === openState ? prev : { ...prev, [sectionId]: openState })),
+      // FLUX-1515: record a ticket's explicit tab selection (keyed by ticket id) — wins over the
+      // sideview's computed default on every later open.
+      setSelectedTab: (taskId, tabId) =>
+        setSelectedTabState((prev) => (prev[taskId] === tabId ? prev : { ...prev, [taskId]: tabId })),
       // FLUX-920: merge-patch a window's geometry so a size-only commit (`{w,h}` from the resize grip)
       // keeps any stored dragged position and a position-only commit (`{left,bottom}` from the title-bar
       // drag) keeps the stored size. A no-op write (identical values) keeps the same map identity so
@@ -585,8 +632,8 @@ export function DockProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const state = useMemo<DockState>(
-    () => ({ open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen, windowGeometry, planApprovalOpen, planApprovalNonce }),
-    [open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen, windowGeometry, planApprovalOpen, planApprovalNonce],
+    () => ({ open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen, selectedTab, windowGeometry, planApprovalOpen, planApprovalNonce }),
+    [open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen, selectedTab, windowGeometry, planApprovalOpen, planApprovalNonce],
   );
 
   return (

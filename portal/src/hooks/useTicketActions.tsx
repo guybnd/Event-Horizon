@@ -8,8 +8,9 @@
 // This is the launch slice that used to live inline in useTaskCardController, lifted out so the
 // card and the chat surfaces share it verbatim instead of re-implementing it.
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Task } from '../types';
-import { useAppSelector, useAppActions } from '../store/useAppSelector';
+import type { CliSessionSummary, Task } from '../types';
+import { normalizeSubtaskId } from '../types';
+import { useAppSelector, useAppActions, shallowEqual } from '../store/useAppSelector';
 import {
   mergePr, updateTask, fetchWorkflows, fetchPrStatus, sendTaskCliInput, raisePr, deleteTask,
   detachWorktree, joinWorktree, openWorktreeWindow, setTicketBranch, attachParent,
@@ -130,7 +131,7 @@ export interface UseTicketActions {
 }
 
 export function useTicketActions(task: Task): UseTicketActions {
-  const { triggerRefresh, refreshWorktrees, openTask, markAllCommentsRead } = useAppActions();
+  const { triggerRefresh, refreshWorktrees, openTask, markAllCommentsRead, patchTaskLocal, emitTaskRollback } = useAppActions();
   const currentUser = useAppSelector((s) => s.currentUser);
   const config = useAppSelector((s) => s.config);
 
@@ -323,10 +324,49 @@ export function useTicketActions(task: Task): UseTicketActions {
   // "Starting…" row — otherwise the click looked like a no-op for the beat between the launch
   // call returning and the next poll picking up the session, inviting a repeat click.
   const dispatchFastPath = async () => {
+    const endGhost = beginGhostLaunch();
     try {
       await runAgentAction({ taskId: task.id, framework, action: { kind: 'launch' }, currentUser, phase: 'fast-path' });
     } catch (err) {
+      endGhost(true);
       notifyError(`Failed to start fast-path on ${task.id}`, err instanceof Error ? err.message : String(err));
+      return;
+    }
+    await triggerRefresh();
+  };
+
+  // ── Agent: batch-grooming (FLUX-1383) — the epic trigger. One session grooms this epic's
+  // eligible (Grooming/Require Input, non-epic, ≤M effort) children in one sitting instead of one
+  // session per child. Eligibility is re-derived client-side here (purely to size/gate the button —
+  // the start route re-validates independently, per the ticket's own defense-in-depth design) from
+  // the already-cached store, so no extra fetch is needed. Capped to 2-5 by ticketActions.ts's
+  // rendering gate; >5 hides the button in v1 (no multi-select yet to hand-pick a subset — see the
+  // ticket's own Risk section). ──
+  const subtaskIds = useMemo(() => (task.subtasks ?? []).map(normalizeSubtaskId), [task.subtasks]);
+  const resolvedSubtasks = useAppSelector(
+    (s) => subtaskIds.map((childId) => s.taskById.get(childId)).filter((t): t is Task => !!t),
+    shallowEqual,
+  );
+  const batchGroomingEligibleIds = useMemo(() => {
+    const eligible = resolvedSubtasks.filter((child) => {
+      if ((child.subtasks?.length ?? 0) > 0) return false; // not itself an epic
+      const status = (child.status || '').trim();
+      if (!/^groom/i.test(status) && status !== requireInputStatus) return false;
+      const effort = child.effort;
+      return !effort || ['None', 'XS', 'S', 'M'].includes(effort);
+    }).map((child) => child.id);
+    return eligible.length >= 2 ? eligible : undefined;
+  }, [resolvedSubtasks, requireInputStatus]);
+
+  const dispatchBatchGrooming = async () => {
+    const ids = batchGroomingEligibleIds;
+    if (!ids || ids.length < 2) return;
+    const endGhost = beginGhostLaunch();
+    try {
+      await runAgentAction({ taskId: ids[0], framework, action: { kind: 'launch' }, currentUser, phase: 'batch-grooming', batchTicketIds: ids });
+    } catch (err) {
+      endGhost(true);
+      notifyError(`Failed to start batch-grooming on ${task.id}`, err instanceof Error ? err.message : String(err));
       return;
     }
     await triggerRefresh();
@@ -351,22 +391,31 @@ export function useTicketActions(task: Task): UseTicketActions {
       setStartPromptOpen(true);
       return;
     }
-    const launched = await launchPhaseSession(phase);
-    if (!launched) {
-      openLauncher(phase, resolvePhaseDefaultId(config?.phaseDefaults, phase, 'single'));
-      return;
+    const endGhost = beginGhostLaunch();
+    try {
+      const launched = await launchPhaseSession(phase);
+      if (!launched) {
+        endGhost(false);
+        openLauncher(phase, resolvePhaseDefaultId(config?.phaseDefaults, phase, 'single'));
+        return;
+      }
+      triggerRefresh();
+    } catch (err) {
+      endGhost(true);
+      throw err;
     }
-    triggerRefresh();
   };
 
   const confirmStartPrompt = async (selection: StartSelection) => {
     setStartPromptOpen(false);
     setBusyKey('implement');
+    const endGhost = beginGhostLaunch();
     try {
       await applyStartSelection(task.id, selection);
       await launchPhaseSession('implementation');
       triggerRefresh();
     } catch (err) {
+      endGhost(true);
       notifyError(`Failed to start ${task.id}`, err instanceof Error ? err.message : String(err));
     } finally {
       setBusyKey(null);
@@ -374,18 +423,85 @@ export function useTicketActions(task: Task): UseTicketActions {
   };
   const cancelStartPrompt = () => setStartPromptOpen(false);
 
+  // ── FLUX-1505: commit-first data — the button-driven counterpart to Board.tsx's drag-and-drop
+  // optimistic overlay (`applyStatusChange`). `patch` lands on the shared store immediately (every
+  // surface reading this task — card, modal, side-view — sees it in the same frame); `mutate` is the
+  // real POST, backgrounded. On success the response's task is the new source of truth (already
+  // returned by `updateTask` — no extra round trip); a background `triggerRefresh()` still runs for
+  // the OTHER derived state a single-task patch can't carry (worktree list, parse errors, column
+  // reflow) but is never awaited, so it never blocks the button's busy state. On failure the patch is
+  // reverted and a brief shake plays (`emitTaskRollback`) before the error re-throws for `fire()`'s
+  // existing `notifyError` backstop to surface.
+  const commitOptimistic = async (patch: Partial<Task>, mutate: () => Promise<Task>) => {
+    const snapshot = task;
+    patchTaskLocal(task.id, patch);
+    try {
+      const updated = await mutate();
+      patchTaskLocal(task.id, updated);
+      void triggerRefresh();
+    } catch (err) {
+      patchTaskLocal(task.id, snapshot);
+      emitTaskRollback(task.id);
+      throw err;
+    }
+  };
+
+  // ── FLUX-1506: ghost session on launch — the single choke point every launch-dispatch path below
+  // (single-agent phase default, fast-path, the Todo start prompt, the orchestration launcher) calls
+  // so a session-shaped element appears on the card the INSTANT the user clicks, instead of only a
+  // button spinner through the round trip to the server. Patches `task.cliSession` onto the shared
+  // store via the same `patchTaskLocal` FLUX-1505 commit-first infra `commitOptimistic` above uses,
+  // so CardSessionRow's EXISTING 'starting' presentation (classifyCardSessionState: status 'pending'
+  // → 'starting') renders it for free — no new UI needed on the card. A real session landing (SSE
+  // taskUpdated / triggerRefresh) naturally overwrites the ghost object with truth, which IS the
+  // cross-fade: CardSessionRow re-renders from 'starting' straight to the live state in place.
+  // The returned `end` callback: `end(false)` means no session was actually created (e.g. no phase
+  // persona resolved, caller falls back to the full launcher) — revert to the pre-click snapshot
+  // silently. `end(true)` means the launch call itself threw — flip the ghost to the existing
+  // 'failed' presentation (reused verbatim, including its Retry button) so the failure is visible
+  // inline, then dissolve back to the snapshot a beat later. Success calls neither — the ghost stays
+  // showing 'Starting…' until the real data arrives.
+  const GHOST_DISSOLVE_MS = 2200;
+  const beginGhostLaunch = () => {
+    const snapshot = task.cliSession ?? null;
+    const ghost: CliSessionSummary = {
+      id: `ghost-${task.id}-${Date.now()}`,
+      taskId: task.id,
+      framework,
+      status: 'pending',
+      command: '',
+      args: [],
+      startedAt: new Date().toISOString(),
+      label: 'Agent',
+    };
+    patchTaskLocal(task.id, { cliSession: ghost });
+    return (failed: boolean) => {
+      if (!failed) {
+        patchTaskLocal(task.id, { cliSession: snapshot });
+        return;
+      }
+      patchTaskLocal(task.id, { cliSession: { ...ghost, status: 'failed' } });
+      // FLUX-1528: guard the delayed revert with an id check (mirrors the modal path's
+      // `current?.id === ghostId ? null : current`) — a fast retry within GHOST_DISSOLVE_MS can land
+      // a real cliSession before this fires; reverting unconditionally would wipe it back to the
+      // stale pre-launch snapshot until the next SSE/poll tick papers over it.
+      window.setTimeout(() => patchTaskLocal(task.id, (current) => (
+        current.cliSession?.id === ghost.id ? { cliSession: snapshot } : {}
+      )), GHOST_DISSOLVE_MS);
+    };
+  };
+
   // ── Engine/agent: return a Ready ticket to In Progress carrying the reviewer's reason. ──
   const returnToDev = async (reason: string) => {
     const comment = reason.trim();
     if (!comment) return;
     // FLUX-725: send the reason comment as an appendHistory delta (the card task no longer carries
     // full history); the engine appends it and auto-adds the status_change.
-    await updateTask(task.id, {
+    await commitOptimistic({ status: 'In Progress' }, () => updateTask(task.id, {
       status: 'In Progress',
       appendHistory: [{ type: 'comment', user: currentUser, comment }],
       updatedBy: currentUser,
-    });
-    triggerRefresh();
+    }));
   };
 
   // ── The launcher modal's onLaunch: single agent runs standalone, multi via orchestration.
@@ -394,6 +510,7 @@ export function useTicketActions(task: Task): UseTicketActions {
     setLauncherOpen(false);
     setLauncherBusy(true);
     setLauncherError('');
+    const endGhost = beginGhostLaunch();
     try {
       if (plan.personas.length === 1) {
         await runAgentAction({
@@ -434,6 +551,7 @@ export function useTicketActions(task: Task): UseTicketActions {
       });
       triggerRefresh();
     } catch (err) {
+      endGhost(true);
       setLauncherError(err instanceof Error ? err.message : 'Failed to launch agent.');
       setLauncherOpen(true);
     } finally {
@@ -450,12 +568,11 @@ export function useTicketActions(task: Task): UseTicketActions {
     moveToStatus: async (status) => {
       // Promptable statuses (Ready / Require Input) open the modal so the comment is captured there.
       if (isPromptableStatus(status, config)) { openTask(task); return; }
-      await updateTask(task.id, { status, updatedBy: currentUser });
-      triggerRefresh();
+      await commitOptimistic({ status }, () => updateTask(task.id, { status, updatedBy: currentUser }));
     },
     setStatusRaw: async (status) => {
-      await updateTask(task.id, { status, updatedBy: currentUser } as Partial<Task>);
-      refreshAll();
+      await commitOptimistic({ status } as Partial<Task>, () => updateTask(task.id, { status, updatedBy: currentUser } as Partial<Task>));
+      refreshWorktrees();
     },
     raisePr: async () => { await raisePr(task.id); refreshAll(); },
     mergePrNow: async () => { await mergePr(task.id); refreshAll(); },
@@ -468,22 +585,31 @@ export function useTicketActions(task: Task): UseTicketActions {
     joinWorktree: async (branch) => { await joinWorktree(task.id, branch); refreshAll(); },
     attachBranch: async (branch) => { await setTicketBranch(task.id, branch, currentUser); refreshAll(); },
     attachParent: async (parentId) => { await attachParent(task.id, parentId, currentUser); refreshAll(); },
-    archive: async () => { await updateTask(task.id, { status: archiveStatus, updatedBy: currentUser }); triggerRefresh(); },
+    archive: async () => { await commitOptimistic({ status: archiveStatus }, () => updateTask(task.id, { status: archiveStatus, updatedBy: currentUser })); },
     deleteTicket: async () => { await deleteTask(task.id); triggerRefresh(); },
     markCommentsRead: () => {
       // FLUX-725: comment ids come from the list digest (derived from full history).
       const ids = (task.historyDigest?.comments ?? []).map((c) => c.id);
       markAllCommentsRead(task.id, ids);
     },
-    clearSwimlane: async () => { await updateTask(task.id, { swimlane: null, updatedBy: currentUser } as Partial<Task>); triggerRefresh(); },
+    clearSwimlane: async () => {
+      await commitOptimistic({ swimlane: null } as Partial<Task>, () => updateTask(task.id, { swimlane: null, updatedBy: currentUser } as Partial<Task>));
+    },
   };
 
   // One-click launch of a phase default, exposed for the ContextMenu primary action. Returns false
   // when no default persona resolves so the caller can fall back to the full launcher.
   const tryLaunchPhaseDefault = async (phase: LaunchPhase): Promise<boolean> => {
-    const launched = await launchPhaseSession(phase);
-    if (launched) triggerRefresh();
-    return launched;
+    const endGhost = beginGhostLaunch();
+    try {
+      const launched = await launchPhaseSession(phase);
+      if (launched) triggerRefresh();
+      else endGhost(false);
+      return launched;
+    } catch (err) {
+      endGhost(true);
+      throw err;
+    }
   };
 
   const ctx: TicketActionContext = {
@@ -496,6 +622,8 @@ export function useTicketActions(task: Task): UseTicketActions {
     finishViaEngine,
     dispatchFinish,
     dispatchFastPath,
+    batchGroomingEligibleIds,
+    dispatchBatchGrooming,
     launchDefault,
     openLauncher,
     returnToDev,

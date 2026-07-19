@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { isGateParkedTicket, isPlanApprovalPending, isPlanApprovalNeedsYou, isPlanGateRevising, canApprovePlan, planReviewFeedback, planTldr, revisePlan, dismissPlanReview } from './pendingInteractions';
-import { updateTask, startPlanRevise } from '../api';
-import type { Config, Task } from '../types';
+import { isGateParkedTicket, isPlanApprovalPending, isPlanApprovalNeedsYou, isPlanGateRevising, canApprovePlan, planReviewFeedback, planTldr, revisePlan, dismissPlanReview, dispatchApprovedImplementation, approvePlanAndStart } from './pendingInteractions';
+import { updateTask, startPlanRevise, createBranch } from '../api';
+import { launchPhaseDefault } from '../agentActions';
+import type { Config, Task, CliSessionSummary } from '../types';
+import type { NotifyApi } from '../hooks/useNotify';
 
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>();
@@ -9,11 +11,22 @@ vi.mock('../api', async (importOriginal) => {
     ...actual,
     updateTask: vi.fn().mockResolvedValue({}),
     startPlanRevise: vi.fn().mockResolvedValue({ ok: true, message: 'ok' }),
+    createBranch: vi.fn().mockResolvedValue({ branch: 'flux/x' }),
+  };
+});
+
+vi.mock('../agentActions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../agentActions')>();
+  return {
+    ...actual,
+    launchPhaseDefault: vi.fn().mockResolvedValue({ id: 'sess-1' }),
   };
 });
 
 const mockedUpdateTask = vi.mocked(updateTask);
 const mockedStartPlanRevise = vi.mocked(startPlanRevise);
+const mockedCreateBranch = vi.mocked(createBranch);
+const mockedLaunchPhaseDefault = vi.mocked(launchPhaseDefault);
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -21,6 +34,14 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     status: 'Grooming',
     ...overrides,
   } as Task;
+}
+
+function makeSession(overrides: Partial<CliSessionSummary> = {}): CliSessionSummary {
+  return { id: 'sess-0', taskId: 'FLUX-1', framework: 'claude', status: 'running', command: 'x', ...overrides } as CliSessionSummary;
+}
+
+function makeNotify(): NotifyApi {
+  return { success: vi.fn(), error: vi.fn(), info: vi.fn() };
 }
 
 describe('isGateParkedTicket (FLUX-1262)', () => {
@@ -223,5 +244,127 @@ describe('dismissPlanReview (FLUX-1289/FLUX-1303 — the single "Set aside")', (
     await dismissPlanReview('FLUX-1', 'Guy');
     expect(mockedStartPlanRevise).not.toHaveBeenCalled();
     expect(mockedUpdateTask).toHaveBeenCalledWith('FLUX-1', expect.objectContaining({ planReviewState: null, planReviewBodyHash: null, updatedBy: 'Guy' }));
+  });
+});
+
+describe('dispatchApprovedImplementation (FLUX-1294/FLUX-1369 — shared "Approve & start" dispatch)', () => {
+  const config: Config = { worktreeByDefault: true, defaultFramework: 'claude' } as Config;
+
+  beforeEach(() => {
+    mockedCreateBranch.mockClear().mockResolvedValue({ branch: 'flux/x' });
+    mockedLaunchPhaseDefault.mockClear().mockResolvedValue(makeSession());
+  });
+
+  it('skips createBranch for XS effort, but still launches the implementation session', async () => {
+    const task = makeTask({ effort: 'XS' });
+    const notify = makeNotify();
+    await dispatchApprovedImplementation(task, config, 'Guy', notify);
+    expect(mockedCreateBranch).not.toHaveBeenCalled();
+    expect(mockedLaunchPhaseDefault).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId: 'FLUX-1', phase: 'implementation', currentUser: 'Guy' }),
+    );
+    expect(notify.info).not.toHaveBeenCalled();
+    expect(notify.error).not.toHaveBeenCalled();
+  });
+
+  it('creates a branch for non-XS effort with worktree per config.worktreeByDefault', async () => {
+    const task = makeTask({ effort: 'M' });
+    await dispatchApprovedImplementation(task, config, 'Guy', makeNotify());
+    expect(mockedCreateBranch).toHaveBeenCalledWith('FLUX-1', { worktree: true });
+  });
+
+  it('passes worktree: false when config.worktreeByDefault is unset/false', async () => {
+    const task = makeTask({ effort: 'M' });
+    await dispatchApprovedImplementation(task, { ...config, worktreeByDefault: false }, 'Guy', makeNotify());
+    expect(mockedCreateBranch).toHaveBeenCalledWith('FLUX-1', { worktree: false });
+  });
+
+  it('active-session guard: early-returns with notify.info and never dispatches', async () => {
+    const task = makeTask({ effort: 'M', cliSession: makeSession({ status: 'running' }) });
+    const notify = makeNotify();
+    await dispatchApprovedImplementation(task, config, 'Guy', notify);
+    expect(mockedCreateBranch).not.toHaveBeenCalled();
+    expect(mockedLaunchPhaseDefault).not.toHaveBeenCalled();
+    expect(notify.info).toHaveBeenCalledWith(expect.stringContaining('a session is already running'));
+  });
+
+  it('dispatches when the existing session is terminal (not an active guard)', async () => {
+    const task = makeTask({ effort: 'XS', cliSession: makeSession({ status: 'completed', endedAt: '2026-07-01T00:00:00.000Z' }) });
+    await dispatchApprovedImplementation(task, config, 'Guy', makeNotify());
+    expect(mockedLaunchPhaseDefault).toHaveBeenCalled();
+  });
+
+  it('launchPhaseDefault returning falsy → notify.info "no default implementation persona" (does not throw)', async () => {
+    mockedLaunchPhaseDefault.mockResolvedValueOnce(null);
+    const task = makeTask({ effort: 'XS' });
+    const notify = makeNotify();
+    await expect(dispatchApprovedImplementation(task, config, 'Guy', notify)).resolves.toBeUndefined();
+    expect(notify.info).toHaveBeenCalledWith(expect.stringContaining('no default implementation persona'));
+    expect(notify.error).not.toHaveBeenCalled();
+  });
+
+  it('a thrown dispatch error surfaces via notify.error and is never rethrown', async () => {
+    mockedLaunchPhaseDefault.mockRejectedValueOnce(new Error('engine down'));
+    const task = makeTask({ effort: 'XS' });
+    const notify = makeNotify();
+    await expect(dispatchApprovedImplementation(task, config, 'Guy', notify)).resolves.toBeUndefined();
+    expect(notify.error).toHaveBeenCalledWith(expect.stringContaining('engine down'));
+  });
+
+  it('a thrown createBranch error also surfaces via notify.error without reaching launchPhaseDefault', async () => {
+    mockedCreateBranch.mockRejectedValueOnce(new Error('branch exists'));
+    const task = makeTask({ effort: 'M' });
+    const notify = makeNotify();
+    await dispatchApprovedImplementation(task, config, 'Guy', notify);
+    expect(mockedLaunchPhaseDefault).not.toHaveBeenCalled();
+    expect(notify.error).toHaveBeenCalledWith(expect.stringContaining('branch exists'));
+  });
+
+  it('passes a default focusComment, overridable by the caller', async () => {
+    const task = makeTask({ effort: 'XS' });
+    await dispatchApprovedImplementation(task, config, 'Guy', makeNotify());
+    expect(mockedLaunchPhaseDefault).toHaveBeenCalledWith(expect.objectContaining({ focusComment: 'Plan approved via "Approve & start."' }));
+
+    mockedLaunchPhaseDefault.mockClear();
+    await dispatchApprovedImplementation(task, config, 'Guy', makeNotify(), 'custom note');
+    expect(mockedLaunchPhaseDefault).toHaveBeenCalledWith(expect.objectContaining({ focusComment: 'custom note' }));
+  });
+});
+
+describe('approvePlanAndStart (FLUX-1369 — commit then dispatch)', () => {
+  beforeEach(() => {
+    mockedUpdateTask.mockClear();
+    mockedCreateBranch.mockClear().mockResolvedValue({ branch: 'flux/x' });
+    mockedLaunchPhaseDefault.mockClear().mockResolvedValue(makeSession());
+  });
+
+  it('commits the approve->Todo update via updateTask, then dispatches using the RETURNED (updated) task', async () => {
+    const task = makeTask({ status: 'Grooming', effort: 'XS' });
+    const updated = makeTask({ status: 'Todo', effort: 'XS', cliSession: undefined });
+    mockedUpdateTask.mockResolvedValueOnce(updated);
+    const config: Config = { columns: [{ name: 'Todo' }] } as Config;
+
+    await approvePlanAndStart(task, config, 'Guy', makeNotify());
+
+    expect(mockedUpdateTask).toHaveBeenCalledWith(
+      'FLUX-1',
+      expect.objectContaining({ status: 'Todo', planReviewState: null, planReviewBodyHash: null, updatedBy: 'Guy' }),
+    );
+    // XS effort on the updated task → no branch created, but the session still launches.
+    expect(mockedCreateBranch).not.toHaveBeenCalled();
+    expect(mockedLaunchPhaseDefault).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'FLUX-1' }));
+  });
+
+  it('does not dispatch when the returned task already carries an active session', async () => {
+    const task = makeTask({ status: 'Grooming', effort: 'M' });
+    const updated = makeTask({ status: 'Todo', effort: 'M', cliSession: makeSession({ status: 'pending' }) });
+    mockedUpdateTask.mockResolvedValueOnce(updated);
+    const notify = makeNotify();
+
+    await approvePlanAndStart(task, {} as Config, 'Guy', notify);
+
+    expect(mockedCreateBranch).not.toHaveBeenCalled();
+    expect(mockedLaunchPhaseDefault).not.toHaveBeenCalled();
+    expect(notify.info).toHaveBeenCalledWith(expect.stringContaining('a session is already running'));
   });
 });

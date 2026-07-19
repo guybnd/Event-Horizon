@@ -68,9 +68,9 @@ describe('extract verb (FLUX-656)', () => {
     // AC3: the new card renders the extracted slice (t1..t3), each tagged with its source.
     const msgs = await readTranscriptMessages(res.id);
     expect(msgs).toEqual([
-      { role: 'user', text: 't1', ts: '', sourceStream: '__board__' },
-      { role: 'user', text: 't2', ts: '', sourceStream: '__board__' },
-      { role: 'user', text: 't3', ts: '', sourceStream: '__board__' },
+      { role: 'user', text: 't1', ts: '', seq: 1, sourceStream: '__board__' },
+      { role: 'user', text: 't2', ts: '', seq: 2, sourceStream: '__board__' },
+      { role: 'user', text: 't3', ts: '', seq: 3, sourceStream: '__board__' },
     ]);
   });
 
@@ -93,10 +93,10 @@ describe('extract verb (FLUX-656)', () => {
 
     const msgs = await readTranscriptMessages(res.id);
     expect(msgs).toEqual([
-      { role: 'user', text: 't0', ts: '', sourceStream: '__board__' },
-      { role: 'user', text: 't1', ts: '', sourceStream: '__board__' },
+      { role: 'user', text: 't0', ts: '', seq: 0, sourceStream: '__board__' },
+      { role: 'user', text: 't1', ts: '', seq: 1, sourceStream: '__board__' },
       // The card's own turn is NOT foreign → no sourceStream tag.
-      { role: 'user', text: 'native', ts: 'TX' },
+      { role: 'user', text: 'native', ts: 'TX', seq: 0 },
     ]);
   });
 
@@ -177,8 +177,8 @@ describe('extract verb (FLUX-656)', () => {
     expect(ops).toHaveLength(1);
     const newId = ops[0]!.into;
     expect(await readTranscriptMessages(newId)).toEqual([
-      { role: 'user', text: 't0', ts: '', sourceStream: '__board__' },
-      { role: 'user', text: 't1', ts: '', sourceStream: '__board__' },
+      { role: 'user', text: 't0', ts: '', seq: 0, sourceStream: '__board__' },
+      { role: 'user', text: 't1', ts: '', seq: 1, sourceStream: '__board__' },
     ]);
   });
 
@@ -233,9 +233,9 @@ describe('extract verb (FLUX-656)', () => {
       // AC: the promoted card's transcript STILL re-derives from the (untouched) scratch substrate
       // after the archive — a status change never touches the transcript files.
       expect(await readTranscriptMessages(res.id)).toEqual([
-        { role: 'user', text: 's0', ts: '', sourceStream: scratch },
-        { role: 'user', text: 's1', ts: '', sourceStream: scratch },
-        { role: 'user', text: 's2', ts: '', sourceStream: scratch },
+        { role: 'user', text: 's0', ts: '', seq: 0, sourceStream: scratch },
+        { role: 'user', text: 's1', ts: '', seq: 1, sourceStream: scratch },
+        { role: 'user', text: 's2', ts: '', seq: 2, sourceStream: scratch },
       ]);
     });
 
@@ -263,8 +263,8 @@ describe('extract verb (FLUX-656)', () => {
       expect(res.consumeError).toBeUndefined();
       // __board__ has no card, so nothing to archive; the op stands and the view re-derives.
       expect(await readTranscriptMessages(res.id)).toEqual([
-        { role: 'user', text: 't0', ts: '', sourceStream: '__board__' },
-        { role: 'user', text: 't1', ts: '', sourceStream: '__board__' },
+        { role: 'user', text: 't0', ts: '', seq: 0, sourceStream: '__board__' },
+        { role: 'user', text: 't1', ts: '', seq: 1, sourceStream: '__board__' },
       ]);
     });
 
@@ -284,8 +284,8 @@ describe('extract verb (FLUX-656)', () => {
       expect(res.consumeError).toBeTruthy();
       expect((await readCurationOps()).some((o) => o.op === 'extract' && o.into === res.id)).toBe(true);
       expect(await readTranscriptMessages(res.id)).toEqual([
-        { role: 'user', text: 's0', ts: '', sourceStream: scratch },
-        { role: 'user', text: 's1', ts: '', sourceStream: scratch },
+        { role: 'user', text: 's0', ts: '', seq: 0, sourceStream: scratch },
+        { role: 'user', text: 's1', ts: '', seq: 1, sourceStream: scratch },
       ]);
     });
   });

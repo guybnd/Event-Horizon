@@ -36,6 +36,21 @@ interface ConfigTagEntry {
   name?: unknown;
 }
 
+// FLUX-1492: keys the GET /api/config handler computes and appends to the response for portal
+// convenience (routes/config.ts) — none of these are ever legitimately part of config.json.
+// The portal caches the full GET response and PUTs it back wholesale on Settings save
+// (GatePolicyModal.tsx and others), which without stripping would persist these computed values
+// as if they were real config — freezing a stale snapshot (e.g. an old cliCapabilities table)
+// that silently diverges from the engine's actual capabilities on next boot. Stripped from every
+// PUT body (routes/config.ts) and swept from any already-polluted config.json on load below.
+export const GET_COMPUTED_CONFIG_KEYS = [
+  'cliCapabilities',
+  'defaultFramework',
+  'boardConversationId',
+  'furnaceConversationId',
+  'runtimeFrameworks',
+] as const;
+
 // FLUX-1373: shipped per-CLI Tier -> model-id defaults, seeded into `integrations.<cli>.tiers`
 // below and reused by the migration (the "shipped defaults" a blank/legacy field falls back to).
 // Claude uses the CLI's short model aliases (matches the pre-1373 TIER_MODELS convention);
@@ -184,6 +199,9 @@ const CONFIG_DEFAULTS: any = {
   furnaceSettings: {
     rateLimitRetryIntervalMs: 20 * 60 * 1000, // 20 min
     rateLimitMaxWaitMs: 5 * 60 * 60 * 1000,   // 5 h
+    // FLUX-1431: global default for the Furnace per-session watchdog. New batches inherit this
+    // unless an explicit per-batch sessionTimeoutMs is given (overridable via furnace_update).
+    sessionTimeoutMs: 90 * 60 * 1000,         // 90 min
     // FLUX-1175: the Smelter persona's authority mode — 'drafting' (default, manual: every
     // real burn-lifecycle action needs ask_user_question confirmation) vs 'operator' (autonomous:
     // full ignite/stop/resume/retry authority once asked to manage a burn). See
@@ -195,7 +213,8 @@ const CONFIG_DEFAULTS: any = {
   // (migrated once via `gatePolicyMigrated`, see loadConfig below); `review: 'auto'` drives the
   // exact same loop `temperEnabled: true` used to (temper.ts). `merge` is never a representable
   // key here — the merge-lock is structural, not a runtime check.
-  // FLUX-1292: seeded to UNMIGRATED_GATE_POLICY_DEFAULT (auto/auto), not DEFAULT_GATE_POLICY —
+  // FLUX-1292: seeded to UNMIGRATED_GATE_POLICY_DEFAULT (auto-then-you/auto since FLUX-1497), not
+  // DEFAULT_GATE_POLICY —
   // this literal is the ONE in-memory value a board whose gatePolicy has never been migrated ever
   // sees (a fresh install's ENOENT path, and an existing config.json that predates the `gatePolicy`
   // field, both leave this seed untouched all the way into the migration block below). A board with
@@ -226,6 +245,31 @@ const CONFIG_DEFAULTS: any = {
   // structurally unrepresentable in `GateValue` per the FLUX-1247 decision, this is a separate
   // on/off switch in front of the one runtime check, not a new gate.
   blockAgentPrMerges: false,
+  // FLUX-560: CI gate policy — refuses `finish_ticket`/the portal Merge action on a failing or
+  // (by default) pending GitHub check-rollup verdict. Agnostic by construction: EH only reads
+  // gh's statusCheckRollup (already surfaced via getPullRequestStatus), never runs the user's
+  // stack itself. `checkCommand` is the opt-in bring-your-own-command primitive for repos with no
+  // GitHub checks (mirrors the multi-repo group's per-member `testCommand`, group.ts) — omitted
+  // by default so a no-CI repo never gets an invented blocker. `gate: 'off'` restores the
+  // pre-FLUX-560 unconditional-merge behavior.
+  ci: {
+    gate: 'block',
+    allowPending: false,
+  },
+  // FLUX-1502: communication-style prompt injection (canonical text in the orchestrator skill
+  // module's "Communication Style" section; blocks defined in orchestration-personas.ts and
+  // composed onto persona prompts + solo session prompts via buildCommunicationBlocks). Two axes:
+  // `user` is TASTE — a selectable style for user-facing writing ('concise' | 'detailed' |
+  // 'custom' + `customText` | 'off'); `interAgent` is PROTOCOL — one fixed contract for
+  // agent-to-agent handoffs/delegations, on/off only (a style menu there would invite
+  // degradation). Both read fresh at launch time; the skill-module conventions remain as docs
+  // regardless of these switches. Replaces the short-lived `injectCommunicationStyle` boolean
+  // (never released or persisted, so no migration).
+  communicationStyle: {
+    user: 'concise',
+    customText: '',
+    interAgent: true,
+  },
   agentProgress: {
     enabled: true,
     inlineDelay: 2,
@@ -270,7 +314,11 @@ const CONFIG_DEFAULTS: any = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- same FLUX-1073 rationale as the defaults literal above
 export function getConfig(): any {
   const ws = getWorkspace();
-  if (ws.config === null) ws.config = CONFIG_DEFAULTS;
+  // FLUX-1445: seed from a deep copy, not the module-level singleton — CONFIG_DEFAULTS is
+  // shared across every workspace in this process, so a by-reference seed here let any
+  // in-place mutation before loadConfig() replaces ws.config leak into (and permanently
+  // pollute) every other workspace's defaults.
+  if (ws.config === null) ws.config = structuredClone(CONFIG_DEFAULTS);
   return ws.config;
 }
 
@@ -351,6 +399,21 @@ export async function loadConfig() {
     }
   }
 
+  // FLUX-1492: sweep any GET-computed keys (see GET_COMPUTED_CONFIG_KEYS) that leaked into
+  // config.json via the portal's echo-back full-config PUT, before the migrations below run.
+  // Uses applyConfigPatch (not a raw mutate-then-saveConfig) purely for its undefined-deletes-the-
+  // key semantics — this runs immediately after a fresh disk read so getConfig() is already fresh.
+  {
+    const config = getConfig();
+    const polluted = GET_COMPUTED_CONFIG_KEYS.filter((k) => k in config);
+    if (polluted.length > 0) {
+      const patch: Record<string, unknown> = {};
+      for (const k of polluted) patch[k] = undefined;
+      await applyConfigPatch(patch);
+      log.info('[config] stripped GET-computed keys from config.json:', polluted.join(', '));
+    }
+  }
+
   // FLUX-744: one-time migration of the board-open default. The default changed from 'full' to 'chat',
   // but existing boards eagerly persisted the OLD 'full' default (saveConfig writes the whole config),
   // so without this an updating user would keep opening cards in the modal. Flip a persisted 'full'
@@ -359,14 +422,16 @@ export async function loadConfig() {
   // merges over the live config, so this marker survives portal Settings saves (which don't echo it back).
   // FLUX-781: only reached after a successful load or a legitimate ENOENT create — every parse/read
   // failure above returns early, so this can never overwrite a corrupt-but-recoverable config.json.
-  const config = getConfig();
-  if (!config.chatOpenDefaultMigrated) {
-    if (!config.boardCardOpenMode || config.boardCardOpenMode === 'full') {
-      config.boardCardOpenMode = 'chat';
+  {
+    const config = getConfig();
+    if (!config.chatOpenDefaultMigrated) {
+      const boardCardOpenMode = (!config.boardCardOpenMode || config.boardCardOpenMode === 'full') ? 'chat' : config.boardCardOpenMode;
+      // FLUX-1492: patch only the keys this migration actually changes instead of writing the
+      // full in-memory snapshot — see applyConfigPatch doc for why this (not patchConfig) is
+      // the right helper from inside loadConfig.
+      await applyConfigPatch({ boardCardOpenMode, chatOpenDefaultMigrated: true });
+      log.info('[config] applied chat-open-default migration (boardCardOpenMode →', boardCardOpenMode + ')');
     }
-    config.chatOpenDefaultMigrated = true;
-    await saveConfig(config);
-    log.info('[config] applied chat-open-default migration (boardCardOpenMode →', config.boardCardOpenMode + ')');
   }
 
   // FLUX-1261: one-time migration of Temper's board-wide `temperEnabled` boolean into
@@ -376,19 +441,20 @@ export async function loadConfig() {
   // `gatePolicyMigrated` so a later deliberate dial change is never re-clobbered, mirroring the
   // `chatOpenDefaultMigrated` idiom above. Runs exactly once, and only past the corrupt/unreadable
   // config early-returns above, so it can never overwrite a recoverable file with a bad migration.
-  if (!config.gatePolicyMigrated) {
-    const legacyTemperOn = config.temperEnabled === true;
-    const priorBoardDefault = config.gatePolicy?.boardDefault as { plan?: unknown; review?: unknown } | undefined;
-    config.gatePolicy = {
-      boardDefault: {
-        plan: priorBoardDefault?.plan ?? DEFAULT_GATE_POLICY.boardDefault.plan,
-        review: legacyTemperOn ? 'auto' : (priorBoardDefault?.review ?? DEFAULT_GATE_POLICY.boardDefault.review),
-      },
-    };
-    delete config.temperEnabled;
-    config.gatePolicyMigrated = true;
-    await saveConfig(config);
-    log.info(`[config] migrated temperEnabled (${legacyTemperOn}) → gatePolicy.boardDefault.review='${config.gatePolicy.boardDefault.review}'`);
+  {
+    const config = getConfig();
+    if (!config.gatePolicyMigrated) {
+      const legacyTemperOn = config.temperEnabled === true;
+      const priorBoardDefault = config.gatePolicy?.boardDefault as { plan?: unknown; review?: unknown } | undefined;
+      const gatePolicy = {
+        boardDefault: {
+          plan: priorBoardDefault?.plan ?? DEFAULT_GATE_POLICY.boardDefault.plan,
+          review: legacyTemperOn ? 'auto' : (priorBoardDefault?.review ?? DEFAULT_GATE_POLICY.boardDefault.review),
+        },
+      };
+      await applyConfigPatch({ gatePolicy, temperEnabled: undefined, gatePolicyMigrated: true });
+      log.info(`[config] migrated temperEnabled (${legacyTemperOn}) → gatePolicy.boardDefault.review='${gatePolicy.boardDefault.review}'`);
+    }
   }
 
   // FLUX-1373: one-time migration seeding integrations.<cli>.tiers + top-level modelPolicy. Must
@@ -402,27 +468,29 @@ export async function loadConfig() {
   // config (CONFIG_DEFAULTS no longer declares them, but an old config.json on disk still can) and
   // dropped from the persisted shape going forward; a non-empty value seeds the matching tier,
   // pinned per the ticket's mapping (grooming→smart, implementation→efficient, delegate→cheap).
-  if (!config.modelPolicyMigrated) {
-    const cliKeys = Object.keys(INTEGRATION_TIER_DEFAULTS) as Array<keyof typeof INTEGRATION_TIER_DEFAULTS>;
-    if (!config.integrations) config.integrations = {};
-    for (const cliKey of cliKeys) {
-      const shippedTiers = INTEGRATION_TIER_DEFAULTS[cliKey];
-      const legacy = (config.integrations[cliKey] || {}) as { groomingModel?: unknown; implementationModel?: unknown; delegateModel?: unknown; tiers?: unknown };
-      const legacyGrooming = typeof legacy.groomingModel === 'string' ? legacy.groomingModel.trim() : '';
-      const legacyImplementation = typeof legacy.implementationModel === 'string' ? legacy.implementationModel.trim() : '';
-      const legacyDelegate = typeof legacy.delegateModel === 'string' ? legacy.delegateModel.trim() : '';
-      config.integrations[cliKey] = {
-        tiers: {
-          smart: legacyGrooming || shippedTiers.smart,
-          efficient: legacyImplementation || shippedTiers.efficient,
-          cheap: legacyDelegate || shippedTiers.cheap,
-        },
-      };
+  {
+    const config = getConfig();
+    if (!config.modelPolicyMigrated) {
+      const cliKeys = Object.keys(INTEGRATION_TIER_DEFAULTS) as Array<keyof typeof INTEGRATION_TIER_DEFAULTS>;
+      const integrations: Record<string, unknown> = { ...(config.integrations || {}) };
+      for (const cliKey of cliKeys) {
+        const shippedTiers = INTEGRATION_TIER_DEFAULTS[cliKey];
+        const legacy = (integrations[cliKey] || {}) as { groomingModel?: unknown; implementationModel?: unknown; delegateModel?: unknown; tiers?: unknown };
+        const legacyGrooming = typeof legacy.groomingModel === 'string' ? legacy.groomingModel.trim() : '';
+        const legacyImplementation = typeof legacy.implementationModel === 'string' ? legacy.implementationModel.trim() : '';
+        const legacyDelegate = typeof legacy.delegateModel === 'string' ? legacy.delegateModel.trim() : '';
+        integrations[cliKey] = {
+          tiers: {
+            smart: legacyGrooming || shippedTiers.smart,
+            efficient: legacyImplementation || shippedTiers.efficient,
+            cheap: legacyDelegate || shippedTiers.cheap,
+          },
+        };
+      }
+      const modelPolicy = { preset: 'balanced', assignments: { ...MODEL_POLICY_PRESETS.balanced } };
+      await applyConfigPatch({ integrations, modelPolicy, modelPolicyMigrated: true });
+      log.info('[config] applied model-policy migration (integrations.*.tiers + modelPolicy seeded, legacy model fields dropped)');
     }
-    config.modelPolicy = { preset: 'balanced', assignments: { ...MODEL_POLICY_PRESETS.balanced } };
-    config.modelPolicyMigrated = true;
-    await saveConfig(config);
-    log.info('[config] applied model-policy migration (integrations.*.tiers + modelPolicy seeded, legacy model fields dropped)');
   }
 }
 
@@ -448,20 +516,87 @@ export async function saveConfig(newConfig: Record<string, unknown>) {
   }
 }
 
+/** Read+parse config.json fresh from disk, or `null` if missing/empty/unreadable/corrupt. */
+async function readConfigFileRaw(): Promise<Record<string, unknown> | null> {
+  try {
+    const data = await fs.readFile(getConfigFile(), 'utf-8');
+    if (!data.trim()) return null;
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+/** Shallow-merge `patch` over `base`; a patch value of `undefined` deletes that key from the result (mirrors `delete config[key]`). */
+function mergeConfigPatch(base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...base, ...patch };
+  for (const key of Object.keys(patch)) {
+    if (patch[key] === undefined) delete merged[key];
+  }
+  return merged;
+}
+
+/**
+ * FLUX-1492: merge `patch` over the CURRENT in-memory config and persist. Safe ONLY where
+ * getConfig() is already known-fresh — i.e. from within loadConfig()'s own one-time migrations,
+ * which run synchronously right after loadConfig's own disk read merges `loaded` over whatever
+ * was in memory before (so getConfig() here already reflects disk ∪ in-memory-only defaults for
+ * keys the file doesn't have yet, e.g. a fresh/never-migrated gatePolicy seed). Re-reading disk
+ * again at this point (as patchConfig below does) would DISCARD that in-memory defaults fallback
+ * for any key genuinely absent from disk. Any OTHER caller (i.e. one not immediately downstream
+ * of a loadConfig disk read) must use patchConfig instead, since its getConfig() may be stale.
+ */
+async function applyConfigPatch(patch: Record<string, unknown>) {
+  await saveConfig(mergeConfigPatch(getConfig(), patch));
+}
+
+/**
+ * FLUX-1492: merge-on-save. Re-reads config.json fresh from disk and shallow-merges `patch`
+ * over THAT — not over the in-memory getConfig(), which may be stale (two engine processes can
+ * bind the same store — dev stack + desktop app — or a config-watcher reload event can be
+ * missed; either leaves a process's in-memory copy behind whatever another process wrote most
+ * recently). A whole-file `saveConfig(getConfig())` from that stale copy silently reverts every
+ * key changed since it loaded. `patchConfig` scopes the write to only the keys the caller
+ * actually intends to change, so unrelated keys (e.g. `gatePolicy`) can never be clobbered by a
+ * stale writer. Falls back to the in-memory config if disk is unreadable (fresh-install race /
+ * permissions) — same degradation saveConfig already tolerated. Also replaces `ws.config` with
+ * the merged (disk + patch) result, so the writing process's own view heals to match disk instead
+ * of staying stale. Use this for any runtime write path OUTSIDE loadConfig(); loadConfig's own
+ * migrations use the lighter applyConfigPatch above instead (see its doc for why).
+ */
+export async function patchConfig(patch: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return patchConfigChain = patchConfigChain.then(() => patchConfigUnlocked(patch), () => patchConfigUnlocked(patch));
+}
+
+/**
+ * FLUX-1534: serializes patchConfig's own read-modify-write against itself. Without this, two
+ * concurrent in-process patches to different keys (e.g. autoRegisterUnknownTags overlapping a
+ * PUT /api/config) each read the same disk snapshot before either writes — the later save wins
+ * and silently drops the earlier patch's key. A single promise chain forces overlapping calls to
+ * apply sequentially, each over the previous one's result, so no in-process patch is lost. This
+ * does not protect against a genuinely different OS process racing the same file (patchConfig's
+ * own disk re-read already degrades that case gracefully, per its doc above).
+ */
+let patchConfigChain: Promise<Record<string, unknown>> = Promise.resolve({});
+
+async function patchConfigUnlocked(patch: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const onDisk = (await readConfigFileRaw()) ?? getConfig();
+  const merged = mergeConfigPatch(onDisk, patch);
+  await saveConfig(merged);
+  return merged;
+}
+
 export async function autoRegisterUnknownTags(tags: string[]) {
   if (!tags || !Array.isArray(tags) || tags.length === 0) return;
 
-  const config = getConfig();
-  if (!config.tags) {
-    config.tags = [];
-  }
-
-  const existingTagsLower = new Set(config.tags.map((t: ConfigTagEntry) => (t.name as string | undefined)?.toLowerCase() || ''));
+  const existingTags: Array<ConfigTagEntry & { color?: unknown }> = Array.isArray(getConfig().tags) ? getConfig().tags : [];
+  const existingTagsLower = new Set(existingTags.map((t) => (t.name as string | undefined)?.toLowerCase() || ''));
+  const newTags = [...existingTags];
   let configChanged = false;
 
   for (const tag of tags) {
     if (tag && typeof tag === 'string' && !existingTagsLower.has(tag.toLowerCase())) {
-      config.tags.push({
+      newTags.push({
         name: tag,
         color: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
       });
@@ -470,7 +605,10 @@ export async function autoRegisterUnknownTags(tags: string[]) {
     }
   }
 
+  // FLUX-1492: patch only `tags` (merge-on-save over a fresh disk read) instead of writing the
+  // full in-memory config — this fires on every ticket carrying an unknown tag, making it the
+  // single most frequent whole-file saveConfig call and the most likely to run from a stale copy.
   if (configChanged) {
-    await saveConfig(config);
+    await patchConfig({ tags: newTags });
   }
 }

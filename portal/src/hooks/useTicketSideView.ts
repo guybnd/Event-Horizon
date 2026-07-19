@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
-import { fetchTask, updateTask } from '../api';
+import { updateTask } from '../api';
+import { fetchTaskCached, peekTask } from '../taskPrefetch';
 import { isAgentSession, normalizeSubtaskId } from '../types';
 import type { HistoryEntry, HistoryEntryDraft, InlineSubtask, Task } from '../types';
 import { getRequireInputStatus } from '../workflow';
-import { useTaskForm } from './useTaskForm';
+import { getInstantField, isInstantFieldUnchanged, normalizeInstantFieldValue, setInstantField, useTaskForm, type InstantFieldName, type TaskFormValues } from './useTaskForm';
 import { useImageAttachment } from './useImageAttachment';
 import type { CommentBoxHandle } from '../components/task-modal/CommentBox';
 
@@ -36,12 +37,14 @@ export function useTicketSideView(task: Task) {
   // activity log / subtasks are complete, and re-fetch whenever the app signals a refresh.
   const [fullTask, setFullTask] = useState<Task>(task);
   useEffect(() => {
-    setFullTask(task);
+    // FLUX-1517: a hover-intent prefetch may already have this ticket warm — seed it so the dock
+    // opens with full history instead of the board's (possibly history-digested) copy.
+    setFullTask(peekTask(task.id) ?? task);
   }, [task.id]); // eslint-disable-line react-hooks/exhaustive-deps -- identity-keyed reset; field churn is reconciled by the fetch below.
 
   useEffect(() => {
     let cancelled = false;
-    fetchTask(task.id)
+    fetchTaskCached(task.id)
       .then((t) => { if (!cancelled) setFullTask(t); })
       .catch(() => { /* keep the board copy on transient failure */ });
     return () => { cancelled = true; };
@@ -240,7 +243,9 @@ export function useTicketSideView(task: Task) {
   }, [fullTask.id, fullTask.history, currentUser, triggerRefresh]);
 
   /** Persist the editable form (title/body/metadata), folding in a status_change entry and any
-   *  pending comment text — mirrors the modal's `handleSave`. */
+   *  pending comment text — mirrors the modal's `handleSave`. Calls `updateTask` directly (not
+   *  the generic `persist` above) so it can inspect a stale-body 409 and recover from it — see
+   *  the catch block below. */
   const save = useCallback(async () => {
     if (!fullTask.id) return;
     const now = new Date().toISOString();
@@ -260,22 +265,85 @@ export function useTicketSideView(task: Task) {
         comment: pendingComment ? 'Included with comment' : undefined,
       });
     }
-    await persist({
-      title: form.title,
-      body: form.body,
-      status: form.status,
-      assignee: form.assignee,
-      tags: form.tags,
-      priority: form.priority,
-      effort: form.effort,
-      effortLevel: form.effortLevel || undefined,
-      implementationLink: form.implementationLink.trim(),
-      subtasks: form.subtasks,
-      parentId: form.parentId || undefined,
-      order: fullTask.order,
-      appendHistory: historyUpdates,
-    });
-  }, [fullTask, form.title, form.body, form.status, form.assignee, form.tags, form.priority, form.effort, form.effortLevel, form.implementationLink, form.subtasks, form.parentId, currentUser, persist]);
+    form.setSaving(true);
+    form.setSaveError(null);
+    try {
+      const updated = await updateTask(fullTask.id, {
+        title: form.title,
+        body: form.body,
+        status: form.status,
+        assignee: form.assignee,
+        tags: form.tags,
+        priority: form.priority,
+        effort: form.effort,
+        effortLevel: form.effortLevel || undefined,
+        implementationLink: form.implementationLink.trim(),
+        subtasks: form.subtasks,
+        parentId: form.parentId || undefined,
+        order: fullTask.order,
+        appendHistory: historyUpdates,
+        updatedBy: currentUser,
+        // FLUX-979/FLUX-1550: gate this whole-form save against the body version this panel last
+        // read — the save always resubmits `body` (edited or not), so this is what catches a
+        // concurrent body edit landing while the chat window was open. Before this, ONLY the
+        // legacy TaskModal's handleSave carried this check; the chat-window save path (the actual
+        // surface this ticket is about — "ticket chat") had no conflict detection at all.
+        ...(fullTask.bodyVersion !== undefined ? { baseBodyVersion: fullTask.bodyVersion } : {}),
+      });
+      setFullTask(updated);
+      triggerRefresh();
+    } catch (error) {
+      // FLUX-1550: a stale-body 409 is a distinct, recoverable state, not a generic failure —
+      // reload the ticket so `fullTask.bodyVersion` is current for a retry. The user's
+      // in-progress edits are NOT clobbered: useTaskForm's per-field reconcile only reconciles a
+      // field that ISN'T dirty, and `body` still measures as dirty against its old baseline here
+      // since this save never landed.
+      if ((error as { code?: string } | null)?.code === 'stale_body') {
+        form.setSaveError('This ticket changed since you opened it. The latest version has been loaded — your edits are preserved; save again to apply them.');
+        fetchTaskCached(fullTask.id).then(setFullTask).catch(() => {});
+      } else {
+        form.setSaveError(error instanceof Error ? error.message : 'Failed to save. Is the engine running?');
+      }
+    } finally {
+      form.setSaving(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- form setters are stable; values read fresh each call.
+  }, [fullTask, form.title, form.body, form.status, form.assignee, form.tags, form.priority, form.effort, form.effortLevel, form.implementationLink, form.subtasks, form.parentId, currentUser, triggerRefresh]);
+
+  /** FLUX-979: dropdown/tag metadata fields save instantly on change instead of joining the
+   *  title/body dirty-then-Save flow — mirrors `useTaskModalController`'s `saveField`. */
+  const saveField = useCallback(async (field: InstantFieldName, value: string | string[]) => {
+    if (!fullTask.id) return;
+    const normalizedValue = normalizeInstantFieldValue(field, value);
+    const previousValue = getInstantField(form, field);
+    setInstantField(form, field, normalizedValue);
+    // FLUX-1568: e.g. clicking into implementationLink and blurring without editing it — the value
+    // already matches what's persisted, so skip the PUT + refresh entirely.
+    if (isInstantFieldUnchanged(fullTask, field, normalizedValue)) return;
+    const appendHistory: HistoryEntry[] = [];
+    if (field === 'status' && fullTask.status !== normalizedValue) {
+      appendHistory.push({
+        type: 'status_change',
+        from: fullTask.status,
+        to: normalizedValue as string,
+        user: currentUser,
+        date: new Date().toISOString(),
+      });
+    }
+    try {
+      const updatedTask = await updateTask(fullTask.id, {
+        [field]: normalizedValue,
+        updatedBy: currentUser,
+        ...(appendHistory.length ? { appendHistory } : {}),
+      });
+      setFullTask(updatedTask);
+      triggerRefresh();
+      form.markFieldsClean({ [field]: normalizedValue } as Partial<TaskFormValues>);
+    } catch (error) {
+      setInstantField(form, field, previousValue);
+      form.setSaveError(error instanceof Error ? error.message : 'Failed to save change. Make sure the engine is running.');
+    }
+  }, [fullTask, currentUser, form, triggerRefresh]);
 
   /** FLUX-740: discard unsaved edits — reset every editable form field back to the loaded ticket.
    *  Lives on the controller (not the view) so the unified save/discard affordance in the metadata
@@ -369,7 +437,7 @@ export function useTicketSideView(task: Task) {
     // approval panel's Approve/Send-back/Ask-in-chat, which also set `planReviewState`/`status`/a
     // verdict-specific history entry) can do so in ONE write — `save()` itself doesn't know about
     // fields outside the standard ticket form.
-    persist, save, discard, sendComment, sendReply,
+    persist, save, saveField, discard, sendComment, sendReply,
     handleToggleReply, handleCancelReply, handleToggleCollapsed, handleClearReplyAssetError,
   };
 }

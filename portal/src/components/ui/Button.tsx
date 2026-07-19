@@ -1,6 +1,7 @@
 import { forwardRef } from 'react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { Loader2 } from 'lucide-react';
+import { useMotionTokens } from '../../motion/tokens';
 
 /**
  * Shared action-row button (FLUX-1477). One `filled` per row is the safe-forward action for the
@@ -80,17 +81,27 @@ function colorClasses(variant: ButtonVariant, intent: ButtonIntent): string {
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { variant = 'quiet', intent = 'neutral', size = 'md', icon, busy, disabled, className, children, type = 'button', ...rest },
+  { variant = 'quiet', intent = 'neutral', size = 'md', icon, busy, disabled, className, children, type = 'button', style, ...rest },
   ref,
 ) {
+  // FLUX-1505: pressed-state feedback (~scale 0.97) on every shared Button, timed off the FLUX-1507
+  // press token so it matches the rest of the app's physics. `transition` (not `transition-colors`)
+  // is a Tailwind shorthand covering both hover-color AND transform — picking one avoids two
+  // `transition-property` classes fighting over CSS source order. `tokens.press.duration` is
+  // seconds; the token is `{ duration: 0 }` under reduced-motion/animations-off, in which case the
+  // active-scale class itself is dropped rather than left to animate at 0-duration.
+  const tokens = useMotionTokens();
   const leading = busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : icon;
+  const pressStyle = tokens.instant ? style : { transitionDuration: `${Math.round((tokens.press.duration ?? 0) * 1000)}ms`, ...style };
   return (
     <button
       ref={ref}
       type={type}
       disabled={disabled || busy}
+      style={pressStyle}
       className={[
-        'inline-flex items-center justify-center font-semibold transition-colors disabled:opacity-40',
+        'inline-flex items-center justify-center font-semibold transition disabled:opacity-40',
+        !tokens.instant && 'active:scale-[0.97]',
         SIZE_CLASSES[size],
         colorClasses(variant, intent),
         className,

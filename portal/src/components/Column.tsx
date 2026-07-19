@@ -1,18 +1,21 @@
 import { memo, useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { motion } from 'framer-motion';
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { TaskCard } from './TaskCard';
 import { EpicStackDeck } from './EpicStackDeck';
 import type { ColumnLiveEvent, GateName, GateValue, Task, TaskLiveEvent } from '../types';
 import type { CrossColumnCluster } from '../lib/decks';
-import { computeEpicRollup, getDoneStatuses } from '../lib/epics';
+import { normalizeSubtaskId } from '../types';
 import { Plus, CirclePause, Bot, Clock, Terminal, GitPullRequest, HandHelping, ClipboardCheck, X, ArrowRight, ArrowLeft, Rocket, Settings } from 'lucide-react';
 import { GatePolicyModal } from './GatePolicyModal';
+import { AnimatedCount } from './ui/AnimatedCount';
 import { updateTask } from '../api';
 import { useAppSelector, useAppActions, useLiveSession } from '../store/useAppSelector';
 import { getStatusTint, tintColumnWash } from '../statusStyles';
 import { isTaskAwaitingInput, needsAction } from '../workflow';
 import { isPlanApprovalPending } from './pendingInteractions';
+import { useMotionTokens, COLD_BOOT_STAGGER_MS } from '../motion/tokens';
 
 const GATE_VALUE_SHORT_LABEL: Record<GateValue, string> = { auto: 'Auto', 'auto-then-you': 'Auto → You', you: 'You' };
 
@@ -115,19 +118,20 @@ const ProxyDeck = memo(function ProxyDeck({ epic, subtasks, column, openEpic }: 
   openEpic: (task: Task) => void;
 }) {
   const taskById = useAppSelector((s) => s.taskById);
-  const config = useAppSelector((s) => s.config);
-  // The mirror shows the epic's OVERALL completion (all its subtasks), not just this column's
-  // cluster — shared with the board card + Epics screen via lib/epics, so the number never drifts.
-  const epicProgress = useMemo(() => {
-    const rollup = computeEpicRollup(epic, taskById, getDoneStatuses(config));
-    return { done: rollup.done, total: rollup.total };
-  }, [epic, taskById, config]);
+  // FLUX-1503: the ghost card's state strip shows the epic's OVERALL subtasks, not just this
+  // column's cluster — same "never drifts from the full set" intent the old done/total rollup
+  // had (computeEpicRollup), just resolved directly here since the strip needs Task objects
+  // (for live state), not a done/total count.
+  const epicSubtasks = useMemo(
+    () => (epic.subtasks ?? []).map((entry) => taskById.get(normalizeSubtaskId(entry))).filter((t): t is Task => !!t),
+    [epic, taskById],
+  );
   return (
     <EpicStackDeck
       idPrefix={`epic-cluster-${epic.id}-${column}`}
       items={subtasks}
       epic={epic}
-      epicProgress={epicProgress}
+      epicSubtasks={epicSubtasks}
       openEpic={openEpic}
     />
   );
@@ -156,10 +160,17 @@ interface ColumnProps {
   /** FLUX-724: board-level done-streak count (tickets that reached Done today), computed once in
    *  Board so columns no longer each subscribe to the whole task list. Only the Done column uses it. */
   doneStreakCount?: number;
+  /** FLUX-1519: cold-boot cascade. Set by Board only on the first real render (undefined on every
+   *  refetch/SSE update/view-switch after) to this column's `idx * COLD_BOOT_STAGGER_MS` delay —
+   *  the column fades+drifts in at this delay, and its top ~4 cards cascade in after it. */
+  bootEntranceDelayMs?: number;
 }
 
-export const Column = memo(function Column({ id, title, tasks, clusters, foldedByEpic, parentByChildId, liveEvent, taskLiveEvents, getTaskTravelDirection, flowLeft = 0, flowRight = 0, titleChars = 8, doneStreakCount = 0 }: ColumnProps) {
+export const Column = memo(function Column({ id, title, tasks, clusters, foldedByEpic, parentByChildId, liveEvent, taskLiveEvents, getTaskTravelDirection, flowLeft = 0, flowRight = 0, titleChars = 8, doneStreakCount = 0, bootEntranceDelayMs }: ColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id });
+  // FLUX-1519: only read when bootEntranceDelayMs is set (first boot), but the hook itself is
+  // cheap and unconditional per rules-of-hooks — the card tier below reuses it too.
+  const motionTokens = useMotionTokens();
   const { openTask, openTaskModal, markAllCommentsRead } = useAppActions();
   const config = useAppSelector((s) => s.config);
   const readComments = useAppSelector((s) => s.readComments);
@@ -170,6 +181,17 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
   const pinnedTasks = useAppSelector((s) => s.pinnedTasks);
 
   const openTaskByMode = useCallback((task: Task) => openTask(task), [openTask]);
+
+  // FLUX-1519: `bootEntranceDelayMs` is only meaningful on the render that mounts this column —
+  // Board passes `undefined` on every subsequent re-render (SSE task updates, streaming agent
+  // output, ...). Reading the prop live in the JSX below meant a re-render landing mid-fade
+  // flipped `animate` from `{opacity:1,y:0}` to `undefined`, which tells framer-motion to stop
+  // driving the animation — freezing the column at whatever opacity it had interpolated to.
+  // Columns late in the board order (Ready, Done) get the longest stagger delay and are the
+  // most likely to still be mid-fade when a re-render lands, so they were the ones observed
+  // stuck semi-transparent. Capturing the delay once via lazy useState makes the entrance
+  // (or lack of one) sticky for the component's whole lifetime, immune to later prop changes.
+  const [entranceDelayMs] = useState(bootEntranceDelayMs);
 
   const columnUnreadByTask = useMemo(() => tasks.map(task => {
     const readIds = new Set(readComments[task.id] ?? []);
@@ -213,7 +235,14 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
     : null;
 
   return (
-    <div className="flex flex-col w-[320px] min-w-[280px] flex-1 max-w-[440px] xl:max-w-[520px] 2xl:max-w-[620px] min-[2560px]:max-w-[780px] rounded-2xl eh-column" style={{ backgroundImage: tintColumnWash(tint, 0.08) }}>
+    <motion.div
+      data-column-id={id}
+      className="flex flex-col w-[320px] min-w-[280px] flex-1 max-w-[440px] xl:max-w-[520px] 2xl:max-w-[620px] min-[2560px]:max-w-[780px] rounded-2xl eh-column"
+      style={{ backgroundImage: tintColumnWash(tint, 0.08) }}
+      initial={entranceDelayMs != null ? { opacity: 0, y: motionTokens.crossfadeDriftPx } : false}
+      animate={entranceDelayMs != null ? { opacity: 1, y: 0 } : undefined}
+      transition={entranceDelayMs != null ? { delay: entranceDelayMs / 1000, ...motionTokens.fade } : undefined}
+    >
       <div className="px-4 pt-3 pb-1">
         {/* Title bar — one fixed-height row: status slot · centered title · count pill. Flow + hue
             live on the row below, and nothing here is conditional-height, so every column header is
@@ -276,7 +305,7 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
                 className="flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-amber-600 transition-colors hover:bg-amber-500/30 dark:text-amber-400"
               >
                 <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                {columnUnreadByTask.length}
+                <AnimatedCount value={columnUnreadByTask.length} />
               </button>
             )}
             <span className={`shrink-0 text-xs px-2.5 py-0.5 rounded-full font-medium ${liveEvent ? 'column-live-badge' : ''} ${
@@ -288,7 +317,7 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
                     ? 'column-fire-1'
                     : 'bg-gray-200 text-gray-600 dark:bg-white/10 dark:text-gray-400'
             }`}>
-              {tasks.length}
+              <AnimatedCount value={tasks.length} />
             </span>
           </span>
         </div>
@@ -393,6 +422,12 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
           // branch belongs to a PR (but isn't folded — a Todo/Grooming/Backlog "pile" ticket)
           // gets a subtle `→ PR-n` marker above it, so it's clearly linked without leaving its
           // column (FLUX-565 decision #4).
+          // FLUX-1519: shared across every renderTask call this render — caps the cold-boot cascade
+          // to the top ~4 cards actually painted at the top of the column (DOM order across every
+          // grouped section below: pinned/running/swimlane/planApproval/needsAction/openPr/rest),
+          // not framer `staggerChildren` (which would stagger every card, uncapped, reintroducing
+          // scroll-time animation debt).
+          let cardEntranceIdx = 0;
           const renderTask = (task: Task) => {
             const card = (
               <TaskCard
@@ -411,9 +446,15 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
             // pulled into a ProxyDeck by the Board before they reach here.)
             const epicDeck = task.kind !== 'pr' ? foldedByEpic?.get(task.id) : undefined;
             const hasDeck = !!(epicDeck && epicDeck.length > 0);
-            if (!prLink && !hasDeck) return <div key={task.id}>{card}</div>;
-            return (
-              <div key={task.id}>
+            // FLUX-1519: only the first 4 cards (per column) get an entrance wrapper — every card
+            // beyond that, and every render where Board didn't pass bootEntranceDelayMs (i.e. every
+            // render after first boot), returns exactly today's markup, unwrapped (a plain `div`,
+            // not a no-op `motion.div` — avoids framer-motion touching every card on every render).
+            const cardDelayMs = bootEntranceDelayMs != null && cardEntranceIdx < 4
+              ? bootEntranceDelayMs + cardEntranceIdx * COLD_BOOT_STAGGER_MS
+              : null;
+            const inner = (
+              <>
                 {prLink && (
                   <div className="mb-0.5 ml-1 flex items-center gap-1 text-[10px] font-semibold text-violet-600 dark:text-violet-300" title={`Linked to ${prLink} (not folded — start work to fold it in)`}>
                     <GitPullRequest className="h-2.5 w-2.5" /> linked to {prLink}
@@ -423,8 +464,18 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
                 {hasDeck && (
                   <EpicStackDeck idPrefix={`epic-deck-${task.id}`} items={epicDeck!} />
                 )}
-              </div>
+              </>
             );
+            if (cardDelayMs != null) {
+              cardEntranceIdx++;
+              const entrance = {
+                initial: { opacity: 0, y: motionTokens.crossfadeDriftPx },
+                animate: { opacity: 1, y: 0 },
+                transition: { delay: cardDelayMs / 1000, ...motionTokens.fade },
+              };
+              return <motion.div key={task.id} {...entrance}>{inner}</motion.div>;
+            }
+            return <div key={task.id}>{inner}</div>;
           };
           return (
             <SortableContext items={sortedTasks.map(t => t.id)} strategy={verticalListSortingStrategy}>
@@ -504,6 +555,6 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
       {gateForColumn && gateModalOpen && (
         <GatePolicyModal gate={gateForColumn} onClose={() => setGateModalOpen(false)} />
       )}
-    </div>
+    </motion.div>
   );
 });

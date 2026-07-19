@@ -5,6 +5,7 @@ import { useDebouncedArtifactReload } from '../../hooks/useDebouncedArtifactRelo
 import { triggerEscape, useEscapeKey } from '../../hooks/useEscapeKey';
 import { AnnotationPill } from './AnnotationPill';
 import { formatArtifactAnnotations, type ArtifactAnnotation } from '../../lib/planAnnotations';
+import { ehEventSourceUrl } from '../../api';
 import type { Task } from '../../types';
 
 /**
@@ -335,7 +336,10 @@ export function ArtifactPanel({
   // The displayed src. Changing it remounts the iframe (key={src}); re-arm the audit + clear stale
   // annotation state (the fresh iframe starts with no pins). FLUX-1136: also re-arm on `iframeMounted`
   // flipping back true — a grace-period teardown recreates the iframe from scratch.
-  const src = `/api/tasks/${encodeURIComponent(task.id)}/artifact?rev=${rev}&_n=${reloadNonce}`;
+  // Board-scoped via `?ws=` (ehEventSourceUrl) — an iframe navigation can't carry the
+  // X-EH-Workspace header, so without the param the engine would serve the artifact from
+  // whichever board was most recently opened (epic FLUX-1230 S10 switcher), 404-ing this one.
+  const src = ehEventSourceUrl(`/tasks/${encodeURIComponent(task.id)}/artifact?rev=${rev}&_n=${reloadNonce}`);
   useEffect(() => {
     if (!iframeMounted) return;
     setAudit({ status: 'pending' });
@@ -578,7 +582,7 @@ export function ArtifactPanel({
           unmounted when the caller's section is collapsed, preserving FLUX-1136's "stay mounted"
           contract (an instant unmount would eat an in-progress annotation batch living inside the
           iframe). FLUX-1474: also the pane's SOLE vertical scroller — `fillHeight` callers bound this
-          block's height via their own flex/height context (see `TicketSideView`'s `ArtifactSection`),
+          block's height via their own flex/height context (FLUX-1515: `TicketSideView`'s Plan tab),
           so the iframe's own internal scrollbar is the only one that can appear within it; the host
           never grows a second, competing scrollbar around it. */}
       <div

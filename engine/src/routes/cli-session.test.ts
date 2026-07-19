@@ -4,7 +4,7 @@
 // resolves, and that the session converges (running, or failed with the error surfaced) once
 // the backgrounded work settles — never a hung request.
 
-import { getWorkspace } from '../workspace-context.js';
+import { getWorkspace, openWorkspace, closeWorkspace, listWorkspaces } from '../workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -13,12 +13,14 @@ import http from 'http';
 import type { AddressInfo } from 'net';
 import express from 'express';
 import { setWorkspaceRoot } from '../workspace.js';
-import { requireWorkspace } from '../middleware.js';
+import { requireWorkspace, attachWorkspace } from '../middleware.js';
 
 import { cliSessionsById, cliSessionsByTaskId } from '../session-store.js';
 import { ensureTicketIsolation } from '../ticket-isolation.js';
-import { getAdapter } from '../agents/index.js';
+import { getAdapter, getBoardAdapter } from '../agents/index.js';
+import { BOARD_CONVERSATION_ID, virtualConversationSessionKey, type BoardAdapter } from '../agents/board.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from '../agents/types.js';
+import { appendTranscriptEvent, flushTranscript, readTurns } from '../transcript.js';
 
 // A concrete framework value is unavoidable to drive the route, but the adapter-boundary guard
 // (check-adapter-boundary.mjs) bans repeating the 'claude' literal outside engine/src/agents/ — a
@@ -416,6 +418,91 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
       expect(res.status).toBe(200);
       expect((sendInputMock.mock.calls[0]![0] as CliSessionRecord).id).toBe('worker');
     });
+
+    // FLUX-1494: the guard above reads session.status synchronously, but sendCliSessionInput only
+    // sets status='running' after awaited pre-work (resolveResumeExecutionRoot, checkBinaryInstalled)
+    // — a second POST arriving in that window used to see the still-idle status and pass the guard
+    // too, spawning a second concurrent `claude --resume`. The route must now claim the session
+    // synchronously, in the same tick as the guard, so the window is closed regardless of how slow
+    // the adapter's pre-spawn work is.
+    it('claims the session before the slow pre-spawn work resolves, so a concurrent turn 409s instead of double-dispatching', async () => {
+      seedBlockingSession({ status: 'waiting-input', resumeSessionId: 'resume-me' });
+      let resolveSend: (() => void) | undefined;
+      sendInputMock.mockImplementation(() => new Promise<void>((resolve) => { resolveSend = resolve; }));
+
+      const firstReq = sendInput();
+      await waitFor(() => sendInputMock.mock.calls.length === 1);
+      // The route claimed the session synchronously ahead of the still-pending mocked sendInput —
+      // exactly the window the post-await claim used to leave open.
+      expect(cliSessionsById.get('pre')?.status).toBe('running');
+
+      const secondRes = await sendInput();
+      expect(secondRes.status).toBe(409);
+      const secondBody = await secondRes.json();
+      expect(secondBody.error).toMatch(/mid-turn/);
+
+      resolveSend!();
+      const firstRes = await firstReq;
+      expect(firstRes.status).toBe(200);
+      expect(sendInputMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('rolls the claim back on a pre-spawn failure so a legitimate retry is not wedged at running forever', async () => {
+      seedBlockingSession({ status: 'waiting-input', resumeSessionId: 'resume-me' });
+      sendInputMock.mockRejectedValueOnce(new Error('binary not installed'));
+
+      const failRes = await sendInput();
+      expect(failRes.status).toBe(500);
+      expect(cliSessionsById.get('pre')?.status).toBe('waiting-input');
+
+      sendInputMock.mockResolvedValueOnce(undefined);
+      const retryRes = await sendInput();
+      expect(retryRes.status).toBe(200);
+    });
+  });
+
+  describe('truncateFromSeq — edit-and-resend / retry (FLUX-685)', () => {
+    async function sendInput(body: Record<string, unknown> = {}) {
+      return fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/input`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'edited text', user: 'Guy', ...body }),
+      });
+    }
+
+    it('rewinds the durable transcript to fromSeq before the resend is appended', async () => {
+      seedBlockingSession({ status: 'waiting-input', resumeSessionId: 'resume-me' });
+      appendTranscriptEvent('FLUX-1', { type: 'user', text: 't0' });
+      appendTranscriptEvent('FLUX-1', { type: 'user', text: 't1' });
+      appendTranscriptEvent('FLUX-1', { type: 'user', text: 't2' });
+      await flushTranscript('FLUX-1');
+
+      const res = await sendInput({ truncateFromSeq: 1 });
+      expect(res.status).toBe(200);
+      expect(sendInputMock).toHaveBeenCalledTimes(1);
+
+      // The truncate ran BEFORE the adapter's resend was invoked (its own appended turn is not
+      // asserted here — sendInput is mocked and appends nothing), so only turn 0 survives.
+      const turns = await readTurns('FLUX-1');
+      expect(turns.map((t) => t.raw.text)).toEqual(['t0']);
+    });
+
+    it('ignores a malformed truncateFromSeq (negative / non-integer / non-numeric) — an ordinary send', async () => {
+      appendTranscriptEvent('FLUX-1', { type: 'user', text: 't0' });
+      appendTranscriptEvent('FLUX-1', { type: 'user', text: 't1' });
+      await flushTranscript('FLUX-1');
+
+      for (const bad of [-1, 1.5, 'nope']) {
+        // Re-seed idle before each attempt — the route claims the session ('running') on success
+        // and this loop cares only about the truncate-side-effect, not the mid-turn guard.
+        seedBlockingSession({ status: 'waiting-input', resumeSessionId: 'resume-me' });
+        const res = await sendInput({ truncateFromSeq: bad });
+        expect(res.status).toBe(200);
+      }
+
+      const turns = await readTurns('FLUX-1');
+      expect(turns.map((t) => t.raw.text)).toEqual(['t0', 't1']);
+    });
   });
 
   it('phase:"grooming" skips ensureTicketIsolation regardless of requested isolation (FLUX-1214)', async () => {
@@ -524,6 +611,110 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
     });
   });
 
+  describe('phase:"batch-grooming" (FLUX-1383)', () => {
+    beforeEach(() => {
+      getWorkspace().tasks['FLUX-1'].status = 'Grooming';
+      getWorkspace().tasks['FLUX-1'].parentId = 'FLUX-0';
+      getWorkspace().tasks['FLUX-2'] = {
+        id: 'FLUX-2',
+        title: 'Sibling two',
+        status: 'Grooming',
+        parentId: 'FLUX-0',
+        _path: path.join(root, '.flux', 'FLUX-2.md'),
+      };
+      getWorkspace().tasks['FLUX-3'] = {
+        id: 'FLUX-3',
+        title: 'Sibling three',
+        status: 'Require Input',
+        parentId: 'FLUX-0',
+        _path: path.join(root, '.flux', 'FLUX-3.md'),
+      };
+    });
+
+    it('is accepted, stays branchless (unlike fast-path), and carries the eligible member set', async () => {
+      const res = await startRoleless({ phase: 'batch-grooming', batchTicketIds: ['FLUX-1', 'FLUX-2', 'FLUX-3'] });
+      expect(res.status).toBe(201);
+      const { session } = await res.json();
+      await waitFor(() => cliSessionsById.get(session.id)?.status === 'running');
+      expect(ensureTicketIsolation).not.toHaveBeenCalled();
+      expect(session.phase).toBe('batch-grooming');
+      expect(session.batchTicketIds).toEqual(['FLUX-1', 'FLUX-2', 'FLUX-3']);
+    });
+
+    it('refuses an empty batchTicketIds array', async () => {
+      const res = await startRoleless({ phase: 'batch-grooming', batchTicketIds: [] });
+      expect(res.status).toBe(400);
+      expect(startMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses more than 5 tickets', async () => {
+      const ids = ['FLUX-1', 'FLUX-2', 'FLUX-3', 'FLUX-4', 'FLUX-5', 'FLUX-6'];
+      for (const id of ids.slice(3)) {
+        getWorkspace().tasks[id] = { id, title: id, status: 'Grooming', parentId: 'FLUX-0', _path: path.join(root, '.flux', `${id}.md`) };
+      }
+      const res = await startRoleless({ phase: 'batch-grooming', batchTicketIds: ids });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/at most 5/);
+      expect(startMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses when batchTicketIds omits the launched ticket', async () => {
+      const res = await startRoleless({ phase: 'batch-grooming', batchTicketIds: ['FLUX-2', 'FLUX-3'] });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/must include the launched ticket/);
+      expect(startMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses when members do not share one parentId', async () => {
+      getWorkspace().tasks['FLUX-2'].parentId = 'FLUX-9-different';
+      const res = await startRoleless({ phase: 'batch-grooming', batchTicketIds: ['FLUX-1', 'FLUX-2'] });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/parentId/);
+      expect(startMock).not.toHaveBeenCalled();
+    });
+
+    it('excludes and names an L-effort member instead of refusing the whole batch', async () => {
+      getWorkspace().tasks['FLUX-2'].effort = 'L';
+      const res = await startRoleless({ phase: 'batch-grooming', batchTicketIds: ['FLUX-1', 'FLUX-2', 'FLUX-3'] });
+      expect(res.status).toBe(201);
+      const { session } = await res.json();
+      await waitFor(() => cliSessionsById.get(session.id)?.status === 'running');
+      expect(session.batchTicketIds).toEqual(['FLUX-1', 'FLUX-3']);
+    });
+
+    it('excludes and names an epic-parent member (has its own subtasks)', async () => {
+      getWorkspace().tasks['FLUX-2'].subtasks = ['FLUX-99'];
+      const res = await startRoleless({ phase: 'batch-grooming', batchTicketIds: ['FLUX-1', 'FLUX-2', 'FLUX-3'] });
+      expect(res.status).toBe(201);
+      const { session } = await res.json();
+      await waitFor(() => cliSessionsById.get(session.id)?.status === 'running');
+      expect(session.batchTicketIds).toEqual(['FLUX-1', 'FLUX-3']);
+    });
+
+    it('degrades a single-eligible-member batch to plain grooming', async () => {
+      getWorkspace().tasks['FLUX-2'].effort = 'L';
+      getWorkspace().tasks['FLUX-3'].effort = 'XL';
+      const res = await startRoleless({ phase: 'batch-grooming', batchTicketIds: ['FLUX-1', 'FLUX-2', 'FLUX-3'] });
+      expect(res.status).toBe(201);
+      const { session } = await res.json();
+      await waitFor(() => cliSessionsById.get(session.id)?.status === 'running');
+      expect(session.phase).toBe('grooming');
+      expect(session.batchTicketIds).toBeUndefined();
+    });
+
+    it('refuses when every member is ineligible', async () => {
+      getWorkspace().tasks['FLUX-1'].effort = 'L';
+      getWorkspace().tasks['FLUX-2'].effort = 'L';
+      getWorkspace().tasks['FLUX-3'].effort = 'L';
+      const res = await startRoleless({ phase: 'batch-grooming', batchTicketIds: ['FLUX-1', 'FLUX-2', 'FLUX-3'] });
+      expect(res.status).toBe(400);
+      expect(startMock).not.toHaveBeenCalled();
+    });
+  });
+
   // A fresh-spawn pre-spawn failure (worktree pool full, git push failure, …) previously surfaced
   // only inside the ticket chat + history — no board flag, unlike a resume-time failure
   // (surfaceResumeFailure raises needsAction). Dispatched launches are fire-and-forget, so the
@@ -614,5 +805,203 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
       expect(entry.comment).not.toBe(entry.summary);
       expect(entry.summary).toContain("read_skill('review', 'Plan-review methodology')");
     });
+  });
+
+  // FLUX-1494: the board branch's FLUX-714 guard (`status === 'running' || 'pending'`) reads
+  // status synchronously, but sendBoardInput only sets status='running' after awaited pre-work
+  // (checkBinaryInstalled, ...) — a second POST arriving in that window used to see the still-idle
+  // status and pass the guard too, spawning a second concurrent `claude --resume` against the same
+  // board session (the observed incident this ticket reports). The route must claim the session
+  // synchronously, in the same tick as the guard, so the window is closed regardless of how slow
+  // the adapter's pre-spawn work is.
+  describe('board /input mid-turn guard is TOCTOU-safe (FLUX-1494)', () => {
+    let sendBoardInputMock: ReturnType<typeof vi.fn<BoardAdapter['sendBoardInput']>>;
+
+    function seedBoardSession(over: Partial<CliSessionRecord> = {}): CliSessionRecord {
+      const s = {
+        id: 'board-session', taskId: BOARD_CONVERSATION_ID, framework: TEST_FRAMEWORK,
+        status: 'waiting-input', command: 'claude', args: [], startedAt: new Date().toISOString(),
+        label: 'Claude Code', outputBuffer: '', liveOutputBuffer: '', pendingAssistantText: '',
+        skipPermissions: true, requestedStop: false, writeQueue: Promise.resolve(),
+        resumeSessionId: 'resume-board', inputTokens: 0, outputTokens: 0, costUSD: 0,
+        ...over,
+      } as unknown as CliSessionRecord;
+      cliSessionsById.set(s.id, s);
+      // FLUX-1580: the board session-store key is namespaced per (conversation, workspace) — seed
+      // under the SAME key the route computes (`reqWorkspace(req).root`, which resolves to `root`
+      // here since the test sends no X-EH-Workspace header and requireWorkspace falls back to the
+      // registered default workspace this suite's beforeEach points at `root`).
+      cliSessionsByTaskId.set(virtualConversationSessionKey(BOARD_CONVERSATION_ID, root), [s.id]);
+      return s;
+    }
+
+    async function sendBoardMessage() {
+      return fetch(`${baseUrl}/api/tasks/${BOARD_CONVERSATION_ID}/cli-session/input`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'go' }),
+      });
+    }
+
+    beforeEach(() => {
+      sendBoardInputMock = vi.fn().mockResolvedValue(undefined);
+      vi.mocked(getBoardAdapter).mockReturnValue({
+        startBoardSession: vi.fn(),
+        sendBoardInput: sendBoardInputMock,
+      });
+    });
+
+    it('claims the session before the slow pre-spawn work resolves, so a concurrent turn 409s instead of double-spawning', async () => {
+      seedBoardSession();
+      let resolveSend: (() => void) | undefined;
+      sendBoardInputMock.mockImplementation(() => new Promise<void>((resolve) => { resolveSend = resolve; }));
+
+      const firstReq = sendBoardMessage();
+      await waitFor(() => sendBoardInputMock.mock.calls.length === 1);
+      // The route claimed the session synchronously ahead of the still-pending mocked
+      // sendBoardInput — exactly the window the post-await claim used to leave open.
+      expect(cliSessionsById.get('board-session')?.status).toBe('pending');
+
+      const secondRes = await sendBoardMessage();
+      expect(secondRes.status).toBe(409);
+      const secondBody = await secondRes.json();
+      expect(secondBody.error).toMatch(/mid-turn/);
+
+      resolveSend!();
+      const firstRes = await firstReq;
+      expect(firstRes.status).toBe(200);
+      expect(sendBoardInputMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('rolls the claim back on a pre-spawn failure so a legitimate retry is not wedged forever', async () => {
+      seedBoardSession();
+      sendBoardInputMock.mockRejectedValueOnce(new Error('binary not installed'));
+
+      const failRes = await sendBoardMessage();
+      expect(failRes.status).toBe(500);
+      expect(cliSessionsById.get('board-session')?.status).toBe('waiting-input');
+
+      sendBoardInputMock.mockResolvedValueOnce(undefined);
+      const retryRes = await sendBoardMessage();
+      expect(retryRes.status).toBe(200);
+    });
+  });
+});
+
+// FLUX-1580: the board orchestrator (`__board__`) and Furnace/Smelter chat (`__furnace__`) used to
+// spawn a SINGLE global session keyed by the bare literal id, so two open workspaces collided on
+// one session-store slot. This suite wires `attachWorkspace` (which the FLUX-1002 suite above does
+// not — it only asserts single-workspace behavior via `requireWorkspace`) so requests can carry an
+// `X-EH-Workspace` header and actually exercise the per-(conversation, workspace) keying fix.
+describe('board/Furnace session-store isolation across workspaces (FLUX-1580)', () => {
+  let rootA: string;
+  let rootB: string;
+  let server: http.Server;
+  let baseUrl: string;
+  let startBoardSessionMock: ReturnType<typeof vi.fn<BoardAdapter['startBoardSession']>>;
+
+  beforeEach(async () => {
+    // FLUX-1571: openWorkspace stores the realpath-canonical form on `ws.root`, which can differ
+    // from the raw mkdtemp path (case/short-name normalization) — use the RETURNED root everywhere
+    // (the header value, the assertions) so this test doesn't depend on canonicalization matching
+    // the input verbatim, mirroring http-workspace-routing.test.ts's established pattern.
+    rootA = openWorkspace(await fs.mkdtemp(path.join(os.tmpdir(), 'eh-cli-session-a-'))).root!;
+    rootB = openWorkspace(await fs.mkdtemp(path.join(os.tmpdir(), 'eh-cli-session-b-'))).root!;
+
+    cliSessionsById.clear();
+    cliSessionsByTaskId.clear();
+
+    startBoardSessionMock = vi.fn(async (session: CliSessionRecord) => {
+      session.status = 'waiting-input';
+      session.resumeSessionId = `resume-${session.id}`;
+    });
+    vi.mocked(getBoardAdapter).mockReturnValue({
+      startBoardSession: startBoardSessionMock,
+      sendBoardInput: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const { default: cliSessionRouter } = await import('./cli-session.js');
+    const app = express();
+    app.use(express.json());
+    app.use('/api/tasks', attachWorkspace, requireWorkspace, cliSessionRouter);
+    server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const addr = server.address() as AddressInfo;
+    baseUrl = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterEach(async () => {
+    vi.clearAllMocks();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await Promise.all(listWorkspaces().map((ws) => ws.root && closeWorkspace(ws.root)));
+    await fs.rm(rootA, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(rootB, { recursive: true, force: true }).catch(() => {});
+  });
+
+  async function startBoardIn(root: string) {
+    return fetch(`${baseUrl}/api/tasks/${BOARD_CONVERSATION_ID}/cli-session/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-EH-Workspace': root },
+      body: JSON.stringify({ appendPrompt: 'hello' }),
+    });
+  }
+
+  it('spawns a SEPARATE board session per workspace instead of colliding on the bare id', async () => {
+    const resA = await startBoardIn(rootA);
+    expect(resA.status).toBe(201);
+    const bodyA = await resA.json();
+
+    const resB = await startBoardIn(rootB);
+    expect(resB.status).toBe(201);
+    const bodyB = await resB.json();
+
+    // Two distinct sessions, both under the wire-visible bare `__board__` taskId.
+    expect(bodyA.session.id).not.toBe(bodyB.session.id);
+    expect(bodyA.session.taskId).toBe(BOARD_CONVERSATION_ID);
+    expect(bodyB.session.taskId).toBe(BOARD_CONVERSATION_ID);
+    expect(startBoardSessionMock).toHaveBeenCalledTimes(2);
+
+    // Each session-store entry is scoped to its OWN workspace — never merged into one array.
+    const sessionA = cliSessionsById.get(bodyA.session.id);
+    const sessionB = cliSessionsById.get(bodyB.session.id);
+    expect(sessionA?.workspaceRoot).toBe(rootA);
+    expect(sessionB?.workspaceRoot).toBe(rootB);
+  });
+
+  it('starting a second workspace\'s board does NOT 409 against the first workspace\'s already-active session', async () => {
+    // FLUX-604/FLUX-667: a 'pending'/'running' existing session 409s a same-workspace restart —
+    // but workspace B must be entirely unaffected by workspace A's in-flight session.
+    let releaseA: (() => void) | undefined;
+    startBoardSessionMock.mockImplementationOnce((session) => new Promise((resolve) => {
+      releaseA = () => { session.status = 'waiting-input'; resolve(); };
+    }));
+
+    const resAPromise = startBoardIn(rootA);
+    // Give the mocked in-flight A call a tick to register before B fires.
+    await new Promise((r) => setTimeout(r, 10));
+
+    const resB = await startBoardIn(rootB);
+    expect(resB.status).toBe(201);
+
+    releaseA?.();
+    const resA = await resAPromise;
+    expect(resA.status).toBe(201);
+  });
+
+  it('stopping workspace A\'s board leaves workspace B\'s board session untouched', async () => {
+    const resA = await startBoardIn(rootA);
+    const bodyA = await resA.json();
+    const resB = await startBoardIn(rootB);
+    const bodyB = await resB.json();
+
+    const stopRes = await fetch(`${baseUrl}/api/tasks/${BOARD_CONVERSATION_ID}/cli-session/stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-EH-Workspace': rootA },
+      body: '{}',
+    });
+    expect(stopRes.status).toBe(200);
+
+    expect(cliSessionsById.get(bodyA.session.id)?.status).toBe('cancelled');
+    expect(cliSessionsById.get(bodyB.session.id)?.status).toBe('waiting-input');
   });
 });

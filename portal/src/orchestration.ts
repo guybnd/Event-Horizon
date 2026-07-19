@@ -44,6 +44,24 @@ export function isLiveInputTarget(
   return false;
 }
 
+/**
+ * FLUX-1532: whether a live (`pending`/`running`/`waiting-input`) session has gone quiet long enough
+ * that it should no longer render as "actively working" — a stalled agent otherwise sits in
+ * `running`/`waiting-input` forever and looks identical to one actively producing output. Two ways
+ * in: no output for longer than `SESSION_STALE_MS`, or a non-resumable `waiting-input` (mirrors the
+ * parked case in `isLiveInputTarget` — that CLI process has already exited for good). `'scheduled'`
+ * is deliberately asleep (FLUX-1390) and is never stale regardless of how old its last output is.
+ */
+export function isSessionStale(
+  s: Pick<CliSessionSummary, 'status' | 'lastOutputAt' | 'startedAt' | 'resumable'>,
+  nowMs = Date.now(),
+): boolean {
+  if (s.status === 'scheduled') return false;
+  if (s.status === 'waiting-input' && s.resumable === false) return true;
+  const last = s.lastOutputAt ?? s.startedAt;
+  return !!last && nowMs - new Date(last).getTime() > SESSION_STALE_MS;
+}
+
 /** Strip the multi-session role prefix (e.g. "reviewer:architect" -> "architect"). */
 export function normalizeRoleLabel(role?: string): string | undefined {
   if (!role) return undefined;

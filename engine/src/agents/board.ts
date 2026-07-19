@@ -25,7 +25,44 @@ export const FURNACE_CONVERSATION_ID = '__furnace__';
  *  Furnace Operator chat) — the shared guard every non-ticket-conversation route/helper widens
  *  on instead of a `=== BOARD_CONVERSATION_ID` literal. */
 export function isVirtualConversationId(id: string): boolean {
-  return id === BOARD_CONVERSATION_ID || id === FURNACE_CONVERSATION_ID;
+  if (id === BOARD_CONVERSATION_ID || id === FURNACE_CONVERSATION_ID) return true;
+  return parseVirtualSessionKey(id) !== null;
+}
+
+// FLUX-1580: the board orchestrator (`__board__`) and Furnace/Smelter chat (`__furnace__`) each
+// used to be a single GLOBAL session slot — spawned bound to whichever workspace was ambiently
+// active, keyed in `session-store.ts`'s `cliSessionsByTaskId` purely by the bare literal id. That
+// meant every open workspace's board (or Furnace) chat collided on the same map entry: switching
+// workspace left the session bound to whichever workspace spawned it, and a second workspace's
+// "start" would 409 against (or silently resume) the first workspace's session.
+//
+// Fix: key each virtual conversation's session-store entry per (id, workspaceRoot) pair via this
+// namespaced string, so N workspaces get N distinct entries. This key is STRICTLY INTERNAL to the
+// session-store Map lookups (registerSession/unregisterSession/cliSessionIdByTaskId.get/
+// getCliSessionSummaryForTask/getAllSessionSummariesForTask in routes/cli-session.ts) — it is
+// NEVER the wire id (the portal always sends/receives the bare `__board__`/`__furnace__`), NEVER
+// `CliSessionRecord.taskId` (which stays bare so transcript filenames, MCP conversation-id
+// headers, and broadcast/notification payloads are untouched), and NEVER a transcript filename.
+const VIRTUAL_SESSION_KEY_SEP = '::';
+
+/** The per-workspace session-store key for a virtual conversation — see block comment above.
+ *  `workspaceRoot` should be the canonical/resolved root (callers pass `reqWorkspace(req).root`,
+ *  which is already canonical via the workspace registry) so two spellings of the same root never
+ *  mint two different keys. */
+export function virtualConversationSessionKey(id: string, workspaceRoot: string): string {
+  return `${id}${VIRTUAL_SESSION_KEY_SEP}${workspaceRoot}`;
+}
+
+/** Inverse of {@link virtualConversationSessionKey} — recognizes the namespaced form (null for a
+ *  bare id or any non-matching string), for the rare defensive case where code needs to recover
+ *  `{ id, workspaceRoot }` from a key that might be either form. */
+export function parseVirtualSessionKey(taskId: string): { id: string; workspaceRoot: string } | null {
+  const sepIndex = taskId.indexOf(VIRTUAL_SESSION_KEY_SEP);
+  if (sepIndex === -1) return null;
+  const id = taskId.slice(0, sepIndex);
+  const workspaceRoot = taskId.slice(sepIndex + VIRTUAL_SESSION_KEY_SEP.length);
+  if ((id !== BOARD_CONVERSATION_ID && id !== FURNACE_CONVERSATION_ID) || !workspaceRoot) return null;
+  return { id, workspaceRoot };
 }
 
 export interface BoardAdapter {

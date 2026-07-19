@@ -18,7 +18,7 @@ const router = express.Router();
 
 router.get('/:id/diff', async (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = (req.workspace ?? getWorkspace()).tasks[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
 
   const mode = req.query.mode === 'working' ? 'working' : 'committed';
@@ -61,9 +61,11 @@ router.get('/:id/diff', async (req, res) => {
 // the portal can render it in a `<iframe sandbox="allow-scripts">` (NO allow-same-origin → opaque
 // origin, no access to portal cookies/DOM/storage). `rev` is parsed to a positive integer or
 // 'latest' and the file path is traversal-guarded inside the artifacts root (see artifacts.ts).
+// Board-scoped via header OR `?ws=` (the portal iframe can't send headers — see attachWorkspace);
+// the workspaceScope binding makes readArtifactRevision's internal flux-dir resolution follow too.
 router.get('/:id/artifact', async (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = (req.workspace ?? getWorkspace()).tasks[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
   if (!isSafeTicketId(id)) return res.status(400).json({ error: 'Invalid ticket id' });
 
@@ -92,7 +94,7 @@ router.get('/:id/artifact', async (req, res) => {
 // line up with this summary. 404-free for "no branch" — returns an empty summary instead.
 router.get('/:id/branch-diff', async (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = (req.workspace ?? getWorkspace()).tasks[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
   if (!task.branch) return res.json({ branch: null, worktree: null, base: null, files: [] });
 

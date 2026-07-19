@@ -1,6 +1,6 @@
 {
   "name": "event-horizon",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "private": true,
   "description": "An IDE for the agent era — a local-first, markdown-backed ticket board and orchestration layer for coding agents.",
   "keywords": [
@@ -51,7 +51,8 @@
     "install-skill": "npm run install-skill -w engine --",
     "publish-public": "node scripts/publish-public.mjs",
     "electron": "npm --prefix electron start",
-    "electron:build": "npm --prefix electron run build"
+    "electron:build": "npm --prefix electron run build",
+    "electron:win": "npm run build && npm --prefix electron run build:win"
   },
   "overrides": {
     "react-draggable": "4.4.6"

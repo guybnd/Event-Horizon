@@ -1,6 +1,5 @@
 // Branchless engine-side finish (FLUX-618; FLUX-349 split) — the zero-token sibling of
 // POST /:id/pr/merge (pr.ts).
-import { getWorkspace } from '../../workspace-context.js';
 import express from 'express';
 import fs from 'fs/promises';
 import path from 'path';
@@ -11,7 +10,7 @@ import { updateTaskWithHistory } from '../../task-store.js';
 import { reapStaleParkedSessions } from '../../session-store.js';
 import { captureDiff, resolveCommit } from '../../branch-manager.js';
 import { broadcastEvent } from '../../events.js';
-import { git, errorMessage, gitErrorDetail } from './helpers.js';
+import { git, errorMessage, gitErrorDetail, reqWorkspace } from './helpers.js';
 import type { TaskRecord } from './helpers.js';
 
 const router = express.Router();
@@ -26,7 +25,7 @@ const router = express.Router();
 // sidecar, status → Done, reap stale parked sessions.
 router.post('/:id/finish', async (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id] as TaskRecord;
+  const task = reqWorkspace(req).tasks[id] as TaskRecord;
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
 
   // Branch/PR tickets must finish through the PR-merge surface — never commit straight to their tree here.
@@ -80,7 +79,7 @@ router.post('/:id/finish', async (req, res) => {
     if (!task.baselineCommit) {
       const parent = await resolveCommit('HEAD~1');
       if (parent) {
-        await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { baselineCommit: parent } });
+        await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { baselineCommit: parent } }, req.workspace);
         task.baselineCommit = parent;
       }
     }
@@ -99,7 +98,7 @@ router.post('/:id/finish', async (req, res) => {
     updatedBy: 'Agent',
     nextStatus: 'Done',
     extraFields: finishExtraFields,
-  });
+  }, req.workspace);
   if (!result) return res.status(500).json({ error: `Failed to finish ${id}` });
 
   // Reap any sessions still parked on an earlier phase now that the ticket is Done (FLUX-721 parity).
@@ -108,7 +107,7 @@ router.post('/:id/finish', async (req, res) => {
     await updateTaskWithHistory(id, {
       updatedBy: 'Agent',
       entries: [buildActivityEntry(`Reaped ${reaped.length} stale parked session${reaped.length > 1 ? 's' : ''} from an earlier phase on finish.`, 'Agent', new Date().toISOString())],
-    });
+    }, req.workspace);
   }
 
   broadcastEvent('taskUpdated', { id });

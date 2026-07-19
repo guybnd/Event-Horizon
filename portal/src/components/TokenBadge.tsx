@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { Config } from '../types';
 
 interface TokenData {
@@ -26,7 +27,14 @@ function getThresholdColor(costUSD: number, thresholds?: { green: number; yellow
   return 'text-red-600 dark:text-red-400';
 }
 
-export function TokenBadge({ data, config, onToggle, variant = 'card', label }: TokenBadgeProps) {
+/**
+ * Everything the badge actually paints, derived from `data`/`config`. Shared by the render body
+ * and the `React.memo` comparator (FLUX-1553) so "does the visible pill change" is answered by
+ * ONE computation — the strings/classes here are already quantized to display precision
+ * (`.toFixed`, threshold buckets), so comparing them is exactly "did the rendered output change",
+ * not a guessed staleness threshold.
+ */
+function computeTokenBadgeDisplay(data: TokenData | null | undefined, config: Config | null) {
   const showTokens = config?.tokenDisplayMode === 'tokens';
   const thresholds = config?.tokenCostThresholds;
 
@@ -60,19 +68,23 @@ export function TokenBadge({ data, config, onToggle, variant = 'card', label }: 
 
   const colorClass = !showTokens && costUSD > 0 ? getThresholdColor(costUSD, thresholds) : '';
 
-  if (variant === 'modal') {
-    // FLUX-1375: the fresh/cache-read/cache-creation split was already computed for the tooltip
-    // above but only ever surfaced on hover — show it inline here so it doesn't require a mouseover
-    // to discover (a modal is already an intentional "tell me more" click, unlike the card pill).
-    const hasCacheSplit = cacheRead > 0 || cacheCreation > 0;
-    const breakdownLabel = hasCacheSplit
-      ? [
-          freshInput > 0 ? `${(freshInput / 1000).toFixed(1)}k fresh` : null,
-          cacheRead > 0 ? `${(cacheRead / 1000).toFixed(1)}k cached` : null,
-          cacheCreation > 0 ? `${(cacheCreation / 1000).toFixed(1)}k new-cache` : null,
-        ].filter(Boolean).join(' · ')
-      : null;
+  // FLUX-1375: fresh/cache-read/cache-creation split, surfaced inline on the modal variant only.
+  const hasCacheSplit = cacheRead > 0 || cacheCreation > 0;
+  const breakdownLabel = hasCacheSplit
+    ? [
+        freshInput > 0 ? `${(freshInput / 1000).toFixed(1)}k fresh` : null,
+        cacheRead > 0 ? `${(cacheRead / 1000).toFixed(1)}k cached` : null,
+        cacheCreation > 0 ? `${(cacheCreation / 1000).toFixed(1)}k new-cache` : null,
+      ].filter(Boolean).join(' · ')
+    : null;
 
+  return { showTokens, isEstimated, displayLabel, tooltip, colorClass, breakdownLabel };
+}
+
+function TokenBadgeImpl({ data, config, onToggle, variant = 'card', label }: TokenBadgeProps) {
+  const { showTokens, isEstimated, displayLabel, tooltip, colorClass, breakdownLabel } = computeTokenBadgeDisplay(data, config);
+
+  if (variant === 'modal') {
     return (
       <button
         type="button"
@@ -118,3 +130,26 @@ export function TokenBadge({ data, config, onToggle, variant = 'card', label }: 
     </button>
   );
 }
+
+/**
+ * FLUX-1553: memoized against the *displayed* value, not raw props — `data` mints a new object
+ * reference on every SSE token tick (`patchTaskLocal`, unthrottled), which would otherwise
+ * re-render every card's pill on every stream chunk even when the rounded label/color it paints
+ * hasn't moved. `computeTokenBadgeDisplay` is the single source for both the render and this
+ * comparator, so "unchanged" here always means "the actual rendered output is identical" — it can
+ * never skip a genuinely visible change.
+ */
+export const TokenBadge = memo(TokenBadgeImpl, (prev, next) => {
+  if (prev.onToggle !== next.onToggle) return false;
+  if (prev.variant !== next.variant) return false;
+  if (prev.label !== next.label) return false;
+  const a = computeTokenBadgeDisplay(prev.data, prev.config);
+  const b = computeTokenBadgeDisplay(next.data, next.config);
+  return (
+    a.showTokens === b.showTokens &&
+    a.isEstimated === b.isEstimated &&
+    a.displayLabel === b.displayLabel &&
+    a.colorClass === b.colorClass &&
+    a.breakdownLabel === b.breakdownLabel
+  );
+});

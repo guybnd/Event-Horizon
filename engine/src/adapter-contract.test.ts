@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
 import { execSync, execFileSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { readFileSync } from 'fs';
@@ -704,6 +704,75 @@ describe('FLUX-931: session.model reaches the real spawn --model arg', () => {
     const spawnedModel = modelArgFromLastSpawnCall();
     expect(spawnedModel).toBeTruthy();
     expect(session.model).toBe(spawnedModel);
+  });
+});
+
+// ─── FLUX-1479 (FLUX-1226 Phase F): a resolved persona's `model` reaches the real spawn --model
+// arg for a solo/dispatched Claude session — Claude-only, and only for solo/dispatched spawns
+// (never a delegate/relay position, which resolves its model entirely via the /delegate route).
+describe('FLUX-1479: persona.model reaches the real spawn --model arg (Claude solo/dispatched)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('a resolved persona\'s model wins over the task-tier policy for a solo Claude session', async () => {
+    const orchestrationPersonas = await import('./orchestration-personas.js');
+    vi.spyOn(orchestrationPersonas, 'resolveSoloChatPersona').mockReturnValue({
+      id: 'test-cheap-persona', label: 'Test', description: '', role: 'lead', phases: [], requiredCapabilities: [], prompt: 'x',
+      model: 'claude-haiku-4-5-20251001',
+    });
+    const { startCliSession } = await import('./agents/claude-code.js');
+    const taskId = 'FLUX-TEST-claude-persona-model';
+    const task = { id: taskId, status: 'Todo' };
+    const session = fakeChatSession(taskId, 'claude');
+    expect(session.model).toBeUndefined();
+
+    mockSpawn.mockClear();
+    await startCliSession(session, task, '', '', '/tmp/test-repo');
+    if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
+
+    expect(modelArgFromLastSpawnCall()).toBe('claude-haiku-4-5-20251001');
+    expect(session.model).toBe('claude-haiku-4-5-20251001');
+  });
+
+  it('an explicit session.model (e.g. the chat model picker) still wins over a resolved persona model', async () => {
+    const orchestrationPersonas = await import('./orchestration-personas.js');
+    vi.spyOn(orchestrationPersonas, 'resolveSoloChatPersona').mockReturnValue({
+      id: 'test-cheap-persona', label: 'Test', description: '', role: 'lead', phases: [], requiredCapabilities: [], prompt: 'x',
+      model: 'claude-haiku-4-5-20251001',
+    });
+    const { startCliSession } = await import('./agents/claude-code.js');
+    const taskId = 'FLUX-TEST-claude-persona-model-override';
+    const task = { id: taskId, status: 'Todo' };
+    const session = fakeChatSession(taskId, 'claude');
+    session.model = 'claude-opus-4-8';
+
+    mockSpawn.mockClear();
+    await startCliSession(session, task, '', '', '/tmp/test-repo');
+    if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
+
+    expect(modelArgFromLastSpawnCall()).toBe('claude-opus-4-8');
+  });
+
+  it('a resolved persona model is NOT applied to a delegate/relay spawn (patternPosition assistant/step)', async () => {
+    const orchestrationPersonas = await import('./orchestration-personas.js');
+    const spy = vi.spyOn(orchestrationPersonas, 'resolveSoloChatPersona').mockReturnValue({
+      id: 'test-cheap-persona', label: 'Test', description: '', role: 'worker', phases: [], requiredCapabilities: [], prompt: 'x',
+      model: 'claude-haiku-4-5-20251001',
+    });
+    const { startCliSession } = await import('./agents/claude-code.js');
+    const taskId = 'FLUX-TEST-claude-persona-model-delegate';
+    const task = { id: taskId, status: 'Todo' };
+    const session = fakeChatSession(taskId, 'claude');
+    session.patternPosition = 'assistant';
+
+    mockSpawn.mockClear();
+    await startCliSession(session, task, '', '', '/tmp/test-repo');
+    if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
+
+    // Never even consulted for a delegate/relay position — falls through to the task-tier policy.
+    expect(modelArgFromLastSpawnCall()).not.toBe('claude-haiku-4-5-20251001');
+    spy.mockRestore();
   });
 });
 

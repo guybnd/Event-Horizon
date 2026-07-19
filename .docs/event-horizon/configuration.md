@@ -34,6 +34,7 @@ This is your primary workspace configuration file. It is tracked in your reposit
 | `readyForMergeStatus` | `string` | The status name indicating a ticket is awaiting user review before merging (default: `"Ready"`). |
 | `gatePolicy` | `object` | **FLUX-1261.** Per-gate autonomy policy — see below. Replaces the old `temperEnabled` boolean (migrated once via the `gatePolicyMigrated` marker). |
 | `blockAgentPrMerges` | `boolean` | **FLUX-1290.** Gates the `finish_ticket` merge-lock's runtime "a human touched this" check — see below (default `false`). |
+| `ci` | `object` | **FLUX-560.** CI gate policy for `finish_ticket` and the portal Merge action — see below (default `{ gate: 'block', allowPending: false }`). |
 | `agents.honorScheduledWakeups` | `boolean` | **FLUX-1390.** Honor the `ScheduleWakeup` tool in dispatched (non-chat) phase sessions instead of blocking it — see below (default `false`). |
 | `boardCardOpenMode` | `"full" \| "preview"` | Controls whether clicking a board card opens the full modal or the side preview. |
 | `animationsEnabled` | `boolean` | Toggles micro-animations on the board interface. |
@@ -61,14 +62,14 @@ The `permissions` object sets the default permission mode for each session surfa
 
 **FLUX-1292 default boundary.** The real dividing line is "has this board's `gatePolicy` ever been migrated/configured at all" (`gatePolicyMigrated`, `config.ts`) — **not** "new install" vs. "existing install":
 
-- **Never migrated** — a genuinely fresh workspace (no `config.json` yet) **or** an existing `config.json` that predates the `gatePolicy` field entirely (including a pre-FLUX-1261 Temper-era config, regardless of what `temperEnabled` was set to) — defaults to **`auto`/`auto`** (Autonomous) the first time the engine loads it, persisted once via `gatePolicyMigrated: true`.
+- **Never migrated** — a genuinely fresh workspace (no `config.json` yet) **or** an existing `config.json` that predates the `gatePolicy` field entirely (including a pre-FLUX-1261 Temper-era config, regardless of what `temperEnabled` was set to) — defaults to **`auto-then-you`/`auto`** the first time the engine loads it (FLUX-1497; was `auto`/`auto` Autonomous under FLUX-1292 — the plan gate now always stops for a human confirm on an unconfigured board), persisted once via `gatePolicyMigrated: true`. This mix matches no preset button (renders as "Custom" — legitimate).
 - **Already migrated** — a board that has completed this migration once, on any resulting value (including landing on `you`/`you`), or that has an explicit `gatePolicy` choice on disk — is **never** retroactively touched.
 
 **FLUX-1264 presets.** The same ⚙ modal opens with a "Presets — both gates" row above the per-gate control: **Manual** (`you`/`you`), **Guided** (`auto-then-you`/`auto-then-you`), **Autonomous** (`auto`/`auto`). Clicking one writes both `boardDefault.plan` and `boardDefault.review` in a single `saveConfig` call; a board default that doesn't exactly match one of the three shows no preset as active ("Custom" — a legitimate state, e.g. mixed `plan`/`review` values). Presets only ever touch `boardDefault` — a ticket's own `gatePolicyOverride` is untouched, and the modal surfaces a live "N tickets override this" count (`countGatePolicyOverrides`, `portal/src/lib/gatePolicyPresets.ts`) so a stale per-ticket override isn't silently confusing after a board-wide preset change. Custom presets are explicitly out of scope.
 
 | Field | Type | Default (never-migrated board) | Description |
 |-------|------|---------|-------------|
-| `gatePolicy.boardDefault.plan` | `"auto" \| "auto-then-you" \| "you"` | `auto` | Autonomy level for the plan-review gate (Grooming → Todo). |
+| `gatePolicy.boardDefault.plan` | `"auto" \| "auto-then-you" \| "you"` | `auto-then-you` | Autonomy level for the plan-review gate (Grooming → Todo). |
 | `gatePolicy.boardDefault.review` | `"auto" \| "auto-then-you" \| "you"` | `auto` | Autonomy level for the code-review gate (→ Ready). `auto` drives the same loop `temperEnabled: true` used to (`temper.ts`). |
 
 > `you`/`you` remains the ultra-safe hard-coded fallback (`DEFAULT_GATE_POLICY`) used only as a last resort if `gatePolicy` is somehow missing entirely on an already-migrated board — it is never the seed a never-migrated board actually lands on.
@@ -86,6 +87,23 @@ Values: `auto` clears the gate silently and loops to completion (re-tried up to 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `blockAgentPrMerges` | `boolean` | `false` | Gates the `finish_ticket` merge-lock's `hasHumanGateTouch` runtime check. `false` skips it (agent-driven merges allowed); `true` restores the always-on refusal. |
+
+### CI gate
+
+**FLUX-560.** `ci` gates `finish_ticket` and the portal's `POST /:id/pr/merge` on the user's own CI, without EH ever knowing what that CI actually runs — it consumes GitHub's check-rollup verdict (`statusCheckRollup`, already read by `getPullRequestStatus` for the PR card) and, only for repos with no GitHub checks, an optional user-supplied `checkCommand` (the single-repo analog of the multi-repo group's per-member `testCommand`). EH never runs the project's build/test tooling itself — it only ever sees pass/fail.
+
+- `checks.failed > 0` → refused. `checks.pending > 0` → refused **unless** `allowPending: true`. `checks.total === 0` (the repo has no GitHub CI) never gates by itself — this is what keeps a local-first/no-CI repo merging exactly as before.
+- When there's no GitHub CI and `checkCommand` is set, it runs (cwd = the PR branch's worktree when one exists, falling back to the workspace root otherwise — FLUX-1564; 5 minute timeout) and its exit code decides; a non-zero exit refuses the same way a failing check does. Leave `checkCommand` unset (the default) for no gate on a no-CI repo.
+- A refusal leaves the ticket's status **unchanged** and names the failing/pending count (or the command's exit detail) — re-run `finish_ticket` with `force: true` (the same param the shared-PR guard uses), or confirm the portal's merge prompt, to merge anyway.
+- `gate: 'off'` restores the pre-FLUX-560 behavior (merge unconditionally, no gh check read at all). `gate: 'warn'` never refuses but still returns the reason, for boards that want visibility before turning the gate on.
+
+Not yet surfaced in Settings; edit `.flux/config.json` directly.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `ci.gate` | `"off" \| "warn" \| "block"` | `block` | `off` = unconditional merge (pre-FLUX-560 behavior); `warn` = never refuses, reason still returned; `block` = refuses on failing/pending/non-zero. |
+| `ci.allowPending` | `boolean` | `false` | When `true`, a pending (not yet completed) check no longer blocks — only an actual failure does. |
+| `ci.checkCommand` | `string` | unset | Shell command run (cwd = the PR branch's worktree, falling back to the workspace root if none exists) when the repo has no GitHub checks; a non-zero exit blocks the same as a failing check. Unset = no gate for a no-CI repo. |
 
 ### Honor scheduled wakeups
 

@@ -1,7 +1,6 @@
 // ─── Branch routes (FLUX-349 split) ──────────────────────────────────────────
 // Branch allocation + status + delete for a ticket, and the workspace-wide branch list. Mounted
 // by the ../tasks.ts barrel BEFORE the crud router so GET /branches wins over GET /:id.
-import { getWorkspace } from '../../workspace-context.js';
 import express from 'express';
 import { existsSync } from 'fs';
 import { getWorkspaceRoot } from '../../workspace.js';
@@ -11,7 +10,7 @@ import { stopAllSessionsForTask } from '../../session-store.js';
 import { getTicketBranchStatus, deleteTicketBranch } from '../../branch-manager.js';
 import { detachTaskWorktree, taskWorktreeDir, listTaskWorktrees, listLocalBranches } from '../../task-worktree.js';
 import { ensureTicketIsolation } from '../../ticket-isolation.js';
-import { errorMessage } from './helpers.js';
+import { errorMessage, reqWorkspace } from './helpers.js';
 import type { TaskRecord } from './helpers.js';
 
 const router = express.Router();
@@ -19,7 +18,7 @@ const router = express.Router();
 // Local branch names + whether each currently holds a worktree — powers the
 // "Attach to branch" picker (FLUX-516). Registered before /:id so the literal
 // path wins.
-router.get('/branches', async (_req, res) => {
+router.get('/branches', async (req, res) => {
   try {
     const [names, worktrees] = await Promise.all([
       listLocalBranches(getWorkspaceRoot()!),
@@ -27,7 +26,7 @@ router.get('/branches', async (_req, res) => {
     ]);
     const worktreeBranches = new Set(worktrees.map((w) => w.branch));
     const ticketBranches = new Set(
-      (Object.values(getWorkspace().tasks) as TaskRecord[]).map((t) => t.branch).filter(Boolean),
+      (Object.values(reqWorkspace(req).tasks) as TaskRecord[]).map((t) => t.branch).filter(Boolean),
     );
     res.json({
       branches: names.map((name) => ({
@@ -43,7 +42,7 @@ router.get('/branches', async (_req, res) => {
 
 router.post('/:id/branch', async (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
 
   const baseBranch: string | undefined = req.body?.baseBranch;
@@ -64,7 +63,7 @@ router.post('/:id/branch', async (req, res) => {
 
 router.get('/:id/branch', async (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
 
   const name: string | undefined = task.branch;
@@ -83,7 +82,7 @@ router.get('/:id/branch', async (req, res) => {
 
 router.delete('/:id/branch', async (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
 
   const name: string | undefined = task.branch;
@@ -101,7 +100,7 @@ router.delete('/:id/branch', async (req, res) => {
       await detachTaskWorktree(getWorkspaceRoot()!, wtPath, { ticketId: id, applyToMain: false });
     }
     await deleteTicketBranch(name, force);
-    await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch: null } });
+    await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch: null } }, req.workspace);
     res.json({ deleted: name });
   } catch (err: unknown) {
     res.status(500).json({ error: errorMessage(err) });

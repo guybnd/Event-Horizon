@@ -1,6 +1,7 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { getConfig } from '../config.js';
-import { disallowedToolsArgs, isChatEditGated, FILE_MUTATION_TOOLS } from './claude-code.js';
+import { disallowedToolsArgs, isChatEditGated, FILE_MUTATION_TOOLS, stampDisallowedEhTools } from './claude-code.js';
+import * as orchestrationPersonas from '../orchestration-personas.js';
 
 // FLUX-926: ticket chat may edit files only while the ticket is In Progress. Enforcement is via
 // --disallowed-tools (permission-mode-independent — covers the default 'skip' chat path where
@@ -30,12 +31,21 @@ describe('isChatEditGated / disallowedToolsArgs (FLUX-926)', () => {
   });
 
   it('never gates non-chat phases, regardless of ticket status', () => {
+    // FLUX-1462: grooming/review now carry a LEAD_PHASE_DENY trim even with no personaId, so their
+    // args include extra `mcp__event-horizon__*` entries — asserted via arrayContaining instead of
+    // the old exact-equality, which still holds unchanged for implementation/finalize/undefined.
+    const TRIMMED_PHASES = new Set(['grooming', 'review']);
     for (const phase of ['grooming', 'implementation', 'review', 'finalize', undefined] as const) {
       for (const status of ['Todo', 'Grooming', 'In Progress', 'Ready']) {
         const session = { phase };
         const task = { status };
         expect(isChatEditGated(session, task), `phase=${phase} status=${status}`).toBe(false);
-        expect(disallowedToolsArgs(session, task)).toEqual(['--disallowed-tools', 'AskUserQuestion', 'ScheduleWakeup']);
+        const args = disallowedToolsArgs(session, task);
+        if (TRIMMED_PHASES.has(phase as string)) {
+          expect(args, `phase=${phase} status=${status}`).toEqual(expect.arrayContaining(['--disallowed-tools', 'AskUserQuestion', 'ScheduleWakeup']));
+        } else {
+          expect(args, `phase=${phase} status=${status}`).toEqual(['--disallowed-tools', 'AskUserQuestion', 'ScheduleWakeup']);
+        }
       }
     }
   });
@@ -197,11 +207,15 @@ describe('disallowedToolsArgs scopes the event-horizon MCP toolset via the deny-
 // prompt text) must be completely untouched by the migration, for every phase, by construction.
 // A dispatched solo/standalone session still carries no `personaId` and a chat/scratch session is
 // still hard-skipped — exactly as before FLUX-1226.
+//
+// FLUX-1462 deliberately punches one hole in this: `grooming`/`review` now get a per-phase trim
+// (`LEAD_PHASE_DENY`) even with no personaId. That's a scoped, intentional exception — split out
+// below — not a regression of this gate; `implementation`/`fast-path`/`finalize` stay byte-identical.
 describe('disallowedToolsArgs / disallowedEhToolsForPersona stay untouched by the FLUX-1226 persona migration (C2)', () => {
-  const DISPATCHED_PHASES = ['grooming', 'fast-path', 'implementation', 'review', 'finalize'] as const;
+  const UNTRIMMED_DISPATCHED_PHASES = ['fast-path', 'implementation', 'finalize'] as const;
 
-  it('a no-personaId dispatched session stays un-scoped for every phase (byte-identical to pre-FLUX-1226)', () => {
-    for (const phase of DISPATCHED_PHASES) {
+  it('a no-personaId dispatched session stays un-scoped for phases FLUX-1462 does not trim (byte-identical to pre-FLUX-1226)', () => {
+    for (const phase of UNTRIMMED_DISPATCHED_PHASES) {
       const args = disallowedToolsArgs({ phase }, { status: 'In Progress' });
       expect(args, `phase=${phase}`).not.toEqual(expect.arrayContaining([expect.stringContaining('mcp__event-horizon__')]));
     }
@@ -215,3 +229,113 @@ describe('disallowedToolsArgs / disallowedEhToolsForPersona stay untouched by th
     expect(scratchArgs).not.toEqual(expect.arrayContaining([expect.stringContaining('mcp__event-horizon__')]));
   });
 });
+
+// FLUX-1462: a genuinely standalone dispatched grooming/review session (no personaId, no
+// patternPosition) gets its `LEAD_PHASE_DENY` trim — the deliberate, ticket-scoped exception to
+// the C2 gate above. Any non-standalone patternPosition (a worker delegate's `assistant`/`step`,
+// or a scatter-gather orchestrator/combiner's `lead`/`combiner`) must stay untouched.
+describe('disallowedToolsArgs trims a dispatched solo lead\'s toolset per phase (FLUX-1462)', () => {
+  it('trims branch/finish_ticket/merge_tickets for a standalone grooming session', () => {
+    const args = disallowedToolsArgs({ phase: 'grooming' }, { status: 'Grooming' });
+    expect(args).toEqual(expect.arrayContaining([
+      'mcp__event-horizon__branch', 'mcp__event-horizon__finish_ticket', 'mcp__event-horizon__merge_tickets',
+    ]));
+  });
+
+  it('trims branch/finish_ticket/merge_tickets for a standalone review session', () => {
+    const args = disallowedToolsArgs({ phase: 'review' }, { status: 'Ready' });
+    expect(args).toEqual(expect.arrayContaining([
+      'mcp__event-horizon__branch', 'mcp__event-horizon__finish_ticket', 'mcp__event-horizon__merge_tickets',
+    ]));
+  });
+
+  it('FLUX-1383: trims branch/finish_ticket/merge_tickets for a standalone batch-grooming session (same as grooming)', () => {
+    const args = disallowedToolsArgs({ phase: 'batch-grooming' }, { status: 'Grooming' });
+    expect(args).toEqual(expect.arrayContaining([
+      'mcp__event-horizon__branch', 'mcp__event-horizon__finish_ticket', 'mcp__event-horizon__merge_tickets',
+    ]));
+  });
+
+  it('never trims the NEVER_DENY floor or leaves the phase mission tools scoped', () => {
+    const args = disallowedToolsArgs({ phase: 'grooming' }, { status: 'Grooming' });
+    expect(args).not.toEqual(expect.arrayContaining([
+      'mcp__event-horizon__get_ticket', 'mcp__event-horizon__add_note',
+      'mcp__event-horizon__update_ticket', 'mcp__event-horizon__change_status', 'mcp__event-horizon__create_ticket',
+    ]));
+  });
+
+  it('does NOT trim a worker delegate dispatched into grooming/review (patternPosition assistant/step untouched)', () => {
+    const assistantArgs = disallowedToolsArgs({ phase: 'grooming', patternPosition: 'assistant' }, { status: 'Grooming' });
+    expect(assistantArgs).not.toEqual(expect.arrayContaining([expect.stringContaining('mcp__event-horizon__branch')]));
+
+    const stepArgs = disallowedToolsArgs({ phase: 'review', patternPosition: 'step' }, { status: 'Ready' });
+    expect(stepArgs).not.toEqual(expect.arrayContaining([expect.stringContaining('mcp__event-horizon__branch')]));
+  });
+
+  it('does NOT trim a scatter-gather orchestrator/combiner lead (non-standalone patternPosition untouched)', () => {
+    const leadArgs = disallowedToolsArgs({ phase: 'review', patternPosition: 'lead' }, { status: 'Ready' });
+    expect(leadArgs).not.toEqual(expect.arrayContaining([expect.stringContaining('mcp__event-horizon__')]));
+  });
+
+  it('an explicit enableTools grant re-enables a trimmed tool for a standalone dispatch', () => {
+    const args = disallowedToolsArgs({ phase: 'grooming', enableTools: ['branch'] }, { status: 'Grooming' });
+    expect(args).not.toEqual(expect.arrayContaining(['mcp__event-horizon__branch']));
+    expect(args).toEqual(expect.arrayContaining(['mcp__event-horizon__finish_ticket', 'mcp__event-horizon__merge_tickets']));
+  });
+
+  it('leaves implementation/fast-path/finalize untouched (no LEAD_PHASE_DENY entry)', () => {
+    for (const phase of ['implementation', 'fast-path', 'finalize'] as const) {
+      const args = disallowedToolsArgs({ phase }, { status: 'In Progress' });
+      expect(args, `phase=${phase}`).not.toEqual(expect.arrayContaining([expect.stringContaining('mcp__event-horizon__')]));
+    }
+  });
+});
+
+// FLUX-1479 (FLUX-1226 Phase E): a persistent chat session's `phase` field stays 'chat' forever
+// (FLUX-602), so a phase HANDOFF is carried on the separate `handoffPhase` field instead —
+// disallowedToolsArgs/stampDisallowedEhTools must recompute against `handoffPhase ?? phase`, not
+// hard-skip just because the literal `phase` is still 'chat'.
+describe('disallowedToolsArgs / stampDisallowedEhTools honor a phase handoff (FLUX-1479)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('a chat session with no handoff is unaffected (byte-identical to pre-FLUX-1479)', () => {
+    const args = disallowedToolsArgs({ phase: 'chat', handoffPhase: undefined }, { status: 'In Progress' });
+    expect(args).not.toEqual(expect.arrayContaining([expect.stringContaining('mcp__event-horizon__')]));
+  });
+
+  it('a handed-off chat session recomputes against the destination phase — the recompute genuinely runs, not just the outcome', () => {
+    const spy = vi.spyOn(orchestrationPersonas, 'disallowedEhToolsForPersona');
+    disallowedToolsArgs({ phase: 'chat', handoffPhase: 'grooming' }, { status: 'In Progress' });
+    // The hard-skip ternary must have let the call through with the DESTINATION phase, not 'chat'.
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ phase: 'grooming' }));
+  });
+
+  it('stampDisallowedEhTools recomputes against the destination phase too', () => {
+    const spy = vi.spyOn(orchestrationPersonas, 'disallowedEhToolsForPersona');
+    const session = { phase: 'chat' as const, handoffPhase: 'grooming' as const, disallowedEhTools: undefined as string[] | undefined };
+    stampDisallowedEhTools(session as never);
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ phase: 'grooming' }));
+  });
+
+  it('a handed-off session with no personaId (the phase-default lead persona) still stays un-scoped in the OUTCOME for an untrimmed phase — the recompute runs but resolves to no-op', () => {
+    // FLUX-1462: grooming/review now DO trim on handoff (covered separately below) — this case
+    // uses 'implementation', which LEAD_PHASE_DENY deliberately never trims, to keep testing the
+    // "recompute runs but resolves to no-op" shape FLUX-1479 introduced.
+    const session = { phase: 'chat' as const, handoffPhase: 'implementation' as const, disallowedEhTools: undefined as string[] | undefined };
+    stampDisallowedEhTools(session as never);
+    expect(session.disallowedEhTools).toBeUndefined();
+    const args = disallowedToolsArgs({ phase: 'chat', handoffPhase: 'implementation' }, { status: 'In Progress' });
+    expect(args).not.toEqual(expect.arrayContaining([expect.stringContaining('mcp__event-horizon__')]));
+  });
+
+  it('FLUX-1462: a handed-off session into grooming DOES recompute a real trim (handoff generalizes the new phase-lead deny)', () => {
+    const session = { phase: 'chat' as const, handoffPhase: 'grooming' as const, disallowedEhTools: undefined as string[] | undefined };
+    stampDisallowedEhTools(session as never);
+    expect(session.disallowedEhTools).toEqual(expect.arrayContaining(['branch', 'finish_ticket', 'merge_tickets']));
+    const args = disallowedToolsArgs({ phase: 'chat', handoffPhase: 'grooming' }, { status: 'In Progress' });
+    expect(args).toEqual(expect.arrayContaining(['mcp__event-horizon__branch', 'mcp__event-horizon__finish_ticket', 'mcp__event-horizon__merge_tickets']));
+  });
+});
+

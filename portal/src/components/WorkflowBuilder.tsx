@@ -26,6 +26,7 @@ import {
 import type { Config, Doc } from '../types';
 import { useConfirm } from '../hooks/useConfirm';
 import { useNotify } from '../hooks/useNotify';
+import { Skeleton, SkeletonCard } from './ui/Skeleton';
 
 // --- Constants ---
 
@@ -796,7 +797,18 @@ export function WorkflowBuilder() {
     config?.phaseDefaults?.[activePhase]?.[currentVariant] === activeTemplate.id
   );
 
-  if (loading) return <div className="h-full flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-gray-400" /></div>;
+  if (loading) {
+    return (
+      <div className="workflow-builder flex h-full flex-col gap-4 overflow-hidden p-5" aria-busy="true" aria-label="Loading workflows">
+        <Skeleton variant="bar" className="h-6 w-1/3" />
+        <div className="flex flex-1 gap-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <SkeletonCard key={i} className="flex-1" />
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="workflow-builder h-full flex flex-col overflow-hidden">

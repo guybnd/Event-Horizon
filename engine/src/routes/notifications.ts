@@ -30,8 +30,12 @@ router.get('/', (_req, res) => {
 });
 
 router.post('/read-all', (_req, res) => {
-  markAllRead();
-  broadcastEvent('notification', { notification: null, unreadCount: 0 });
+  // FLUX-1555: scope to the requesting board — `getWorkspace()` inside markAllRead/getUnreadCount
+  // resolves correctly here because `workspaceScope` (mounted globally) already bound this request
+  // to its board before routing reached this handler.
+  const ws = getWorkspace();
+  markAllRead(ws);
+  broadcastEvent('notification', { notification: null, unreadCount: getUnreadCount(ws) }, ws);
   res.json({ ok: true });
 });
 

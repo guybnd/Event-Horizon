@@ -7,7 +7,7 @@ import {
   type WorkspaceEntry,
 } from './global-settings.js';
 import { isPkg, isSea, getSeaExtractDir } from './packaged-mode.js';
-import { getWorkspace } from './workspace-context.js';
+import { getWorkspace, canonicalizeWorkspaceRoot, normalizeWorkspaceKey } from './workspace-context.js';
 
 // In CJS bundles (esbuild output / pkg executable), __dirname is provided by Node.
 // In ESM dev mode (tsx / Node 20+), use import.meta for the source directory.
@@ -115,17 +115,25 @@ export async function getWorkspacesList(): Promise<WorkspaceEntry[]> {
   return global.workspaces ?? [];
 }
 
+/**
+ * FLUX-1571: aligned with the S1 registry's own key rule (`normalizeWorkspaceKey`,
+ * workspace-context.ts) — realpath'd + case-folded on win32, not a bare `path.resolve()` + fold.
+ * Two entries that name the same on-disk root via an 8.3 short name / different casing now dedupe
+ * (`addWorkspaceEntry`/`autoRegisterWorkspace` below) and compare equal the same way the registry
+ * and HTTP/MCP header resolution do.
+ */
 export function pathsEqual(a: string, b: string): boolean {
-  const na = path.resolve(a);
-  const nb = path.resolve(b);
-  if (process.platform === 'win32') return na.toLowerCase() === nb.toLowerCase();
-  return na === nb;
+  return normalizeWorkspaceKey(a) === normalizeWorkspaceKey(b);
 }
 
 export async function addWorkspaceEntry(entry: WorkspaceEntry): Promise<WorkspaceEntry[]> {
   const global = await loadGlobalSettings();
   const list = global.workspaces ?? [];
-  const normalized = path.resolve(entry.path);
+  // FLUX-1571: store the realpath-canonical form, not a bare `path.resolve()` — an entry persisted
+  // as-typed (e.g. an 8.3 short name) would never byte-match the registry key `openWorkspaceLive`
+  // computes for the same board, so header-based routing that echoes this stored path back would
+  // silently miss and fall through to the default board.
+  const normalized = canonicalizeWorkspaceRoot(entry.path);
   if (!list.some(w => pathsEqual(w.path, normalized))) {
     const newEntry: WorkspaceEntry = { path: normalized };
     if (entry.label) newEntry.label = entry.label;
@@ -166,7 +174,7 @@ export async function updateWorkspaceLabel(index: number, label: string | undefi
 export async function autoRegisterWorkspace(wsPath: string) {
   const global = await loadGlobalSettings();
   const list = global.workspaces ?? [];
-  const normalized = path.resolve(wsPath);
+  const normalized = canonicalizeWorkspaceRoot(wsPath);
   if (!list.some(w => pathsEqual(w.path, normalized))) {
     list.push({ path: normalized });
     global.workspaces = list;

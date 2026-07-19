@@ -77,4 +77,15 @@ describe('computeContextBudget', () => {
     // The old caveat citing the (now-Archived) FLUX-491/FLUX-481 as a measurement blocker is gone.
     expect(b.caveats.join(' ')).not.toMatch(/FLUX-491|FLUX-481/);
   });
+
+  it('FLUX-1512: includes digestSavings and oversized flags, correctly shaped', async () => {
+    const b = await computeContextBudget(task);
+    expect(typeof b.digestSavings.undigestedTokensEst).toBe('number');
+    expect(typeof b.digestSavings.actualTokensEst).toBe('number');
+    expect(typeof b.digestSavings.tokensSaved).toBe('number');
+    expect(typeof b.digestSavings.pctSaved).toBe('number');
+    expect(Number.isNaN(b.digestSavings.pctSaved)).toBe(false);
+    expect(typeof b.bodyOversized).toBe('boolean');
+    expect(typeof b.historyOversized).toBe('boolean');
+  });
 });

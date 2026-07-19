@@ -13,7 +13,7 @@ import type { Task, CliFramework } from '../types';
 import { stopTaskCliSession } from '../api';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { FrameworkSelector } from './FrameworkSelector';
-import { groupSessions, isActiveSession } from '../orchestration';
+import { groupSessions, isActiveSession, isSessionStale } from '../orchestration';
 import { SessionCard } from './SessionCard';
 import { useDockActions } from './DockProvider';
 import { usePendingInteractions } from './pendingInteractions';
@@ -82,6 +82,21 @@ export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks
     [tasks]
   );
 
+  // FLUX-1532: precompute each task's orchestration group + solo staleness once (ticking off `now`
+  // so a card flips into "stalled" live as it crosses SESSION_STALE_MS) — both the per-card render
+  // and the footer's stalled count read from this instead of recomputing `groupSessions` twice.
+  const sessionRows = useMemo(() =>
+    activeTasks.map(task => {
+      const groups = groupSessions(task.cliSessions);
+      const multi = groups.find(g => g.isMulti && g.sessions.some(isActiveSession));
+      // Per-member group staleness isn't surfaced yet (FLUX-1532 scope) — only solo sessions.
+      const stalled = !multi && !!task.cliSession && isSessionStale(task.cliSession, now);
+      return { task, multi, stalled };
+    }),
+    [activeTasks, now]
+  );
+  const stalledSessionCount = sessionRows.filter(r => r.stalled).length;
+
   // Does this conversation currently have a pending approval/question? Mirrors the match used by the
   // reused panels (strict conversationId for approvals; questions also claim an UNROUTED prompt via
   // the single live chat, FLUX-923) so the card shows the panel — not the blockedReason fallback.
@@ -134,9 +149,7 @@ export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks
             </p>
           </div>
         ) : (
-          activeTasks.map(task => {
-            const groups = groupSessions(task.cliSessions);
-            const multi = groups.find(g => g.isMulti && g.sessions.some(isActiveSession));
+          sessionRows.map(({ task, multi, stalled }) => {
             const pendingSlot = (
               <>
                 <ChatApprovalPanel conversationId={task.id} />
@@ -152,6 +165,7 @@ export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks
                 variant="full"
                 session={multi ? null : task.cliSession}
                 group={multi ?? null}
+                stalled={stalled}
                 onOpen={(e) => handleOpen(e, task.id)}
                 onStop={(e) => handleStop(e, task.id)}
                 pendingSlot={pendingSlot}
@@ -166,6 +180,9 @@ export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks
         <div className="border-t border-gray-100 bg-gray-50 p-2 dark:border-white/5 dark:bg-black/20">
            <p className="text-center text-[9px] font-bold uppercase tracking-widest text-gray-400">
              {activeTasks.length} session{activeTasks.length > 1 ? 's' : ''} running
+             {stalledSessionCount > 0 && (
+               <span className="text-amber-500 dark:text-amber-400"> · {stalledSessionCount} stalled</span>
+             )}
            </p>
         </div>
       )}

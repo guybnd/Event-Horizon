@@ -5,19 +5,19 @@
 // "unavailable", never a 500) when gh is missing/unauthed so the UI can fall back.
 // PR-card (kind:'pr') operations — adopt/retry — live in pr-ticket.ts; the branchless
 // engine-side finish lives in finish.ts.
-import { getWorkspace } from '../../workspace-context.js';
 import express from 'express';
 import { getWorkspaceRoot } from '../../workspace.js';
 import { buildActivityEntry } from '../../history.js';
 import { updateTaskWithHistory } from '../../task-store.js';
 import { stopAllSessionsForTask, getBlockingSessionsForTask, getParkedSessionsForTask } from '../../session-store.js';
-import { getTicketBranchStatus, createPullRequest, mergePullRequest, getGhAvailability, ghUnavailableMessage, getPullRequestStatus, getDefaultBranch, isMergeConflict } from '../../branch-manager.js';
+import { getTicketBranchStatus, createPullRequest, mergePullRequest, getGhAvailability, ghUnavailableMessage, getPullRequestStatus, getDefaultBranch, isMergeConflict, evaluateCiGate } from '../../branch-manager.js';
+import { getConfig } from '../../config.js';
 import { findWorktreeForBranch, worktreeIsDirty } from '../../task-worktree.js';
 import { cleanupMergedBranch } from '../../pr-cleanup.js';
 import { disarmTemperForExternalStop } from '../../temper.js';
 import { broadcastEvent } from '../../events.js';
 import { sharedNonDoneSiblings, resolveMergedPrTickets } from '../../pr-tickets.js';
-import { git, errorMessage } from './helpers.js';
+import { git, errorMessage, reqWorkspace } from './helpers.js';
 import type { TaskRecord } from './helpers.js';
 
 const router = express.Router();
@@ -26,7 +26,7 @@ const router = express.Router();
 // no PR exists, or gh is unavailable. Best-effort — never 500.
 router.get('/:id/pr', async (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
   if (!task.branch) return res.json({ pr: null });
 
@@ -45,7 +45,7 @@ router.get('/:id/pr', async (req, res) => {
 // (Done happens at merge — FLUX-555 decision #2). Stores the PR URL as implementationLink.
 router.post('/:id/pr', async (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
   if (!task.branch) return res.status(409).json({ error: 'Ticket has no branch to raise a PR for.' });
 
@@ -68,13 +68,13 @@ router.post('/:id/pr', async (req, res) => {
     // Stamp the PR link on every ticket sharing the branch (branch-scoped PR). The PR's surface
     // is now its own `PR-<n>` deck card (created by syncPrTickets on the next poll) — the FLUX-558
     // `open-pr` swimlane/glow on member tickets is retired (FLUX-569), so we no longer set it.
-    const branchTickets = (Object.values(getWorkspace().tasks) as TaskRecord[]).filter((t) => t.branch === task.branch);
+    const branchTickets = (Object.values(reqWorkspace(req).tasks) as TaskRecord[]).filter((t) => t.branch === task.branch);
     for (const t of branchTickets) {
       await updateTaskWithHistory(t.id, {
         updatedBy: 'Agent',
         entries: t.id === id ? [buildActivityEntry(`PR raised: ${url}`, 'Agent', new Date().toISOString())] : [],
         extraFields: { implementationLink: url },
-      });
+      }, req.workspace);
       if (t.id !== id) broadcastEvent('taskUpdated', { id: t.id });
     }
     const pr = await getPullRequestStatus(task.branch).catch(() => null);
@@ -91,13 +91,13 @@ router.post('/:id/pr', async (req, res) => {
 // merging out from under a running session would lose/clobber in-flight work.
 router.post('/:id/pr/merge', async (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
   const branch: string | undefined = task.branch;
   if (!branch) return res.status(409).json({ error: 'Ticket has no branch / PR to merge.' });
 
   // Branch-scoped: a merge advances ALL tickets sharing this branch.
-  const sharedTickets = (Object.values(getWorkspace().tasks) as TaskRecord[]).filter((t) => t.branch === branch);
+  const sharedTickets = (Object.values(reqWorkspace(req).tasks) as TaskRecord[]).filter((t) => t.branch === branch);
 
   // Two-tier merge guard (FLUX-636):
   // Tier 1 — hard block: pending/running sessions are actively executing; merging would clobber in-flight work.
@@ -129,13 +129,13 @@ router.post('/:id/pr/merge', async (req, res) => {
   const force = req.body?.force === true;
   if (!force) {
     // sharedNonDoneSiblings (pr-tickets.ts) declares a narrower TicketRecord return shape than
-    // this file's TaskRecord (no `title`) — the filtered entries are still the SAME getWorkspace().tasks
-    // objects though, so re-key back into getWorkspace().tasks for the field it doesn't carry.
-    const nonDone = sharedNonDoneSiblings(Object.values(getWorkspace().tasks), branch, id);
+    // this file's TaskRecord (no `title`) — the filtered entries are still the SAME req.workspace.tasks
+    // objects though, so re-key back into req.workspace.tasks for the field it doesn't carry.
+    const nonDone = sharedNonDoneSiblings(Object.values(reqWorkspace(req).tasks), branch, id);
     if (nonDone.length > 0) {
       return res.status(409).json({
         error: `Merging \`${branch}\` would advance ${nonDone.length} unfinished ticket(s) to Done: ${nonDone.map((t) => `${t.id} (${t.status})`).join(', ')}. Confirm to merge the whole shared PR anyway.`,
-        sharedNonDone: nonDone.map((t) => ({ id: t.id, status: t.status, title: (getWorkspace().tasks[t.id] as TaskRecord | undefined)?.title })),
+        sharedNonDone: nonDone.map((t) => ({ id: t.id, status: t.status, title: (reqWorkspace(req).tasks[t.id] as TaskRecord | undefined)?.title })),
         requiresForce: true,
       });
     }
@@ -155,13 +155,28 @@ router.post('/:id/pr/merge', async (req, res) => {
       await updateTaskWithHistory(t.id, {
         updatedBy: 'Agent',
         entries: [buildActivityEntry(`Parked session ended for merge of \`${branch}\`.`, 'Agent', new Date().toISOString())],
-      });
+      }, req.workspace);
     }
   }
 
   const ghAvailability = await getGhAvailability();
   if (!ghAvailability.ok) {
     return res.status(409).json({ error: ghUnavailableMessage(ghAvailability.reason), unavailable: true });
+  }
+
+  // CI gate (FLUX-560): consumes GitHub's check-rollup verdict (or the configured checkCommand
+  // for repos with no GitHub checks) before merging. Mirrors the shared-PR guard above — a 409
+  // with `requiresForce` naming why, never a silent block; `force` (already read above) overrides.
+  if (!force) {
+    const gateOutcome = await evaluateCiGate(branch, getConfig().ci ?? {});
+    if (gateOutcome.blocked) {
+      return res.status(409).json({
+        error: `Cannot merge \`${branch}\` — CI gate: ${gateOutcome.reason} Confirm to merge anyway.`,
+        checks: gateOutcome.checks,
+        ciBlocked: true,
+        requiresForce: true,
+      });
+    }
   }
 
   try {
@@ -176,7 +191,7 @@ router.post('/:id/pr/merge', async (req, res) => {
       await updateTaskWithHistory(id, {
         updatedBy: 'Agent',
         extraFields: { swimlane: 'merge-conflict' },
-      });
+      }, req.workspace);
       broadcastEvent('taskUpdated', { id });
     }
     return res.status(500).json({ error: `Merge failed: ${errorMessage(err)}` });
@@ -201,7 +216,7 @@ router.post('/:id/pr/merge', async (req, res) => {
 // worktree) — never leaves a half-merged tree. Pushes the merge so the PR refreshes.
 router.post('/:id/pr/update-branch', async (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
   const branch: string | undefined = task.branch;
   if (!branch) return res.status(409).json({ error: 'Ticket has no branch to update.' });

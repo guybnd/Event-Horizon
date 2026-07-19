@@ -10,6 +10,28 @@ import { normalizeSubtaskId } from '../types';
  */
 
 /**
+ * Every task id → its first epic parent (epics sorted by id so a multi-parent child resolves
+ * deterministically), built from each candidate parent's `subtasks` list. Single source for
+ * "does this ticket have an epic parent, and which" — Board's own column-exclusion resolution
+ * (FLUX-1503: also reused per-member by the PR deck, so a PR member that is itself someone's
+ * epic subtask still shows the -> epic chip, matching Board's board-level resolution exactly).
+ */
+export function resolveParentByChildId(tasks: Iterable<Task>): Map<string, Task> {
+  const map = new Map<string, Task>();
+  [...tasks]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .forEach((candidateParent) => {
+      candidateParent.subtasks?.forEach((entry) => {
+        const childId = normalizeSubtaskId(entry);
+        if (!map.has(childId)) {
+          map.set(childId, candidateParent);
+        }
+      });
+    });
+  return map;
+}
+
+/**
  * Set of ticket ids folded into a PR deck (every PR ticket's members). PR membership takes
  * precedence over epic folding — a ticket that is both a PR member and an epic subtask folds
  * into the PR deck only, never both.
@@ -20,6 +42,19 @@ export function collectPrMemberIds(tasks: Iterable<Task>): Set<string> {
     if (t.kind === 'pr') (t.members ?? []).forEach((m) => ids.add(m));
   }
   return ids;
+}
+
+/**
+ * Reverse of {@link collectPrMemberIds} (FLUX-1503): PR member ticket id → its owning PR ticket
+ * id. A subtask can be both an epic child and a PR member — PR precedence hides it from the
+ * epic's own deck, but the epic card's full-rollup strip still needs to say "in PR-n" for it.
+ */
+export function collectPrTicketIdByMember(tasks: Iterable<Task>): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const t of tasks) {
+    if (t.kind === 'pr') (t.members ?? []).forEach((m) => map.set(m, t.id));
+  }
+  return map;
 }
 
 /**

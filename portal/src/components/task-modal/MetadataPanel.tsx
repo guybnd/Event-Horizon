@@ -22,6 +22,10 @@ interface MetadataPanelProps {
   setEffortLevel: (v: string) => void;
   implementationLink: string;
   setImplementationLink: (v: string) => void;
+  /** FLUX-979: implementationLink is free text, so it commits on blur (not per keystroke like the
+   *  dropdown fields, not gated behind a manual Save button either) — called with no args; the
+   *  caller reads the current value off its own live state. */
+  onImplementationLinkBlur?: () => void;
   tags: string[];
   setTags: (tags: string[]) => void;
   allStatuses: string[];
@@ -42,7 +46,7 @@ export function MetadataPanel({
   priority, setPriority,
   effort, setEffort,
   effortLevel, setEffortLevel,
-  implementationLink, setImplementationLink,
+  implementationLink, setImplementationLink, onImplementationLinkBlur,
   tags, setTags,
   allStatuses, allUsers, allTags, configTags, availablePriorities,
   task,
@@ -235,6 +239,7 @@ export function MetadataPanel({
           className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
           value={implementationLink}
           onChange={(e) => setImplementationLink(e.target.value)}
+          onBlur={() => onImplementationLinkBlur?.()}
           placeholder="https://github.com/..."
         />
       </div>

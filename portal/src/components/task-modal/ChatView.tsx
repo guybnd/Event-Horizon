@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X, RefreshCw, Play, CheckCircle2, XCircle, Ban, PauseCircle, HelpCircle, LayoutTemplate, ExternalLink } from 'lucide-react';
+import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X, RefreshCw, Play, CheckCircle2, XCircle, Ban, PauseCircle, HelpCircle, LayoutTemplate, ExternalLink, Pencil } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useReducedMotion } from 'framer-motion';
-import { fetchDiffFile, openWorkspaceEditor, type TranscriptMessage, type ChatAttachment } from '../../api';
+import { ehBrowserUrl, fetchDiffFile, openWorkspaceEditor, type TranscriptMessage, type ChatAttachment } from '../../api';
 import type { QueuedMessage, ChatSendOptions } from '../../hooks/useChatSession';
 import { DELEGATION_TOOLS } from '../../orchestration';
 import { TaskMarkdown } from '../TaskMarkdown';
@@ -100,6 +100,19 @@ export interface ChatViewProps {
    *  using `scrollMaxClass`. Used by the resizable floating dock window. */
   fill?: boolean;
   onSend: (text: string, opts?: { model?: string; effort?: string; permissionMode?: string; attachments?: ChatAttachment[] }) => void | Promise<void>;
+  /** FLUX-685: edit-and-resend a past user turn. When provided, a pencil affordance appears on
+   *  every native (non-`sourceStream`) user turn; submitting the edit calls this with the turn's
+   *  `seq`, the edited text, and the composer's current model/effort/permission chips. Omit to
+   *  disable the affordance entirely (e.g. the virtual board/Furnace chats, which have no
+   *  per-turn transcript to truncate). */
+  onEditTurn?: (seq: number, text: string, opts: ChatSendOptions) => void | Promise<void>;
+  /** FLUX-685: retry the last assistant turn — drops it and resends the preceding user turn's own
+   *  text unchanged. When provided, a Retry affordance appears on the last assistant turn only.
+   *  Receives the composer's current model/effort chips (so switching a chip then hitting Retry
+   *  re-runs the SAME prompt under the new model/effort) — permission mode is intentionally not
+   *  threaded through since Retry has no composer submission of its own to read it from. Omit to
+   *  disable the affordance. */
+  onRetryTurn?: (opts?: { model?: string; effort?: string }) => void | Promise<void>;
   /** Stop/interrupt the running turn. Shown while `working`. */
   onStop?: () => void | Promise<void>;
   /** FLUX-674: upload a pasted/dropped/picked image, returning its ref. When provided, the
@@ -262,6 +275,8 @@ export function ChatView({
   scrollMaxClass = 'max-h-72',
   fill = false,
   onSend,
+  onEditTurn,
+  onRetryTurn,
   onStop,
   onUploadImage,
   actions,
@@ -274,8 +289,8 @@ export function ChatView({
   awaitingInputBanner,
   draft,
   onDraftChange,
-  selections,
-  onSelectionsChange,
+  selections: selectionsProp,
+  onSelectionsChange: onSelectionsChangeProp,
   diffBranch,
   tickets,
   meter,
@@ -319,6 +334,22 @@ export function ChatView({
   const [showJump, setShowJump] = useState(false);
   const [newCount, setNewCount] = useState(0);
   const prevLenRef = useRef(messages.length);
+
+  // FLUX-685: edit-and-resend state — the user turn currently being edited (its `seq` + original
+  // text), or null when the composer is in its normal send mode. Lives here (not inside Composer)
+  // because both the Edit button (a message row) and the Composer need it; cleared by the
+  // Composer itself on submit or Cancel.
+  const [editingTurn, setEditingTurn] = useState<{ seq: number; text: string } | null>(null);
+
+  // FLUX-1566: the uncontrolled (task-modal ChatPane) path never passes `onSelectionsChange`, so
+  // Composer's model/effort chips lived only in Composer's own internal state — invisible to the
+  // Retry button here, which always resent under the session default. Mirror the chips into a local
+  // state here so Retry (and the gating below) can read them too; the controlled (dock) path is
+  // untouched since it keeps flowing the parent's `selections`/`onSelectionsChange` straight through.
+  const selectionsControlled = onSelectionsChangeProp !== undefined;
+  const [internalSelections, setInternalSelections] = useState<ComposerSelections | undefined>(selectionsProp);
+  const selections = selectionsControlled ? selectionsProp : internalSelections;
+  const onSelectionsChange = selectionsControlled ? onSelectionsChangeProp : setInternalSelections;
 
   // FLUX-814: render only the last `visibleCount` messages on open (the tail), so a long thread
   // doesn't mount 800+ markdown rows synchronously and freeze the open. "Show earlier" reveals
@@ -733,17 +764,32 @@ export function ChatView({
       if (m.role === 'user') {
           // FLUX-674: a user turn may carry pasted images — render them inline above the text.
           const atts = m.attachments ?? [];
+          // FLUX-685: edit-and-resend needs an addressable, NATIVE turn (a foreign turn gathered
+          // from another stream via extract carries `sourceStream` — its `seq` addresses that
+          // OTHER stream's transcript, not this one, so truncating here would be wrong).
+          const canEdit = !!onEditTurn && m.seq !== undefined && !m.sourceStream && !working && !busy;
           return (
             <div key={i} className="group flex items-end justify-end gap-2">
               {/* FLUX-684: quiet hover-revealed timestamp, left of the right-aligned bubble. */}
               <MessageTime ts={m.ts} />
+              {/* FLUX-685: hover-revealed edit affordance — same treatment as CopyButton below. */}
+              {canEdit && (
+                <button
+                  type="button"
+                  onClick={() => setEditingTurn({ seq: m.seq!, text: m.text })}
+                  title="Edit and resend — drops this message and everything after it"
+                  className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded text-[var(--eh-text-muted)] opacity-0 transition-opacity hover:text-[var(--eh-text-secondary)] focus-visible:opacity-100 group-hover:opacity-100"
+                >
+                  <Pencil className="h-3 w-3" />
+                </button>
+              )}
               <div className="flex max-w-[80%] flex-col gap-1.5 rounded-2xl rounded-br-md border border-primary/15 bg-primary/10 px-3.5 py-2 text-[13px] text-[var(--eh-text-primary)]">
                 {atts.length > 0 && (
                   <div className="flex flex-wrap justify-end gap-1.5">
                     {atts.map((a, j) => (
-                      <a key={j} href={a.url} target="_blank" rel="noreferrer" title={a.fileName}>
+                      <a key={j} href={ehBrowserUrl(a.url)} target="_blank" rel="noreferrer" title={a.fileName}>
                         <img
-                          src={a.url}
+                          src={ehBrowserUrl(a.url)}
                           alt={a.fileName}
                           className="max-h-40 max-w-[200px] rounded-lg border border-primary/20 object-contain"
                         />
@@ -790,6 +836,10 @@ export function ChatView({
       // height cap was removed (explicit user tradeoff: a very long reply can make the transcript
       // tall; no replacement safeguard is in scope).
       const isLastAssistant = i === lastAssistantIdx;
+      // FLUX-685: Retry only makes sense on the LAST assistant turn, only while idle, and only
+      // when it's a native turn (see the edit-affordance comment above for why `sourceStream`
+      // disqualifies it).
+      const canRetry = isLastAssistant && !!onRetryTurn && !m.sourceStream && !working && !busy;
       return (
         <div
           key={i}
@@ -805,6 +855,16 @@ export function ChatView({
               title="Copy message"
               className="flex h-4 w-4 items-center justify-center rounded text-[var(--eh-text-muted)] opacity-0 transition-opacity hover:text-[var(--eh-text-secondary)] focus-visible:opacity-100 group-hover:opacity-100"
             />
+            {canRetry && (
+              <button
+                type="button"
+                onClick={() => void onRetryTurn!({ model: selections?.model || undefined, effort: selections?.effort || undefined })}
+                title="Retry — resend the preceding turn and drop this reply"
+                className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded text-[var(--eh-text-muted)] opacity-0 transition-opacity hover:text-[var(--eh-text-secondary)] focus-visible:opacity-100 group-hover:opacity-100"
+              >
+                <RefreshCw className="h-3 w-3" />
+              </button>
+            )}
           </div>
         </div>
       );
@@ -868,7 +928,10 @@ export function ChatView({
     // plan-ready card is also showing we don't need both, so drop the trailing marker(s) then.
     if (!planReadyPresent) flushMarkers(null);
     return { rows: out, spawnInsertAt };
-  }, [messages, linkifyTickets, diffBranch, working, dividerIndex, openToLastMessage, hasBlock, startIndex, artifactMarkers, planReadyPresent]);
+    // FLUX-685: `busy`, `onEditTurn`/`onRetryTurn`, and the model/effort chip values feed the
+    // Edit/Retry affordances' gating + click handlers computed inside `renderMessage` above — added
+    // to the deps so a chip change or a working/busy flip is never rendered off a stale closure.
+  }, [messages, linkifyTickets, diffBranch, working, busy, dividerIndex, openToLastMessage, hasBlock, startIndex, artifactMarkers, planReadyPresent, onEditTurn, onRetryTurn, selections?.model, selections?.effort]);
 
   // The floating window owns its own title bar, so suppress the in-surface title there. The
   // "working" signal now lives in the WorkingStrip above the composer (FLUX-639), so the
@@ -1106,7 +1169,7 @@ export function ChatView({
 
       {/* Composer lives in its own component so its per-keystroke input state never
           re-renders the transcript above it. */}
-      <Composer busy={busy} working={!!working} onSend={onSend} onEnqueue={onEnqueue} onUploadImage={onUploadImage} draft={draft} onDraftChange={onDraftChange} selections={selections} onSelectionsChange={onSelectionsChange} tickets={tickets} answerPrompt={answerPrompt} onAnswerQuestion={onAnswerQuestion} />
+      <Composer busy={busy} working={!!working} onSend={onSend} onEnqueue={onEnqueue} onUploadImage={onUploadImage} draft={draft} onDraftChange={onDraftChange} selections={selections} onSelectionsChange={onSelectionsChange} tickets={tickets} answerPrompt={answerPrompt} onAnswerQuestion={onAnswerQuestion} editingTurn={editingTurn} onEditSubmit={onEditTurn} onCancelEdit={() => setEditingTurn(null)} />
     </div>
   );
 }
@@ -1436,7 +1499,7 @@ function DispatchChip({
   /** FLUX-865: source ticket title, resolved from the `tickets` prop at the call site. Omitted when
    *  the ticket isn't loaded — the chip falls back to the bare id. */
   title?: string;
-  phase?: 'grooming' | 'implementation' | 'review' | 'finalize' | 'fast-path';
+  phase?: 'grooming' | 'implementation' | 'review' | 'finalize' | 'fast-path' | 'batch-grooming';
   lifecycle?: 'started' | 'working' | 'completed' | 'failed' | 'cancelled' | 'waiting-input';
   /** FLUX-869: dispatched session start (ISO) — powers the run-duration token. Absent on older rows. */
   startedAt?: string;
@@ -1944,6 +2007,9 @@ function Composer({
   tickets,
   answerPrompt,
   onAnswerQuestion,
+  editingTurn,
+  onEditSubmit,
+  onCancelEdit,
 }: {
   busy: boolean;
   /** FLUX-714: the agent's turn is genuinely in flight (live `running` session). FLUX-748: this no
@@ -1963,6 +2029,12 @@ function Composer({
   /** FLUX-923: when set, submit answers this parked question instead of sending/queuing a message. */
   answerPrompt?: { id: string; label: string } | null;
   onAnswerQuestion?: (text: string) => void | Promise<void>;
+  /** FLUX-685: when set, the composer is editing this past user turn — seeds the draft with its
+   *  text and submit routes to `onEditSubmit` instead of send/queue. */
+  editingTurn?: { seq: number; text: string } | null;
+  onEditSubmit?: (seq: number, text: string, opts: ChatSendOptions) => void | Promise<void>;
+  /** FLUX-685: step out of edit mode — clears the parent's `editingTurn` (called on submit too). */
+  onCancelEdit?: () => void;
 }) {
   const [internalInput, setInternalInput] = useState('');
   // FLUX-666: internal chip-selection state — used only on the uncontrolled (ChatPane) path.
@@ -2007,6 +2079,15 @@ function Composer({
   const controlled = onDraftChange !== undefined;
   const input = controlled ? draft ?? '' : internalInput;
   const setValue = controlled ? onDraftChange! : setInternalInput;
+
+  // FLUX-685: entering edit mode repopulates the composer with the target turn's text — keyed on
+  // `seq` (not the whole `editingTurn` object) so this fires once per NEW edit target and doesn't
+  // clobber further keystrokes on re-render.
+  const editingSeq = editingTurn?.seq;
+  useEffect(() => {
+    if (editingSeq !== undefined) setValue(editingTurn!.text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingSeq]);
 
   // FLUX-666: chip selections are optionally controlled the same way as the text draft. When the
   // parent owns them (`onSelectionsChange` provided — the dock path), the values come from the
@@ -2127,6 +2208,24 @@ function Composer({
 
   function submit() {
     const text = input.trim();
+    // FLUX-685: edit-and-resend — takes priority over everything below (a deliberate click on the
+    // pencil affordance, which is itself disabled while working/busy, so this branch never races
+    // the answer-mode/queue paths). Empty text is a no-op rather than a resend-with-nothing.
+    if (editingTurn) {
+      if (!text || working || busy) return;
+      const opts: ChatSendOptions = {
+        model,
+        effort,
+        permissionMode: permissionTouched ? permission : undefined,
+        attachments,
+      };
+      void onEditSubmit?.(editingTurn.seq, text, opts);
+      setValue('');
+      setAttachments([]);
+      setAttachError(null);
+      onCancelEdit?.();
+      return;
+    }
     // FLUX-923: answer mode — a parked ask_user_question is awaiting an answer in this chat. Route the
     // free-text reply to settle it (the session is still `working` because the turn is parked on the
     // question, so the normal path would only QUEUE the text). Must run BEFORE the working/busy branch.
@@ -2239,7 +2338,7 @@ function Composer({
           {attachments.map((a, i) => (
             <div key={i} className="group relative">
               <img
-                src={a.url}
+                src={ehBrowserUrl(a.url)}
                 alt={a.fileName}
                 title={a.fileName}
                 className="h-14 w-14 rounded-lg border border-[var(--eh-border)] object-cover"
@@ -2259,6 +2358,25 @@ function Composer({
               <Loader2 className="h-4 w-4 animate-spin" />
             </div>
           )}
+        </div>
+      )}
+      {/* FLUX-685: editing-mode banner — a visible cue that Enter/Send will REPLACE the transcript
+          from this turn onward (not append a normal message), with a ✕ off-ramp back to a plain
+          send. Mirrors the FLUX-923 answer-mode pill below. */}
+      {editingTurn && (
+        <div className="mx-3 mt-2 flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-[11px] text-[var(--eh-text-primary)]">
+          <Pencil className="h-3.5 w-3.5 flex-shrink-0 text-primary" />
+          <span className="min-w-0 flex-1 truncate">
+            <span className="font-semibold text-primary">Editing:</span> will replace this message and everything after it
+          </span>
+          <button
+            type="button"
+            onClick={() => { setValue(''); onCancelEdit?.(); }}
+            title="Cancel editing"
+            className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-[var(--eh-text-muted)] transition-colors hover:bg-black/10 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/10"
+          >
+            <X className="h-3 w-3" />
+          </button>
         </div>
       )}
       {/* FLUX-923: answer-mode pill — a visible cue that Enter/Send will SETTLE the parked question
@@ -2323,11 +2441,13 @@ function Composer({
         }}
         rows={1}
         placeholder={
-          answering
-            ? 'Type your answer…  (Enter to send your reply)'
-            : canAttach
-              ? 'Message…  (Enter to send, paste or drop an image)'
-              : 'Message…  (Enter to send, Shift+Enter for newline)'
+          editingTurn
+            ? 'Edit and resend…  (Enter to replace, Shift+Enter for newline)'
+            : answering
+              ? 'Type your answer…  (Enter to send your reply)'
+              : canAttach
+                ? 'Message…  (Enter to send, paste or drop an image)'
+                : 'Message…  (Enter to send, Shift+Enter for newline)'
         }
         className="max-h-32 min-h-[40px] w-full resize-none bg-transparent px-3.5 pt-3 text-[13px] text-[var(--eh-text-primary)] placeholder:text-[var(--eh-text-muted)] focus:outline-none"
       />
@@ -2368,24 +2488,33 @@ function Composer({
           // legacy no-queue path (`!onEnqueue`) keeps the old hard gate. Empty input / uploads
           // still disable it in either mode. FLUX-923: in answer mode the only gate is empty text —
           // answering a parked question is allowed regardless of `working` (the turn is parked on it).
+          // FLUX-685: editing has NO queue equivalent — a rewind+resend only makes sense against an
+          // idle turn, so it's gated on `working || busy` same as the legacy no-queue path.
           disabled={
-            answering
-              ? !input.trim() || answerSubmitting
-              : isUploading || (!input.trim() && attachments.length === 0) || ((busy || working) && !onEnqueue)
+            editingTurn
+              ? !input.trim() || working || busy
+              : answering
+                ? !input.trim() || answerSubmitting
+                : isUploading || (!input.trim() && attachments.length === 0) || ((busy || working) && !onEnqueue)
           }
           title={
-            answering
-              ? 'Send your answer to the agent'
-              : (working || busy) && onEnqueue
-                ? 'Queue message — sends when the current turn finishes'
-                : working
-                  ? 'Wait for the current turn to finish'
-                  : 'Send'
+            editingTurn
+              ? working || busy
+                ? 'Wait for the current turn to finish'
+                : 'Resend — replaces this message and everything after it'
+              : answering
+                ? 'Send your answer to the agent'
+                : (working || busy) && onEnqueue
+                  ? 'Queue message — sends when the current turn finishes'
+                  : working
+                    ? 'Wait for the current turn to finish'
+                    : 'Send'
           }
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-white transition-colors hover:bg-primary-hover disabled:opacity-40"
         >
           {answering && answerSubmitting ? <Loader2 className="h-4 w-4 animate-spin" />
             : !answering && (busy || working) && !onEnqueue ? <Loader2 className="h-4 w-4 animate-spin" />
+            : editingTurn ? <RefreshCw className="h-4 w-4" />
             : <Send className="h-4 w-4" />}
         </button>
       </div>

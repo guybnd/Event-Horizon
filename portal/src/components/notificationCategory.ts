@@ -27,3 +27,15 @@ export const CATEGORY_META: { key: NotificationCategory; label: string }[] = [
   { key: 'action', label: 'Action needed' },
   { key: 'update', label: 'Updates' },
 ];
+
+/**
+ * FLUX-1486: a pre-spawn session-launch failure deserves a foreground surface even while the
+ * window is focused (unlike ordinary `prompt`/`error` chatter, which stays badge-only per
+ * FLUX-796). Detected by the message shape the engine already emits for this case — see
+ * `${session.label} session failed to start: ${message}` in `engine/src/routes/cli-session.ts`
+ * (raiseNeedsAction call). No new notification subtype; if that reason string is ever reworded,
+ * this predicate silently stops matching.
+ */
+export function isLaunchFailureNotification(n: Notification): boolean {
+  return n.type === 'prompt' && n.message.includes('session failed to start');
+}

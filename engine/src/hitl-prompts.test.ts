@@ -221,4 +221,42 @@ describe('hitl-prompts durable store (FLUX-833 Phase 2)', () => {
     expect(rehydrateOpenPrompts()).toBe(1);
     expect(listOpenPrompts('permission')[0]!.conversationId).toBeNull();
   });
+
+  // FLUX-1555: parkPrompt stamps the owning board so a per-board index write/rehydrate and a
+  // timeout's settle() rebind all have something durable to key off of.
+  it('stamps workspaceRoot from the active board at park time', async () => {
+    void parkPrompt({ kind: 'permission', payload: { toolName: 'Bash', input: {} }, conversationId: 'FLUX-10', timeoutMs: 60_000 });
+    await Promise.resolve();
+    expect(listOpenPrompts('permission')[0]!.workspaceRoot).toBe(root);
+    await flushOpenPrompts();
+    expect((await readIndex())[0]!.workspaceRoot).toBe(root);
+  });
+
+  // FLUX-1555: a legacy record with no workspaceRoot (written before this field existed) is
+  // back-filled in memory with the board whose file it was read from — the back-compat default the
+  // plan requires — and that stamped root survives + round-trips the next time anything on this
+  // board triggers a write (rehydrate itself doesn't re-persist an untouched record — only a
+  // mutation does).
+  it('back-fills workspaceRoot on rehydrate for a pre-FLUX-1555 index file, and it survives the next write', async () => {
+    await fs.mkdir(getActiveFluxDir(), { recursive: true });
+    await fs.writeFile(
+      path.join(getActiveFluxDir(), 'open-prompts.json'),
+      JSON.stringify([
+        { id: 'legacy', kind: 'permission', payload: { toolName: 'Bash', input: {} }, conversationId: null, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() },
+      ]),
+      'utf-8',
+    );
+    expect(rehydrateOpenPrompts()).toBe(1);
+    expect(listOpenPrompts('permission')[0]!.workspaceRoot).toBe(root);
+
+    // Park a second prompt on the same (only) board — its persist() rewrites the WHOLE board slice,
+    // including the back-filled legacy record, proving the stamp isn't lost on the next flush.
+    void parkPrompt({ kind: 'permission', payload: { toolName: 'Write', input: {} }, conversationId: 'FLUX-11', timeoutMs: 60_000 });
+    await Promise.resolve();
+    await flushOpenPrompts();
+
+    const onDisk = await readIndex();
+    expect(onDisk).toHaveLength(2);
+    expect(onDisk.find((r) => r.id === 'legacy')).toMatchObject({ id: 'legacy', workspaceRoot: root });
+  });
 });

@@ -5,7 +5,22 @@
 // no timeout, no non-interactive env — so e.g. `git fetch`/`git push` in the update-branch route
 // could hang that request forever on a slow/unreachable remote. Route through the S1
 // runner via this tiny local wrapper (mirrors pr-cleanup.ts's `git(cwd, args)` helper).
+import type express from 'express';
+import { getWorkspace, type Workspace } from '../../workspace-context.js';
 import { runGit } from '../../git-exec.js';
+
+/**
+ * FLUX-1448 (epic FLUX-1230 S2/S3 boundary): the workspace a route reads/writes — `req.workspace`
+ * (attached globally by `attachWorkspace`, FLUX-343) when present, else the registry default. The
+ * fallback isn't just defensive: `attachWorkspace` is mounted once in `index.ts`'s real app, but a
+ * route test's minimal Express app frequently skips it, and this keeps those tests exercising the
+ * real handler instead of every one of them needing to reconstruct the full middleware stack.
+ * Byte-for-byte the same value as `req.workspace!` on any request that actually went through
+ * `attachWorkspace` (i.e. always, in production).
+ */
+export function reqWorkspace(req: express.Request): Workspace {
+  return req.workspace ?? getWorkspace();
+}
 
 export function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
   return runGit(args, { cwd });

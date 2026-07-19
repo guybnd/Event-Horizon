@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { buildInitialPrompt } from './shared.js';
+import { getConfig } from '../config.js';
 import type { LaunchPhase } from './types.js';
 
 // FLUX-1226 (C1) — load-bearing byte-compat gate for the Mission-block -> persona migration.
@@ -30,7 +31,11 @@ vi.mock('../skill-modules.js', async (importOriginal) => {
       `(phase skill module '${module}' body stubbed — live .docs/skills content is deliberately not under this snapshot)`,
   };
 });
-const ALL_PHASES: LaunchPhase[] = ['chat', 'grooming', 'fast-path', 'implementation', 'review', 'finalize'];
+// FLUX-1383: 'batch-grooming' is appended at the END, not inserted mid-list — every snapshot in
+// this file's "every phase on X" loops is positional (index-numbered, not phase-named), so
+// inserting a new phase anywhere but last would shift every subsequent phase's snapshot index and
+// spuriously fail this byte-compat gate for phases this ticket never touched.
+const ALL_PHASES: LaunchPhase[] = ['chat', 'grooming', 'fast-path', 'implementation', 'review', 'finalize', 'batch-grooming'];
 
 const baseTask = {
   id: 'FLUX-9001',
@@ -40,6 +45,13 @@ const baseTask = {
   history: [],
   tags: [],
 };
+
+// FLUX-1502: the config-driven communication blocks are a deliberate, feature-owned addition
+// on top of the migrated mission text — they have their own coverage (build-initial-prompt.test.ts /
+// orchestration-personas.test.ts). Pin them OFF here so these snapshots keep guarding exactly what
+// they were verified against: the FLUX-1226 pre-migration baseline.
+beforeAll(() => { getConfig().communicationStyle = { user: 'off', interAgent: false }; });
+afterAll(() => { getConfig().communicationStyle = { user: 'concise', customText: '', interAgent: true }; });
 
 describe('buildInitialPrompt phase mission text — byte-compat snapshot (FLUX-1226 C1)', () => {
   for (const phase of ALL_PHASES) {

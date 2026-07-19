@@ -142,8 +142,8 @@ export function AppearanceSection({
           )}
         </SettingToggleCard>
         <SettingToggleCard
-          title="Celebrate Done Tickets"
-          description="Show fireworks when moving a ticket into the Done column."
+          title="Celebrate Releases"
+          description="Show fireworks when you cut a release."
           checked={enableFireworks}
           onChange={setEnableFireworks}
         />

@@ -93,13 +93,19 @@ function envelopeTs(raw: unknown): string {
 }
 
 /** Wrap a raw event in a turn envelope and append it as one JSONL line. The seq is
- *  assigned inside the serialized queue so it is strictly monotonic per stream. */
+ *  assigned inside the serialized queue so it is strictly monotonic per stream. FLUX-1556: the
+ *  transcript dir is resolved ONCE here, synchronously, at enqueue time — not re-resolved inside
+ *  the queued `.then()` below. That continuation chains off `prev` (the prior write's promise), so
+ *  it runs in a PRIOR write's async context, which can carry a different board's workspace binding
+ *  than the call enqueuing THIS append; re-resolving `getTranscriptDir()` there could mkdir/append
+ *  against the wrong board mid-multi-board-session. */
 function appendEnveloped(streamId: string, raw: unknown): void {
-  const file = getTranscriptFile(streamId);
+  const dir = getTranscriptDir();
+  const file = path.join(dir, `${streamId}.jsonl`);
   const prev = writeQueues.get(streamId) ?? Promise.resolve();
   const next = prev
     .then(async () => {
-      await fs.mkdir(getTranscriptDir(), { recursive: true });
+      await fs.mkdir(dir, { recursive: true });
       let count = lineCounts.get(streamId);
       if (count === undefined) {
         count = await countLines(file);
@@ -169,6 +175,72 @@ export async function clearTranscript(taskId: string): Promise<void> {
  *  so awaiting the latest covers every prior append). Used by tests and clean shutdown. */
 export async function flushTranscript(taskId: string): Promise<void> {
   await (writeQueues.get(taskId) ?? Promise.resolve());
+}
+
+/**
+ * FLUX-685: rewrite a stream's OWN transcript file, keeping only the turns before `fromSeq` —
+ * the write-side counterpart of `sliceTurns` (which reads a range), used to rewind a chat before
+ * an edit-and-resend/retry resend. A stream's own substrate always has `seq === line index`
+ * (`appendEnveloped` assigns `seq` as the running per-stream line count, and legacy lines are
+ * addressed the same way in `lineToTurn`), so truncating is just keeping the first `fromSeq` raw
+ * lines verbatim — no need to re-parse/re-serialize each envelope. Serialized behind the same
+ * per-stream write queue as appends/clear so it can't race a concurrent append, and resets
+ * `lineCounts` to the kept length so the next append continues the seq space with no gap or
+ * collision. `fromSeq` is clamped to `[0, current line count]`.
+ *
+ * Returns the dropped tail lines (possibly empty) plus the post-truncate `keptLength`, so a caller
+ * can undo the rewind — see `restoreTruncatedTail` — if the resend it was rewinding for never
+ * lands. `keptLength` is what `restoreTruncatedTail` compares the on-disk line count against to
+ * detect whether anything was appended in between (see its own doc comment).
+ */
+export async function truncateTranscript(taskId: string, fromSeq: number): Promise<{ dropped: string[]; keptLength: number }> {
+  const file = getTranscriptFile(taskId);
+  const prev = writeQueues.get(taskId) ?? Promise.resolve();
+  let dropped: string[] = [];
+  let keptLength = 0;
+  const next = prev.then(async () => {
+    const lines = await readTranscript(taskId);
+    const kept = lines.slice(0, Math.max(0, fromSeq));
+    dropped = lines.slice(Math.max(0, fromSeq));
+    keptLength = kept.length;
+    await fs.mkdir(getTranscriptDir(), { recursive: true });
+    await fs.writeFile(file, kept.length ? kept.join('\n') + '\n' : '', 'utf8');
+    lineCounts.set(taskId, kept.length);
+  });
+  writeQueues.set(taskId, next.catch(() => {}));
+  await next;
+  return { dropped, keptLength };
+}
+
+/**
+ * FLUX-1566: undo a `truncateTranscript` rewind when the resend it was rewinding for never lands
+ * — a pre-spawn failure in `sendInput` (binary check / resource contention) throws BEFORE it
+ * appends anything, per `sendCliSessionInput`'s ordering (`resolveResumeExecutionRoot` and
+ * `checkBinaryInstalled` both run, and can throw, before the turn's `appendTranscriptEvent`).
+ * Re-appends `dropped` (the exact lines `truncateTranscript` removed) after whatever is currently
+ * on disk, through the same per-stream write queue, so a failed resend never leaves the durable
+ * transcript missing the edited turn with no replacement. No-op for an empty `dropped`.
+ *
+ * Guarded by `keptLength` (the line count `truncateTranscript` left behind): if the on-disk count
+ * has since moved past that — i.e. something DID get appended (the replacement turn landed, then a
+ * LATER step failed) — restoring would resurrect the dropped tail AFTER that new turn, duplicating
+ * the very content the edit was replacing. In that case the new turn is authoritative and this is a
+ * no-op; only a genuine pre-append failure (on-disk count still equals `keptLength`) gets restored.
+ */
+export async function restoreTruncatedTail(taskId: string, dropped: string[], keptLength: number): Promise<void> {
+  if (!dropped.length) return;
+  const file = getTranscriptFile(taskId);
+  const prev = writeQueues.get(taskId) ?? Promise.resolve();
+  const next = prev.then(async () => {
+    const current = await readTranscript(taskId);
+    if (current.length !== keptLength) return; // something was appended since truncate — don't resurrect the dropped tail
+    const restored = [...current, ...dropped];
+    await fs.mkdir(getTranscriptDir(), { recursive: true });
+    await fs.writeFile(file, restored.length ? restored.join('\n') + '\n' : '', 'utf8');
+    lineCounts.set(taskId, restored.length);
+  });
+  writeQueues.set(taskId, next.catch(() => {}));
+  await next;
 }
 
 /** Read the raw transcript lines for a ticket (empty array if none yet). */

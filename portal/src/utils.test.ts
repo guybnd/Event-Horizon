@@ -170,6 +170,9 @@ describe('groupWorkspaces', () => {
     displayName: path.split('/').pop()!,
     active: false,
     available: true,
+    open: false,
+    closable: false,
+    liveSessionCount: 0,
     ...(group ? { group } : {}),
   });
 

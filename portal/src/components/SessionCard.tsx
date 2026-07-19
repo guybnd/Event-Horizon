@@ -64,6 +64,11 @@ export interface SessionCardProps {
    *  safely reflow on grow (e.g. a dense/virtualized kanban column) — the card stays collapsed and
    *  the caller relies on click→chat for detail (FLUX-962 board-rendering constraint). */
   expandable?: boolean;
+  /** FLUX-1532: true when the SOLO session (`session`, never `group` — per-member group staleness
+   *  isn't surfaced here) has gone quiet past `SESSION_STALE_MS` (`isSessionStale`). Renders a
+   *  distinct "stalled" badge/tone instead of the normal active-running treatment, so a hung agent
+   *  reads as needing attention rather than as still actively working. */
+  stalled?: boolean;
 }
 
 /** Compact running-duration label, e.g. "4s", "3m 12s", "1h 04m". FLUX-846: a terminal session
@@ -321,6 +326,7 @@ export const SessionCard = memo(function SessionCard({
   pendingSlot,
   hasPendingInteraction,
   expandable = true,
+  stalled = false,
 }: SessionCardProps) {
   const isCompact = variant === 'compact';
 
@@ -352,10 +358,12 @@ export const SessionCard = memo(function SessionCard({
   const stale =
     session?.status === 'running' && !!session.lastOutputAt && now - new Date(session.lastOutputAt).getTime() > 15000;
 
-  const tone = isWaiting ? 'amber' : group ? 'emerald' : 'neutral';
+  const tone = isWaiting ? 'amber' : stalled ? 'slate' : group ? 'emerald' : 'neutral';
   const toneClass = {
     amber:
       'border-amber-200/80 bg-amber-50/50 hover:border-amber-300/80 dark:border-amber-500/25 dark:bg-amber-500/[0.06] dark:hover:border-amber-500/40',
+    slate:
+      'border-slate-200/80 bg-slate-50/50 hover:border-slate-300/80 dark:border-slate-500/25 dark:bg-slate-500/[0.06] dark:hover:border-slate-500/40',
     emerald:
       'border-emerald-200/70 bg-emerald-50/40 hover:border-primary/30 hover:bg-primary/5 dark:border-emerald-500/20 dark:bg-emerald-500/5 dark:hover:bg-white/5',
     neutral:
@@ -406,6 +414,14 @@ export const SessionCard = memo(function SessionCard({
                   {normalizeRoleLabel(session.role)}
                 </span>
               )}
+              {stalled && (
+                <span
+                  className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold text-slate-600 dark:bg-slate-500/10 dark:text-slate-300"
+                  title="No output for a while — may be stuck"
+                >
+                  stalled
+                </span>
+              )}
               <ElapsedPill
                 startedAt={session.startedAt}
                 endedAt={session.endedAt}
@@ -438,10 +454,12 @@ export const SessionCard = memo(function SessionCard({
           className={`flex min-w-0 items-center gap-1.5 rounded px-1.5 py-1 text-[10px] font-medium ${
             isWaiting
               ? 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300'
-              : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'
+              : stalled
+                ? 'bg-slate-50 text-slate-600 dark:bg-slate-500/10 dark:text-slate-300'
+                : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'
           }`}
         >
-          <CircleDot className={`h-2.5 w-2.5 shrink-0 ${isWaiting || stale ? '' : 'animate-pulse'}`} />
+          <CircleDot className={`h-2.5 w-2.5 shrink-0 ${isWaiting || stale || stalled ? '' : 'animate-pulse'}`} />
           <span className="truncate">{session.currentActivity}</span>
         </div>
       ) : (

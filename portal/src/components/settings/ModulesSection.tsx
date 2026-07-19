@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Package, Plus, Trash2, ChevronDown, ChevronUp, Terminal, Sparkles, RefreshCw, ExternalLink } from 'lucide-react';
-import { fetchModuleCatalog, fetchModuleStatuses, triggerModuleProbe } from '../../api';
+import { fetchModuleCatalog, fetchModuleStatuses, triggerModuleProbe, ehEventSourceUrl } from '../../api';
 import type { ModuleDeclaration, ProbeResult } from '../../types';
 
 interface ModulesSectionProps {
@@ -218,7 +218,7 @@ export function ModulesSection({ modules, setModules }: ModulesSectionProps) {
 
   // SSE subscription for live probe status updates
   useEffect(() => {
-    const es = new EventSource('/api/events');
+    const es = new EventSource(ehEventSourceUrl('/events'));
     es.addEventListener('module-status', (e: MessageEvent) => {
       const { id, status, message, checkedAt } = JSON.parse(e.data) as { id: string; status: import('../../types').ProbeStatus; message: string; checkedAt: string };
       setProbeStatuses(prev => ({ ...prev, [id]: { status, message, checkedAt } }));

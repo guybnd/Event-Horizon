@@ -1,7 +1,8 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Bot, Zap } from 'lucide-react';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
-import { createTask, deleteTask, fetchTask, sendTaskCliInput, updateTask } from '../api';
+import { createTask, deleteTask, sendTaskCliInput, updateTask } from '../api';
+import { fetchTaskCached, peekTask } from '../taskPrefetch';
 import { runAgentAction, launchOrchestration, launchPhaseDefault, getOrchestrationMode, phaseCombiner, phaseLaunchStatus, applyStartSelection, type LaunchPhase, type StartSelection } from '../agentActions';
 import { type OrchestrationLaunchPlan } from '../components/OrchestrationLauncher';
 import { TaskMarkdown } from '../components/TaskMarkdown';
@@ -9,9 +10,10 @@ import { isAgentSession } from '../types';
 import type { HistoryEntry, InlineSubtask, Task } from '../types';
 import { DEFAULT_READY_FOR_MERGE_STATUS, getRequireInputStatus } from '../workflow';
 import { frameworkSupports } from '../utils';
-import { useTaskForm } from './useTaskForm';
+import { getInstantField, isInstantFieldUnchanged, normalizeInstantFieldValue, setInstantField, useTaskForm, type InstantFieldName, type TaskFormValues } from './useTaskForm';
 import { useCliSession } from './useCliSession';
 import { useImageAttachment } from './useImageAttachment';
+import { useUnsavedChangesGuard } from './useUnsavedChangesGuard';
 import type { CommentBoxHandle } from '../components/task-modal/CommentBox';
 import { groupSessions, isActiveSession } from '../orchestration';
 
@@ -58,6 +60,7 @@ export function useTaskModalController() {
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const returnToWorkReasonRef = useRef<HTMLTextAreaElement>(null);
 
+  const form = useTaskForm(modalTask);
   const {
     title, setTitle,
     body, setBody,
@@ -74,7 +77,7 @@ export function useTaskModalController() {
     saveError, setSaveError,
     isDirty: formIsDirty,
     openedTaskIdRef,
-  } = useTaskForm(modalTask);
+  } = form;
 
   const {
     cliSession, setCliSession,
@@ -294,8 +297,16 @@ export function useTaskModalController() {
   }, [allTasks, modalTask?.id]);
   useEffect(() => {
     if (!isModalOpen || !modalTask?.id) return;
-    setIsTaskLoading(true);
-    fetchTask(modalTask.id)
+    // FLUX-1517: a hover-intent prefetch may already have this ticket warm — paint it immediately
+    // (no loading flag) instead of flashing a skeleton, then still await the (possibly-cached) fetch
+    // below so a stale peek is reconciled and the existing revalidation triggers keep working.
+    const warm = peekTask(modalTask.id);
+    if (warm) {
+      setModalTask(warm);
+    } else {
+      setIsTaskLoading(true);
+    }
+    fetchTaskCached(modalTask.id)
       .then((task) => startTransition(() => { setModalTask(task); setIsTaskLoading(false); }))
       .catch((err) => { console.error(err); setIsTaskLoading(false); });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- liveHistSig drives a history-change re-fetch
@@ -443,6 +454,10 @@ export function useTaskModalController() {
           ...payload,
           history: newHistory,
           updatedBy: currentUser,
+          // FLUX-1550: gate this whole-body save against the version the modal last knew — a
+          // save always resubmits `body` (edited or not), so this is what catches a concurrent
+          // body edit landing while the modal was open, not just an in-progress edit.
+          ...(modalTask.bodyVersion !== undefined ? { baseBodyVersion: modalTask.bodyVersion } : {}),
         });
         setModalTask(updatedTask);
       } else {
@@ -453,11 +468,66 @@ export function useTaskModalController() {
       if (!keepOpen && !customHistory) closeModal();
     } catch (error) {
       console.error(error);
-      setSaveError(error instanceof Error ? error.message : 'Failed to save changes. Make sure the engine is running.');
+      // FLUX-1550: a stale-body 409 is a distinct, recoverable state — not a generic engine
+      // failure. Auto-reload the ticket so `modalTask.bodyVersion` is current for a retry; the
+      // user's in-progress edits are NOT clobbered by this reload — useTaskForm's dirty-check
+      // (liveDirty) skips field reconciliation on a same-id modalTask update while the form is
+      // dirty, which it still is here since this save never landed.
+      if ((error as { code?: string } | null)?.code === 'stale_body') {
+        setSaveError('This ticket changed since you opened it. The latest version has been loaded — your edits are preserved; save again to apply them.');
+        if (modalTask?.id) {
+          fetchTaskCached(modalTask.id).then(setModalTask).catch(() => {});
+        }
+      } else {
+        setSaveError(error instanceof Error ? error.message : 'Failed to save changes. Make sure the engine is running.');
+      }
     } finally {
       setSaving(false);
     }
   };
+
+  // FLUX-979: dropdown/tag metadata fields save instantly on change instead of joining the
+  // title/body dirty-then-Save flow — the field never shows as "unsaved" and a status change
+  // still gets its `status_change` history entry. On failure the optimistic value is rolled back
+  // and the generic save error surfaces (same banner the manual Save button uses).
+  const saveField = useCallback(async (field: InstantFieldName, value: string | string[]) => {
+    if (!modalTask?.id) return;
+    const normalizedValue = normalizeInstantFieldValue(field, value);
+    const previousValue = getInstantField(form, field);
+    setInstantField(form, field, normalizedValue);
+    // FLUX-1568: e.g. clicking into implementationLink and blurring without editing it — the value
+    // already matches what's persisted, so skip the PUT + refresh entirely.
+    if (isInstantFieldUnchanged(modalTask, field, normalizedValue)) return;
+    const appendHistory: HistoryEntry[] = [];
+    if (field === 'status' && modalTask.status !== normalizedValue) {
+      appendHistory.push({
+        type: 'status_change',
+        from: modalTask.status,
+        to: normalizedValue as string,
+        user: currentUser,
+        date: new Date().toISOString(),
+      });
+    }
+    try {
+      const updatedTask = await updateTask(modalTask.id, {
+        [field]: normalizedValue,
+        updatedBy: currentUser,
+        ...(appendHistory.length ? { appendHistory } : {}),
+      });
+      setModalTask(updatedTask);
+      triggerRefresh();
+      form.markFieldsClean({ [field]: normalizedValue } as Partial<TaskFormValues>);
+    } catch (error) {
+      setInstantField(form, field, previousValue);
+      setSaveError(error instanceof Error ? error.message : 'Failed to save change. Make sure the engine is running.');
+    }
+  }, [modalTask, currentUser, form, setModalTask, triggerRefresh, setSaveError]);
+
+  // FLUX-979: native "Leave site?" guard — catches tab-close/refresh/navigation with an unsaved
+  // title/body/subtask edit, which the in-app discard confirmation can't (it only fires on an
+  // in-app close attempt). Metadata fields never contribute to `isDirty` any more (they save
+  // instantly via `saveField` above), so this only fires for genuine free-text/hierarchy edits.
+  useUnsavedChangesGuard(isModalOpen && formIsDirty);
 
   const handleDelete = async () => {
     if (!modalTask?.id) return;
@@ -986,6 +1056,7 @@ export function useTaskModalController() {
     handleReplyPaste, handleReplyDragOver, handleReplyDrop,
     // derived
     isDirty,
+    dirtyFields: form.dirtyFields,
     allStatuses, allUsers, allTags, availablePriorities,
     readyForMergeStatus,
     requireInputDestinations,
@@ -999,7 +1070,7 @@ export function useTaskModalController() {
     // banners
     groomingBanner, requireInputBanner, readyForMergeBanner,
     // handlers
-    handleCloseAttempt, handleSave, handleDelete, handleSetReviewState,
+    handleCloseAttempt, handleSave, saveField, handleDelete, handleSetReviewState,
     sendCommentDirectly, sendReplyDirectly, submitRequireInputResponse,
     handleReturnToWork, openLauncher, handleReviewLaunch,
     sendFinishCommand, handleLaunchWithBranchCheck, handleStartPromptConfirm,

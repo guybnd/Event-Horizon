@@ -2,6 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { getActiveFluxDir } from './workspace.js';
+import { getWorkspace } from './workspace-context.js';
 
 /**
  * FLUX-841 — session→ticket binding for the human-in-the-loop channels.
@@ -22,7 +23,10 @@ import { getActiveFluxDir } from './workspace.js';
  * route.
  *
  * The secret (FLUX-894): a 32-byte random value PERSISTED to the active flux dir
- * (`session-binding-secret`), loaded lazily on first sign/verify and cached for the process.
+ * (`session-binding-secret`), loaded lazily on first sign/verify and cached PER WORKSPACE ROOT
+ * (FLUX-1556 — a single process-wide cache meant every board's sign/verify used whichever board's
+ * secret was resolved first, so all boards shared board-1's secret instead of each reading/minting
+ * its own on-disk one).
  *  - It is local-only: gitignored and excluded from flux-data sync, exactly like `open-prompts.json`,
  *    so the FLUX-841 secrecy property still holds (the secret never leaves the machine).
  *  - It is durable across an engine restart. The original design held the secret only in memory and
@@ -36,12 +40,15 @@ import { getActiveFluxDir } from './workspace.js';
  */
 
 const SECRET_FILE = 'session-binding-secret';
-/** The resolved per-workspace binding secret, cached for the life of the process after first use. */
-let cachedSecret: Buffer | null = null;
+/** The resolved per-workspace binding secret, keyed by workspace root and cached for the life of
+ *  the process after first use per root (FLUX-1556). */
+const cachedSecretsByRoot = new Map<string | null, Buffer>();
 
 /**
- * Load the persisted binding secret, minting and persisting one on first use. Cached for the
- * process so every sign/verify is consistent and disk is touched at most once.
+ * Load the persisted binding secret for the CURRENT workspace, minting and persisting one on first
+ * use. Cached per workspace root so every sign/verify for a given board is consistent and its
+ * on-disk secret is touched at most once — a second board must never read/verify against the
+ * first board's cached secret.
  *
  * Best-effort persistence: if the active flux dir cannot be resolved (no workspace bound — e.g. a
  * unit test) or the file system is unwritable, we fall back to a fresh in-memory secret. That is
@@ -51,7 +58,9 @@ let cachedSecret: Buffer | null = null;
  * the on-disk secret is the live path.
  */
 function getSecret(): Buffer {
-  if (cachedSecret) return cachedSecret;
+  const root = getWorkspace().root;
+  const cached = cachedSecretsByRoot.get(root);
+  if (cached) return cached;
   let file: string | null = null;
   // FLUX-908: distinguish "file absent" from "file present but unreadable". A transient Windows
   // EBUSY/EACCES lock (AV/indexer) on the EXISTING valid secret must NOT trigger a re-mint+overwrite
@@ -64,7 +73,7 @@ function getSecret(): Buffer {
     const hex = fs.readFileSync(file, 'utf-8').trim();
     const buf = Buffer.from(hex, 'hex');
     if (buf.length === 32) {
-      cachedSecret = buf;
+      cachedSecretsByRoot.set(root, buf);
       return buf;
     }
     // Wrong length / garbage on disk (truncated/tampered) — fall through and re-mint a fresh one.
@@ -90,7 +99,7 @@ function getSecret(): Buffer {
   } else if (existedButUnreadable) {
     console.warn('[session-binding] binding secret exists but was unreadable (transient lock?) — using an ephemeral in-process secret WITHOUT overwriting it; tokens will not survive this restart, but the on-disk secret is preserved for the next one');
   }
-  cachedSecret = buf;
+  cachedSecretsByRoot.set(root, buf);
   return buf;
 }
 
@@ -121,5 +130,5 @@ export function verifyConversation(conversationId: string, token: string | null 
  * Not part of the runtime API.
  */
 export function __resetBindingSecretForTest(): void {
-  cachedSecret = null;
+  cachedSecretsByRoot.clear();
 }

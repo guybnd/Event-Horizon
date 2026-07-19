@@ -65,6 +65,15 @@ export interface AgentSessionEntry {
   role?: string;
   /** Execution pattern of the run (relay | scatter-gather | supervisor). */
   pattern?: string;
+  /**
+   * PID of the ENGINE process (not the spawned CLI subprocess) that started this session
+   * (FLUX-1572). Lets a boot-time reconcile tell a genuinely orphaned session (its owning engine
+   * process is dead) apart from one still owned by a live sibling engine process bound to the
+   * same shared `.flux`/`.flux-store` — a second instance on the same workspace must not abandon
+   * the first's still-running sessions. Absent on entries written before this field existed;
+   * callers fall back to the pre-fix unconditional-abandon behavior for those.
+   */
+  enginePid?: number;
 }
 
 export function buildAgentSessionEntry(
@@ -81,6 +90,7 @@ export function buildAgentSessionEntry(
     progress: [],
     user: label,
     date: startedAt,
+    enginePid: process.pid,
     ...(group?.groupId ? { groupId: group.groupId } : {}),
     ...(group?.role ? { role: group.role } : {}),
     ...(group?.pattern ? { pattern: group.pattern } : {}),
@@ -123,6 +133,7 @@ export interface HistoryEntryLike {
   outcome?: string | undefined;
   progress?: AgentSessionProgress[] | undefined;
   progressCount?: number | undefined;
+  enginePid?: number | undefined;
   originalProgressCount?: number | undefined;
   finalMessage?: string | undefined;
   collapsed?: boolean | undefined;

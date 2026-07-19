@@ -5,10 +5,10 @@ import path from 'path';
 import {
   GROUP_DOCS_BRANCH,
   GROUP_STORE_DIRNAME,
-  getMemberBinding,
   type GroupContext,
   type ResolvedMember,
 } from './group.js';
+import { getWorkspace } from './workspace-context.js';
 // FLUX-1000 (epic FLUX-996): defaultGitRunner used to be a bare execFileAsync — no timeout, no
 // non-interactive env. Called from group-sync.ts's syncGroup() after the fan-out, so a hung
 // fetch/reset here could still block a group sync/edit even once fanOutGroupDocs itself is
@@ -203,7 +203,11 @@ export async function ensureMemberGitignore(memberRoot: string): Promise<void> {
 export function buildGroupDocsScopeArg(memberRoot: string): string[] {
   if (!memberRoot) return [];
   // Only emit when we're a member — on a parent the cwd already covers .flux-group.
-  if (!getMemberBinding()) return [];
+  // FLUX-1565: `getWorkspace()` resolves to the ALS-bound workspace of the request/session
+  // that's spawning this agent (see workspace-context.ts's `runWithWorkspace`), not the
+  // `getMemberBinding()` singleton — which reflects whichever workspace activated last and
+  // would leak a different board's member binding once two boards are open.
+  if (!getWorkspace().memberBinding) return [];
   const storeDir = path.join(memberRoot, GROUP_STORE_DIRNAME);
   return existsSync(storeDir) ? ['--add-dir', storeDir] : [];
 }

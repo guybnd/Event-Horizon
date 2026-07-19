@@ -47,6 +47,10 @@ export interface ModuleDeclaration {
   phases?: string[];
   conditions?: {
     requireTags?: string[];
+    /** FLUX-1479 (FLUX-1226 Phase D): only active for a Scratch ticket's chat (`isScratchSession`
+     *  in agents/shared.ts) — the mechanism a scratch-specific fragment (e.g. `scratchpad-mode`
+     *  below) is keyed on so an ordinary chat session never picks it up. */
+    requireScratch?: boolean;
   };
   /** Subdirectories to create under the active flux dir when this module is enabled. */
   scaffold?: {
@@ -98,13 +102,23 @@ export function loadModules(): ModuleDeclaration[] {
   return raw.filter(isValidModule);
 }
 
-export function getActiveModules(phase?: string, tags?: string[]): ModuleDeclaration[] {
-  return loadModules().filter(m => {
+export function getActiveModules(phase?: string, tags?: string[], isScratch?: boolean): ModuleDeclaration[] {
+  // FLUX-1479: `loadModules()` only ever returns what a project explicitly opted into
+  // (`getConfig().modules`, empty by default) — the right gate for a module that spawns a real
+  // process (serena/context7/basic-memory/mem0 above, all `enabled: false` by default). A pure
+  // prompt-fragment built-in with no external process (no `mcpServer`/`sharedHttp`) has no such
+  // cost, so it stays always-in-play rather than requiring every project to remember to flip a
+  // toggle for it — layered UNDER the configured list so a project can still override by id.
+  const configured = loadModules();
+  const configuredIds = new Set(configured.map(m => m.id));
+  const alwaysOn = BUILTIN_MODULES.filter(m => m.enabled && !m.mcpServer && !m.sharedHttp && !configuredIds.has(m.id));
+  return [...alwaysOn, ...configured].filter(m => {
     if (!m.enabled) return false;
     if (phase && m.phases && m.phases.length > 0 && !m.phases.includes(phase)) return false;
     if (m.conditions?.requireTags && m.conditions.requireTags.length > 0) {
       if (!tags || !m.conditions.requireTags.every(t => tags.includes(t))) return false;
     }
+    if (m.conditions?.requireScratch && !isScratch) return false;
     return true;
   });
 }
@@ -159,8 +173,8 @@ export function serenaContextFor(framework?: string): string {
   return (framework && SERENA_CONTEXT_BY_FRAMEWORK[framework]) || 'claude-code';
 }
 
-export function getModulePromptFragments(phase?: string, tags?: string[]): string {
-  const active = getActiveModules(phase, tags);
+export function getModulePromptFragments(phase?: string, tags?: string[], isScratch?: boolean): string {
+  const active = getActiveModules(phase, tags, isScratch);
   const fragments: string[] = [];
   // Dedupe by module id — matches getModuleMcpServers' object-key dedupe, so a
   // duplicate id in config doesn't inject the same fragment twice (FLUX-447).
@@ -242,5 +256,17 @@ export const BUILTIN_MODULES: ModuleDeclaration[] = [
       env: { MEM0_API_KEY: '${MEM0_API_KEY}' },
     },
     promptFragment: 'Mem0 memory tools are available if you need cross-session recall. Use them to persist key architectural decisions or patterns when they are worth remembering beyond this session. Don\'t use them for ephemeral state or things already tracked in the ticket.',
+  },
+  {
+    // FLUX-1479 (FLUX-1226 Phase D): always-on (not an opt-in toggle like the modules above) —
+    // gated purely by `conditions.requireScratch` so it only ever activates for a Scratch
+    // ticket's chat (phase 'chat' + task.kind === 'scratch'), never for an ordinary ticket chat.
+    id: 'scratchpad-mode',
+    name: 'Scratchpad Mode',
+    description: 'Scratch-specific guidance for a Scratch ticket\'s open-ended chat session',
+    enabled: true,
+    phases: ['chat'],
+    conditions: { requireScratch: true },
+    promptFragment: 'This is a Scratchpad conversation — an exploratory surface with no fixed board position and no phase checklist. Use it to riff on ideas, compare approaches, and think out loud with the user before anything is committed to a real ticket. When the discussion converges on something concrete enough to build, PROPOSE extracting it into a real, groomed ticket (extract_ticket, or a board-rebase "promote") — describe what you would carve out and wait for the user\'s go-ahead rather than promoting unilaterally.',
   },
 ];

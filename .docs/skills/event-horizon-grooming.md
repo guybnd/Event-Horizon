@@ -13,7 +13,7 @@ Scope: Interpret requirements, update frontmatter, and handle `.flux` metadata d
 
 # Event Horizon Agent — Grooming Skill
 
-Version: 2.17.0
+Version: 2.18.0
 
 ## When This Skill Applies
 
@@ -36,6 +36,7 @@ Full contract: `read_skill('orchestrator', 'End-of-Turn Action Contract')`. For 
    - **Implementation plan**: concrete steps so another agent could pick up without re-discovery. Apply the Plan Discipline items below, scaled to the ticket's size and risk. Scale ceremony to effort generally — see `read_skill('orchestrator', 'Ceremony by effort')`.
 7. Use `change_status` with `newStatus: 'Todo'`. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.** If the board's `plan` gate policy is `Auto` or `Auto→You` (FLUX-1263), this call may not move the ticket immediately — it instead kicks off an automated plan-review pass and the tool's response explains what happened. That's expected: stop the same way regardless of whether the move applied directly or the gate took over.
    - **Exception — fast-path sessions (FLUX-1380).** This "stop at Todo" instruction is the default grooming contract, not an absolute rule. When the launch mission text explicitly identifies this session as `fast-path` (a combined groom-and-implement session dispatched via `phase:'fast-path'`), that mission overrides this step for this launch only: continue straight into implementation per the fast-path mission's own instructions instead of stopping at Todo. This is a launch-time override, not a change to what a normally-dispatched grooming session does — absent an explicit fast-path mission, stop at Todo as written above.
+   - **Exception — batch-grooming sessions (FLUX-1383).** When the launch mission identifies this session as `batch-grooming` (dispatched via `phase:'batch-grooming'` with a `batchTicketIds` member set — one session grooming several sibling tickets sharing one parent, in one sitting, instead of one session per ticket), apply this whole workflow to EACH listed member independently and in turn: read the shared parent once, then for each member run steps 3-7 on its own ticket id, ending with member's own `change_status` call (`Todo`, or `Require Input` with that member's own question). A `Require Input` or any other outcome on one member must never block, skip, or change how you groom the others — each member's status move is its own independent call, made immediately after finishing that member, never deferred or batched together. Ineligible members (already resolved server-side — L/XL effort, epic parents, past Grooming/Require Input) are excluded from the set you're handed; do not re-derive eligibility yourself. End your final turn with a one-line summary naming which members moved to Todo and which (if any) moved to Require Input, and why. This is a launch-time override (like fast-path above), not a change to single-ticket grooming.
 
 All persistence uses MCP tools (see "Editing & Safety" below).
 
@@ -144,4 +145,5 @@ When you reach "design finalized — ready to split into subtasks" for an epic t
 
 - Keep comments factual and short. End input requests with a concrete question and proposed default.
 - Prefer comments that help the next agent continue without re-discovery.
+- **Write for the reader (FLUX-1502):** to the user (questions, `Require Input`, TL;DRs) — lead with the outcome or question, plain language, bold the load-bearing phrases; to the next agent (handoffs, findings) — self-contained facts with exact paths/symbols/ids, action first, never "see above". No filler, no hedging. Full rules: `read_skill('orchestrator', 'Communication Style')`.
 - **Substantial comments: add a faithful `summary`** on `add_note` (preserve the decision / why / actionable detail; concise but not lossy; length scales with importance — don't force one line; skip for short notes). Older summarized comments show collapsed in the agent digest; the full text stays fetchable via `get_ticket` with `expand: ["<id>"]`. Set `pin: true` on entries that must never collapse. When a comment **replaces an earlier decision** in this ticket, pass `supersedes: ["<id>"]` so the dead entry collapses to a marker (a pinned/user-authored target stays full, advisory-only — the engine won't bury human intent).

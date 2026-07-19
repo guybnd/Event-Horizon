@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { HelpCircle, Send, Plus } from 'lucide-react';
+import { HelpCircle, Send, Plus, Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { usePendingInteractions } from './pendingInteractions';
@@ -123,6 +123,11 @@ export function QuestionCard({
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // FLUX-1505: decision-collapse — the picker folds into a compact chosen-answer chip the instant
+  // Send is clicked (no waiting on the POST), and springs back open on failure so the user can
+  // retry with their selection intact. Network semantics are unchanged: `onResolved()` still only
+  // fires after the engine accepts the answer (see `submit` below) — collapsing is purely visual.
+  const [collapsed, setCollapsed] = useState(false);
 
   function toggleOption(qi: number, label: string, multi: boolean) {
     setChoices((prev) => {
@@ -173,6 +178,7 @@ export function QuestionCard({
     if (!complete || submitting) return;
     setSubmitting(true);
     setError(null);
+    setCollapsed(true); // fold into the chosen-answer chip immediately — purely visual
     try {
       await answerQuestion(pending.id, answers, notes.trim() || undefined);
       // Remove only after the engine accepted the answer. (The engine also broadcasts
@@ -181,11 +187,31 @@ export function QuestionCard({
       // engine stays parked until timeout. (FLUX-662 review m1 / FLUX-664.)
       onResolved();
     } catch (err) {
-      // POST failed (or the question is no longer pending) — keep the picker so the user can
-      // retry, and surface the error. The engine is still parked until a successful answer.
+      // POST failed (or the question is no longer pending) — spring back open so the user can
+      // retry with their selection intact, and surface the error. The engine is still parked
+      // until a successful answer.
       setError(err instanceof Error ? err.message : 'Failed to submit answer.');
       setSubmitting(false);
+      setCollapsed(false);
     }
+  }
+
+  // FLUX-1505: a short human-readable summary of the chosen answer(s) for the collapsed chip.
+  const chosenSummary = Object.values(answers).flat().join(', ');
+
+  if (collapsed) {
+    return (
+      <div className={bare ? '' : 'eh-border rounded-xl border border-primary/30 bg-primary/5 p-3'}>
+        <div className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px] font-medium text-[var(--eh-text-primary)] ${submitting ? 'animate-pulse' : ''}`}>
+          {submitting ? (
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+          ) : (
+            <HelpCircle className="h-3.5 w-3.5 shrink-0 text-primary" />
+          )}
+          <span className="min-w-0 flex-1 truncate">{chosenSummary || 'Answer sent'}</span>
+        </div>
+      </div>
+    );
   }
 
   return (

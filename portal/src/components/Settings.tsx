@@ -22,6 +22,7 @@ import { CostTokensSection } from './settings/CostTokensSection';
 import { ModulesSection } from './settings/ModulesSection';
 import { McpPhasesSection } from './settings/McpPhasesSection';
 import { GeneralSection } from './settings/GeneralSection';
+import { CommunicationStyleSection, type CommUserStyle } from './settings/CommunicationStyleSection';
 import type { Config, ModuleDeclaration, TaskKey, Tier } from '../types';
 import { EMPTY_TIER_MODELS, PRESET_ASSIGNMENTS, derivePreset, type TierModels } from '../modelPolicy';
 
@@ -92,6 +93,11 @@ export function Settings() {
   const [defaultAgent, setDefaultAgent] = useState<string>('auto');
   const [boardPermissionDefault, setBoardPermissionDefault] = useState<'gated' | 'skip'>('gated');
   const [ticketPermissionDefault, setTicketPermissionDefault] = useState<'gated' | 'skip'>('skip');
+  // FLUX-1502: communication-style prompt injection — user-facing style (taste, selectable) +
+  // inter-agent protocol (fixed contract, on/off only).
+  const [commUserStyle, setCommUserStyle] = useState<CommUserStyle>('concise');
+  const [commCustomText, setCommCustomText] = useState('');
+  const [commInterAgent, setCommInterAgent] = useState(true);
   // FLUX-1373: per-CLI tier definitions + task->tier policy — supersedes the retired
   // groomingModel/implementationModel per-CLI fields.
   const [claudeTiers, setClaudeTiers] = useState<TierModels>(EMPTY_TIER_MODELS);
@@ -106,6 +112,7 @@ export function Settings() {
   const [agentProgressDelay, setAgentProgressDelay] = useState(2);
   const [furnaceRetryIntervalMs, setFurnaceRetryIntervalMs] = useState(20 * 60 * 1000);
   const [furnaceMaxWaitMs, setFurnaceMaxWaitMs] = useState(5 * 60 * 60 * 1000);
+  const [furnaceSessionTimeoutMs, setFurnaceSessionTimeoutMs] = useState(90 * 60 * 1000);
   const [modules, setModules] = useState<ModuleDeclaration[]>([]);
   const [mcpServerPhases, setMcpServerPhases] = useState<Record<string, string[]>>({});
   const [boardFx, setBoardFx] = useState<NonNullable<Config['boardFx']>>({ columnFire: true, ticketAgeRust: true, dragTrail: true, idleDust: true, boardWeather: true, columnFlowArrows: true, heartbeat: true, speedDemon: true, doneStreak: true, ticketDna: true });
@@ -170,6 +177,9 @@ export function Settings() {
       setDefaultAgent(config.defaultAgent || 'auto');
       setBoardPermissionDefault(config.permissions?.boardDefault === 'skip' ? 'skip' : 'gated');
       setTicketPermissionDefault(config.permissions?.ticketDefault === 'gated' ? 'gated' : 'skip');
+      setCommUserStyle(config.communicationStyle?.user ?? 'concise');
+      setCommCustomText(config.communicationStyle?.customText ?? '');
+      setCommInterAgent(config.communicationStyle?.interAgent ?? true);
       setClaudeTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.claudeCode?.tiers ?? {}) });
       setGeminiTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.geminiCli?.tiers ?? {}) });
       setCopilotTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.copilotCli?.tiers ?? {}) });
@@ -184,6 +194,7 @@ export function Settings() {
       setAgentProgressDelay(config.agentProgress?.inlineDelay ?? 2);
       setFurnaceRetryIntervalMs(config.furnaceSettings?.rateLimitRetryIntervalMs ?? 20 * 60 * 1000);
       setFurnaceMaxWaitMs(config.furnaceSettings?.rateLimitMaxWaitMs ?? 5 * 60 * 60 * 1000);
+      setFurnaceSessionTimeoutMs(config.furnaceSettings?.sessionTimeoutMs ?? 90 * 60 * 1000);
       setModules(config.modules || []);
       setMcpServerPhases((config as ConfigWithMcpPhases).mcpServerPhases || {});
       setBoardFx({ columnFire: true, ticketAgeRust: true, dragTrail: true, idleDust: true, boardWeather: true, columnFlowArrows: true, heartbeat: true, speedDemon: true, doneStreak: true, ticketDna: true, ...(config.boardFx ?? {}) });
@@ -314,6 +325,11 @@ export function Settings() {
           boardDefault: boardPermissionDefault,
           ticketDefault: ticketPermissionDefault,
         },
+        communicationStyle: {
+          user: commUserStyle,
+          customText: commCustomText,
+          interAgent: commInterAgent,
+        },
         syncSettings: {
           debounceMs: syncDebounceMs,
           maxWaitMs: syncMaxWaitMs,
@@ -325,6 +341,8 @@ export function Settings() {
         furnaceSettings: {
           rateLimitRetryIntervalMs: furnaceRetryIntervalMs,
           rateLimitMaxWaitMs: furnaceMaxWaitMs,
+          sessionTimeoutMs: furnaceSessionTimeoutMs,
+          smelterMode: config.furnaceSettings?.smelterMode,
         },
         modules,
         mcpServerPhases,
@@ -389,6 +407,9 @@ export function Settings() {
     setDefaultAgent(config.defaultAgent || 'auto');
     setBoardPermissionDefault(config.permissions?.boardDefault === 'skip' ? 'skip' : 'gated');
     setTicketPermissionDefault(config.permissions?.ticketDefault === 'gated' ? 'gated' : 'skip');
+    setCommUserStyle(config.communicationStyle?.user ?? 'concise');
+    setCommCustomText(config.communicationStyle?.customText ?? '');
+    setCommInterAgent(config.communicationStyle?.interAgent ?? true);
     setClaudeTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.claudeCode?.tiers ?? {}) });
     setGeminiTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.geminiCli?.tiers ?? {}) });
     setCopilotTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.copilotCli?.tiers ?? {}) });
@@ -401,6 +422,7 @@ export function Settings() {
     setAgentProgressDelay(config.agentProgress?.inlineDelay ?? 2);
     setFurnaceRetryIntervalMs(config.furnaceSettings?.rateLimitRetryIntervalMs ?? 20 * 60 * 1000);
     setFurnaceMaxWaitMs(config.furnaceSettings?.rateLimitMaxWaitMs ?? 5 * 60 * 60 * 1000);
+    setFurnaceSessionTimeoutMs(config.furnaceSettings?.sessionTimeoutMs ?? 90 * 60 * 1000);
     setModules(config.modules || []);
     setMcpServerPhases((config as ConfigWithMcpPhases).mcpServerPhases || {});
     setBoardFx({ columnFire: true, ticketAgeRust: true, dragTrail: true, idleDust: true, boardWeather: true, columnFlowArrows: true, heartbeat: true, speedDemon: true, doneStreak: true, ticketDna: true, ...(config.boardFx ?? {}) });
@@ -462,6 +484,9 @@ export function Settings() {
       defaultAgent,
       boardPermissionDefault,
       ticketPermissionDefault,
+      commUserStyle,
+      commCustomText,
+      commInterAgent,
       claudeTiers,
       geminiTiers,
       copilotTiers,
@@ -470,6 +495,7 @@ export function Settings() {
       agentProgressDelay,
       furnaceRetryIntervalMs,
       furnaceMaxWaitMs,
+      furnaceSessionTimeoutMs,
       tokenDisplayMode,
       tokenCostThresholds,
     },
@@ -522,6 +548,9 @@ export function Settings() {
       defaultAgent: config.defaultAgent || 'auto',
       boardPermissionDefault: config.permissions?.boardDefault === 'skip' ? 'skip' : 'gated',
       ticketPermissionDefault: config.permissions?.ticketDefault === 'gated' ? 'gated' : 'skip',
+      commUserStyle: config.communicationStyle?.user ?? 'concise',
+      commCustomText: config.communicationStyle?.customText ?? '',
+      commInterAgent: config.communicationStyle?.interAgent ?? true,
       claudeTiers: { ...EMPTY_TIER_MODELS, ...(config.integrations?.claudeCode?.tiers ?? {}) },
       geminiTiers: { ...EMPTY_TIER_MODELS, ...(config.integrations?.geminiCli?.tiers ?? {}) },
       copilotTiers: { ...EMPTY_TIER_MODELS, ...(config.integrations?.copilotCli?.tiers ?? {}) },
@@ -530,6 +559,7 @@ export function Settings() {
       agentProgressDelay: config.agentProgress?.inlineDelay ?? 2,
       furnaceRetryIntervalMs: config.furnaceSettings?.rateLimitRetryIntervalMs ?? 20 * 60 * 1000,
       furnaceMaxWaitMs: config.furnaceSettings?.rateLimitMaxWaitMs ?? 5 * 60 * 60 * 1000,
+      furnaceSessionTimeoutMs: config.furnaceSettings?.sessionTimeoutMs ?? 90 * 60 * 1000,
       tokenDisplayMode: config.tokenDisplayMode ?? 'cost',
       tokenCostThresholds: config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 },
     },
@@ -680,6 +710,14 @@ export function Settings() {
                     setTicketPermissionDefault={setTicketPermissionDefault}
                     skillStatus={agentsTabSkillStatus}
                   />
+                  <CommunicationStyleSection
+                    userStyle={commUserStyle}
+                    setUserStyle={setCommUserStyle}
+                    customText={commCustomText}
+                    setCustomText={setCommCustomText}
+                    interAgent={commInterAgent}
+                    setInterAgent={setCommInterAgent}
+                  />
                   <AgentModelPolicySection
                     claudeTiers={claudeTiers}
                     setClaudeTiers={setClaudeTiers}
@@ -707,6 +745,8 @@ export function Settings() {
                     setRateLimitRetryIntervalMs={setFurnaceRetryIntervalMs}
                     rateLimitMaxWaitMs={furnaceMaxWaitMs}
                     setRateLimitMaxWaitMs={setFurnaceMaxWaitMs}
+                    sessionTimeoutMs={furnaceSessionTimeoutMs}
+                    setSessionTimeoutMs={setFurnaceSessionTimeoutMs}
                     defaultAgent={defaultAgent}
                   />
                   <AgentWorkflowSection

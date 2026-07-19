@@ -119,6 +119,12 @@ export interface TranscriptMessage {
    *  card's view — set when `projectTranscript` is given a `homeStreamId` to compare against.
    *  Powers an "from the orchestrator" attribution badge; absent for native turns. */
   sourceStream?: string;
+  /** FLUX-685: the originating turn's stable `seq` within its OWN stream (see `Turn.seq` in this
+   *  file / `transcript.ts`) — the address edit-and-resend/retry truncate from
+   *  (`truncateTranscript(taskId, seq)`). Always set (every message derives from exactly one
+   *  turn). A message with `sourceStream` set carries a FOREIGN turn's seq, relative to that
+   *  source stream, not the viewing card's own substrate — not a valid truncation target here. */
+  seq?: number;
 }
 
 /** FLUX-661: file-mutating Claude Code tools whose rows get an expandable inline diff. */
@@ -365,6 +371,7 @@ export function projectTranscript(
 ): TranscriptMessage[] {
   const out: TranscriptMessage[] = [];
   const tag = (msg: TranscriptMessage, turn: Turn): TranscriptMessage => {
+    msg.seq = turn.seq;
     if (homeStreamId !== undefined && turn.streamId !== homeStreamId) msg.sourceStream = turn.streamId;
     return msg;
   };
@@ -386,7 +393,20 @@ export function projectTranscript(
       // non-bubble `note` row so the portal can render it as a subtle "⟳ context update" chip. The
       // event already carries its own `text` + `timestamp` (pure projection, no schema change).
       const ts = typeof evt.timestamp === 'string' ? evt.timestamp : turn.ts;
-      out.push(tag({ role: 'note', kind: 'context-update', text: evt.text, ts }, turn));
+      const note: TranscriptMessage = tag({ role: 'note', kind: 'context-update', text: evt.text, ts }, turn);
+      // FLUX-1495: the engine now appends this turn's `user` event before computing/appending this
+      // note (so a slow preamble await can't delay the user's message becoming visible — see
+      // sendBoardInput/sendCliSessionInput). Splice the note back in FRONT of that adjacent,
+      // same-timestamp user bubble so the rendered order still honors the FLUX-716 item 3 contract
+      // (preamble above the user's message for the same turn) regardless of storage order. A note
+      // with no matching just-pushed user bubble (older transcripts, or a cold-resume preamble with
+      // no turn of its own) falls through to the normal append.
+      const prev = out[out.length - 1];
+      if (prev && prev.role === 'user' && prev.ts === ts) {
+        out.splice(out.length - 1, 0, note);
+      } else {
+        out.push(note);
+      }
     } else if (evt?.type === 'action' && typeof evt.phase === 'string') {
       // FLUX-794: the user pressed a non-chat phase action (Groom / Implement / Review / Finalize)
       // and the chat popped in. Emit a non-bubble `note` row so the portal renders it as a quiet

@@ -1,6 +1,6 @@
 import express from 'express';
 import { getWorkspaceRoot } from './workspace.js';
-import { getWorkspace, type Workspace } from './workspace-context.js';
+import { getDefaultWorkspace, getWorkspace, getWorkspaceByRoot, normalizeWorkspaceKey, runWithWorkspace, type Workspace } from './workspace-context.js';
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace -- Express request augmentation requires the ambient namespace
@@ -13,14 +13,71 @@ declare global {
 }
 
 /**
- * Attach the active workspace to the request (FLUX-343). Today this is always the process's
- * single active Workspace; it exists as the seam the parallel-workspaces epic (FLUX-1230)
- * swaps for a per-request registry lookup — route handlers migrate from `getWorkspace()` to
- * `req.workspace` incrementally, without another engine-wide rewrite.
+ * Resolves a `x-eh-workspace`/`?ws=` value against the S1 registry (FLUX-1530), mirroring
+ * `extractBoundWorkspaceFromRequest`/`boundWorkspace` in mcp-server.ts: an array (repeated
+ * header/query param) collapses to its first entry, and an unset or unregistered root falls
+ * back to `getWorkspace()` — never an error, same "unrouted" semantics as the MCP path.
+ *
+ * FLUX-1455 review fix: a root naming the legacy default/boot binding must resolve to
+ * `defaultWorkspace` even when it's not a registry entry (it never is — see `defaultWorkspace`'s
+ * doc comment in workspace-context.ts) and even when `activeKey` has since moved to a different
+ * board opened via `openWorkspaceLive`. Without this, a client pinned to the boot board sends its
+ * root back on every request but `getWorkspaceByRoot` misses (unregistered) and the `getWorkspace()`
+ * fallback silently served whichever board was most recently opened instead.
+ *
+ * FLUX-1571: this comparison MUST use the same `normalizeWorkspaceKey` (realpath'd + case-folded)
+ * rule the S1 registry keys itself with — `getWorkspaceByRoot` below already does, via that
+ * function, but the `defaultWs` fallback used a bare `path.resolve()` + case-fold local `pathsEqual`
+ * that had no realpath step. A client that echoes back an 8.3-short-form or differently-cased
+ * (but on-disk-identical) root for the *default* board missed both checks and silently fell through
+ * to `getWorkspace()`'s ambient resolution — usually still correct today, but no longer guaranteed
+ * once a second board is open (S10 switcher), which is exactly the silent-misroute this ticket
+ * covers.
+ */
+export function resolveWorkspaceFromRoot(root: string | string[] | undefined): Workspace {
+  const key = Array.isArray(root) ? root[0] : root;
+  if (!key) return getWorkspace();
+  const registered = getWorkspaceByRoot(key);
+  if (registered) return registered;
+  const defaultWs = getDefaultWorkspace();
+  if (defaultWs.root && normalizeWorkspaceKey(defaultWs.root) === normalizeWorkspaceKey(key)) return defaultWs;
+  return getWorkspace();
+}
+
+/**
+ * Attach the request's workspace (FLUX-343, routed per-request as of FLUX-1530). Resolves the
+ * `X-EH-Workspace` header against the S1 registry via {@link resolveWorkspaceFromRoot}; an
+ * unset or unregistered root falls back to the registry's active/default workspace, so
+ * single-workspace mode (empty registry) is byte-for-byte unchanged.
+ *
+ * Header absent → fall back to `?ws=` (same value/semantics): browser-navigated resources —
+ * the artifact `<iframe src>`, plain link opens — can't set custom headers, exactly like the
+ * SSE route's `EventSource` (events.ts). Without this, an artifact iframe on board A served
+ * whatever board was most recently opened via the S10 switcher.
  */
 export function attachWorkspace(req: express.Request, _res: express.Response, next: express.NextFunction) {
-  req.workspace = getWorkspace();
+  let root: string | string[] | undefined = req.headers['x-eh-workspace'];
+  if (!root || (Array.isArray(root) && !root.length)) {
+    const q = req.query?.ws;
+    if (typeof q === 'string') root = q;
+    else if (Array.isArray(q)) root = q.filter((v): v is string => typeof v === 'string');
+  }
+  req.workspace = resolveWorkspaceFromRoot(root);
   next();
+}
+
+/**
+ * Run the rest of the request inside the {@link runWithWorkspace} binding for
+ * `req.workspace` (epic FLUX-1230's per-request resolution seam) so every legacy
+ * `getWorkspace()`/`getWorkspaceRoot()`/`getActiveFluxDir()` call downstream — route handlers,
+ * backgrounded launch work started from them, and child-process event handlers registered
+ * during a spawn — resolves to the board this request targeted instead of whichever board was
+ * most recently opened. Mounted globally right after {@link attachWorkspace}. For a request
+ * with no routing header/param this binds exactly what `getWorkspace()` would have returned
+ * anyway (resolveWorkspaceFromRoot's fallback), so behavior is unchanged there.
+ */
+export function workspaceScope(req: express.Request, _res: express.Response, next: express.NextFunction) {
+  runWithWorkspace(req.workspace ?? null, () => next());
 }
 
 export function requireWorkspace(req: express.Request, res: express.Response, next: express.NextFunction) {

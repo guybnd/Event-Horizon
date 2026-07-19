@@ -36,12 +36,15 @@ export const DEFAULT_GATE_POLICY: GatePolicy = {
 /** FLUX-1292: seed value for a board whose gatePolicy has NEVER been migrated/configured at all —
  *  covers BOTH a genuinely fresh workspace (no config.json yet) AND an existing config.json that
  *  predates the gatePolicy field (gatePolicyMigrated has never fired, e.g. an old Temper-era config,
- *  regardless of what temperEnabled was set to). Mirrors portal/src/lib/gatePolicyPresets.ts'
- *  GATE_POLICY_PRESETS.autonomous. Deliberately NOT used as DEFAULT_GATE_POLICY's fallback — that
- *  constant stays 'you'/'you', resolveGateValue()'s ultra-safe last-resort backstop, and must never
- *  retroactively change a board that already has an explicit, persisted gatePolicy. */
+ *  regardless of what temperEnabled was set to). FLUX-1497: `plan` is 'auto-then-you', not 'auto' —
+ *  an unconfigured board's automated plan review always stops for a human confirm instead of silently
+ *  auto-moving Grooming -> Todo (also bounds the blast radius of a config clobber reverting to this
+ *  seed, FLUX-1492). The mix matches no portal preset (matchGatePolicyPreset returns null — legal).
+ *  Deliberately NOT used as DEFAULT_GATE_POLICY's fallback — that constant stays 'you'/'you',
+ *  resolveGateValue()'s ultra-safe last-resort backstop, and must never retroactively change a
+ *  board that already has an explicit, persisted gatePolicy. */
 export const UNMIGRATED_GATE_POLICY_DEFAULT: GatePolicy = {
-  boardDefault: { plan: 'auto', review: 'auto' },
+  boardDefault: { plan: 'auto-then-you', review: 'auto' },
 };
 
 /** A per-ticket override of one or both gates, stored directly on the ticket's own frontmatter

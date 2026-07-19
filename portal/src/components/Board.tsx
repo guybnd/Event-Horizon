@@ -1,19 +1,21 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { DndContext, DragOverlay, pointerWithin } from '@dnd-kit/core';
-import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core';
-import { FurnaceDrawer } from './FurnaceDrawer';
+import { motion } from 'framer-motion';
+import { DndContext, DragOverlay, useDroppable } from '@dnd-kit/core';
+import type { DragEndEvent, DragMoveEvent, DragStartEvent, DropAnimation } from '@dnd-kit/core';
+import { FurnaceDrawer, FURNACE_ACCENT, FURNACE_ACCENT_GLOW } from './FurnaceDrawer';
 import { FURNACE_NEW_DROP_ID, FURNACE_REFRESH_EVENT } from '../furnaceTypes';
+import { FURNACE_QUICK_DROP_WIDTH_PX, isFurnaceRailRevealTarget, makeFurnaceAwareCollision } from './furnaceRailReveal';
 import { appendFurnaceTicket, createFurnaceBatch } from '../api';
 import { arrayMove } from '@dnd-kit/sortable';
 import { Column } from './Column';
 import { StatusBadge } from './StatusBadge';
 import { TaskCardInner } from './TaskCard';
 import { createTask, updateTask, TASK_CREATED_LOCALLY_EVENT } from '../api';
-import { useAppSelector, useAppActions } from '../store/useAppSelector';
+import { useAppSelector, useAppActions, useParentByChildId } from '../store/useAppSelector';
 import { buildStatusChangeHistory, applyOptimisticStatusChange, isMissingCommentError } from '../lib/ticketActions';
 import type { Task } from '../types';
 import { normalizeSubtaskId } from '../types';
-import { Loader2, Upload, Sparkles } from 'lucide-react';
+import { Loader2, Upload, Sparkles, Flame, Rocket } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
 import { getStatusColorClass } from '../statusStyles';
@@ -23,6 +25,9 @@ import { collectPrMemberIds, collectEpicFoldedIds, collectCrossColumnClusters } 
 import { ParseErrorButton } from './ParseErrorButton';
 import { BootstrapPreview } from './BootstrapPreview';
 import { useNotify } from '../hooks/useNotify';
+import { useMotionTokens, COLD_BOOT_STAGGER_MS } from '../motion/tokens';
+import { useCardFlight } from '../motion/useCardFlight';
+import { Skeleton, SkeletonCard } from './ui/Skeleton';
 
 // Stable empty array so columns with no tasks get a referentially-stable prop (memo-friendly).
 const EMPTY_TASKS: Task[] = [];
@@ -54,10 +59,251 @@ This is a starter ticket. **Launch an agent on it** (Grooming or Implementation)
 
 _Created by the "Bootstrap with AI" action on the empty board. Delete this ticket once your board is populated._`;
 
+// FLUX-1506: cold-load placeholder — ghost columns of ghost cards, roughly matching Column.tsx's
+// `w-[320px] min-w-[280px]` shape, in place of the old centered spinner (which carried no layout
+// information at all and made every board load flash-then-jump into its real shape).
+function BoardSkeleton() {
+  return (
+    <div className="flex h-full min-h-0 gap-2 overflow-hidden pb-4">
+      {Array.from({ length: 4 }).map((_, col) => (
+        <div key={col} className="flex w-[320px] min-w-[280px] flex-1 max-w-[440px] flex-col gap-3 rounded-2xl eh-column p-3">
+          <Skeleton variant="bar" className="h-4 w-1/2" />
+          {Array.from({ length: 3 }).map((_, card) => (
+            <SkeletonCard key={card} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const BOOT_ROLL_DURATION_MS = 400;
+const BOOT_ROLL_STEPS = 12;
+const BOOT_ROLL_INTERVAL_MS = BOOT_ROLL_DURATION_MS / BOOT_ROLL_STEPS;
+
+function easeOutCubicBootRoll(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+/**
+ * FLUX-1547 Phase 4: rolls the raw `bootProgress.loaded` SSE value into a smooth count-up instead
+ * of jumping straight to each new value — the engine emits in batches (today ~50 tickets, but the
+ * cadence/step size is an engine-side detail that may change independently, including going
+ * irregular under a parallel scan), so reading `loaded` directly makes the count visibly jump.
+ * Mirrors `AnimatedCount`'s (FLUX-1520) fixed-duration retarget-from-ref algorithm instead of
+ * estimating a rate from inter-event timing: every new target starts a fresh ~400ms ease from
+ * wherever the display currently sits, so a mid-roll event retargets cleanly (no restart-from-zero,
+ * no stale timer racing the new one) and a final event — including `phase: 'ready'` — always lands
+ * exactly on its value once its own roll completes, never stalling short. `null` (no progress yet,
+ * or `total` is 0) resets the display to 0 with no roll. Respects the same `instant` contract as
+ * every other portal animation (reduced motion / animationsEnabled=false skips the roll).
+ */
+function useRollingBootCount(target: number | null): number {
+  const { instant } = useMotionTokens();
+  const [displayed, setDisplayed] = useState(target ?? 0);
+  const displayedRef = useRef(displayed);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    displayedRef.current = displayed;
+  }, [displayed]);
+
+  useEffect(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    const value = target ?? 0;
+    if (instant || target == null) {
+      setDisplayed(value);
+      return;
+    }
+    const from = displayedRef.current;
+    if (from === value) return;
+
+    let step = 0;
+    timerRef.current = setInterval(() => {
+      step += 1;
+      if (step >= BOOT_ROLL_STEPS) {
+        setDisplayed(value);
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
+        return;
+      }
+      const progress = easeOutCubicBootRoll(step / BOOT_ROLL_STEPS);
+      setDisplayed(Math.round(from + (value - from) * progress));
+    }, BOOT_ROLL_INTERVAL_MS);
+
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [target, instant]);
+
+  return displayed;
+}
+
+// FLUX-1540: cold-boot loading state. Wraps the FLUX-1506 ghost-column skeleton (which conveys
+// board *shape*) with a centered, always-visible-text status line so a ~60s cold launch never
+// reads as hung — plus real "Loaded X / Y tickets" progress once the engine's `bootProgress` SSE
+// event (initDir's 50-file yield boundary) starts arriving. Falls back to an indeterminate sweep
+// when no progress data has arrived yet (event missed, or the scan finished before the portal's
+// SSE connection opened) — this must never render a static or stuck `0 / 0` frame.
+function BoardLoadingState() {
+  const bootProgress = useAppSelector((s) => s.bootProgress);
+  const hasProgress = !!bootProgress && bootProgress.total > 0;
+  // FLUX-1547 Phase 4: tween the count instead of reading `bootProgress.loaded` straight through —
+  // see useRollingBootCount above.
+  const displayedLoaded = useRollingBootCount(hasProgress ? bootProgress!.loaded : null);
+  const total = hasProgress ? bootProgress!.total : 0;
+  const pct = hasProgress ? Math.min(100, Math.round((displayedLoaded / total) * 100)) : null;
+  const label = hasProgress
+    ? `Loading tickets… ${displayedLoaded.toLocaleString()} / ${total.toLocaleString()}`
+    : 'Starting Event Horizon…';
+
+  return (
+    <div className="relative h-full min-h-0" aria-busy="true" aria-live="polite" aria-label={label}>
+      <BoardSkeleton />
+      <div className="pointer-events-none absolute inset-x-0 top-12 flex flex-col items-center gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="rounded-lg bg-primary/10 p-1.5">
+            <Rocket className="h-5 w-5 text-primary" />
+          </div>
+          <h1 className="text-[15px] font-extrabold tracking-[-0.03em]">Event Horizon</h1>
+        </div>
+        <div className="flex items-center gap-2 text-sm font-medium" style={{ color: 'var(--eh-text-muted)' }}>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span>{label}</span>
+        </div>
+        <div className="h-1.5 w-64 overflow-hidden rounded-full bg-primary/10">
+          {hasProgress ? (
+            <div
+              className="h-full rounded-full bg-primary transition-[width] duration-300 ease-out"
+              style={{ width: `${pct}%` }}
+            />
+          ) : (
+            <div className="eh-notif-indeterminate h-full w-1/3 rounded-full bg-primary" />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// FLUX-1533: a big, always-available Furnace drop target shown for the duration of a card drag when
+// the Furnace drawer is closed — see the render-site comment in Board for why this exists instead of
+// just relying on the drawer's own (drawer-open-only) useDroppable zones. Dropping here creates a new
+// batch with the dragged ticket (handleDragEnd's existing FURNACE_NEW_DROP_ID branch); to append to an
+// EXISTING batch, open the drawer first — its batch cards remain droppable as before.
+//
+// FLUX-1549: the zone is an absolutely-positioned overlay (out of document flow), so it never has a
+// layout footprint on the board — a prior review fix (FLUX-1533) instead reserved its width as animated
+// scroller `paddingRight`, which squished every `flex-1` column and re-flowed all their cards on every
+// drag-start (the "huge lag" this ticket fixes). At rest it renders as a slim edge rail (just the flame
+// icon peeking out); a purely-visual inner panel slides the rest of the way into view via a CSS
+// `transform` (GPU-composited, no layout) once the dragged card nears the right edge — see
+// `handleDragMove`'s reveal logic below, imperative ref+CSS-var, never `setState` (same pattern as the
+// drag-tilt code).
+//
+// FLUX-1549 review fix: dnd-kit measures a droppable's collision rect ONCE at drag-start and does not
+// re-measure it as a CSS `transform` animates (with the default `measuring` config, the `translate` dep
+// on `useDroppableMeasuring` only feeds a disabled timeout path). Animating `transform` on the droppable
+// node itself therefore froze its hit-area at the pre-reveal (mostly off-screen) position — only a
+// sliver at the edge was actually droppable, contested by the now-unpadded last column. Fix: the
+// `useDroppable` ref lives on a small FIXED-geometry rail (`FURNACE_RAIL_PEEK_PX` wide, pinned to the
+// right edge, position/size NEVER transformed) — hit-testing always matches where that rail visually
+// sits, at rest or revealed. The larger sliding panel below is a separate `pointer-events-none`
+// decorative child; it never intercepts drops, so it can safely visually cover the last column without
+// hijacking its drops (the original FLUX-1533 concern).
+// FLUX-1570: FURNACE_QUICK_DROP_WIDTH_PX now lives in furnaceRailReveal.ts — makeFurnaceAwareCollision
+// needs it too (the pointer hit-band must match the panel width exactly), so it's defined once there.
+// Rest-state sliver width: how much of the rail (just the flame icon) peeks out at the right edge
+// before the pointer nears and it slides fully into view. Also the real droppable's fixed width — see
+// the FLUX-1549 review-fix comment above.
+const FURNACE_RAIL_PEEK_PX = 40;
+// The hidden transform offset: the rail's own width minus the peeking sliver.
+const FURNACE_RAIL_HIDDEN_OFFSET_PX = FURNACE_QUICK_DROP_WIDTH_PX - FURNACE_RAIL_PEEK_PX;
+
+function FurnaceQuickDropZone({ railRef }: { railRef: React.RefObject<HTMLDivElement | null> }) {
+  const { setNodeRef, isOver } = useDroppable({ id: FURNACE_NEW_DROP_ID });
+  return (
+    <div
+      ref={railRef}
+      className="pointer-events-none absolute inset-y-2 right-2 z-30"
+      style={{ width: FURNACE_QUICK_DROP_WIDTH_PX }}
+    >
+      {/* Decorative reveal panel — visual affordance only, never the drop target. `pointer-events-none`
+          so it can't shadow the real (fixed-position) rail below or intercept native pointer handling. */}
+      <div
+        className="pointer-events-none absolute inset-y-0 right-0 flex flex-col items-center justify-center gap-2 overflow-hidden rounded-2xl border-2 border-dashed transition-transform duration-150 ease-out"
+        style={{
+          width: FURNACE_QUICK_DROP_WIDTH_PX,
+          borderColor: FURNACE_ACCENT,
+          background: isOver ? FURNACE_ACCENT_GLOW : 'var(--eh-surface)',
+          boxShadow: '0 20px 48px -12px rgba(0, 0, 0, 0.35), 0 0 32px -4px var(--eh-furnace-accent-glow)',
+          transform: `translateX(var(--eh-furnace-reveal, ${FURNACE_RAIL_HIDDEN_OFFSET_PX}px))`,
+        }}
+      >
+        <Flame className="h-6 w-6 shrink-0" style={{ color: FURNACE_ACCENT }} />
+        <div className="whitespace-nowrap text-sm font-medium" style={{ color: FURNACE_ACCENT }}>
+          {isOver ? 'Drop to send to the Furnace' : 'Drag here to add to the Furnace'}
+        </div>
+      </div>
+      {/* Real drop target: fixed size + position, never transformed — this is what dnd-kit actually
+          measures once at drag-start and hit-tests for the rest of the drag. Pinned to match the rail
+          sliver that's always on-screen, revealed or not. */}
+      <div
+        ref={setNodeRef}
+        data-testid="furnace-quick-drop-zone"
+        className="pointer-events-auto absolute inset-y-0 right-0 rounded-2xl"
+        style={{ width: FURNACE_RAIL_PEEK_PX }}
+      />
+    </div>
+  );
+}
+
 // FLUX-1141: memoized so an unrelated AppContent re-render (terminal/furnace toggle, the 5s
 // furnace-status poll) doesn't re-invoke this whole ~700-line tree — furnaceOpen/onCloseFurnace
 // are its only props and stay stable across those toggles, so the memo boundary actually bails.
-export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furnaceOpen?: boolean; onCloseFurnace?: () => void } = {}) {
+export const Board = memo(function Board({ furnaceOpen, onCloseFurnace, active = true }: { furnaceOpen?: boolean; onCloseFurnace?: () => void; active?: boolean } = {}) {
+  // FLUX-1507: Board is kept mounted across view switches (FLUX-983 — remounting it is the
+  // expensive path) and only ever toggled via CSS visibility from the parent. `active` drives a
+  // crossfade+drift matching the other views' AnimatePresence transition instead of App.tsx's old
+  // instant `display` swap; the parent still delays flipping to `display:none` until this fade
+  // finishes, so the FLUX-983 "no layout space while hidden" property is unchanged.
+  const boardTokens = useMotionTokens();
+  // FLUX-1525: drop-settle animation for the drag overlay. dnd-kit's `dropAnimation` is
+  // Web-Animations-API based, so it can't consume `boardTokens.spring` (a framer-motion
+  // Transition) — `springSettleMs` + an overshoot bezier is the WAAPI-compatible stand-in.
+  // `null` disables dnd-kit's own default drop animation entirely (instant snap).
+  const dragDropAnimation: DropAnimation | null = useMemo(() => (
+    boardTokens.instant
+      ? null
+      : { duration: boardTokens.springSettleMs, easing: 'cubic-bezier(0.34, 1.56, 0.64, 1)' }
+  ), [boardTokens.instant, boardTokens.springSettleMs]);
+  // FLUX-1507: card flight between columns — see useCardFlight.ts.
+  const { beginFlight: beginCardFlight } = useCardFlight();
+  // FLUX-1519: cold-boot cascade — plays once per app lifetime. Board stays mounted across view
+  // switches (see the FLUX-1507 comment above), so this ref alone gates every refetch/SSE update/
+  // view-switch after the first real render from replaying the entrance.
+  //
+  // Flipping `hasBooted.current` is deliberately deferred to a macrotask (not mutated inline during
+  // render, and not even a plain `useEffect(() => {...}, [])`) — mount reliably produces more than
+  // one synchronous render pass before it settles (the external-store subscriptions behind
+  // `useAppSelector` force a consistency re-render right after commit, and a bare passive effect
+  // fires *between* those passes, not after all of them). Flipping too early drops the entrance
+  // mid-cascade on whichever pass comes after — most visibly on cards, where the wrapper element
+  // itself changes type (`motion.div` → `div`), so React remounts it and the in-flight animation is
+  // lost outright. A macrotask reliably runs after every pass mount schedules synchronously.
+  const hasBooted = useRef(false);
+  useEffect(() => {
+    const id = setTimeout(() => { hasBooted.current = true; }, 0);
+    return () => clearTimeout(id);
+  }, []);
   const liveTasks = useAppSelector((s) => s.tasks);
   // FLUX-982: seed local `tasks` from the already-loaded store snapshot instead of `[]`. Board
   // fully unmounts/remounts on view switch (App.tsx `{view === 'board' && <Board />}`), and the
@@ -68,6 +314,14 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
   const [tasks, setTasks] = useState<Task[]>(() => liveTasks);
   const notify = useNotify();
   const [activeTask, setActiveTask] = useState<Task | null>(null);
+  // FLUX-1525: velocity-following tilt on the drag overlay. Imperative (ref + CSS var), never
+  // React state — onDragMove fires on every pointer move, so a setState here would reintroduce
+  // the FLUX-629 per-frame-render regression.
+  const dragOverlayRef = useRef<HTMLDivElement>(null);
+  const dragTiltRef = useRef({ smoothedDeg: 0, prevDeltaX: 0 });
+  // FLUX-1549: imperative handle to the Furnace quick-drop rail — reveal is driven by a CSS var set
+  // in handleDragMove, same reasoning as dragTiltRef above (per-frame, must never be React state).
+  const furnaceRailRef = useRef<HTMLDivElement>(null);
   const [releaseModalTasks, setReleaseModalTasks] = useState<Task[] | null>(null);
   const [showBootstrap, setShowBootstrap] = useState(false);
   // FLUX-1487: drives the floating Furnace panel's slide-in-from-right entrance transition —
@@ -75,6 +329,7 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
   const [furnacePanelMounted, setFurnacePanelMounted] = useState(false);
   const { triggerRefresh, openTaskModal } = useAppActions();
   const currentProject = useAppSelector((s) => s.currentProject);
+  const isModalOpen = useAppSelector((s) => s.isModalOpen);
   const [bootstrapping, setBootstrapping] = useState(false);
   const tasksLoading = useAppSelector((s) => s.tasksLoading);
   const taskLiveEvents = useAppSelector((s) => s.taskLiveEvents);
@@ -293,20 +548,9 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
     return cols;
   }, [boardTasks, config, archiveStatus, requireInputStatus, hasSwimlanes]);
   const columnOrder = useMemo(() => new Map(allColumns.map((columnId, index) => [columnId, index])), [allColumns]);
-  const parentByChildId = useMemo(() => {
-    const map = new Map<string, Task>();
-    [...tasks]
-      .sort((left, right) => left.id.localeCompare(right.id))
-      .forEach((candidateParent) => {
-        candidateParent.subtasks?.forEach((entry) => {
-          const childId = normalizeSubtaskId(entry);
-          if (!map.has(childId)) {
-            map.set(childId, candidateParent);
-          }
-        });
-      });
-    return map;
-  }, [tasks]);
+  // FLUX-1553: shared store-level selector (AppContext computes this once per `tasks` update)
+  // instead of a board-local `resolveParentByChildId(tasks)` recompute every Board render.
+  const parentByChildId = useParentByChildId();
   // Union of every PR ticket's work-gated members — these fold into the PR deck and are
   // excluded from their own columns. Memoized so the Set isn't rebuilt every Board render
   // (FLUX-567 perf review).
@@ -415,22 +659,51 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
   }, [taskLiveEvents, columnOrder]);
 
   if ((tasksLoading && tasks.length === 0) || !config) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-      </div>
-    );
+    return <BoardLoadingState />;
   }
+
+  // FLUX-1519: `boardTokens.instant` already folds in both animationsEnabled and
+  // prefers-reduced-motion, so the reduced-motion path is a genuine no-op below.
+  const playEntrance = !hasBooted.current && !boardTokens.instant;
 
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;
     const task = tasks.find(t => t.id === active.id);
     if (task) setActiveTask(task);
+    dragTiltRef.current.smoothedDeg = 0;
+    dragTiltRef.current.prevDeltaX = 0;
+    dragOverlayRef.current?.style.setProperty('--eh-drag-tilt', '0deg');
+  };
+
+  const handleDragMove = (event: DragMoveEvent) => {
+    if (!boardTokens.instant) {
+      const tilt = dragTiltRef.current;
+      const incrementX = event.delta.x - tilt.prevDeltaX;
+      tilt.prevDeltaX = event.delta.x;
+      // Low-pass filter so the tilt follows velocity smoothly instead of jittering frame to frame,
+      // then map to degrees clamped to ±5° per the acceptance criteria.
+      tilt.smoothedDeg = tilt.smoothedDeg * 0.8 + incrementX * 0.2;
+      const deg = Math.max(-5, Math.min(5, tilt.smoothedDeg));
+      dragOverlayRef.current?.style.setProperty('--eh-drag-tilt', `${deg}deg`);
+    }
+
+    // FLUX-1549: reveal the Furnace rail once the dragged card nears the scroller's right edge —
+    // `event.active.rect.current.translated` is the card's live on-screen rect (dnd-kit applies the
+    // pointer delta for us), so this needs no separate pointer tracking. Written via CSS var + ref,
+    // never setState — see furnaceRailRef's declaration.
+    if (furnaceRailRef.current && scrollerRef.current) {
+      const scrollerRect = scrollerRef.current.getBoundingClientRect();
+      const near = isFurnaceRailRevealTarget(event.active.rect.current.translated, scrollerRect);
+      furnaceRailRef.current.style.setProperty('--eh-furnace-reveal', near ? '0px' : `${FURNACE_RAIL_HIDDEN_OFFSET_PX}px`);
+    }
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
     setActiveTask(null);
+    dragTiltRef.current.smoothedDeg = 0;
+    dragTiltRef.current.prevDeltaX = 0;
+    dragOverlayRef.current?.style.setProperty('--eh-drag-tilt', '0deg');
     if (!over) return;
 
     const activeTaskId = active.id as string;
@@ -526,6 +799,10 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
 
+    // FLUX-1507: measure the card's rect BEFORE the optimistic state below moves it — must run
+    // synchronously, ahead of every `setState` in this function (see useCardFlight.ts).
+    if (newStatus !== oldStatus) beginCardFlight(taskId);
+
     // Shared with the chat action bar (FLUX-610) — `from` pinned to the explicit oldStatus
     // so optimistic state never skews the recorded transition. FLUX-725: send the history DELTA via
     // `appendHistory` (the list payload no longer carries full `history`), and fold the move into the
@@ -592,9 +869,30 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
     setSkipFutureNotes(false);
   };
 
+  // FLUX-1570: dnd-kit's default `pointerWithin` only sees the Furnace quick-drop panel's real
+  // (fixed 40px, FLUX-1549) droppable node, so a drop anywhere else on the visible panel falls
+  // through to the Done column underneath. Override the collision result across the whole panel
+  // while it's mounted (`!furnaceOpen && activeTask` — matches the render condition below); with the
+  // drawer open this is a no-op passthrough so its own batch-card droppables are untouched. Built
+  // fresh each render (cheap closure, no hook) — this function sits after the loading-state early
+  // return above, so it can't be a `useMemo`/other hook without violating rules-of-hooks.
+  const furnaceAwareCollisionDetection = makeFurnaceAwareCollision({
+    isQuickDropMounted: () => !furnaceOpen && !!activeTask,
+    getScrollerRect: () => scrollerRef.current?.getBoundingClientRect() ?? null,
+  });
+
   return (
     <>
-      <div className="flex h-full min-h-0 flex-col gap-0">
+      <motion.div
+        className="flex h-full min-h-0 flex-col gap-0"
+        animate={{
+          opacity: active ? 1 : 0,
+          y: active ? 0 : (boardTokens.crossfadeDirection === 'down' ? boardTokens.crossfadeDriftPx : -boardTokens.crossfadeDriftPx),
+          scale: (isModalOpen && !boardTokens.instant) ? 0.96 : 1,
+        }}
+        transition={{ default: boardTokens.fade, scale: boardTokens.spring }}
+        style={{ pointerEvents: active ? 'auto' : 'none' }}
+      >
         <div className="flex items-center gap-3">
           <div className="flex-1">
             <TaskViewControls
@@ -634,9 +932,13 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
               </div>
             </div>
           )}
-          <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd} collisionDetection={pointerWithin}>
+          <DndContext onDragStart={handleDragStart} onDragMove={handleDragMove} onDragEnd={handleDragEnd} collisionDetection={furnaceAwareCollisionDetection}>
             <div className="relative flex h-full min-h-0">
-            <div ref={scrollerRef} className="flex min-h-full flex-1 gap-2 pb-4 items-stretch overflow-x-auto">
+            <div
+              ref={scrollerRef}
+              data-testid="board-scroller"
+              className="flex min-h-full flex-1 gap-2 pb-4 items-stretch overflow-x-auto"
+            >
               {allColumns.map((columnId, idx) => {
                 const prevCol = idx > 0 ? allColumns[idx - 1] : null;
                 const nextCol = idx < allColumns.length - 1 ? allColumns[idx + 1] : null;
@@ -662,6 +964,7 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
                     flowRight={flowRight}
                     titleChars={maxTitleChars}
                     doneStreakCount={doneStreakCount}
+                    bootEntranceDelayMs={playEntrance ? idx * COLD_BOOT_STAGGER_MS : undefined}
                   />
                 );
               })}
@@ -679,15 +982,30 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
                 <FurnaceDrawer onClose={onCloseFurnace} />
               </div>
             )}
+            {/* FLUX-1533: without the drawer open, dragging a card near the Furnace icon has no drop
+                target at all (the drawer — and its useDroppable zones — only mount while furnaceOpen).
+                Surface a large stand-in target, same footprint as the real panel, for the duration of
+                any card drag so dropping into the Furnace doesn't require opening the drawer first.
+                It reuses FURNACE_NEW_DROP_ID, so handleDragEnd's existing new-batch handling covers it.
+                FLUX-1549: it's a zero-footprint overlay (see the FurnaceQuickDropZone comment above) —
+                the scroller no longer reserves any space for it. */}
+            {!furnaceOpen && activeTask && <FurnaceQuickDropZone railRef={furnaceRailRef} />}
             </div>
-            <DragOverlay>
+            <DragOverlay dropAnimation={dragDropAnimation}>
               {activeTask
-                ? <div className={boardFx?.dragTrail !== false ? 'drag-trail-overlay' : undefined}><TaskCardInner task={activeTask} parentTask={parentByChildId.get(activeTask.id)} isOverlay /></div>
+                ? (
+                  <div
+                    ref={dragOverlayRef}
+                    className={[boardFx?.dragTrail !== false && 'drag-trail-overlay', !boardTokens.instant && 'drag-lift'].filter(Boolean).join(' ') || undefined}
+                  >
+                    <TaskCardInner task={activeTask} parentTask={parentByChildId.get(activeTask.id)} isOverlay />
+                  </div>
+                )
                 : null}
             </DragOverlay>
           </DndContext>
         </div>
-      </div>
+      </motion.div>
 
       {pendingStatusChange && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm pointer-events-auto">

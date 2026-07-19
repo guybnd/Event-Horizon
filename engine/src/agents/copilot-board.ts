@@ -8,25 +8,29 @@
 import { attachStdoutProcessing, spawnCopilot, buildAdditionalMcpConfigArgs } from './copilot.js';
 import { EFFORT_LEVELS } from './shared.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { BOARD_CONVERSATION_ID, type BoardSpec } from './board.js';
+import type { BoardSpec } from './board.js';
 import { makeBoardAdapter } from './board-core.js';
 
 export const copilotBoardSpec: BoardSpec = {
   framework: 'copilot',
   binary: 'copilot',
-  buildArgs({ session, prompt, isResume }) {
+  buildArgs({ session, workspaceRoot, isResume }) {
     const resumeArgs = isResume && session.resumeSessionId ? ['--resume', session.resumeSessionId] : [];
+    // FLUX-1496: `-p` is a bare flag — the prompt is written to stdin by wireBoardProc after spawn
+    // (board-core.ts), mirroring the FLUX-1444 per-ticket fix (copilot.ts:467).
     const args = [
       // Copilot has no `--resume`-time model re-specification in the per-ticket adapter either —
       // mirror that: only set --model on a fresh turn.
       ...(!isResume && session.model ? ['--model', session.model] : []),
-      '-p', prompt,
+      '-p',
       ...resumeArgs,
       '--output-format', 'json',
       '--yolo',
       // FLUX-984: explicit MCP config injection — workspace .mcp.json is never auto-loaded in -p mode.
-      // FLUX-1213: bind to BOARD_CONVERSATION_ID so the board's own HITL prompts route by binding.
-      ...buildAdditionalMcpConfigArgs(BOARD_CONVERSATION_ID),
+      // FLUX-1213/FLUX-1580: bind to the turn's ACTUAL conversation id (`__board__` or
+      // `__furnace__`) + workspaceRoot, not a hardcoded board literal — previously every Furnace
+      // child's own HITL prompts / MCP tool calls silently routed as `__board__`.
+      ...buildAdditionalMcpConfigArgs(session.taskId, workspaceRoot),
     ];
     // FLUX-977: Copilot CLI rejects --effort outright when no explicit --model is passed in the
     // SAME invocation (its default "auto" model doesn't support it — confirmed against the live

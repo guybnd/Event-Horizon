@@ -335,6 +335,10 @@ export interface TicketActionContext {
   dispatchFinish: () => void | Promise<void>;
   /** Agent fast-path (FLUX-1380) — one session grooms + implements a Grooming-column XS/S ticket. */
   dispatchFastPath: () => void | Promise<void>;
+  /** Agent batch-grooming (FLUX-1383) — one session grooms this epic's eligible Grooming/Require
+   *  Input children. Undefined/empty when there are fewer than 2 eligible children. */
+  batchGroomingEligibleIds?: string[];
+  dispatchBatchGrooming: () => void | Promise<void>;
   /** One-click launch of the phase default (StartPrompt for Todo-no-branch; launcher fallback). */
   launchDefault: (phase: LaunchPhase) => void | Promise<void>;
   /** Open the orchestration launcher pinned to a phase + template. */
@@ -409,6 +413,22 @@ export function actionsForStatus(task: Task, ctx: TicketActionContext): TicketAc
   const actions: TicketAction[] = [];
   const pr = prLink(task);
   const tpl = ctx.launchTemplates;
+
+  // FLUX-1383: batch-grooming's epic trigger — offered regardless of the EPIC's own status (its
+  // children, not it, are what's being groomed), whenever it has 2-5 eligible Grooming/Require
+  // Input children. Placed before the status branches below (several of which `return actions`
+  // early) so it survives every branch.
+  const batchIds = ctx.batchGroomingEligibleIds;
+  if (batchIds && batchIds.length >= 2 && batchIds.length <= 5) {
+    actions.push({
+      key: 'batch-grooming',
+      label: `Groom all subtasks (${batchIds.length})`,
+      category: 'workflow',
+      kind: 'agent',
+      icon: 'layers',
+      run: ctx.dispatchBatchGrooming,
+    });
+  }
 
   // Grooming / Require Input → plan it forward or hand to the grooming agent.
   if (/^groom/i.test(status) || status === requireInputStatus) {

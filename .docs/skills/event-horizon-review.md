@@ -13,7 +13,7 @@ Scope: Judge a diff against the ticket's intent and record a machine-readable ve
 
 # Event Horizon Agent — Review Skill
 
-Version: 1.5.0
+Version: 1.6.0
 
 ## When This Skill Applies
 
@@ -34,6 +34,10 @@ Tag every finding with one of these three levels — normalize on this scale eve
 - **Minor** — nice to have. Style, naming, small simplifications, non-blocking polish.
 
 **Synthesizing multiple reviewers' findings** (orchestrator/supervisor leads): merge overlapping findings and remove duplicates — if multiple reviewers raised the same issue, state it once and note the consensus instead of repeating it per-reviewer. Lead the consolidated list with Blockers first, and resolve any disagreements on the merits of the argument, not a raw vote count.
+
+## Verdict Readability (FLUX-1502)
+
+Lead the review comment with the verdict (**APPROVED** / **CHANGES NEEDED**) and a one-sentence reason — the user and the implementer both get the point from line one. Each finding is self-contained: file:line, what's wrong, the concrete fix — never "as noted above" or a reference to another reviewer's comment. Anything the user reads (the verdict line, the synthesis summary) stays plain-language; the structured skeleton (severity tags, `reviewState`) stays intact. Full rules: `read_skill('orchestrator', 'Communication Style')`.
 
 ## Test Coverage — the "tested leaf, untested glue" flag
 

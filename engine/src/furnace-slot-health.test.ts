@@ -97,7 +97,7 @@ describe('checkFurnaceSlotHealth (FLUX-1217)', () => {
   });
 
   it('warns and notifies, naming the holders, when full with nothing burning', async () => {
-    setObservedWorktrees(Array.from({ length: FURNACE_SLOT_CAP }, (_, i) => `LEAKED-${i}`));
+    setObservedWorktrees(root, Array.from({ length: FURNACE_SLOT_CAP }, (_, i) => `LEAKED-${i}`));
     worktreesOnDisk = Array.from({ length: FURNACE_SLOT_CAP }, (_, i) => ({ path: taskWorktreeDir(root, `LEAKED-${i}`), branch: null }));
 
     await checkFurnaceSlotHealth();
@@ -113,7 +113,7 @@ describe('checkFurnaceSlotHealth (FLUX-1217)', () => {
   });
 
   it('is edge-triggered — does not re-notify on a second call while the leak persists', async () => {
-    setObservedWorktrees(Array.from({ length: FURNACE_SLOT_CAP }, (_, i) => `LEAKED-${i}`));
+    setObservedWorktrees(root, Array.from({ length: FURNACE_SLOT_CAP }, (_, i) => `LEAKED-${i}`));
     worktreesOnDisk = Array.from({ length: FURNACE_SLOT_CAP }, (_, i) => ({ path: taskWorktreeDir(root, `LEAKED-${i}`), branch: null }));
 
     await checkFurnaceSlotHealth();
@@ -124,19 +124,19 @@ describe('checkFurnaceSlotHealth (FLUX-1217)', () => {
   });
 
   it('re-arms after recovery — notifies again on a fresh incident', async () => {
-    setObservedWorktrees(Array.from({ length: FURNACE_SLOT_CAP }, (_, i) => `LEAKED-${i}`));
+    setObservedWorktrees(root, Array.from({ length: FURNACE_SLOT_CAP }, (_, i) => `LEAKED-${i}`));
     worktreesOnDisk = Array.from({ length: FURNACE_SLOT_CAP }, (_, i) => ({ path: taskWorktreeDir(root, `LEAKED-${i}`), branch: null }));
     await checkFurnaceSlotHealth();
     expect(addNotificationMock).toHaveBeenCalledTimes(1);
 
     // The leak is reclaimed — pool drops back under the cap.
-    setObservedWorktrees([]);
+    setObservedWorktrees(root, []);
     worktreesOnDisk = [];
     await checkFurnaceSlotHealth();
     expect(addNotificationMock).toHaveBeenCalledTimes(1); // still just the one from the first incident
 
     // A fresh leak occurs later.
-    setObservedWorktrees(Array.from({ length: FURNACE_SLOT_CAP }, (_, i) => `LEAKED2-${i}`));
+    setObservedWorktrees(root, Array.from({ length: FURNACE_SLOT_CAP }, (_, i) => `LEAKED2-${i}`));
     worktreesOnDisk = Array.from({ length: FURNACE_SLOT_CAP }, (_, i) => ({ path: taskWorktreeDir(root, `LEAKED2-${i}`), branch: null }));
     await checkFurnaceSlotHealth();
     expect(addNotificationMock).toHaveBeenCalledTimes(2);
@@ -147,7 +147,7 @@ describe('checkFurnaceSlotHealth (FLUX-1217)', () => {
   // burst can legitimately fill the pool with zero Furnace batches burning. That's healthy activity, not
   // the leak this check exists to catch.
   it('does nothing when the pool is full solely due to legitimate Temper reservations', async () => {
-    for (let i = 0; i < FURNACE_SLOT_CAP; i++) setTemperReserved(`TEMPER-${i}`, true);
+    for (let i = 0; i < FURNACE_SLOT_CAP; i++) setTemperReserved(root, `TEMPER-${i}`, true);
 
     await checkFurnaceSlotHealth();
 
@@ -156,9 +156,9 @@ describe('checkFurnaceSlotHealth (FLUX-1217)', () => {
   });
 
   it('still warns when usage exceeds what Temper reservations account for', async () => {
-    setTemperReserved('TEMPER-1', true); // accounts for exactly 1 of the used slots
+    setTemperReserved(root, 'TEMPER-1', true); // accounts for exactly 1 of the used slots
     const leakedCount = FURNACE_SLOT_CAP - 1;
-    setObservedWorktrees(Array.from({ length: leakedCount }, (_, i) => `LEAKED-${i}`));
+    setObservedWorktrees(root, Array.from({ length: leakedCount }, (_, i) => `LEAKED-${i}`));
     worktreesOnDisk = Array.from({ length: leakedCount }, (_, i) => ({ path: taskWorktreeDir(root, `LEAKED-${i}`), branch: null }));
 
     await checkFurnaceSlotHealth();

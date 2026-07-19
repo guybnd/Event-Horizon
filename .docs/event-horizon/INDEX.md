@@ -13,6 +13,7 @@ This index routes by **subsystem**. For each subsystem you get the code entry po
 | Subsystem | Code entry points | Reference | Decisions |
 |---|---|---|---|
 | **Engine bootstrap / HTTP server** | [`engine/src/index.ts`](../../engine/src/index.ts), [`engine/src/workspace.ts`](../../engine/src/workspace.ts) | [Architecture Overview](architecture/overview.md), [Code Map](architecture/code-map.md) | — |
+| **Multi-workspace resolution** (which board is "active") | [`engine/src/workspace-context.ts`](../../engine/src/workspace-context.ts), [`engine/src/middleware.ts`](../../engine/src/middleware.ts), [`portal/src/api.ts`](../../portal/src/api.ts) (`ehFetch`) | [Workspace Resolution](reference/workspace-resolution.md) | — |
 | **Ticket store + persistence** | [`engine/src/task-store.ts`](../../engine/src/task-store.ts), [`engine/src/schema.ts`](../../engine/src/schema.ts), [`engine/src/history.ts`](../../engine/src/history.ts) | [Ticket Model](architecture/ticket-model.md), [Ticket Schema](reference/ticket-schema.md) | — |
 | **REST API (portal-facing)** | [`engine/src/routes/`](../../engine/src/routes) | [REST API](reference/rest-api.md) | [ADR 0001 — Storage Modes](decisions/0001-storage-modes.md) (storage-related routes) |
 | **MCP server (agent-facing)** | [`engine/src/mcp-server.ts`](../../engine/src/mcp-server.ts) | [MCP Server](mcp-server.md), [MCP Tools](reference/mcp-tools.md) | — |

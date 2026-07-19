@@ -39,6 +39,9 @@ let engineProc = null; // only set when WE spawned the engine (so we only kill w
 // The renderer instead reports dirty state here, and main owns the confirm + the actual guard.
 let hasUnsavedChanges = false;
 let allowClose = false;
+// FLUX-1541: closing the window while agent sessions are running kills them (only when we spawned
+// the engine — see shutdownEngine). The renderer reports the running count here, same seam as above.
+let runningSessionCount = 0;
 
 // ── Defender false-positive mitigation ─────────────────────────────────────────
 // Windows Defender's JS heuristic (VirTool:JS/Anomelesz.A) false-positives on the minified portal
@@ -172,9 +175,8 @@ function createWindow() {
   });
 
   win.on('close', (e) => {
-    if (win && !allowClose && hasUnsavedChanges) {
-      const choice = promptUnsaved();
-      if (choice === 0) {
+    if (win && !allowClose && (hasUnsavedChanges || (runningSessionCount > 0 && engineProc))) {
+      if (!confirmClose()) {
         e.preventDefault();
         return;
       }
@@ -205,6 +207,7 @@ function registerNativeBridge() {
     if (payload && typeof payload === 'object') showNotification(payload);
   });
   ipcMain.on('eh:set-unsaved-guard', (_e, dirty) => { hasUnsavedChanges = !!dirty; });
+  ipcMain.on('eh:set-running-guard', (_e, count) => { runningSessionCount = Number(count) || 0; });
 }
 
 /**
@@ -221,6 +224,34 @@ function promptUnsaved() {
     message: 'You have unsaved doc changes.',
     detail: 'Closing now will discard them.',
   });
+}
+
+/**
+ * Native confirm for closing while agent sessions are still running (FLUX-1541). Only shown when
+ * we own the engine (`engineProc` set) — closing would actually stop it; when attached to an
+ * externally-managed engine (dev `npm run dev`), sessions survive the window close, so no warning
+ * is needed. Returns the clicked button index — 0 = Cancel.
+ */
+function promptRunningSessions(count) {
+  return dialog.showMessageBoxSync(win, {
+    type: 'warning',
+    buttons: ['Cancel', 'Close anyway'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Agent sessions running',
+    message: `${count} agent session${count === 1 ? '' : 's'} are still running.`,
+    detail: 'Closing Event Horizon will stop them.',
+  });
+}
+
+/**
+ * Runs the close/quit guards in priority order, showing AT MOST ONE dialog (FLUX-1541): unsaved
+ * changes take priority over running sessions. Returns true if the close should proceed.
+ */
+function confirmClose() {
+  if (hasUnsavedChanges) return promptUnsaved() !== 0;
+  if (runningSessionCount > 0 && engineProc) return promptRunningSessions(runningSessionCount) !== 0;
+  return true;
 }
 
 /**
@@ -378,10 +409,9 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', async (e) => {
-  if (win && !allowClose && hasUnsavedChanges) {
+  if (win && !allowClose && (hasUnsavedChanges || (runningSessionCount > 0 && engineProc))) {
     e.preventDefault();
-    const choice = promptUnsaved();
-    if (choice === 0) return; // Cancel — stay open
+    if (!confirmClose()) return; // Cancel — stay open
     allowClose = true;
     app.quit(); // re-fires before-quit, now past the guard
     return;

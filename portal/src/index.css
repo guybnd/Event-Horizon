@@ -429,14 +429,10 @@ body::before {
   --ring-color: rgba(0, 255, 65, 0.2);
 }
 
-/* Agent session pulse uses bright green in matrix */
-:root[data-theme="matrix"] .agent-session-active {
-  animation-name: matrix-session-pulse;
-}
-@keyframes matrix-session-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(0, 255, 65, 0.4); }
-  70% { box-shadow: 0 0 0 8px rgba(0, 255, 65, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(0, 255, 65, 0); }
+/* Agent session pulse uses bright green in matrix (FLUX-1552: overlay recipe below, shared
+   eh-glow-breathe keyframes — no per-theme @keyframes needed anymore, just the peak color). */
+:root[data-theme="matrix"] .agent-session-glow {
+  box-shadow: 0 0 0 4px rgba(0, 255, 65, 0.22);
 }
 
 /* #4 Texture brightens on card hover — interactive grid */
@@ -811,6 +807,16 @@ button:not(:disabled):active {
   }
 }
 
+/* FLUX-1505: an optimistic button action the server rejected — the card shakes to read as a
+   rollback/failure instead of the success pulse `task-updated-pulse` plays. */
+@keyframes task-rollback-shake {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  20% { transform: translate3d(-6px, 0, 0); }
+  40% { transform: translate3d(5px, 0, 0); }
+  60% { transform: translate3d(-4px, 0, 0); }
+  80% { transform: translate3d(3px, 0, 0); }
+}
+
 @keyframes column-arrival-glow {
   0% {
     box-shadow: inset 0 0 0 1px var(--eh-accent-glow), 0 0 0 0 var(--eh-accent-glow);
@@ -832,18 +838,23 @@ button:not(:disabled):active {
   70% { transform: scale(0.98); }
 }
 
-/* FLUX-1419: deliberately NOT converted to the pseudo-element recipe — the host
-   (BoardStatusCluster's sessions button) is overflow-hidden, which would clip an ::after's
-   outward ripple, while the element's OWN box-shadow is never self-clipped. It's a single
-   instance in the header, so the per-frame paint cost is negligible. */
-@keyframes agent-session-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.35); }
-  70% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-}
-
-.agent-session-active {
-  animation: agent-session-pulse 2s infinite;
+/* FLUX-1552: converted to the FLUX-1266 compositor-only recipe, superseding the FLUX-1419 "single
+   instance, negligible" call — ANY main-thread box-shadow keyframe animation forces a style
+   recalc + paint over the WHOLE page every frame (not just this button), and it ran continuously
+   whenever any agent session was live, i.e. essentially always during real use. The sessions
+   button (BoardStatusCluster.tsx) is overflow-hidden, which would clip a ::after descendant's
+   shadow, so the glow lives on a sibling overlay element positioned over the button instead
+   (`.agent-session-glow`, not a pseudo of `.agent-session-active`). Peak box-shadow is static;
+   only opacity breathes (shared eh-glow-breathe keyframes, defined with the taskcard glows). */
+.agent-session-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: 0.75rem;
+  pointer-events: none;
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.22);
+  opacity: 0;
+  will-change: opacity;
+  animation: eh-glow-breathe 2s ease-in-out infinite;
 }
 
 .task-live-created {
@@ -860,6 +871,11 @@ button:not(:disabled):active {
 
 .task-live-updated {
   animation: task-updated-pulse 900ms ease-out;
+}
+
+.task-live-rollback {
+  animation: task-rollback-shake 380ms cubic-bezier(0.36, 0.07, 0.19, 0.97);
+  will-change: transform;
 }
 
 .column-live-receiving {
@@ -1459,6 +1475,19 @@ button:not(:disabled):active {
   border-radius: 12px;
 }
 
+/* ─── Drag lift physics (FLUX-1525) ─────────────────────────────────────── */
+/* Pickup scale + velocity tilt on the DragOverlay wrapper. `--eh-drag-tilt` is written
+   imperatively (Board.tsx onDragMove) so the tilt tracks pointer velocity without a
+   React re-render per frame. The static shadow is only visible when the trail FX above
+   is off — the trail's animated box-shadow otherwise wins on that property, which is
+   fine since the trail already supplies elevation. */
+.drag-lift {
+  transform: rotate(var(--eh-drag-tilt, 0deg)) scale(1.03);
+  transition: transform 150ms ease-out;
+  box-shadow: 0 16px 40px -8px rgba(0, 0, 0, 0.35), 0 4px 12px -2px rgba(0, 0, 0, 0.25);
+  border-radius: 12px;
+}
+
 /* ─── Board FX: Idle column dust ────────────────────────────────────────── */
 /* CSS-only particle simulation — no JS, no canvas */
 @keyframes dust-float-a {
@@ -1572,13 +1601,26 @@ button:not(:disabled):active {
 
 /* ─── FLUX-1487: Furnace burning-batch heat edge — a slow ambient pulse on a burning
    BatchCard's glow so it reads as "alive" at a glance next to quiet draft/finished cards.
-   Neutralized by the blanket reduced-motion rule below. */
-@keyframes eh-furnace-heat-pulse {
-  0%, 100% { box-shadow: 0 0 0 1px var(--eh-furnace-accent-glow), 0 0 10px 0 rgba(249, 115, 22, .18); }
-  50%      { box-shadow: 0 0 0 1px var(--eh-furnace-accent-glow), 0 0 18px 2px rgba(220, 38, 38, .3); }
-}
+   FLUX-1552: converted to the FLUX-1266 compositor-only recipe — this was added after the
+   FLUX-1419 sweep and slipped back to a raw box-shadow keyframe. Peak box-shadow (the more
+   intense red-tinted frame) is now static on a ::after and only its opacity breathes; the
+   original's always-visible resting ring (never fully off) is preserved via the eh-glow-breathe-half
+   variant (0.52⇄1) rather than fading to none, at the cost of the orange→red hue sweep. The card
+   root has no overflow-hidden, so the ::after descendant recipe applies directly (no restructuring
+   needed, unlike agent-session-glow above). Neutralized by the blanket reduced-motion rule below. */
 .eh-furnace-burning-glow {
-  animation: eh-furnace-heat-pulse 3s ease-in-out infinite;
+  position: relative;
+}
+.eh-furnace-burning-glow::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px var(--eh-furnace-accent-glow), 0 0 18px 2px rgba(220, 38, 38, .3);
+  opacity: 0;
+  will-change: opacity;
+  animation: eh-glow-breathe-half 3s ease-in-out infinite;
 }
 
 /* ─── FLUX-790: blanket reduced-motion fallback ──────────────────────────────
@@ -1616,7 +1658,7 @@ button:not(:disabled):active {
    `.eh-tab-hidden` (above) only covers a backgrounded tab — a board left open and
    VISIBLE but untouched (no click/scroll/keypress) still kept these running forever,
    the leftover from FLUX-1135's idle trace. Unlike `.eh-tab-hidden` this must NOT be a
-   blanket `*` rule: `agent-session-pulse`/`bot-border-breathe`/`eh-taskcard-*`/
+   blanket `*` rule: `agent-session-glow`/`bot-border-breathe`/`eh-taskcard-*`/
    `eh-attention-*`/heartbeat etc. communicate real live state the user may be glancing
    at without touching the mouse, so only the zero-signal decorative loops (CRT flicker/
    beam, empty-column idle dust) are listed here. `AppContext` toggles `.eh-idle` on

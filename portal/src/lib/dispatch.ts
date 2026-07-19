@@ -1,4 +1,4 @@
-import { Search, Code2, Eye, Flag, Zap } from 'lucide-react';
+import { Search, Code2, Eye, Flag, Zap, Layers } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { TranscriptMessage } from '../api';
 
@@ -31,6 +31,8 @@ export const DISPATCH_PHASE_LABEL: Record<string, string> = {
   finalize: 'final',
   // FLUX-1380: one session grooms + implements a Grooming-column XS/S ticket.
   'fast-path': 'fast-path',
+  // FLUX-1383: one session grooms up to 5 sibling tickets sharing one parent.
+  'batch-grooming': 'batch-groom',
 };
 
 /**
@@ -44,6 +46,7 @@ export const DISPATCH_PHASE_ICON: Record<NonNullable<TranscriptMessage['phase']>
   review: Eye,
   finalize: Flag,
   'fast-path': Zap,
+  'batch-grooming': Layers,
 };
 
 /** The dispatch lifecycle stages, in lifecycle order — drives the Activity outcome filter. */
@@ -53,5 +56,5 @@ export const DISPATCH_LIFECYCLES: Array<NonNullable<TranscriptMessage['lifecycle
 
 /** The dispatch phases, in workflow order — drives the Activity phase filter. */
 export const DISPATCH_PHASES: Array<NonNullable<TranscriptMessage['phase']>> = [
-  'grooming', 'implementation', 'review', 'finalize', 'fast-path',
+  'grooming', 'implementation', 'review', 'finalize', 'fast-path', 'batch-grooming',
 ];

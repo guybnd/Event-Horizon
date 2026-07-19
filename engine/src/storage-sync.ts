@@ -8,6 +8,7 @@ import { BUILTIN_MODULES } from './modules.js';
 import { buildGitSyncEnv, classifyGitError, GIT_SYNC_TIMEOUT_MS } from './git-sync-env.js';
 import { addOrphanWorktree, isWorktreeOnBranch } from './git-worktree.js';
 import { reportDivergedStatus, clearSyncStateAfterForceReset, withSyncLock, SUPPORTED_SYNC_PROTOCOL, SYNC_PROTOCOL_MARKER_FILE } from './sync-watcher.js';
+import { BOOT_INDEX_FILE } from './boot-index.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -62,7 +63,14 @@ async function git(cwd: string, args: string[]): Promise<{ stdout: string; stder
 // FLUX-1428: sync-journal.jsonl is the durable op journal backing push-as-CAS + replay — pure
 // per-engine local state (what THIS engine has applied but not yet confirmed pushed), never
 // meaningful to another clone. It must never be synced/merged like a ticket file.
-const STORE_LOCAL_IGNORES = ['config.json', 'read-state.json', 'open-prompts.json', 'open-prompts.json.tmp', 'session-binding-secret', 'session-binding-secret.tmp', 'sessions/', 'sync-journal.jsonl'];
+// FLUX-1547: boot-index.json is a per-machine parsed-ticket cache (engine/src/boot-index.ts) —
+// mtimeMs/size fingerprints and absolute _path values are meaningless on another clone, and two
+// engines both rewriting it every boot would otherwise churn history and add/add-conflict on the
+// shared flux-data remote. It must never be synced like a ticket file either.
+// FLUX-1550: <ticket>.body-history.json is a per-ticket local recovery stash of prior body
+// versions (see stashPriorBody in task-store.ts) — like sync-journal.jsonl, it must stay
+// local-only, never committed/synced through flux-data.
+const STORE_LOCAL_IGNORES = ['config.json', 'read-state.json', 'open-prompts.json', 'open-prompts.json.tmp', 'session-binding-secret', 'session-binding-secret.tmp', 'sessions/', 'sync-journal.jsonl', BOOT_INDEX_FILE, '*.body-history.json'];
 
 /** Ensure the store-root `.gitignore` lists the local-only files. Returns true if it changed. */
 async function ensureStoreLocalGitignore(storeDir: string): Promise<boolean> {
@@ -103,6 +111,26 @@ export async function excludeLocalConfigFromSync(storeDir: string): Promise<void
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     log.info(`[storage-sync] excludeLocalConfigFromSync skipped: ${message}`);
+  }
+}
+
+/**
+ * FLUX-1559: non-orphan mode's counterpart to {@link excludeLocalConfigFromSync}. `.flux/` there
+ * is an ordinary directory inside the user's own repo, not a dedicated `flux-data` worktree — so
+ * there's no separate git history to untrack committed copies from, only the same
+ * `STORE_LOCAL_IGNORES` entries (config.json, read-state.json, boot-index.json, ...) to seed into
+ * `.flux/.gitignore` so a user who commits `.flux/` doesn't get per-machine files churning their
+ * working tree. Reuses {@link ensureStoreLocalGitignore} — it's already dir-agnostic, just
+ * writing/updating a `.gitignore` in whatever dir it's given. Idempotent — safe on every
+ * workspace activation.
+ */
+export async function ensureNonOrphanLocalGitignore(fluxDir: string): Promise<void> {
+  if (!existsSync(fluxDir)) return;
+  try {
+    await ensureStoreLocalGitignore(fluxDir);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.info(`[storage-sync] ensureNonOrphanLocalGitignore skipped: ${message}`);
   }
 }
 
@@ -363,7 +391,7 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
         const existing = await fs.readFile(gitignorePath, 'utf-8').catch(() => '');
         const marker = '# flux-data orphan mode';
         if (!existing.includes(marker)) {
-          const addition = `\n${marker}\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/open-prompts.json\n.flux/open-prompts.json.tmp\n.flux/session-binding-secret\n.flux/session-binding-secret.tmp\n.flux/memory/\n.flux-store/\n`;
+          const addition = `\n${marker}\n.flux/*.md\n.flux/*.body-history.json\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/open-prompts.json\n.flux/open-prompts.json.tmp\n.flux/session-binding-secret\n.flux/session-binding-secret.tmp\n.flux/memory/\n.flux-store/\n`;
           await fs.writeFile(gitignorePath, existing + addition, 'utf-8');
         }
 
@@ -436,7 +464,7 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
   const existing = await fs.readFile(gitignorePath, 'utf-8').catch(() => '');
   const marker = '# flux-data orphan mode';
   if (!existing.includes(marker)) {
-    const addition = `\n${marker}\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/open-prompts.json\n.flux/open-prompts.json.tmp\n.flux/memory/\n.flux-store/\n`;
+    const addition = `\n${marker}\n.flux/*.md\n.flux/*.body-history.json\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/open-prompts.json\n.flux/open-prompts.json.tmp\n.flux/memory/\n.flux-store/\n`;
     await fs.writeFile(gitignorePath, existing + addition, 'utf-8');
   }
 
@@ -575,7 +603,7 @@ export async function restoreToInRepo(workspaceRoot: string): Promise<void> {
   try {
     const content = await fs.readFile(gitignorePath, 'utf-8');
     const normalized = content.replace(/\r\n/g, '\n');
-    const section = `\n# flux-data orphan mode\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/open-prompts.json\n.flux/open-prompts.json.tmp\n.flux/session-binding-secret\n.flux/session-binding-secret.tmp\n.flux/memory/\n.flux-store/\n`;
+    const section = `\n# flux-data orphan mode\n.flux/*.md\n.flux/*.body-history.json\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/open-prompts.json\n.flux/open-prompts.json.tmp\n.flux/session-binding-secret\n.flux/session-binding-secret.tmp\n.flux/memory/\n.flux-store/\n`;
     const cleaned = normalized.split(section).join('');
     await fs.writeFile(gitignorePath, cleaned, 'utf-8');
   } catch {

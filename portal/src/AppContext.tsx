@@ -1,17 +1,21 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
-import { fetchConfig, fetchTasks, fetchWorktrees, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace, fetchParseErrors, fetchNotifications, fetchWorkspaces, switchWorkspace as apiSwitchWorkspace, type ParseError, type Notification, type WorkspaceInfo, type WorktreeInfo } from './api';
+import { fetchConfig, fetchTasks, fetchTaskListShape, fetchWorktrees, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace, fetchParseErrors, fetchNotifications, fetchWorkspaces, switchWorkspace as apiSwitchWorkspace, openBoardLive as apiOpenBoardLive, closeBoardLive as apiCloseBoardLive, fetchFurnaceBatches, setActiveBoardKey, type ParseError, type Notification, type WorkspaceInfo, type WorktreeInfo } from './api';
+import type { FurnaceBatch } from './furnaceTypes';
 import { getArchiveStatus } from './workflow';
-import { collectPrMemberIds } from './lib/decks';
+import { isActiveSession } from './orchestration';
+import { collectPrMemberIds, collectPrTicketIdByMember, resolveParentByChildId } from './lib/decks';
 import { tasksEqual } from './lib/tasksEqual';
 import { appStore, ENGINE_EVENTS_MAX } from './store/appStore';
 import { appendEngineEvents } from './lib/coalesceEngineEvents';
-import type { AppStoreState, AppActions, AppView, AppTheme, TaskSortOption, OperationFailure, EngineEvent } from './store/appStore';
+import type { AppStoreState, AppActions, AppView, AppTheme, TaskSortOption, OperationFailure, EngineEvent, BoardSlice } from './store/appStore';
 import { AppActionsContext } from './store/useAppSelector';
 import { getElectronAPI, renderBadgeDataUrl } from './electronApi';
 import { incr, recordDuration, recordSseEvent } from './perfClient';
 import { useConfirm } from './hooks/useConfirm';
+import { useNotify } from './hooks/useNotify';
+import { isLaunchFailureNotification } from './components/notificationCategory';
 
 export type { AppView, TaskSortOption, AppTheme };
 
@@ -31,6 +35,14 @@ export const THEMES: ThemeDef[] = [
 ];
 
 const VALID_THEMES = new Set<string>(THEMES.map(t => t.name));
+
+// FLUX-1507: one-off rect snapshot for the card→modal morph — a plain object (not the live
+// `DOMRect`) so it round-trips through the store's shallow-equal snapshot cheaply.
+function captureOriginRect(el?: HTMLElement | null): { left: number; top: number; width: number; height: number } | null {
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return { left: r.left, top: r.top, width: r.width, height: r.height };
+}
 
 function getInitialTheme(): AppTheme {
   const stored = localStorage.getItem('eh-theme');
@@ -53,11 +65,22 @@ const VIEW_PATHS: Record<AppView, string> = {
   releases: '/releases',
   workflows: '/workflows',
   epics: '/epics',
+  'token-costs': '/token-costs',
   'dev-onboarding': '/dev/onboarding',
 };
 
 const LIVE_TASK_POLL_INTERVAL_MS = 3000;
 const LIVE_EVENT_DURATION_MS = 2200;
+/** FLUX-1505: patch-first SSE — how long to wait after the last `taskUpdated` before running the
+ *  full `loadTasks()` background truth-sync (column reflow, created/moved live events, pinning —
+ *  the reconciliation a single-task patch can't derive on its own). Debounced so a burst of
+ *  updates pays for one full refetch, not one per event. */
+const TASK_UPDATED_SYNC_DEBOUNCE_MS = 600;
+/** FLUX-1505 review fix: a sustained `taskUpdated` stream (an active agent session emits one every
+ *  ~1-2s) keeps resetting the trailing-only debounce above, so the background truth-sync could be
+ *  starved indefinitely — stalling column re-sort / new-ticket pinning / `moved` live events for as
+ *  long as the burst continues. Caps how long a burst can push the sync out from its first tick. */
+const TASK_UPDATED_SYNC_MAX_WAIT_MS = 3000;
 /** FLUX-1300: how long a freshly-created ticket sorts first in its column (client-side "top-pin"),
  *  regardless of the board's configured sort option, before settling into its normal position. */
 const NEW_TASK_PIN_DURATION_MS = 15_000;
@@ -85,6 +108,7 @@ function getViewFromLocation(): AppView {
   if (path === '/releases') return 'releases';
   if (path === '/workflows') return 'workflows';
   if (path === '/epics') return 'epics';
+  if (path === '/token-costs') return 'token-costs';
   // Dev-only editor route (FLUX-755). Gated by import.meta.env.DEV so that in a
   // production build a hand-typed /dev/onboarding falls through to the board.
   if (import.meta.env.DEV && path === '/dev/onboarding') return 'dev-onboarding';
@@ -178,6 +202,7 @@ function reconcileUser(prev: string, users: unknown[] | undefined): string {
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const confirm = useConfirm();
+  const notify = useNotify();
   const initialFilters = getTaskFiltersFromLocation();
   const [currentUser, setCurrentUser] = useState(getInitialUser);
   const [currentProject, setCurrentProject] = useState('');
@@ -192,6 +217,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [settingsTab, setSettingsTab] = useState<string | null>(null);
   const [modalTask, setModalTask] = useState<Partial<Task> | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  // FLUX-1507: the clicked card's rect, captured synchronously when the center modal is opened
+  // `from` one — TaskModal springs its card→modal morph from this instead of the dead `layoutId`.
+  const [modalOriginRect, setModalOriginRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [overlayCount, setOverlayCount] = useState(0);
   const pushOverlay = useCallback(() => setOverlayCount((n) => n + 1), []);
   const popOverlay = useCallback(() => setOverlayCount((n) => Math.max(0, n - 1)), []);
@@ -241,6 +269,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // PR precedence (a PR-folded subtask is never also epic-folded) without each card
   // re-scanning every PR ticket's members.
   const prMemberIds = useMemo(() => collectPrMemberIds(tasks), [tasks]);
+  // Reverse of prMemberIds (FLUX-1503): which PR a folded member belongs to, for the "in PR-n"
+  // tooltip on the epic card's full-rollup strip (CardSubtaskProgress).
+  const prTicketIdByMember = useMemo(() => collectPrTicketIdByMember(tasks), [tasks]);
+  // FLUX-1553: every task id -> its first epic parent, computed once per `tasks` update instead
+  // of per-card (PrDeckSection and Board's overlay/deck rendering both consumed their own
+  // per-render `resolveParentByChildId(taskById)` before this hoist).
+  const parentByChildId = useMemo(() => resolveParentByChildId(tasks), [tasks]);
   const [tasksLoading, setTasksLoading] = useState(true);
   const [taskLiveEvents, setTaskLiveEvents] = useState<Record<string, TaskLiveEvent>>({});
   const [columnLiveEvents, setColumnLiveEvents] = useState<Record<string, ColumnLiveEvent>>({});
@@ -268,6 +303,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const seenNotificationIds = useRef<Set<string>>(new Set());
   const [restartPending, setRestartPending] = useState(false);
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
+  // S9 (epic FLUX-1230): the board-key dimension. S10 (`setActiveBoard`) can pin this to a
+  // different already-open board than the server's legacy single-active binding — that's the
+  // whole point of a non-destructive switch. `null` means "not pinned yet", in which case it
+  // falls back to whichever workspace the registry reports active, with `workspacePath` (set on
+  // mount before `workspaces` has loaded) as the fallback-of-the-fallback so the key resolves on
+  // first paint. A destructive `switchWorkspace` rebind clears the pin (see `notifyWorkspaceSet`)
+  // since it invalidates any client-side board choice.
+  const [pinnedBoardId, setPinnedBoardId] = useState<string | null>(null);
+  const activeBoardId = pinnedBoardId ?? workspaces.find((w) => w.active)?.path ?? workspacePath;
   // FLUX-758: reactive mirror of the onboarding-complete localStorage flag. App
   // gates the wizard on this store field, so flipping it dismisses the wizard
   // immediately (no manual reload), while localStorage remains the persistence layer.
@@ -285,6 +329,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const liveEventSequenceRef = useRef(0);
   const pendingReadStateRef = useRef<Record<string, string[]>>({});
   const readStateFlushTimerRef = useRef<number | null>(null);
+  // FLUX-1505: debounce handle for the patch-first `taskUpdated` background truth-sync, plus when
+  // the current debounce burst started (review fix: caps starvation — see scheduleBackgroundTaskSync).
+  const taskUpdatedSyncTimerRef = useRef<number | null>(null);
+  const taskUpdatedSyncBurstStartRef = useRef<number | null>(null);
 
   const scheduleTaskEventClear = useCallback((taskId: string, sequence: number) => {
     const existingTimeout = taskEventTimeoutsRef.current[taskId];
@@ -455,7 +503,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
               taskId: task.id,
             };
             
-            if (task.status.toLowerCase() === 'done') {
+            // FLUX-1526: confetti is reserved for cutting a release — routine Done moves get the
+            // restrained SuccessMark gesture instead (useTaskCardController), so this stays rare.
+            if (task.status.toLowerCase() === 'released') {
               const fireworksEnabled = configRef.current?.enableFireworks !== false;
               const animationsEnabled = configRef.current?.animationsEnabled !== false;
               if (fireworksEnabled && animationsEnabled) {
@@ -571,6 +621,52 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await Promise.all([loadTasks(), loadParseErrors()]);
   }, [loadTasks, loadParseErrors]);
 
+  // FLUX-1505: commit-first data — merge `patch` onto `taskId` in `tasks` right now, no refetch.
+  // Keeps `tasksRef` in lockstep (not just the React state) so a `loadTasks()` diff that runs later
+  // (SSE reconnect, background truth-sync) compares against the ALREADY-patched snapshot instead of
+  // a stale pre-patch one, which would otherwise replay a 'moved'/'updated' live-event animation for
+  // a transition the user already saw happen instantly.
+  const patchTaskLocal = useCallback((taskId: string, patch: Partial<Task> | ((current: Task) => Partial<Task>)) => {
+    let changed = false;
+    const next = tasksRef.current.map((t) => {
+      if (t.id !== taskId) return t;
+      const resolved = typeof patch === 'function' ? patch(t) : patch;
+      const isNoop = (Object.keys(resolved) as (keyof Task)[]).every((k) => Object.is(t[k], resolved[k]));
+      if (isNoop) return t;
+      changed = true;
+      return { ...t, ...resolved };
+    });
+    if (!changed) return;
+    tasksRef.current = next;
+    setTasks(next);
+  }, []);
+
+  // FLUX-1505: the optimistic-button-action rollback signal — reuses the same live-event/auto-clear
+  // plumbing `loadTasks`'s diff uses for 'created'/'moved'/'updated' (see `applyLiveEvents`), so the
+  // card component needs no new subscription, just a new `kind` to render as a shake instead of a
+  // pulse.
+  const emitTaskRollback = useCallback((taskId: string) => {
+    liveEventSequenceRef.current += 1;
+    applyLiveEvents({ [taskId]: { kind: 'rollback', sequence: liveEventSequenceRef.current, at: Date.now() } }, {});
+  }, [applyLiveEvents]);
+
+  // FLUX-1505: debounced background truth-sync after a patch-first `taskUpdated` — see
+  // TASK_UPDATED_SYNC_DEBOUNCE_MS. Review fix: leading+trailing with a max-wait cap
+  // (TASK_UPDATED_SYNC_MAX_WAIT_MS) so a sustained update stream can't starve it forever — the
+  // delay shrinks as the current burst approaches the cap, firing at the cap if it's still going.
+  const scheduleBackgroundTaskSync = useCallback(() => {
+    const now = Date.now();
+    if (taskUpdatedSyncBurstStartRef.current === null) taskUpdatedSyncBurstStartRef.current = now;
+    if (taskUpdatedSyncTimerRef.current !== null) window.clearTimeout(taskUpdatedSyncTimerRef.current);
+    const elapsed = now - taskUpdatedSyncBurstStartRef.current;
+    const delay = Math.min(TASK_UPDATED_SYNC_DEBOUNCE_MS, Math.max(0, TASK_UPDATED_SYNC_MAX_WAIT_MS - elapsed));
+    taskUpdatedSyncTimerRef.current = window.setTimeout(() => {
+      taskUpdatedSyncTimerRef.current = null;
+      taskUpdatedSyncBurstStartRef.current = null;
+      void loadTasks();
+    }, delay);
+  }, [loadTasks]);
+
   const updateTicketViewUrl = (taskId: string, viewMode: 'popup' | 'full') => {
     const url = new URL(window.location.href);
     url.searchParams.set('ticket', taskId);
@@ -593,7 +689,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setFilterWorktree('');
   };
 
-  const openTaskModal = (task?: Partial<Task>) => {
+  const openTaskModal = (task?: Partial<Task>, from?: HTMLElement | null) => {
     setOpenModalInFullView(false);
     const nextTask = task || { status: 'Todo' };
     if (nextTask.id) {
@@ -601,9 +697,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     setModalTask(nextTask);
     setIsModalOpen(true);
+    setModalOriginRect(captureOriginRect(from));
   };
 
-  const openTaskFullView = (task: Partial<Task>, options?: { scrollToComments?: boolean }) => {
+  const openTaskFullView = (task: Partial<Task>, options?: { scrollToComments?: boolean }, from?: HTMLElement | null) => {
     if (task.id) {
       updateTicketViewUrl(task.id, 'full');
     }
@@ -611,6 +708,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setIsModalOpen(true);
     setOpenModalInFullView(true);
     setOpenModalScrollToComments(options?.scrollToComments ?? false);
+    setModalOriginRect(captureOriginRect(from));
   };
 
   const openTask = (task: Task) => {
@@ -671,6 +769,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const pendingEngineEventsRef = useRef<EngineEvent[]>([]);
   const engineEventsFlushHandleRef = useRef<number | null>(null);
   const nextEngineEventIdRef = useRef(0);
+
+  // FLUX-1503: `furnace-deleted` only carries `{batchId}`, no ticket list — this shadow map
+  // remembers which ticketIds last belonged to a batch (populated on every `furnace-updated` for
+  // that batch) so the delete handler knows which keys to prune from `furnaceTicketById`.
+  const furnaceBatchTicketIdsRef = useRef<Map<string, string[]>>(new Map());
 
   const flushEngineEvents = useCallback(() => {
     engineEventsFlushHandleRef.current = null;
@@ -809,6 +912,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void loadParseErrors();
   }, [loadTasks, loadParseErrors]);
 
+  // FLUX-1503: seed `furnaceTicketById` on mount so a page load mid-burn isn't blank until the
+  // next `furnace-updated` SSE tick. Same flattening as the SSE handler above.
+  useEffect(() => {
+    let cancelled = false;
+    fetchFurnaceBatches()
+      .then((batches: FurnaceBatch[]) => {
+        if (cancelled) return;
+        const next = { ...appStore.getState().furnaceTicketById };
+        // FLUX-1539: stamp each ticket's owning batch identity alongside its BatchTicket state —
+        // powers the card's batch icon badge + border tint.
+        const nextBatchMeta = { ...appStore.getState().furnaceBatchMetaByTicketId };
+        for (const batch of batches) {
+          furnaceBatchTicketIdsRef.current.set(batch.id, batch.tickets.map((t) => t.ticketId));
+          for (const t of batch.tickets) {
+            next[t.ticketId] = t;
+            nextBatchMeta[t.ticketId] = { batchId: batch.id, icon: batch.icon, title: batch.title };
+          }
+        }
+        appStore.patch({ furnaceTicketById: next, furnaceBatchMetaByTicketId: nextBatchMeta });
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   const refreshWorkspaces = useCallback(() => {
     fetchWorkspaces().then(setWorkspaces).catch(() => {});
   }, []);
@@ -830,35 +957,42 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setOnboardingComplete(true);
   }, []);
 
+  // FLUX-1465 / S10: reset the flat per-board caches and refetch them for whichever board is now
+  // active — shared by the destructive rebind path (notifyWorkspaceSet) and the S10 non-destructive
+  // tab switch (setActiveBoard/openBoard/closeBoard). Ticket IDs are workspace-scoped, so a stale
+  // `tasksRef` from the previous board can collide by ID with the new board's tasks and look like a
+  // wave of "moved to Done" transitions — firing a confetti burst per card and jank-freezing the
+  // board on every switch. Clearing it first makes the fetch look like an initial load, which
+  // `loadTasks` already skips live-event emission for.
+  const loadBoardData = useCallback(() => {
+    tasksRef.current = [];
+    hasLoadedTasksRef.current = false;
+    setTasks([]);
+    void loadTasks();
+    fetchConfig().then((c) => {
+      setConfig(c);
+      configRef.current = c;
+      setCurrentProject((prev) => reconcileProject(prev, c.projects));
+      setCurrentUser((prev) => reconcileUser(prev, c.users)); // FLUX-785
+    }).catch(() => {});
+    refreshNotifications();
+  }, [loadTasks, refreshNotifications]);
+
   const notifyWorkspaceSet = useCallback(() => {
     fetchWorkspace()
       .then(({ configured, path: wp }) => {
         setWorkspaceConfigured(configured);
         setWorkspacePath(wp);
+        // S10: a destructive rebind invalidates any client-side board pin — fall back to the
+        // freshly-reported server-active board (see `activeBoardId`'s derivation above).
+        setPinnedBoardId(null);
         if (configured) {
-          // FLUX-1465: `loadTasks` diffs the fresh fetch against `tasksRef.current` to emit
-          // live events (status-change confetti, column pins, etc). Ticket IDs are workspace-
-          // scoped, so a stale `tasksRef` from the *previous* workspace can collide by ID with
-          // the new workspace's tasks and look like a wave of "moved to Done" transitions —
-          // firing a confetti burst per card and jank-freezing the board on every swap. Clear
-          // the ref (and `hasLoadedTasksRef`) first so the post-switch fetch is treated as an
-          // initial load, which `loadTasks` already skips live-event emission for.
-          tasksRef.current = [];
-          hasLoadedTasksRef.current = false;
-          setTasks([]);
-          void loadTasks();
-          fetchConfig().then((c) => {
-            setConfig(c);
-            configRef.current = c;
-            setCurrentProject((prev) => reconcileProject(prev, c.projects));
-            setCurrentUser((prev) => reconcileUser(prev, c.users)); // FLUX-785
-          }).catch(() => {});
+          loadBoardData();
           refreshWorkspaces();
-          refreshNotifications();
         }
       })
       .catch(() => {});
-  }, [loadTasks, refreshWorkspaces, refreshNotifications]);
+  }, [loadBoardData, refreshWorkspaces]);
 
   const switchWorkspace = useCallback(async (wsPath: string, force?: boolean) => {
     const result = await apiSwitchWorkspace(wsPath, force);
@@ -871,6 +1005,57 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     notifyWorkspaceSet();
   }, [confirm, notifyWorkspaceSet]);
+
+  // S10 (epic FLUX-1230): non-destructive board flip — repoints the board-key dimension
+  // (`api.ts`'s ehFetch/SSE key + `pinnedBoardId`) at `key` and refetches that board's data. No
+  // `/workspaces/switch` call, no `stopAllCliSessions`, no engine rebind — contrast `switchWorkspace`
+  // above, which stays the only destructive path. `key` must already be an *open* board
+  // (`WorkspaceInfo.open`); `openBoard` below brings a registered-but-not-open board online first.
+  const setActiveBoard = useCallback((key: string) => {
+    if (key === activeBoardId) return; // already the active board — no-op, don't re-fetch
+    setPinnedBoardId(key);
+    setActiveBoardKey(key);
+    loadBoardData();
+  }, [activeBoardId, loadBoardData]);
+
+  // S10: bring a registered-but-not-live board online via the engine registry (no session kill, no
+  // rebind — `POST /workspaces/open` → `openWorkspaceLive`), then flip the active board to it.
+  const openBoard = useCallback(async (wsPath: string) => {
+    const list = await apiOpenBoardLive(wsPath);
+    setWorkspaces(list);
+    setActiveBoard(wsPath);
+  }, [setActiveBoard]);
+
+  // S10: evict an open, registry-backed board (`closable: true` — never the legacy active binding,
+  // which the engine refuses to close). Confirms before stopping live sessions (decision 2 default
+  // from the mockup — reuse `useConfirm`, mirrors `switchWorkspace`'s force flow).
+  const closeBoard = useCallback(async (wsPath: string, force?: boolean) => {
+    const result = await apiCloseBoardLive(wsPath, force);
+    if (Array.isArray(result)) {
+      setWorkspaces(result);
+    } else {
+      const proceed = await confirm({ title: 'Close board and stop live sessions?', body: result.message, tone: 'danger', confirmLabel: 'Close & stop' });
+      if (proceed) {
+        await closeBoard(wsPath, true);
+      }
+      return;
+    }
+    // Closing the active board strands the pin on a now-dead board — fall back to whatever the
+    // registry now reports active (mirrors notifyWorkspaceSet's post-rebind reset).
+    if (activeBoardId === wsPath) {
+      const fallback = result.find((w) => w.active)?.path ?? workspacePath;
+      setPinnedBoardId(fallback);
+      setActiveBoardKey(fallback);
+      loadBoardData();
+    }
+  }, [confirm, activeBoardId, workspacePath, loadBoardData]);
+
+  // S9: keep api.ts's module-level board key in sync with `activeBoardId` even without a switcher
+  // UI driving it (S10) — every board-scoped `ehFetch`/SSE call must carry the right key as soon
+  // as the single active workspace resolves.
+  useEffect(() => {
+    setActiveBoardKey(activeBoardId);
+  }, [activeBoardId]);
 
   // On mount, fetch workspace state. Then poll health alongside connection checks.
   useEffect(() => {
@@ -1032,7 +1217,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const connect = () => {
       if (disposed) return;
-      const src = new EventSource('/api/events');
+      // S9 (epic FLUX-1230): scope the stream to the active board so a future multi-board engine
+      // can filter broadcasts per-connection (S5) the same way `ehFetch` keys HTTP requests.
+      // Single-board today: `activeBoardId` always names the one active workspace.
+      const qs = activeBoardId ? `?ws=${encodeURIComponent(activeBoardId)}` : '';
+      const src = new EventSource(`/api/events${qs}`);
       es = src;
       // FLUX-1133: count every named SSE event by type (perfClient's `sse.event.<type>` counters),
       // wrapping the underlying addEventListener once instead of a manual incr() at each call site.
@@ -1076,9 +1265,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
         incr('refresh.trigger.sse');
         void loadTasks();
       });
-      trackListener('taskUpdated', () => {
+      trackListener('taskUpdated', (e: MessageEvent) => {
         incr('refresh.trigger.sse');
-        void loadTasks();
+        // FLUX-1505: patch-first — fetch just the changed task and merge it into the store instead
+        // of paying for a full-list refetch on every SSE tick. A debounced `loadTasks()` still runs
+        // shortly after as background truth-sync (see `scheduleBackgroundTaskSync`) — it's what
+        // actually recomputes the richer diff (column reflow, created/moved live events, pinning)
+        // a single-task patch can't derive on its own. An id-less payload (the `board-rebase.ts`/
+        // agent broadcasts that key off `__board__`, or a malformed event) falls back to the
+        // previous full-refresh behavior.
+        let id: string | undefined;
+        try { id = (JSON.parse(e.data) as { id?: string }).id; } catch { /* non-JSON payload */ }
+        if (id) {
+          // FLUX-1505 review fix: fetch the LIST shape (?view=list — capped history, derived
+          // historyDigest, truncated liveOutput), matching what `tasks` already holds. The plain
+          // `fetchTask` detail shape must never be merged here — see fetchTaskListShape's doc comment.
+          fetchTaskListShape(id).then((t) => patchTaskLocal(t.id, t)).catch(() => { /* the debounced sync below still catches it up */ });
+          scheduleBackgroundTaskSync();
+        } else {
+          void loadTasks();
+        }
         // FLUX-796: resolving a Require Input / Needs Action ticket dismisses its notification
         // server-side WITHOUT a broadcast (only add/dedup/read-all broadcast). Re-sync the list so
         // the Electron taskbar badge decrements on resolve and clears at 0. Electron-only so the
@@ -1128,6 +1334,72 @@ export function AppProvider({ children }: { children: ReactNode }) {
           },
         });
       });
+      // FLUX-1540: real cold-boot scan progress, broadcast from `initDir`'s existing 50-file yield
+      // boundary. Powers the ramping "Loaded X / Y tickets" loading state in Board.tsx.
+      trackListener('bootProgress', (e: MessageEvent) => {
+        try {
+          // FLUX-1547 Phase 4: `phase` is a bare string here (see BootProgress) — forward-compatible
+          // with any engine-side phase value (e.g. a 'cached' fast-path) without a type change.
+          const data = JSON.parse(e.data) as { loaded: number; total: number; phase: string };
+          const prev = appStore.getState().bootProgress;
+          // Clamp monotonic within a scan — a late/duplicate/out-of-order event must never make
+          // the ramping count jump backward. A `total` change means a new scan started (e.g. a
+          // destructive workspace switch re-running initDir) — don't carry the old scan's count
+          // forward across it (FLUX-1543).
+          const loaded = prev && prev.total === data.total ? Math.max(prev.loaded, data.loaded) : data.loaded;
+          appStore.patch({ bootProgress: { loaded, total: data.total, phase: data.phase } });
+        } catch { /* non-JSON payload — skip */ }
+      });
+      // FLUX-1503: flatten a Furnace batch's tickets into the `furnaceTicketById` store slice so
+      // deck member lines can read live burn/temper state. The event type is already registered
+      // (see the generic `forward` loop above) but had zero real subscribers until now.
+      trackListener('furnace-updated', (e: MessageEvent) => {
+        try {
+          const { batch } = JSON.parse(e.data) as { batch: FurnaceBatch };
+          if (!batch?.tickets) return;
+          const nextTicketIds = new Set(batch.tickets.map((t) => t.ticketId));
+          // FLUX-1503 review fix: a ticket removed from a still-live batch (furnace_ticket
+          // action:"remove") never fires `furnace-deleted` — only the WHOLE batch's delete does.
+          // Diff against the shadow id-list so a removed member's stale enrichment (parked/failed)
+          // doesn't linger until the batch itself is deleted.
+          const prevTicketIds = furnaceBatchTicketIdsRef.current.get(batch.id);
+          furnaceBatchTicketIdsRef.current.set(batch.id, batch.tickets.map((t) => t.ticketId));
+          const current = appStore.getState().furnaceTicketById;
+          const next = { ...current };
+          // FLUX-1539: stamp/prune the ticket -> batch-identity map in the same loop.
+          const currentBatchMeta = appStore.getState().furnaceBatchMetaByTicketId;
+          const nextBatchMeta = { ...currentBatchMeta };
+          for (const t of batch.tickets) {
+            next[t.ticketId] = t;
+            nextBatchMeta[t.ticketId] = { batchId: batch.id, icon: batch.icon, title: batch.title };
+          }
+          if (prevTicketIds) {
+            for (const id of prevTicketIds) {
+              if (!nextTicketIds.has(id)) {
+                delete next[id];
+                delete nextBatchMeta[id];
+              }
+            }
+          }
+          appStore.patch({ furnaceTicketById: next, furnaceBatchMetaByTicketId: nextBatchMeta });
+        } catch { /* non-JSON payload — skip */ }
+      });
+      trackListener('furnace-deleted', (e: MessageEvent) => {
+        try {
+          const { batchId } = JSON.parse(e.data) as { batchId: string };
+          const ticketIds = furnaceBatchTicketIdsRef.current.get(batchId);
+          furnaceBatchTicketIdsRef.current.delete(batchId);
+          if (!ticketIds || ticketIds.length === 0) return;
+          const current = appStore.getState().furnaceTicketById;
+          const next = { ...current };
+          const nextBatchMeta = { ...appStore.getState().furnaceBatchMetaByTicketId };
+          for (const id of ticketIds) {
+            delete next[id];
+            delete nextBatchMeta[id];
+          }
+          appStore.patch({ furnaceTicketById: next, furnaceBatchMetaByTicketId: nextBatchMeta });
+        } catch { /* non-JSON payload — skip */ }
+      });
       // S10 (epic FLUX-996): the S9 operation-telemetry stream — surface a failed/timed-out spawn
       // directly on its ticket's card. Only 'spawn' events carry a ticketId today (git/gh/handshake
       // telemetry isn't ticket-attributed yet, FLUX-1005's scope cut), and a deliberate 'aborted'
@@ -1165,6 +1437,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (notification && !seenNotificationIds.current.has(notification.id)) {
           seenNotificationIds.current.add(notification.id);
           maybeNotifyNative(notification);
+          // FLUX-1486: a launch-failure notification gets a focus-independent in-portal toast —
+          // the failure is a direct response to an action the user just took (clicking Launch),
+          // so it deserves a foreground surface even while the window is focused. Unlike
+          // maybeNotifyNative above, notify.error has no focus gate by design.
+          if (isLaunchFailureNotification(notification)) notify.error(notification.message);
         }
         startTransition(() => {
           if (notification) {
@@ -1220,12 +1497,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
         cancelAnimationFrame(engineEventsFlushHandleRef.current);
         engineEventsFlushHandleRef.current = null;
       }
+      // FLUX-1505: drop any pending patch-first background sync — a stale connection's debounced
+      // loadTasks() firing after teardown would be wasted work at best.
+      if (taskUpdatedSyncTimerRef.current !== null) {
+        window.clearTimeout(taskUpdatedSyncTimerRef.current);
+        taskUpdatedSyncTimerRef.current = null;
+      }
       // FLUX-1146: drain any batch still sitting in pendingEngineEventsRef instead of leaving it
       // for a reconnect that may be slow or never happen — the cancelAnimationFrame above means
       // no flush is otherwise coming.
       flushEngineEvents();
     };
-  }, [isConnected, refreshNotifications, flushEngineEvents]);
+  }, [isConnected, refreshNotifications, flushEngineEvents, activeBoardId]);
 
   useEffect(() => {
     updateViewUrl(getViewFromLocation(), 'replace');
@@ -1349,6 +1632,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     api.setActionCount(actionRequiredCount, renderBadgeDataUrl(actionRequiredCount));
   }, [actionRequiredCount]);
 
+  // FLUX-1541: report the running-session count so Electron main can warn before a close/quit that
+  // would kill them (no-op in the browser portal). Same active-session definition as the taskbar
+  // popover (ActiveSessionsPopover.tsx).
+  useEffect(() => {
+    const api = getElectronAPI();
+    if (!api?.setRunningGuard) return;
+    const count = tasks.filter(t => t.cliSession && isActiveSession(t.cliSession)).length;
+    api.setRunningGuard(count);
+  }, [tasks]);
+
   // Clicking a native toast → focus is handled in main; here we navigate to the ticket.
   useEffect(() => {
     const api = getElectronAPI();
@@ -1374,7 +1667,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     triggerRefresh, subscribeToEvent, notifyWorkspaceSet, switchWorkspace,
     refreshWorkspaces, saveConfig, ensureReadStateLoaded, markCommentRead,
     markAllCommentsRead, setAppTheme, toggleTheme, refreshNotifications,
-    markOnboardingComplete, clearEngineEvents,
+    markOnboardingComplete, clearEngineEvents, setActiveBoard, openBoard, closeBoard,
+    patchTaskLocal, emitTaskRollback,
   };
 
   const actions = useMemo<AppActions>(() => ({
@@ -1394,8 +1688,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     pushOverlay: () => latest.current.pushOverlay(),
     popOverlay: () => latest.current.popOverlay(),
     closeModal: () => latest.current.closeModal(),
-    openTaskModal: (t) => latest.current.openTaskModal(t),
-    openTaskFullView: (t, o) => latest.current.openTaskFullView(t, o),
+    openTaskModal: (t, from) => latest.current.openTaskModal(t, from),
+    openTaskFullView: (t, o, from) => latest.current.openTaskFullView(t, o, from),
     openTask: (t) => latest.current.openTask(t),
     clearOpenModalScrollToComments: () => latest.current.clearOpenModalScrollToComments(),
     refreshWorktrees: () => latest.current.refreshWorktrees(),
@@ -1414,21 +1708,60 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshNotifications: () => latest.current.refreshNotifications(),
     markOnboardingComplete: () => latest.current.markOnboardingComplete(),
     clearEngineEvents: () => latest.current.clearEngineEvents(),
+    setActiveBoard: (k) => latest.current.setActiveBoard(k),
+    openBoard: (p) => latest.current.openBoard(p),
+    closeBoard: (p, f) => latest.current.closeBoard(p, f),
+    patchTaskLocal: (taskId, patch) => latest.current.patchTaskLocal(taskId, patch),
+    emitTaskRollback: (taskId) => latest.current.emitTaskRollback(taskId),
   }), []);
+
+  // S9 (epic FLUX-1230): the active board's slice cache. Memoized on the board-scoped fields (the
+  // same values the flat snapshot below also embeds) so its reference — and therefore
+  // `AppStoreState.boardsById`'s top-level identity — only changes when the active board's data
+  // actually changes, preserving `shallowEqualState`'s no-op fast path below for renders that
+  // don't touch board data. `liveSessions`/`engineEvents` are read from the store directly (like
+  // the flat snapshot fields) since they're store-owned via the SSE fast-path, not `useState` —
+  // they pick up their latest value whenever this component next re-renders for any reason, the
+  // same eventual-consistency window the flat fields already have.
+  const storeLiveSessions = appStore.getState().liveSessions;
+  const storeEngineEvents = appStore.getState().engineEvents;
+  // FLUX-1540: bootProgress is store-owned via the SSE fast-path (patched directly by the
+  // `bootProgress` handler above), same as liveSessions/engineEvents — read it fresh each render
+  // instead of threading it through a useState so the snapshot below doesn't stomp it back to
+  // stale/undefined.
+  const storeBootProgress = appStore.getState().bootProgress;
+  const boardsById = useMemo<Record<string, BoardSlice>>(() => {
+    if (!activeBoardId) return {};
+    const slice: BoardSlice = {
+      tasks, taskById, prByBranch, prMemberIds, worktreeBranches, worktrees,
+      liveSessions: storeLiveSessions,
+      engineEvents: storeEngineEvents,
+      taskLiveEvents, columnLiveEvents, pinnedTasks, readComments,
+      notifications, config,
+    };
+    return { [activeBoardId]: slice };
+  }, [
+    activeBoardId, tasks, taskById, prByBranch, prMemberIds, worktreeBranches, worktrees,
+    taskLiveEvents, columnLiveEvents, pinnedTasks, readComments, notifications, config,
+    storeLiveSessions, storeEngineEvents,
+  ]);
 
   // Snapshot mirrored into the external store. Memoized sub-objects (taskById,
   // prByBranch) and state refs stay stable across renders, so setState's shallow
   // diff only notifies subscribers whose selected slice actually changed.
   const snapshot: AppStoreState = {
+    activeBoardId, boardsById,
     currentUser, currentProject, searchQuery, sortOption,
     filterAssignee, filterPriority, filterTag, filterUnreadOnly, filterWorktree,
-    view, settingsTab, modalTask, isModalOpen,
+    view, settingsTab, modalTask, isModalOpen, modalOriginRect,
     isOverlayOpen: overlayCount > 0,
     openModalScrollToComments, openModalInFullView,
-    tasks, taskById, prByBranch, prMemberIds, worktreeBranches, worktrees,
-    liveSessions: appStore.getState().liveSessions,
-    engineEvents: appStore.getState().engineEvents,
-    changesFocus, tasksLoading, taskLiveEvents, columnLiveEvents, pinnedTasks,
+    tasks, taskById, prByBranch, prMemberIds, prTicketIdByMember, parentByChildId, worktreeBranches, worktrees,
+    liveSessions: storeLiveSessions,
+    furnaceTicketById: appStore.getState().furnaceTicketById,
+    furnaceBatchMetaByTicketId: appStore.getState().furnaceBatchMetaByTicketId,
+    engineEvents: storeEngineEvents,
+    changesFocus, tasksLoading, bootProgress: storeBootProgress, taskLiveEvents, columnLiveEvents, pinnedTasks,
     refreshTrigger, lastRefreshAt, isWindowVisible, isConnected,
     workspaceConfigured, workspacePath, workspaces,
     config, readComments, totalUnreadCount,

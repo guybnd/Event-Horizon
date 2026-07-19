@@ -9,7 +9,7 @@
 // disallowedToolsArgs). A `scheduled` session should never appear for another framework, but this
 // module doesn't need to assume that to stay correct.
 import { log } from './log.js';
-import { getWorkspaceRoot } from './workspace.js';
+import { getWorkspaceByRoot, getDefaultWorkspace, runWithWorkspace } from './workspace-context.js';
 import { getAdapter } from './agents/index.js';
 import { cliSessionsById } from './session-store.js';
 
@@ -21,13 +21,20 @@ const WAKE_TICK_INTERVAL_MS = 5_000;
 const waking = new Set<string>();
 
 async function wakeDueSessions(): Promise<void> {
-  const workspaceRoot = getWorkspaceRoot();
-  if (!workspaceRoot) return;
   const now = Date.now();
 
   for (const session of cliSessionsById.values()) {
     if (session.status !== 'scheduled' || !session.wakeAt || waking.has(session.id)) continue;
     if (Date.parse(session.wakeAt) > now) continue;
+
+    // FLUX-1548: resolve THIS session's own board (stamped at spawn/resume time via `workspaceRoot`,
+    // FLUX-1531), not a single ambient `getWorkspaceRoot()` — with a second board open, the old bare
+    // `getWorkspaceRoot()` resumed every due session against whichever board happened to be active,
+    // never the session's own board when that differed. A session predating the FLUX-1531 tag falls
+    // back to the default workspace, same as `sessionBelongsToWorkspaceRoot`'s convention.
+    const ws = (session.workspaceRoot && getWorkspaceByRoot(session.workspaceRoot)) || getDefaultWorkspace();
+    const workspaceRoot = ws.root;
+    if (!workspaceRoot) continue;
 
     waking.add(session.id);
     const reasonNote = session.wakeReason ? ` (reason given: ${session.wakeReason})` : '';
@@ -45,7 +52,11 @@ async function wakeDueSessions(): Promise<void> {
       continue;
     }
 
-    adapter.sendInput(session, message, 'Scheduler', workspaceRoot, { wakeResume: true })
+    // FLUX-1548: bind the resume to `ws` — `sendInput`'s own internals (e.g. board-core.ts's
+    // `buildResumePreamble`) prefer the AMBIENT `getWorkspaceRoot()` over the explicit param passed
+    // here, so without this binding a wrong "active" board would still win even with the correct
+    // `workspaceRoot` string passed positionally below.
+    runWithWorkspace(ws, () => adapter.sendInput(session, message, 'Scheduler', workspaceRoot, { wakeResume: true }))
       .catch((e: unknown) => {
         log.warn(`[scheduled-wake] resume failed for session ${session.id} (task ${session.taskId}): ${e instanceof Error ? e.message : String(e)}`);
       })

@@ -1,10 +1,17 @@
 import { buildInitialPrompt } from './agents/shared.js';
 import { getModulePromptFragments } from './modules.js';
-import { computeAgentPayloadMetrics, type AgentPayloadMetrics } from './agent-payload-metrics.js';
+import {
+  computeAgentPayloadMetrics,
+  computeDigestSavings,
+  computeOversizedFlags,
+  type AgentPayloadMetrics,
+  type DigestSavings,
+} from './agent-payload-metrics.js';
 import { getCliSessionSummaryForTask } from './session-store.js';
 import { buildCoreSkillDocument } from './skill-core.js';
 import { isInjectablePhaseModule, loadSkillModuleBodySync, skillModuleFallback } from './skill-modules.js';
 import { probeSelfMcpSchema, type McpServerSchemaMetrics } from './mcp-schema-probe.js';
+import { measureText } from './payload-measure.js';
 
 /**
  * Ticket/frontmatter-shaped input. There is no single canonical Task type in
@@ -16,11 +23,6 @@ interface MetricsTask {
   status?: string;
   tags?: string[];
   [key: string]: unknown;
-}
-
-function measure(value: string | undefined | null): { bytes: number; tokensEst: number } {
-  if (!value) return { bytes: 0, tokensEst: 0 };
-  return { bytes: Buffer.byteLength(value, 'utf8'), tokensEst: Math.ceil(value.length / 4) };
 }
 
 function pct(bytes: number, total: number): number {
@@ -59,14 +61,14 @@ export interface LaunchPromptMetrics {
 export function computeLaunchPromptMetrics(task: MetricsTask): LaunchPromptMetrics {
   const phase = statusToPhase(task.status);
   const corePrompt = buildInitialPrompt(task, '', phase ? { phase } : undefined);
-  const total = measure(corePrompt);
+  const total = measureText(corePrompt);
 
-  const moduleFragments = measure(getModulePromptFragments(phase, Array.isArray(task.tags) ? task.tags : undefined));
+  const moduleFragments = measureText(getModulePromptFragments(phase, Array.isArray(task.tags) ? task.tags : undefined));
   // FLUX-1377: buildInitialPrompt (default framework 'claude', no patternPosition — i.e. a real
   // phase dispatch, not a delegate) now appends the phase's skill module body for
   // grooming/implementation/review. Measure it separately so it doesn't get lumped into the
   // boilerplate remainder below — this is the "phase guidance on demand" delta this ticket adds.
-  const injectedModule = measure(
+  const injectedModule = measureText(
     isInjectablePhaseModule(phase) ? (loadSkillModuleBodySync(phase) ?? skillModuleFallback(phase)) : undefined,
   );
   // The body is NOT echoed in the launch prompt (FLUX-498) — agents read it via
@@ -116,9 +118,9 @@ export interface SkillModuleMetrics {
  * there). Human sessions get the core only and Read the phase module on demand.
  */
 export async function computeSkillModuleMetrics(phase?: string): Promise<SkillModuleMetrics> {
-  const core = measure(buildCoreSkillDocument());
+  const core = measureText(buildCoreSkillDocument());
   const modulePhase = isInjectablePhaseModule(phase) ? phase : undefined;
-  const moduleMeasured = measure(
+  const moduleMeasured = measureText(
     modulePhase ? (loadSkillModuleBodySync(modulePhase) ?? skillModuleFallback(modulePhase)) : undefined,
   );
 
@@ -165,6 +167,13 @@ export interface ContextBudget {
    * host, via the adapter) — the real number to compare the measured static
    * prelude against. The gap is conversation + tool-result accumulation. */
   session?: SessionTokenTotals;
+  /** FLUX-1512: how much the FLUX-501/503 history digest actually saves for this ticket —
+   * digested `agentPayload` vs. an undigested re-serialization of the same in-memory task. */
+  digestSavings: DigestSavings;
+  /** FLUX-1512: cheap heuristic flags (see agent-payload-metrics.ts's thresholds) for a body/
+   * history that's disproportionately large — surfaced so the portal panel can call it out. */
+  bodyOversized: boolean;
+  historyOversized: boolean;
   caveats: string[];
 }
 
@@ -177,6 +186,8 @@ export async function computeContextBudget(task: MetricsTask): Promise<ContextBu
   const launchPrompt = computeLaunchPromptMetrics(task);
   const skillModules = await computeSkillModuleMetrics(launchPrompt.phase ?? undefined);
   const ehToolSchemas = await probeSelfMcpSchema();
+  const digestSavings = computeDigestSavings(task);
+  const oversized = computeOversizedFlags(payload);
 
   // FLUX-1377: launchPrompt already includes the injected phase skill module (buildInitialPrompt
   // appends it for Claude spawns) — add only skillModules.coreTokensEst (the static installed
@@ -209,6 +220,8 @@ export async function computeContextBudget(task: MetricsTask): Promise<ContextBu
     ehToolSchemas,
     ehMeasurableTotalTokensEst,
     ...(session ? { session } : {}),
+    digestSavings,
+    ...oversized,
     caveats: [
       "Excludes Claude Code's own system prompt (not engine-controlled).",
       'Excludes external MCP server tool schemas (serena, context7, etc.) — measured by the host, not the engine (see /debug/mcp-schemas for those, on-demand).',

@@ -22,6 +22,11 @@ export interface ElectronAPI {
    * native confirm dialog (`beforeunload` is silently cancelled with no dialog in Electron).
    */
   setUnsavedGuard?: (isDirty: boolean) => void;
+  /**
+   * Report how many agent sessions are currently running, so main can guard window-close / quit
+   * with a native confirm when closing would kill them (FLUX-1541).
+   */
+  setRunningGuard?: (count: number) => void;
 }
 
 declare global {

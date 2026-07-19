@@ -92,6 +92,78 @@ describe('resolvePersonaPrompt — phase contract composition (FLUX-1170)', () =
   });
 });
 
+// FLUX-1502: the communication blocks (user-facing style + inter-agent protocol) compose onto
+// EVERY resolved persona — leads included (the PHASE_CONTRACTS lead exemption is about
+// status-authority conflicts, which pure prose-style blocks don't have). The user axis is a
+// selectable style; the inter-agent axis is one fixed protocol, on/off only.
+describe('resolvePersonaPrompt — communication blocks (FLUX-1502)', () => {
+  it('appends both default blocks (concise user style + inter-agent protocol) to a worker persona', async () => {
+    const { resolvePersonaPrompt } = await import('./orchestration-personas.js');
+    const prompt = resolvePersonaPrompt('qa-correctness', undefined, 'review') ?? '';
+    expect(prompt).toContain('## Communication style — to the user');
+    expect(prompt).toContain('concise and reader-first');
+    expect(prompt).toContain('## Inter-agent protocol');
+    expect(prompt).toContain('When DELEGATING');
+  });
+
+  it('appends them to lead personas too — unlike the phase contract', async () => {
+    const { resolvePersonaPrompt } = await import('./orchestration-personas.js');
+    for (const id of ['orchestrator', 'supervisor', 'dev-lead', 'planner']) {
+      const prompt = resolvePersonaPrompt(id) ?? '';
+      expect(prompt, id).toContain('## Communication style — to the user');
+      expect(prompt, id).toContain('## Inter-agent protocol');
+    }
+  });
+
+  it('keeps the focus comment last, after the blocks', async () => {
+    const { resolvePersonaPrompt } = await import('./orchestration-personas.js');
+    const prompt = resolvePersonaPrompt('senior-dev', 'focus on the auth module', 'review') ?? '';
+    expect(prompt.indexOf('focus on the auth module')).toBeGreaterThan(prompt.indexOf('## Inter-agent protocol'));
+  });
+
+  it('selects the detailed user style, keeps the protocol fixed', async () => {
+    const { resolvePersonaPrompt } = await import('./orchestration-personas.js');
+    const { getConfig } = await import('./config.js');
+    getConfig().communicationStyle = { user: 'detailed', interAgent: true };
+    try {
+      const prompt = resolvePersonaPrompt('senior-dev', undefined, 'review') ?? '';
+      expect(prompt).toContain('explanatory and self-teaching');
+      expect(prompt).not.toContain('concise and reader-first');
+      expect(prompt).toContain('## Inter-agent protocol');
+    } finally {
+      getConfig().communicationStyle = { user: 'concise', customText: '', interAgent: true };
+    }
+  });
+
+  it('injects custom text under the user-style heading; empty custom falls back to concise', async () => {
+    const { resolvePersonaPrompt } = await import('./orchestration-personas.js');
+    const { getConfig } = await import('./config.js');
+    getConfig().communicationStyle = { user: 'custom', customText: 'CUSTOM_STYLE_SENTINEL rules.', interAgent: false };
+    try {
+      const prompt = resolvePersonaPrompt('senior-dev', undefined, 'review') ?? '';
+      expect(prompt).toContain('## Communication style — to the user\nCUSTOM_STYLE_SENTINEL rules.');
+      expect(prompt).not.toContain('## Inter-agent protocol');
+      getConfig().communicationStyle = { user: 'custom', customText: '   ', interAgent: false };
+      expect(resolvePersonaPrompt('senior-dev', undefined, 'review')).toContain('concise and reader-first');
+    } finally {
+      getConfig().communicationStyle = { user: 'concise', customText: '', interAgent: true };
+    }
+  });
+
+  it('omits everything when both axes are off', async () => {
+    const { resolvePersonaPrompt } = await import('./orchestration-personas.js');
+    const { getConfig } = await import('./config.js');
+    getConfig().communicationStyle = { user: 'off', interAgent: false };
+    try {
+      const prompt = resolvePersonaPrompt('senior-dev', undefined, 'review') ?? '';
+      expect(prompt).not.toContain('## Communication style');
+      expect(prompt).not.toContain('## Inter-agent protocol');
+    } finally {
+      getConfig().communicationStyle = { user: 'concise', customText: '', interAgent: true };
+    }
+  });
+});
+
 describe('coordinator retirement (FLUX-1177)', () => {
   it('is no longer selectable — folded into supervisor', async () => {
     const { listSelectablePersonaMeta } = await import('./orchestration-personas.js');
@@ -538,6 +610,7 @@ describe('resolveSoloChatPersona — phase-default resolution (FLUX-1226)', () =
       chat: 'phase-default-chat',
       grooming: 'phase-default-grooming',
       'fast-path': 'phase-default-fast-path',
+      'batch-grooming': 'phase-default-batch-grooming',
       implementation: 'phase-default-implementation',
       review: 'phase-default-review',
       finalize: 'phase-default-finalize',
@@ -589,7 +662,7 @@ describe('resolveSoloChatPersona — phase-default resolution (FLUX-1226)', () =
 
   it('phase-default personas are hidden from every persona picker, like the Smelter', async () => {
     const { listSelectablePersonaMeta } = await import('./orchestration-personas.js');
-    const hiddenIds = ['phase-default-chat', 'phase-default-grooming', 'phase-default-fast-path', 'phase-default-implementation', 'phase-default-review', 'phase-default-finalize'];
+    const hiddenIds = ['phase-default-chat', 'phase-default-grooming', 'phase-default-fast-path', 'phase-default-batch-grooming', 'phase-default-implementation', 'phase-default-review', 'phase-default-finalize'];
     for (const phase of ['grooming', 'implementation', 'review', 'finalize'] as const) {
       const ids = listSelectablePersonaMeta(phase).map((p) => p.id);
       for (const hidden of hiddenIds) expect(ids).not.toContain(hidden);
@@ -607,9 +680,130 @@ describe('resolveSoloChatPersona — phase-default resolution (FLUX-1226)', () =
 
   it('phase-default personas are never EH-tool-scoped (role:lead ⇒ disallowedEhToolsForPersona is undefined)', async () => {
     const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
-    for (const personaId of ['phase-default-grooming', 'phase-default-implementation', 'phase-default-review', 'phase-default-finalize']) {
+    for (const personaId of ['phase-default-grooming', 'phase-default-batch-grooming', 'phase-default-implementation', 'phase-default-review', 'phase-default-finalize']) {
       const denied = disallowedEhToolsForPersona({ personaId, phase: 'implementation' });
       expect(denied, personaId).toBeUndefined();
+    }
+  });
+});
+
+// FLUX-1462: LEAD_PHASE_DENY — a dispatched, personaId-less solo phase session (the case the test
+// directly above does NOT cover — that one always passes an explicit personaId) now gets a
+// deliberate per-phase trim for grooming/review. Every other phase, and every non-standalone
+// patternPosition (worker delegates, scatter-gather orchestrator/combiner leads), must stay
+// exactly as before this ticket.
+describe('disallowedEhToolsForPersona — dispatched solo lead per-phase trim (FLUX-1462)', () => {
+  it('trims LEAD_PHASE_DENY for a personaId-less standalone grooming/review dispatch', async () => {
+    const { disallowedEhToolsForPersona, LEAD_PHASE_DENY } = await import('./orchestration-personas.js');
+    for (const phase of ['grooming', 'review', 'batch-grooming'] as const) {
+      const denied = disallowedEhToolsForPersona({ phase });
+      expect(denied?.sort(), phase).toEqual(LEAD_PHASE_DENY[phase]?.slice().sort());
+    }
+  });
+
+  // FLUX-1562: an explicit patternPosition:'standalone' must trim identically to the undefined
+  // case above — production only reaches `undefined` because cli-session.ts:317 normalizes the
+  // string away before it hits this function; the gate itself must not depend on that normalization.
+  it('trims LEAD_PHASE_DENY identically for an explicit patternPosition:"standalone"', async () => {
+    const { disallowedEhToolsForPersona, LEAD_PHASE_DENY } = await import('./orchestration-personas.js');
+    for (const phase of ['grooming', 'review'] as const) {
+      const denied = disallowedEhToolsForPersona({ phase, patternPosition: 'standalone' });
+      expect(denied?.sort(), phase).toEqual(LEAD_PHASE_DENY[phase]?.slice().sort());
+    }
+  });
+
+  it('leaves every other phase un-scoped for a personaId-less standalone dispatch', async () => {
+    const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+    for (const phase of ['implementation', 'fast-path', 'finalize'] as const) {
+      expect(disallowedEhToolsForPersona({ phase }), phase).toBeUndefined();
+    }
+    expect(disallowedEhToolsForPersona({})).toBeUndefined();
+  });
+
+  it('does not trim a non-standalone patternPosition (worker delegate, or a scatter-gather lead/combiner)', async () => {
+    const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+    for (const patternPosition of ['assistant', 'step', 'lead', 'combiner'] as const) {
+      expect(disallowedEhToolsForPersona({ phase: 'grooming', patternPosition }), patternPosition).toBeUndefined();
+    }
+  });
+
+  it('an explicit enableTools grant re-enables an individual trimmed tool', async () => {
+    const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+    const denied = disallowedEhToolsForPersona({ phase: 'review', enableTools: ['finish_ticket'] });
+    expect(denied).not.toContain('finish_ticket');
+    expect(denied).toEqual(expect.arrayContaining(['branch', 'merge_tickets']));
+  });
+
+  it('every LEAD_PHASE_DENY entry is a real, currently-registered EH tool name (drift guard)', async () => {
+    const { LEAD_PHASE_DENY, CATEGORY_DENY_DEFAULTS, NEVER_DENY } = await import('./orchestration-personas.js');
+    const knownTools = new Set([...CATEGORY_DENY_DEFAULTS.worker, ...NEVER_DENY]);
+    for (const [phase, tools] of Object.entries(LEAD_PHASE_DENY)) {
+      for (const tool of tools ?? []) expect(knownTools.has(tool), `${phase}: unknown tool "${tool}"`).toBe(true);
+    }
+  });
+});
+
+describe('resolveSoloChatPersona — Scratchpad persona (FLUX-1479 / FLUX-1226 Phase D)', () => {
+  it('resolves the Scratchpad persona for phase:"chat" + isScratch:true', async () => {
+    const { resolveSoloChatPersona } = await import('./orchestration-personas.js');
+    const persona = resolveSoloChatPersona('chat', undefined, true);
+    expect(persona?.id).toBe('phase-default-scratchpad');
+    expect(persona?.role).toBe('lead');
+  });
+
+  it('a plain chat (isScratch false/omitted) still resolves the ordinary chat default, not Scratchpad', async () => {
+    const { resolveSoloChatPersona } = await import('./orchestration-personas.js');
+    expect(resolveSoloChatPersona('chat', undefined, false)?.id).toBe('phase-default-chat');
+    expect(resolveSoloChatPersona('chat')?.id).toBe('phase-default-chat');
+  });
+
+  it('isScratch is only consulted for phase:"chat" — a non-chat phase ignores it', async () => {
+    const { resolveSoloChatPersona } = await import('./orchestration-personas.js');
+    expect(resolveSoloChatPersona('grooming', undefined, true)?.id).toBe('phase-default-grooming');
+  });
+
+  it('an explicit personaId still wins over the Scratchpad default', async () => {
+    const { resolveSoloChatPersona } = await import('./orchestration-personas.js');
+    const persona = resolveSoloChatPersona('chat', 'dev-lead', true);
+    expect(persona?.id).toBe('dev-lead');
+  });
+
+  it('the Scratchpad persona is hidden from every persona picker, like the other phase defaults', async () => {
+    const { listSelectablePersonaMeta } = await import('./orchestration-personas.js');
+    expect(listSelectablePersonaMeta().map((p) => p.id)).not.toContain('phase-default-scratchpad');
+  });
+
+  it('the Scratchpad persona is never EH-tool-scoped (role:lead)', async () => {
+    const { disallowedEhToolsForPersona } = await import('./orchestration-personas.js');
+    expect(disallowedEhToolsForPersona({ personaId: 'phase-default-scratchpad', phase: 'chat' })).toBeUndefined();
+  });
+});
+
+describe('OrchestrationPersona.model — per-phase model override field (FLUX-1479 / FLUX-1226 Phase F)', () => {
+  it('resolveSoloChatPersona surfaces a custom persona\'s model field unchanged', async () => {
+    const { resolveSoloChatPersona, saveCustomPersona, deleteCustomPersona } = await import('./orchestration-personas.js');
+    await saveCustomPersona({
+      id: 'custom-cheap-reviewer',
+      label: 'Custom Cheap Reviewer',
+      description: 'test-only persona for the persona.model resolution test',
+      role: 'lead',
+      phases: ['review'],
+      requiredCapabilities: [],
+      prompt: 'You are a cost-conscious reviewer.',
+      model: 'claude-haiku-4-5-20251001',
+    });
+    try {
+      const persona = resolveSoloChatPersona('review', 'custom-cheap-reviewer');
+      expect(persona?.model).toBe('claude-haiku-4-5-20251001');
+    } finally {
+      await deleteCustomPersona('custom-cheap-reviewer');
+    }
+  });
+
+  it('the built-in phase-default personas declare no model override by default', async () => {
+    const { resolveSoloChatPersona } = await import('./orchestration-personas.js');
+    for (const phase of ['chat', 'grooming', 'fast-path', 'batch-grooming', 'implementation', 'review', 'finalize'] as const) {
+      expect(resolveSoloChatPersona(phase)?.model, `phase=${phase}`).toBeUndefined();
     }
   });
 });

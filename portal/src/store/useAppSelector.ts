@@ -58,6 +58,23 @@ export function useLiveSession(id: string | undefined) {
   return useAppSelector((s) => (id ? s.liveSessions[id] : undefined));
 }
 
+/** Select a task's Furnace batch-ticket state (FLUX-1503), if it belongs to a known batch. */
+export function useFurnaceTicket(id: string | undefined) {
+  return useAppSelector((s) => (id ? s.furnaceTicketById[id] : undefined));
+}
+
+/** Every task id → its first epic parent (FLUX-1553) — the store-level `resolveParentByChildId`
+ *  map, shared by every card instead of each recomputing it per render. */
+export function useParentByChildId(): Map<string, Task> {
+  return useAppSelector((s) => s.parentByChildId);
+}
+
+/** Select a task's owning Furnace batch identity (FLUX-1539) — id/icon/title, for the card's
+ *  batch badge + border tint. */
+export function useFurnaceBatchMeta(id: string | undefined) {
+  return useAppSelector((s) => (id ? s.furnaceBatchMetaByTicketId[id] : undefined));
+}
+
 // ---- Actions -------------------------------------------------------------
 
 /** Provided once by AppProvider with a stable (frozen) handler set. */

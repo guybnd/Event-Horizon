@@ -89,10 +89,10 @@ describe('merge verb (FLUX-657)', () => {
     // AC: survivor view = chronological union by ts; foreign turns tagged with their source.
     const msgs = await readTranscriptMessages(survivor);
     expect(msgs).toEqual([
-      { role: 'user', text: 'a1', ts: '2025-01-01T00:00:01.000Z', sourceStream: a },
-      { role: 'user', text: 's-own', ts: '2025-01-01T00:00:02.000Z' }, // own turn → no tag
-      { role: 'user', text: 'b1', ts: '2025-01-01T00:00:03.000Z', sourceStream: b },
-      { role: 'user', text: 'a2', ts: '2025-01-01T00:00:04.000Z', sourceStream: a },
+      { role: 'user', text: 'a1', ts: '2025-01-01T00:00:01.000Z', seq: 0, sourceStream: a },
+      { role: 'user', text: 's-own', ts: '2025-01-01T00:00:02.000Z', seq: 0 }, // own turn → no tag
+      { role: 'user', text: 'b1', ts: '2025-01-01T00:00:03.000Z', seq: 0, sourceStream: b },
+      { role: 'user', text: 'a2', ts: '2025-01-01T00:00:04.000Z', seq: 1, sourceStream: a },
     ]);
   });
 

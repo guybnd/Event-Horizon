@@ -1,3 +1,4 @@
+import { useCallback } from 'react';
 import { User, Bot, GitCompare } from 'lucide-react';
 import { motion } from 'framer-motion';
 import type { Task } from '../../types';
@@ -6,6 +7,13 @@ import { CardChip, CARD_CHIP_BASE, CARD_CHIP_TEXT } from './CardChip';
 import { reporterInitials } from './reporterInitials';
 import type { TaskCardController } from '../../hooks/useTaskCardController';
 import { useAppSelector } from '../../store/useAppSelector';
+
+// FLUX-1553: constant-prop icons hoisted to module scope (precedent: TaskCard.tsx's
+// PR_CARD_STYLE, FLUX-567) — allocated once instead of re-created via lucide's
+// createElement on every card render.
+const DIFFS_ICON = <GitCompare className="h-3 w-3" />;
+const BOT_ICON = <Bot className="w-3 h-3 shrink-0" />;
+const USER_ICON = <User className="w-3 h-3 shrink-0" />;
 
 // FLUX-725: in-progress→done-under-2h is pre-computed on the list digest (it needs the FULL
 // history, not the 24h window, so a done card older than a day still qualifies).
@@ -53,6 +61,12 @@ export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: 
   // the same tag twice or a blank chip is itself wrong, so we don't render those.)
   const visibleTags = Array.from(new Set(tagNames.map((t) => t.trim()).filter(Boolean)));
   const menuTags = Array.from(new Set(allTags.map((t) => t.trim()).filter(Boolean)));
+
+  // FLUX-1553: stable reference so it doesn't defeat TokenBadge's React.memo comparator.
+  const handleTokenToggle = useCallback(() => {
+    if (!config) return;
+    void saveConfig({ ...config, tokenDisplayMode: config.tokenDisplayMode === 'tokens' ? 'cost' : 'tokens' });
+  }, [config, saveConfig]);
 
   return (
     // Containment contract (FLUX-652): two deterministic aligned rows instead of one flex-wrap row
@@ -144,7 +158,7 @@ export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: 
         data={task.tokenMetadata}
         config={config}
         variant="card"
-        onToggle={config ? () => void saveConfig({ ...config, tokenDisplayMode: config.tokenDisplayMode === 'tokens' ? 'cost' : 'tokens' }) : undefined}
+        onToggle={config ? handleTokenToggle : undefined}
       />
 
       {boardFx?.speedDemon !== false && isSpeedDemon && (
@@ -157,7 +171,7 @@ export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: 
           title="View this ticket's diffs in the Changes viewer"
           className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-gray-400 transition-colors hover:bg-primary/10 hover:text-primary"
         >
-          <GitCompare className="h-3 w-3" />
+          {DIFFS_ICON}
           <span>Diffs</span>
         </button>
       )}
@@ -189,7 +203,7 @@ export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: 
           }}
           className={`${CARD_CHIP_BASE} transition-colors ${hasActiveCliSession ? `${isSessionRunning ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300 bot-assignee-glow' : 'bg-gray-100 text-gray-500 dark:bg-black/20 dark:text-gray-400'} cursor-default` : 'bg-gray-100 text-gray-500 dark:bg-black/20 dark:text-gray-400'}`}
         >
-          {hasActiveCliSession ? <Bot className="w-3 h-3 shrink-0" /> : <User className="w-3 h-3 shrink-0" />}
+          {hasActiveCliSession ? BOT_ICON : USER_ICON}
           <span className={`${CARD_CHIP_TEXT} max-w-[88px]`}>{hasActiveCliSession && task.cliSession ? task.cliSession.label : visibleAssignee === 'unassigned' ? 'Unassigned' : visibleAssignee}</span>
         </motion.button>
         {assigneeMenuOpen && !isOverlay && !hasActiveCliSession && (

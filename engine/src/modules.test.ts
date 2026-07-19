@@ -381,3 +381,49 @@ describe('getModuleMcpServers — uninitialised workspace', () => {
     expect(servers['mem']?.env?.BASIC_MEMORY_HOME).toBe('${ACTIVE_FLUX_DIR}/memory');
   });
 });
+
+// ── FLUX-1479 (FLUX-1226 Phase D): scratchpad-mode built-in — always-on, scratch-gated ─────────
+describe('getActiveModules / getModulePromptFragments — scratchpad-mode built-in (FLUX-1479)', () => {
+  it('a scratch chat (phase "chat" + isScratch true) picks up scratchpad-mode with NO config opt-in', () => {
+    getConfig().modules = [];
+    const ids = getActiveModules('chat', undefined, true).map(m => m.id);
+    expect(ids).toContain('scratchpad-mode');
+    expect(getModulePromptFragments('chat', undefined, true)).toContain('Scratchpad');
+  });
+
+  it('an ordinary (non-scratch) chat does NOT pick up scratchpad-mode', () => {
+    getConfig().modules = [];
+    expect(getActiveModules('chat', undefined, false).map(m => m.id)).not.toContain('scratchpad-mode');
+    expect(getActiveModules('chat').map(m => m.id)).not.toContain('scratchpad-mode');
+    expect(getModulePromptFragments('chat')).toBe('');
+  });
+
+  it('a scratch flag on a non-chat phase does not activate scratchpad-mode (phase-gated to "chat")', () => {
+    getConfig().modules = [];
+    expect(getActiveModules('implementation', undefined, true).map(m => m.id)).not.toContain('scratchpad-mode');
+  });
+
+  it('other opt-in built-ins (serena/context7/basic-memory/mem0) stay strictly config-gated — the always-on merge only applies to fragment-only built-ins', () => {
+    getConfig().modules = [];
+    const ids = getActiveModules('chat', undefined, true).map(m => m.id);
+    for (const optIn of ['serena', 'context7', 'basic-memory', 'mem0']) {
+      expect(ids).not.toContain(optIn);
+    }
+  });
+
+  it('a project can still override scratchpad-mode by configuring its own module with the same id', () => {
+    getConfig().modules = [{
+      id: 'scratchpad-mode',
+      name: 'Custom Scratchpad',
+      description: 'project override',
+      enabled: true,
+      phases: ['chat'],
+      conditions: { requireScratch: true },
+      promptFragment: 'CUSTOM_OVERRIDE_TEXT',
+    }];
+    const fragment = getModulePromptFragments('chat', undefined, true);
+    expect(fragment).toContain('CUSTOM_OVERRIDE_TEXT');
+    // Only one copy — the built-in default must not ALSO be injected alongside the override.
+    expect(getActiveModules('chat', undefined, true).filter(m => m.id === 'scratchpad-mode')).toHaveLength(1);
+  });
+});

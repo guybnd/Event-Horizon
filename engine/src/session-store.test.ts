@@ -1,4 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fsp from 'fs/promises';
+import path from 'path';
+import os from 'os';
 
 vi.mock('./agents/index.js', () => ({
   getAdapter: () => ({
@@ -35,6 +38,7 @@ import {
   getActiveSessionsForTask,
   getLiveStandaloneSessionForTask,
   getPreferredInputSessionId,
+  getChatSessionForTask,
   slimSessionSummaryForAgent,
   checkPathConflicts,
   validatePatternSupport,
@@ -43,7 +47,15 @@ import {
   reconcileDeadSessions,
   getActiveSessionCount,
   getLiveProcessSessionCount,
+  getLiveProcessSessionCountForWorkspace,
+  stopCliSessionsForWorkspace,
+  sessionBelongsToWorkspaceRoot,
+  syncActiveSessionStubs,
+  rehydrateSessionStubs,
+  __resetSessionStubStateForTests,
 } from './session-store.js';
+import { setWorkspaceRoot } from './workspace.js';
+import { getWorkspace, getDefaultWorkspace, openWorkspace, closeWorkspace, runWithWorkspace, type Workspace } from './workspace-context.js';
 import type { CliSessionRecord } from './agents/types.js';
 import type { ChildProcessWithoutNullStreams } from 'child_process';
 
@@ -212,6 +224,39 @@ describe('session-store', () => {
 
     it('returns undefined when no sessions exist', () => {
       expect(getPreferredInputSessionId('FLUX-NONE')).toBeUndefined();
+    });
+  });
+
+  describe('getChatSessionForTask (FLUX-1479 / FLUX-1226 Phase E)', () => {
+    function register(task: string, s: CliSessionRecord) {
+      cliSessionsById.set(s.id, s);
+      registerSession(task, s.id);
+    }
+
+    it('finds the persistent chat session (phase === "chat") among mixed sessions', () => {
+      register('FLUX-1', createMockSession({ id: 'impl', taskId: 'FLUX-1', status: 'completed', phase: 'implementation' }));
+      register('FLUX-1', createMockSession({ id: 'chat', taskId: 'FLUX-1', status: 'completed', phase: 'chat' }));
+      expect(getChatSessionForTask('FLUX-1')?.id).toBe('chat');
+    });
+
+    it('returns undefined when the ticket has no chat session', () => {
+      register('FLUX-2', createMockSession({ id: 'impl', taskId: 'FLUX-2', status: 'completed', phase: 'implementation' }));
+      expect(getChatSessionForTask('FLUX-2')).toBeUndefined();
+    });
+
+    it('returns undefined when the only chat session aged out of resumability (e.g. failed)', () => {
+      register('FLUX-3', createMockSession({ id: 'chat-dead', taskId: 'FLUX-3', status: 'failed', phase: 'chat' }));
+      expect(getChatSessionForTask('FLUX-3')).toBeUndefined();
+    });
+
+    it('picks the most-recently-registered chat session when more than one is resumable', () => {
+      register('FLUX-4', createMockSession({ id: 'chat-old', taskId: 'FLUX-4', status: 'completed', phase: 'chat' }));
+      register('FLUX-4', createMockSession({ id: 'chat-new', taskId: 'FLUX-4', status: 'running', phase: 'chat' }));
+      expect(getChatSessionForTask('FLUX-4')?.id).toBe('chat-new');
+    });
+
+    it('returns undefined for an unknown taskId', () => {
+      expect(getChatSessionForTask('FLUX-NONE')).toBeUndefined();
     });
   });
 
@@ -739,5 +784,178 @@ describe('getLiveProcessSessionCount vs getActiveSessionCount (FLUX-1338)', () =
     for (const s of [live, stub1, stub2]) cliSessionsById.set(s.id, s);
     expect(getActiveSessionCount()).toBe(3); // 1 live + 2 resumable stubs
     expect(getLiveProcessSessionCount()).toBe(1); // only the live process — no phantom warning
+  });
+});
+
+// FLUX-1531 (multi-workspace S13): sessions tag their owning workspace root at spawn; the switch
+// guard's count/stop must be scoped per-board instead of engine-wide.
+describe('workspace-scoped session count/stop (FLUX-1531)', () => {
+  const liveProc = { exitCode: null, signalCode: null } as unknown as ChildProcessWithoutNullStreams;
+  const rootA = '/workspaces/board-a';
+  const rootB = '/workspaces/board-b';
+  const defaultRoot = '/workspaces/default';
+
+  beforeEach(() => {
+    cliSessionsById.clear();
+    cliSessionsByTaskId.clear();
+  });
+
+  it('counts only the live session tagged to the requested root', () => {
+    const a = createMockSession({ id: 'sess-a', status: 'running', proc: liveProc, workspaceRoot: rootA });
+    const b = createMockSession({ id: 'sess-b', status: 'running', proc: liveProc, workspaceRoot: rootB });
+    cliSessionsById.set(a.id, a);
+    cliSessionsById.set(b.id, b);
+    expect(getLiveProcessSessionCountForWorkspace(rootA, defaultRoot)).toBe(1);
+    expect(getLiveProcessSessionCountForWorkspace(rootB, defaultRoot)).toBe(1);
+  });
+
+  it('an untagged/legacy session (no workspaceRoot) counts under the default workspace', () => {
+    const legacy = createMockSession({ id: 'sess-legacy', status: 'running', proc: liveProc });
+    cliSessionsById.set(legacy.id, legacy);
+    expect(sessionBelongsToWorkspaceRoot(legacy, defaultRoot, defaultRoot)).toBe(true);
+    expect(getLiveProcessSessionCountForWorkspace(defaultRoot, defaultRoot)).toBe(1);
+    expect(getLiveProcessSessionCountForWorkspace(rootA, defaultRoot)).toBe(0);
+  });
+
+  it('stops only the target workspace\'s sessions, leaving the other board running', () => {
+    const a = createMockSession({ id: 'sess-a', status: 'running', proc: liveProc, workspaceRoot: rootA });
+    const b = createMockSession({ id: 'sess-b', status: 'running', proc: liveProc, workspaceRoot: rootB });
+    cliSessionsById.set(a.id, a);
+    cliSessionsById.set(b.id, b);
+
+    stopCliSessionsForWorkspace(rootA, defaultRoot, 'test');
+
+    expect(a.requestedStop).toBe(true);
+    expect(b.requestedStop).toBe(false);
+  });
+
+  it('single-board behavior is unchanged: scoped count/stop match the engine-wide ones', () => {
+    const a = createMockSession({ id: 'sess-a', status: 'running', proc: liveProc, workspaceRoot: rootA });
+    const b = createMockSession({ id: 'sess-b', status: 'running', proc: liveProc, workspaceRoot: rootA });
+    cliSessionsById.set(a.id, a);
+    cliSessionsById.set(b.id, b);
+    expect(getLiveProcessSessionCountForWorkspace(rootA, defaultRoot)).toBe(getLiveProcessSessionCount());
+  });
+});
+
+/**
+ * FLUX-1556 — two-board fixture. Real temp dirs + the real `workspace.js`/`workspace-context.ts`
+ * (this file's `vi.mock('../workspace.js', …)` above targets a path session-store.ts never
+ * imports, so `getActiveFluxDir()` resolves for real here) so `syncActiveSessionStubs`/
+ * `rehydrateSessionStubs` genuinely touch disk under each board's own root, mirroring the
+ * production reconcile-tick call sites (index.ts wraps the sync in `runWithWorkspace(ws, …)`;
+ * task-store.ts's watcher `ready` handler wraps the rehydrate the same way).
+ */
+describe('active-session stub sync/rehydrate — two-board isolation (FLUX-1556)', () => {
+  let rootA: string;
+  let rootB: string;
+  let boardA: Workspace;
+  let boardB: Workspace;
+
+  function stubsDirFor(root: string): string {
+    return path.join(root, '.flux', 'sessions');
+  }
+  async function readStubFiles(root: string): Promise<string[]> {
+    return (await fsp.readdir(stubsDirFor(root)).catch(() => [] as string[])).sort();
+  }
+
+  beforeEach(async () => {
+    rootA = await fsp.mkdtemp(path.join(os.tmpdir(), 'eh-stub-a-'));
+    rootB = await fsp.mkdtemp(path.join(os.tmpdir(), 'eh-stub-b-'));
+    setWorkspaceRoot(rootA); // binds `defaultWorkspace` to board A (matches production boot)
+    boardA = getDefaultWorkspace();
+    boardB = openWorkspace(rootB); // registers + activates board B as a second live workspace
+
+    cliSessionsById.clear();
+    cliSessionsByTaskId.clear();
+    __resetSessionStubStateForTests();
+  });
+
+  afterEach(async () => {
+    if (boardB.root) await closeWorkspace(boardB.root);
+    cliSessionsById.clear();
+    cliSessionsByTaskId.clear();
+    __resetSessionStubStateForTests();
+    await fsp.rm(rootA, { recursive: true, force: true }).catch(() => {});
+    await fsp.rm(rootB, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('routes each board\'s sessions into its own sessions/ dir, never the other board\'s', async () => {
+    cliSessionsById.set('sess-a', createMockSession({ id: 'sess-a', taskId: 'FLUX-A', status: 'waiting-input', workspaceRoot: rootA }));
+    registerSession('FLUX-A', 'sess-a');
+    cliSessionsById.set('sess-b', createMockSession({ id: 'sess-b', taskId: 'FLUX-B', status: 'waiting-input', workspaceRoot: rootB }));
+    registerSession('FLUX-B', 'sess-b');
+
+    await runWithWorkspace(boardA, () => rehydrateSessionStubs());
+    await runWithWorkspace(boardB, () => rehydrateSessionStubs());
+    await runWithWorkspace(boardA, () => syncActiveSessionStubs(rootA, rootA));
+    await runWithWorkspace(boardB, () => syncActiveSessionStubs(rootB, rootA));
+
+    expect(await readStubFiles(rootA)).toEqual(['sess-a.json']);
+    expect(await readStubFiles(rootB)).toEqual(['sess-b.json']);
+  });
+
+  it('prune only touches the syncing board\'s own dir — a stale/foreign stub in the other board\'s dir survives', async () => {
+    cliSessionsById.set('sess-a', createMockSession({ id: 'sess-a', taskId: 'FLUX-A', status: 'waiting-input', workspaceRoot: rootA }));
+    registerSession('FLUX-A', 'sess-a');
+    cliSessionsById.set('sess-b', createMockSession({ id: 'sess-b', taskId: 'FLUX-B', status: 'waiting-input', workspaceRoot: rootB }));
+    registerSession('FLUX-B', 'sess-b');
+    await runWithWorkspace(boardA, () => rehydrateSessionStubs());
+    await runWithWorkspace(boardB, () => rehydrateSessionStubs());
+    await runWithWorkspace(boardA, () => syncActiveSessionStubs(rootA, rootA));
+    await runWithWorkspace(boardB, () => syncActiveSessionStubs(rootB, rootA));
+
+    // A stale stub for a session that no longer exists in memory, seeded directly into A's dir.
+    await fsp.writeFile(
+      path.join(stubsDirFor(rootA), 'stale-foreign.json'),
+      JSON.stringify({ id: 'stale-foreign', taskId: 'FLUX-STALE', status: 'waiting-input' }),
+      'utf-8',
+    );
+
+    await runWithWorkspace(boardA, () => syncActiveSessionStubs(rootA, rootA));
+
+    expect(await readStubFiles(rootA)).toEqual(['sess-a.json']); // foreign stub pruned
+    expect(await readStubFiles(rootB)).toEqual(['sess-b.json']); // B's dir untouched by A's sync
+  });
+
+  it('does not prune a board\'s on-disk stubs before THAT board has rehydrated, even if another board already has', async () => {
+    // Board A rehydrates and syncs — this flips the per-root guard for A ONLY.
+    cliSessionsById.set('sess-a', createMockSession({ id: 'sess-a', taskId: 'FLUX-A', status: 'waiting-input', workspaceRoot: rootA }));
+    registerSession('FLUX-A', 'sess-a');
+    await runWithWorkspace(boardA, () => rehydrateSessionStubs());
+    await runWithWorkspace(boardA, () => syncActiveSessionStubs(rootA, rootA));
+
+    // Board B has a stub on disk from before this boot, but B's own watcher hasn't rehydrated yet.
+    await fsp.mkdir(stubsDirFor(rootB), { recursive: true });
+    await fsp.writeFile(
+      path.join(stubsDirFor(rootB), 'pre-existing.json'),
+      JSON.stringify({ id: 'pre-existing', taskId: 'FLUX-B', status: 'waiting-input' }),
+      'utf-8',
+    );
+
+    // The reconcile tick still runs board B's sync this round (mirrors index.ts iterating every
+    // live workspace unconditionally). Without the per-root guard, board A's rehydrate having
+    // flipped a GLOBAL flag would let this wipe B's unread stub before B ever reads it back —
+    // reintroducing the FLUX-1556 loss in reverse.
+    await runWithWorkspace(boardB, () => syncActiveSessionStubs(rootB, rootA));
+
+    expect(await readStubFiles(rootB)).toEqual(['pre-existing.json']);
+  });
+
+  it('resolves the BOUND board\'s dir even while another board is ambiently active (ALS propagation)', async () => {
+    cliSessionsById.set('sess-a', createMockSession({ id: 'sess-a', taskId: 'FLUX-A', status: 'waiting-input', workspaceRoot: rootA }));
+    registerSession('FLUX-A', 'sess-a');
+    await runWithWorkspace(boardA, () => rehydrateSessionStubs());
+
+    // FLUX-1557: the unbound/ambient fallback is deterministically the default workspace (board A)
+    // now, never whichever board was registered/opened last.
+    expect(getWorkspace()).toBe(boardA);
+
+    // Bound to board A via the explicit runWithWorkspace call below — `sessionStubsDir()`'s ambient
+    // `getActiveFluxDir()` call must still resolve to A's store across the awaited fs.* calls.
+    await runWithWorkspace(boardA, () => syncActiveSessionStubs(rootA, rootA));
+
+    expect(await readStubFiles(rootA)).toEqual(['sess-a.json']);
+    expect(await readStubFiles(rootB)).toEqual([]); // never touched B's (nonexistent) dir
   });
 });

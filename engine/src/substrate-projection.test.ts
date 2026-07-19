@@ -10,6 +10,8 @@ import {
   getTranscriptFile,
   readTurns,
   sliceTurns,
+  truncateTranscript,
+  restoreTruncatedTail,
   readTranscriptMessages,
   tailTurns,
   tailTranscriptMessages,
@@ -111,6 +113,71 @@ describe('substrate vs projection (FLUX-658)', () => {
     expect(all.map((t) => t.seq)).toEqual([0, 1, 2, 3, 4]);
   });
 
+  it('truncateTranscript (FLUX-685) keeps only turns before fromSeq and lets a later append continue the seq space', async () => {
+    const stream = freshStream();
+    for (let i = 0; i < 5; i++) appendTranscriptEvent(stream, { type: 'user', text: `t${i}` });
+    await flushTranscript(stream);
+
+    await truncateTranscript(stream, 3);
+    const kept = await readTurns(stream);
+    expect(kept.map((t) => t.seq)).toEqual([0, 1, 2]);
+    expect(kept.map((t) => t.raw.text)).toEqual(['t0', 't1', 't2']);
+
+    // The next append must continue at seq 3 (the kept length) — no gap, no collision with the
+    // dropped turns' old seqs.
+    appendTranscriptEvent(stream, { type: 'user', text: 'resent' });
+    await flushTranscript(stream);
+    const after = await readTurns(stream);
+    expect(after.map((t) => t.seq)).toEqual([0, 1, 2, 3]);
+    expect(after[3]!.raw.text).toBe('resent');
+    expect(after[3]!.turnId).toBe(`${stream}:3`);
+  });
+
+  it('truncateTranscript clamps fromSeq to the current line count and to zero', async () => {
+    const stream = freshStream();
+    for (let i = 0; i < 3; i++) appendTranscriptEvent(stream, { type: 'user', text: `t${i}` });
+    await flushTranscript(stream);
+
+    // fromSeq beyond the current length is a no-op (keeps everything).
+    await truncateTranscript(stream, 100);
+    expect((await readTurns(stream)).map((t) => t.seq)).toEqual([0, 1, 2]);
+
+    // fromSeq <= 0 empties the transcript.
+    await truncateTranscript(stream, 0);
+    expect(await readTurns(stream)).toEqual([]);
+  });
+
+  it('restoreTruncatedTail (FLUX-1566) restores the dropped tail on a genuine pre-append failure', async () => {
+    const stream = freshStream();
+    for (let i = 0; i < 5; i++) appendTranscriptEvent(stream, { type: 'user', text: `t${i}` });
+    await flushTranscript(stream);
+
+    const { dropped, keptLength } = await truncateTranscript(stream, 3);
+    expect(keptLength).toBe(3);
+
+    // Nothing was appended in between (the on-disk count still equals keptLength) — restore.
+    await restoreTruncatedTail(stream, dropped, keptLength);
+    const after = await readTurns(stream);
+    expect(after.map((t) => t.raw.text)).toEqual(['t0', 't1', 't2', 't3', 't4']);
+  });
+
+  it('restoreTruncatedTail (FLUX-1566) no-ops when a turn was appended after the truncate', async () => {
+    const stream = freshStream();
+    for (let i = 0; i < 5; i++) appendTranscriptEvent(stream, { type: 'user', text: `t${i}` });
+    await flushTranscript(stream);
+
+    const { dropped, keptLength } = await truncateTranscript(stream, 3);
+
+    // Simulate the replacement turn landing before a LATER step fails.
+    appendTranscriptEvent(stream, { type: 'user', text: 'resent' });
+    await flushTranscript(stream);
+
+    await restoreTruncatedTail(stream, dropped, keptLength);
+    const after = await readTurns(stream);
+    // The dropped tail (t3, t4) must NOT be resurrected after the new turn.
+    expect(after.map((t) => t.raw.text)).toEqual(['t0', 't1', 't2', 'resent']);
+  });
+
   it('projectTranscript re-derives the chat view from turns (pure, ops default empty)', () => {
     const stream = 'FIX';
     const raws = [
@@ -129,11 +196,11 @@ describe('substrate vs projection (FLUX-658)', () => {
     const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: 'TENV', role: 'unknown', raw }));
 
     expect(projectTranscript(turns)).toEqual([
-      { role: 'user', text: 'hello', ts: 'T1' },
-      { role: 'assistant', text: 'hi there', ts: 'TENV' },
-      { role: 'tool', text: 'list_tickets', ts: 'TENV' },
-      { role: 'assistant', text: '❓ **H** — Q?\n- A\n- B', ts: 'T3' },
-      { role: 'user', text: '✔ A', ts: 'T4' },
+      { role: 'user', text: 'hello', ts: 'T1', seq: 0 },
+      { role: 'assistant', text: 'hi there', ts: 'TENV', seq: 1 },
+      { role: 'tool', text: 'list_tickets', ts: 'TENV', seq: 1 },
+      { role: 'assistant', text: '❓ **H** — Q?\n- A\n- B', ts: 'T3', seq: 2 },
+      { role: 'user', text: '✔ A', ts: 'T4', seq: 3 },
     ]);
   });
 
@@ -158,11 +225,11 @@ describe('substrate vs projection (FLUX-658)', () => {
     const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: 'TENV', role: 'unknown', raw }));
 
     expect(projectTranscript(turns)).toEqual([
-      { role: 'user', text: 'go', ts: 'T1' },
-      { role: 'assistant', text: 'Let me look at the ticket.', ts: 'TENV' },
-      { role: 'assistant', text: 'Now updating shared.ts:', ts: 'TENV' },
-      { role: 'assistant', text: 'liveOutput is exposed but not on the progress stream.', ts: 'TENV' },
-      { role: 'assistant', text: 'Let me check the race:', ts: 'TENV' },
+      { role: 'user', text: 'go', ts: 'T1', seq: 0 },
+      { role: 'assistant', text: 'Let me look at the ticket.', ts: 'TENV', seq: 1 },
+      { role: 'assistant', text: 'Now updating shared.ts:', ts: 'TENV', seq: 2 },
+      { role: 'assistant', text: 'liveOutput is exposed but not on the progress stream.', ts: 'TENV', seq: 3 },
+      { role: 'assistant', text: 'Let me check the race:', ts: 'TENV', seq: 3 },
     ]);
   });
 
@@ -180,9 +247,34 @@ describe('substrate vs projection (FLUX-658)', () => {
     const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: 'TENV', role: 'unknown', raw }));
 
     expect(projectTranscript(turns)).toEqual([
-      { role: 'user', text: 'continue', ts: 'T1' },
-      { role: 'note', kind: 'context-update', text: '```situational-update\nbranch moved\n```', ts: 'T2' },
-      { role: 'assistant', text: 'on it', ts: 'TENV' },
+      { role: 'user', text: 'continue', ts: 'T1', seq: 0 },
+      { role: 'note', kind: 'context-update', text: '```situational-update\nbranch moved\n```', ts: 'T2', seq: 1 },
+      { role: 'assistant', text: 'on it', ts: 'TENV', seq: 2 },
+    ]);
+  });
+
+  it('projectTranscript reorders a same-timestamp resume-preamble note in front of its adjacent user bubble (FLUX-1495)', () => {
+    // sendBoardInput/sendCliSessionInput now append the `user` event BEFORE the (possibly slow)
+    // resume-preamble await resolves, so on the wire the preamble note lands AFTER its turn's user
+    // event, both stamped with the same turn timestamp. The FLUX-716 item 3 contract still requires
+    // the note to render ABOVE the user bubble — projectTranscript must reorder it back given
+    // matching timestamps, even though storage order no longer matches display order.
+    const stream = 'RP2';
+    const raws = [
+      { type: 'user', text: 'older turn', timestamp: 'T0' },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'ack' }] } },
+      { type: 'user', text: 'do the thing', timestamp: 'T1' },
+      { type: 'resume-preamble', text: '```situational-update\nbranch moved\n```', timestamp: 'T1' },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'on it' }] } },
+    ];
+    const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: 'TENV', role: 'unknown', raw }));
+
+    expect(projectTranscript(turns)).toEqual([
+      { role: 'user', text: 'older turn', ts: 'T0', seq: 0 },
+      { role: 'assistant', text: 'ack', ts: 'TENV', seq: 1 },
+      { role: 'note', kind: 'context-update', text: '```situational-update\nbranch moved\n```', ts: 'T1', seq: 3 },
+      { role: 'user', text: 'do the thing', ts: 'T1', seq: 2 },
+      { role: 'assistant', text: 'on it', ts: 'TENV', seq: 4 },
     ]);
   });
 
@@ -212,12 +304,12 @@ describe('substrate vs projection (FLUX-658)', () => {
     const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: 'TENV', role: 'unknown', raw }));
 
     expect(projectTranscript(turns)).toEqual([
-      { role: 'note', kind: 'action', text: 'Implementation session started — land the engine seam', ts: 'T1' },
-      { role: 'assistant', text: 'on it', ts: 'TENV' },
-      { role: 'note', kind: 'action', text: 'Review session started', ts: 'T2' },
-      { role: 'note', kind: 'action', text: 'Session started', ts: 'T3' },
-      { role: 'note', kind: 'action', text: 'Implementation session started — Dynamic Delegation', ts: 'T4' },
-      { role: 'user', text: 'hello', ts: 'T5' },
+      { role: 'note', kind: 'action', text: 'Implementation session started — land the engine seam', ts: 'T1', seq: 0 },
+      { role: 'assistant', text: 'on it', ts: 'TENV', seq: 1 },
+      { role: 'note', kind: 'action', text: 'Review session started', ts: 'T2', seq: 2 },
+      { role: 'note', kind: 'action', text: 'Session started', ts: 'T3', seq: 3 },
+      { role: 'note', kind: 'action', text: 'Implementation session started — Dynamic Delegation', ts: 'T4', seq: 4 },
+      { role: 'user', text: 'hello', ts: 'T5', seq: 5 },
     ]);
   });
 
@@ -238,12 +330,12 @@ describe('substrate vs projection (FLUX-658)', () => {
     const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: 'TENV', role: 'unknown', raw }));
 
     expect(projectTranscript(turns)).toEqual([
-      { role: 'note', kind: 'permission', text: '🔒 Approval requested · change_status', ts: 'T1' },
-      { role: 'note', kind: 'permission', text: '✅ Approval granted', ts: 'T2' },
-      { role: 'assistant', text: 'done', ts: 'TENV' },
-      { role: 'note', kind: 'permission', text: '🔒 Approval requested · Bash', ts: 'T3' },
-      { role: 'note', kind: 'permission', text: '⛔ Approval timed out — denied', ts: 'T4' },
-      { role: 'note', kind: 'permission', text: '⛔ Approval denied', ts: 'T5' },
+      { role: 'note', kind: 'permission', text: '🔒 Approval requested · change_status', ts: 'T1', seq: 0 },
+      { role: 'note', kind: 'permission', text: '✅ Approval granted', ts: 'T2', seq: 1 },
+      { role: 'assistant', text: 'done', ts: 'TENV', seq: 2 },
+      { role: 'note', kind: 'permission', text: '🔒 Approval requested · Bash', ts: 'T3', seq: 3 },
+      { role: 'note', kind: 'permission', text: '⛔ Approval timed out — denied', ts: 'T4', seq: 4 },
+      { role: 'note', kind: 'permission', text: '⛔ Approval denied', ts: 'T5', seq: 5 },
     ]);
   });
 
@@ -266,8 +358,8 @@ describe('substrate vs projection (FLUX-658)', () => {
     const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: '', role: 'user', raw }));
 
     expect(projectTranscript(turns)).toEqual([
-      { role: 'user', text: 'look at this', ts: 'T1', attachments: [{ url: '/api/assets/IMG/a.png', path: 'assets/IMG/a.png', fileName: 'a.png' }] },
-      { role: 'user', text: '', ts: 'T2', attachments: [{ url: '/api/assets/IMG/b.png', path: 'assets/IMG/b.png', fileName: 'image' }] },
+      { role: 'user', text: 'look at this', ts: 'T1', seq: 0, attachments: [{ url: '/api/assets/IMG/a.png', path: 'assets/IMG/a.png', fileName: 'a.png' }] },
+      { role: 'user', text: '', ts: 'T2', seq: 1, attachments: [{ url: '/api/assets/IMG/b.png', path: 'assets/IMG/b.png', fileName: 'image' }] },
     ]);
   });
 
@@ -308,9 +400,9 @@ describe('substrate vs projection (FLUX-658)', () => {
     // FLUX-1473: the label text is also repo-relative now (not the raw absolute path sliced to
     // 48 chars) — same relativization the `path`/inline-diff field already used.
     expect(msgs).toEqual([
-      { role: 'tool', text: 'Edit · a.ts', ts: '', added: 1, removed: 1, tool: 'Edit', path: 'a.ts' },
-      { role: 'tool', text: 'Write · b.ts', ts: '', added: 3, removed: 0, tool: 'Write', path: 'b.ts' },
-      { role: 'tool', text: 'MultiEdit · c.ts', ts: '', added: 2, removed: 1, tool: 'MultiEdit', path: 'c.ts' },
+      { role: 'tool', text: 'Edit · a.ts', ts: '', seq: 0, added: 1, removed: 1, tool: 'Edit', path: 'a.ts' },
+      { role: 'tool', text: 'Write · b.ts', ts: '', seq: 0, added: 3, removed: 0, tool: 'Write', path: 'b.ts' },
+      { role: 'tool', text: 'MultiEdit · c.ts', ts: '', seq: 0, added: 2, removed: 1, tool: 'MultiEdit', path: 'c.ts' },
     ]);
   });
 
@@ -336,8 +428,8 @@ describe('substrate vs projection (FLUX-658)', () => {
     // projectTranscript skips it (string raw has no .type).
     const msgs = projectTranscript(turns);
     expect(msgs).toEqual([
-      { role: 'user', text: 'before', ts: 'T0' },
-      { role: 'user', text: 'after', ts: 'T2' },
+      { role: 'user', text: 'before', ts: 'T0', seq: 0 },
+      { role: 'user', text: 'after', ts: 'T2', seq: 1 },
     ]);
   });
 
@@ -356,9 +448,9 @@ describe('substrate vs projection (FLUX-658)', () => {
 
     const msgs = projectTranscript(turns);
     expect(msgs).toEqual([
-      { role: 'note', kind: 'dispatch', text: 'Working on it', ts: 'T1', sourceTask: 'FLUX-1', lifecycle: 'working' },
-      { role: 'note', kind: 'dispatch', text: 'Bogus stage', ts: 'T2', sourceTask: 'FLUX-1' },
-      { role: 'note', kind: 'dispatch', text: 'Numeric stage', ts: 'T3', sourceTask: 'FLUX-1' },
+      { role: 'note', kind: 'dispatch', text: 'Working on it', ts: 'T1', seq: 0, sourceTask: 'FLUX-1', lifecycle: 'working' },
+      { role: 'note', kind: 'dispatch', text: 'Bogus stage', ts: 'T2', seq: 1, sourceTask: 'FLUX-1' },
+      { role: 'note', kind: 'dispatch', text: 'Numeric stage', ts: 'T3', seq: 2, sourceTask: 'FLUX-1' },
     ]);
     expect(msgs[1]!.lifecycle).toBeUndefined();
     expect(msgs[2]!.lifecycle).toBeUndefined();
@@ -377,8 +469,8 @@ describe('substrate vs projection (FLUX-658)', () => {
     await flushTranscript(stream);
 
     expect(await readTranscriptMessages(stream)).toEqual([
-      { role: 'user', text: 'legacy hi', ts: 'T0' },
-      { role: 'assistant', text: 'enveloped reply', ts: 'T1' },
+      { role: 'user', text: 'legacy hi', ts: 'T0', seq: 0 },
+      { role: 'assistant', text: 'enveloped reply', ts: 'T1', seq: 1 },
     ]);
   });
 });
@@ -443,11 +535,11 @@ describe('bounded tail read (FLUX-856)', () => {
 
     const msgs = await tailTranscriptMessages(stream, 5);
     expect(msgs).toEqual([
-      { role: 'user', text: 'msg 25', ts: 'T25' },
-      { role: 'user', text: 'msg 26', ts: 'T26' },
-      { role: 'user', text: 'msg 27', ts: 'T27' },
-      { role: 'user', text: 'msg 28', ts: 'T28' },
-      { role: 'user', text: 'msg 29', ts: 'T29' },
+      { role: 'user', text: 'msg 25', ts: 'T25', seq: 25 },
+      { role: 'user', text: 'msg 26', ts: 'T26', seq: 26 },
+      { role: 'user', text: 'msg 27', ts: 'T27', seq: 27 },
+      { role: 'user', text: 'msg 28', ts: 'T28', seq: 28 },
+      { role: 'user', text: 'msg 29', ts: 'T29', seq: 29 },
     ]);
   });
 

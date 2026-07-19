@@ -79,7 +79,7 @@ describe('Furnace ignite-time reclaim + slot-holder naming (FLUX-1157)', () => {
   it('reclaims a stale reclaimable worktree at ignite and frees its slot for a new batch', async () => {
     await fillSlots(3);
     worktreesOnDisk = [{ path: taskWorktreeDir(root, 'STALE-1'), branch: 'flux/STALE-1' }];
-    setObservedWorktrees(['STALE-1']);
+    setObservedWorktrees(root, ['STALE-1']);
     expect(globalSlotsInUse()).toBe(4); // pool reads full
 
     reclaimReadyWorktreesMock.mockImplementationOnce(async () => {
@@ -98,7 +98,7 @@ describe('Furnace ignite-time reclaim + slot-holder naming (FLUX-1157)', () => {
   it('refuses ignite into a genuinely full pool and names the ticket holding the slot', async () => {
     await fillSlots(3);
     worktreesOnDisk = [{ path: taskWorktreeDir(root, 'STALE-2'), branch: 'flux/STALE-2' }];
-    setObservedWorktrees(['STALE-2']);
+    setObservedWorktrees(root, ['STALE-2']);
     expect(globalSlotsInUse()).toBe(4); // genuinely full — the default reclaim mock finds nothing to free
 
     const draft = await createFurnaceBatch({ title: 'new work', kind: 'sequential', tickets: [newBatchTicket('NEW-2', 0)] });
@@ -153,7 +153,7 @@ describe('Furnace ignite-time reclaim + slot-holder naming (FLUX-1157)', () => {
   // this, a same-tick Temper burst would be invisible to describeSlotHolders, undercounting holders vs.
   // the reported `used` figure exactly like the pre-FLUX-1158 Furnace gap above.
   it('names a Temper reservation whose worktree is not yet on disk', async () => {
-    setTemperReserved('TEMPER-1', true);
+    setTemperReserved(root, 'TEMPER-1', true);
     expect(worktreesOnDisk).toEqual([]);
 
     const holders = await describeSlotHolders(root);

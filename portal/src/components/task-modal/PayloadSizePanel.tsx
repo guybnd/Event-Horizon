@@ -137,6 +137,28 @@ export function PayloadSizePanel({ taskId }: { taskId: string }) {
                 </div>
               ))}
 
+              <div className="flex items-center justify-between text-gray-500">
+                <span>
+                  {budget.digestSavings.pctSaved === 0
+                    ? 'No digest savings'
+                    : `History digest saves ~${fmtTokens(budget.digestSavings.tokensSaved)} tok (${budget.digestSavings.pctSaved}%) vs undigested`}
+                </span>
+                {(budget.bodyOversized || budget.historyOversized) && (
+                  <span className="flex items-center gap-1">
+                    {budget.bodyOversized && (
+                      <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-600 dark:bg-amber-500/10 dark:text-amber-400">
+                        ⚠ oversized body
+                      </span>
+                    )}
+                    {budget.historyOversized && (
+                      <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-600 dark:bg-amber-500/10 dark:text-amber-400">
+                        ⚠ oversized history
+                      </span>
+                    )}
+                  </span>
+                )}
+              </div>
+
               <GroupHeading label={`launch prompt${budget.launchPrompt.phase ? ` (${budget.launchPrompt.phase})` : ''}`} tokens={budget.launchPrompt.totalTokensEst} />
               <Bars sections={budget.launchPrompt.sections} />
 

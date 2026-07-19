@@ -1,8 +1,9 @@
-import { getWorkspace } from '../workspace-context.js';
+import { getWorkspace, type Workspace } from '../workspace-context.js';
 import express from 'express';
 import { randomUUID } from 'crypto';
 import { getWorkspaceRoot } from '../workspace.js';
 import { getConfig } from '../config.js';
+import { log } from '../log.js';
 
 import {
   cliSessionsById,
@@ -32,13 +33,13 @@ import {
   type PendingRelaySpec,
 } from '../session-store.js';
 import { getAdapter, getBoardAdapter, resolveDefaultFramework, isKnownFramework, getRuntimeFrameworks } from '../agents/index.js';
-import { BOARD_CONVERSATION_ID, FURNACE_CONVERSATION_ID, isVirtualConversationId } from '../agents/board.js';
+import { BOARD_CONVERSATION_ID, FURNACE_CONVERSATION_ID, isVirtualConversationId, virtualConversationSessionKey } from '../agents/board.js';
 import { resolveAttachmentAbsPaths, attachmentReadInstruction, appendErrorToSession, resolveModel } from '../agents/shared.js';
 import type { ChatAttachment } from '../projection.js';
 import { updateTaskWithHistory, subtaskIds } from '../task-store.js';
 import { broadcastEvent } from '../events.js';
 import { killProcessTree } from '../kill-process-tree.js';
-import { appendTranscriptEvent, readTranscriptMessages, clearTranscript } from '../transcript.js';
+import { appendTranscriptEvent, readTranscriptMessages, clearTranscript, truncateTranscript, restoreTruncatedTail } from '../transcript.js';
 import { resetBoardDigest } from '../board-digest.js';
 import { dismissNotificationsForTicket } from '../notifications.js';
 import { resolvePersonaPrompt, getPersonaById } from '../orchestration-personas.js';
@@ -71,12 +72,52 @@ function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
 }
 
+/**
+ * FLUX-1448 (epic FLUX-1230 S2/S3 boundary): the workspace a route reads/writes — `req.workspace`
+ * (attached globally by `attachWorkspace`, FLUX-343) when present, else the registry default.
+ * Mirrors `routes/tasks/helpers.ts`'s `reqWorkspace` (kept local here rather than imported — this
+ * file isn't part of the `routes/tasks/*` concern split). The fallback also means a route test's
+ * minimal Express app (skipping the full `attachWorkspace` middleware) keeps exercising the real
+ * handler instead of every test needing to reconstruct the full middleware stack.
+ */
+function reqWorkspace(req: express.Request): Workspace {
+  return req.workspace ?? getWorkspace();
+}
+
+/**
+ * FLUX-1580: the session-store key for a route's `:id` param, scoped to the REQUESTER'S OWN
+ * workspace for a virtual conversation (`__board__`/`__furnace__`) — every open workspace gets
+ * its own board/Furnace session instead of colliding on the bare literal id. A real ticket id is
+ * returned unchanged (ticket sessions are already correctly scoped by the ticket record itself).
+ * Only ever pass the result to session-store Map operations (registerSession/unregisterSession/
+ * cliSessionIdByTaskId/getCliSessionSummaryForTask/getAllSessionSummariesForTask) — never to
+ * `appendTranscriptEvent`/`readTranscriptMessages` (transcript files stay keyed on the bare id)
+ * or back to the client (the wire id never changes — see agents/board.ts).
+ */
+function sessionKeyFor(id: string, req: express.Request): string {
+  return isVirtualConversationId(id) ? virtualConversationSessionKey(id, reqWorkspace(req).root ?? '') : id;
+}
+
 const router = express.Router();
 
 // Launch phase / intent (portal tells engine why a session exists). Validated
 // against this set wherever a caller supplies a raw `phase` string so an
 // arbitrary value never lands on a session record or a persona-prompt lookup.
-const VALID_LAUNCH_PHASES: LaunchPhase[] = ['grooming', 'implementation', 'review', 'finalize', 'chat', 'fast-path'];
+const VALID_LAUNCH_PHASES: LaunchPhase[] = ['grooming', 'implementation', 'review', 'finalize', 'chat', 'fast-path', 'batch-grooming'];
+
+// FLUX-1383: batch-grooming eligibility mirrors fast-path's bail-out rule (no L/XL, no epic
+// parents) plus a Grooming/Require Input status check — a member past those statuses has already
+// moved on and grooming it again would be silently redoing someone else's work. Reads the board's
+// configured Require Input status label (same source `deriveTaskKey`'s `groomingStatuses` uses
+// above) rather than a hardcoded literal, since that one is board-configurable; 'Grooming' is not.
+const BATCH_GROOMING_ELIGIBLE_EFFORTS = new Set(['None', 'XS', 'S', 'M']);
+function isBatchGroomingEligible(member: TaskRecord): boolean {
+  const effort = typeof member.effort === 'string' ? member.effort : undefined;
+  if (effort && !BATCH_GROOMING_ELIGIBLE_EFFORTS.has(effort)) return false;
+  if (subtaskIds(member.subtasks).length > 0) return false;
+  const eligibleStatuses = new Set(['Grooming', getConfig().requireInputStatus || 'Require Input']);
+  return eligibleStatuses.has(String(member.status));
+}
 
 /**
  * Resolve the default permission mode for a session surface (FLUX-605). The per-chat
@@ -209,6 +250,14 @@ interface SpawnOptions {
    *  deny-list model) — re-enabled regardless of pattern position, same as persona.enableTools.
    *  Forwarded from the `/start` and `/delegate` route bodies and the `delegate` MCP tool. */
   enableTools?: string[] | undefined;
+  /** FLUX-850: explicit "this is an unattended, no-human-present dispatch" marker — see
+   *  CliSessionRecord.dispatched (agents/types.ts) for the full rationale. */
+  dispatched?: boolean | undefined;
+  /** FLUX-1383: for phase:'batch-grooming' — the eligible member ticket ids (see
+   *  CliSessionSummary.batchTicketIds) and the excluded members + reasons (see
+   *  CliSessionRecord.batchExcluded), computed once by the route's validation block above. */
+  batchTicketIds?: string[] | undefined;
+  batchExcluded?: { id: string; reason: string }[] | undefined;
 }
 
 // FLUX-1373: derive session.taskKey from what a dispatch site knows at spawn time — phase +
@@ -234,14 +283,14 @@ function deriveTaskKey(phase: LaunchPhase | undefined, patternPosition: PatternP
 // (merge-base), NOT the engine's HEAD at launch — HEAD can sit on an unrelated sibling commit,
 // which made baseline..HEAD diffs surface phantom reversions (FLUX-585). resolveBaselineCommit
 // returns the merge-base for branch tickets and current HEAD for branch-less ones.
-async function stampBaselineCommit(task: TaskRecord): Promise<void> {
+async function stampBaselineCommit(task: TaskRecord, ws: Workspace): Promise<void> {
   if (!task.baselineCommit) {
     const baseline = await resolveBaselineCommit(task.branch ?? null);
     if (baseline) {
       await updateTaskWithHistory(task.id, {
         updatedBy: 'Agent',
         extraFields: { baselineCommit: baseline },
-      });
+      }, ws);
       task.baselineCommit = baseline;
     }
   } else if (task.branch) {
@@ -262,7 +311,7 @@ async function stampBaselineCommit(task: TaskRecord): Promise<void> {
         await updateTaskWithHistory(task.id, {
           updatedBy: 'Agent',
           extraFields: { baselineCommit: mb },
-        });
+        }, ws);
         task.baselineCommit = mb;
       }
     }
@@ -313,9 +362,16 @@ function createPendingSession(task: TaskRecord, opts: SpawnOptions): CliSessionR
   if (opts.personaId) session.personaId = opts.personaId;
   if (opts.focusComment) session.focusComment = opts.focusComment;
   if (opts.enableTools && opts.enableTools.length > 0) session.enableTools = opts.enableTools;
+  if (opts.dispatched) session.dispatched = true;
+  if (opts.batchTicketIds && opts.batchTicketIds.length > 0) session.batchTicketIds = opts.batchTicketIds;
+  if (opts.batchExcluded && opts.batchExcluded.length > 0) session.batchExcluded = opts.batchExcluded;
   if (opts.model) session.model = opts.model;
   if (opts.effortOverride) session.effortOverride = opts.effortOverride;
   if (opts.permissionMode) session.permissionMode = opts.permissionMode;
+  // FLUX-1531: tag with the owning workspace root at spawn — every launch path (spawnSession,
+  // the response-time launcher, board sessions) routes through this one function.
+  const wsRoot = getWorkspaceRoot();
+  if (wsRoot) session.workspaceRoot = wsRoot;
 
   cliSessionsById.set(sessionId, session);
   registerSession(task.id, sessionId);
@@ -347,9 +403,9 @@ function buildFailedPreSpawnSessionEntry(session: CliSessionRecord, message: str
  * and relay-step launchers run off session-store callbacks, not an HTTP handler; /delegate
  * already holds its response open for the whole child lifecycle).
  */
-async function spawnSession(task: TaskRecord, opts: SpawnOptions): Promise<CliSessionRecord> {
+async function spawnSession(task: TaskRecord, opts: SpawnOptions, ws: Workspace = getWorkspace()): Promise<CliSessionRecord> {
   const session = createPendingSession(task, opts);
-  await stampBaselineCommit(task);
+  await stampBaselineCommit(task, ws);
 
   try {
     await getAdapter(opts.framework).start(session, task, opts.appendPrompt, opts.effortOverride, getWorkspaceRoot()!);
@@ -367,7 +423,7 @@ async function spawnSession(task: TaskRecord, opts: SpawnOptions): Promise<CliSe
       await updateTaskWithHistory(task.id, {
         updatedBy: 'Agent',
         entries: [buildFailedPreSpawnSessionEntry(session, message)],
-      });
+      }, ws);
     } catch {
       /* surfacing is best-effort */
     }
@@ -391,6 +447,7 @@ async function prepareAndLaunchSession(
   task: TaskRecord,
   opts: SpawnOptions,
   isolation: 'worktree' | 'branch' | undefined,
+  ws: Workspace,
 ): Promise<void> {
   const id = task.id;
   try {
@@ -410,7 +467,7 @@ async function prepareAndLaunchSession(
     // silently reviving a session the user already cancelled.
     if (session.requestedStop) return;
 
-    await stampBaselineCommit(task);
+    await stampBaselineCommit(task, ws);
 
     // Inject pre-computed diff for scatter-gather review workers.
     if (opts.groupType === 'scatter-gather' && opts.patternPosition !== 'lead') {
@@ -447,7 +504,7 @@ async function prepareAndLaunchSession(
       await updateTaskWithHistory(id, {
         updatedBy: 'Agent',
         entries: [entry],
-      });
+      }, ws);
     } catch {
       /* surfacing is best-effort */
     }
@@ -472,6 +529,9 @@ async function prepareAndLaunchSession(
 
 // Wire the deferred-combiner launcher: when a scatter-gather group's workers
 // all finish, session-store calls this to spawn the combiner.
+// FLUX-1448: this callback fires off session-store's own barrier bookkeeping, not an HTTP
+// request — there's no `req.workspace` to read here. Non-request background code stays on the
+// bare registry default (S4/FLUX-1449 territory), not this ticket's HTTP-route sweep.
 setCombinerLauncher(async (spec: PendingCombinerSpec, anyWorkerSucceeded: boolean) => {
   const task = getWorkspace().tasks[spec.taskId];
   if (!task) {
@@ -502,6 +562,8 @@ setCombinerLauncher(async (spec: PendingCombinerSpec, anyWorkerSucceeded: boolea
 
 // Wire the relay step launcher: when a relay step finishes, session-store
 // calls this to spawn the next step in the pipeline with the previous output.
+// FLUX-1448: same non-request background callback as setCombinerLauncher above — no req.workspace
+// to thread here.
 setRelayStepLauncher(async (spec: PendingRelaySpec, previousOutput: string, previousSucceeded: boolean) => {
   const task = getWorkspace().tasks[spec.taskId];
   if (!task) {
@@ -543,14 +605,14 @@ setRelayStepLauncher(async (spec: PendingRelaySpec, previousOutput: string, prev
 // GET single session (backwards compat — returns most recent active)
 router.get('/:id/cli-session', (req, res) => {
   const { id } = req.params;
-  if (!isVirtualConversationId(id) && !getWorkspace().tasks[id]) return res.status(404).json({ error: 'Task not found' });
-  res.json({ session: getCliSessionSummaryForTask(id) || null });
+  if (!isVirtualConversationId(id) && !reqWorkspace(req).tasks[id]) return res.status(404).json({ error: 'Task not found' });
+  res.json({ session: getCliSessionSummaryForTask(sessionKeyFor(id, req)) || null });
 });
 
 // GET all sessions for a task
 router.get('/:id/cli-sessions', (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
   res.json({ sessions: getAllSessionSummariesForTask(id) });
 });
@@ -560,7 +622,7 @@ router.get('/:id/cli-sessions', (req, res) => {
 // in-memory live progress stream.
 router.get('/:id/transcript', async (req, res) => {
   const { id } = req.params;
-  if (!isVirtualConversationId(id) && !getWorkspace().tasks[id]) return res.status(404).json({ error: 'Task not found' });
+  if (!isVirtualConversationId(id) && !reqWorkspace(req).tasks[id]) return res.status(404).json({ error: 'Task not found' });
   try {
     const messages = await readTranscriptMessages(id);
     res.json({ messages });
@@ -578,7 +640,7 @@ router.get('/:id/transcript', async (req, res) => {
 // portal Activity screen. (No new store — same source of truth as `/transcript`.)
 router.get('/:id/activity', async (req, res) => {
   const { id } = req.params;
-  if (!isVirtualConversationId(id) && !getWorkspace().tasks[id]) return res.status(404).json({ error: 'Task not found' });
+  if (!isVirtualConversationId(id) && !reqWorkspace(req).tasks[id]) return res.status(404).json({ error: 'Task not found' });
   try {
     const ticket = typeof req.query.ticket === 'string' ? req.query.ticket : '';
     const phase = typeof req.query.phase === 'string' ? req.query.phase : '';
@@ -607,7 +669,7 @@ router.get('/:id/activity', async (req, res) => {
 // open chat window refetch (and come back empty) without a reload.
 router.delete('/:id/transcript', async (req, res) => {
   const { id } = req.params;
-  if (!isVirtualConversationId(id) && !getWorkspace().tasks[id]) return res.status(404).json({ error: 'Task not found' });
+  if (!isVirtualConversationId(id) && !reqWorkspace(req).tasks[id]) return res.status(404).json({ error: 'Task not found' });
   try {
     await clearTranscript(id);
     // FLUX-659: resetting the orchestrator conversation drops the digest delta baseline too, so the
@@ -628,6 +690,12 @@ router.post('/:id/cli-session/start', async (req, res) => {
   if (isVirtualConversationId(id)) {
     const isBoard = id === BOARD_CONVERSATION_ID;
     const conversationLabel = isBoard ? 'Orchestrator' : 'Furnace';
+    // FLUX-1580: spawn/lookup scoped to the REQUESTER'S OWN workspace — previously this branch
+    // spawned at the ambient `getWorkspaceRoot()!` and keyed the session-store purely by the bare
+    // `id`, so every open workspace's board/Furnace chat collided on one global session slot.
+    const ws = reqWorkspace(req);
+    const wsRoot = ws.root ?? '';
+    const sessionKey = virtualConversationSessionKey(id, wsRoot);
     const firstMessage = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
     // FLUX-676: the opening turn may carry pasted images; allow an image-only turn (empty text).
     const chatAttachments = parseChatAttachments(req.body?.attachments);
@@ -655,7 +723,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
       boardPersonaPrompt = resolvePersonaPrompt(boardPersonaId, boardFocusComment, 'chat');
       boardPersonaLabel = persona.label;
     }
-    const existingId = cliSessionIdByTaskId.get(id);
+    const existingId = cliSessionIdByTaskId.get(sessionKey);
     const existing = existingId ? cliSessionsById.get(existingId) : undefined;
     // Block only while a turn is genuinely IN FLIGHT (a live proc is running). A session parked
     // at 'waiting-input' is idle — claude -p already exited — so a fresh start should supersede
@@ -663,7 +731,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
     // falls back to start (e.g. the parked turn never captured a resumeSessionId and so isn't
     // resumable), this lets a fresh turn through instead of wedging forever (FLUX-667).
     if (existing && (existing.status === 'running' || existing.status === 'pending')) {
-      return res.status(409).json({ error: `${conversationLabel} session already active`, session: getCliSessionSummaryForTask(id) });
+      return res.status(409).json({ error: `${conversationLabel} session already active`, session: getCliSessionSummaryForTask(sessionKey) });
     }
     if (existing && existing.status === 'waiting-input') {
       existing.status = 'cancelled';
@@ -680,7 +748,15 @@ router.post('/:id/cli-session/start', async (req, res) => {
     const fw = boardFrameworkRaw as CliFramework;
     const boardSession: CliSessionRecord = {
       id: randomUUID(),
+      // FLUX-1580: stays the BARE virtual id (never the namespaced sessionKey) — this field flows
+      // unchanged into the transcript filename, the MCP conversation-id header, notification/
+      // broadcast payloads, and the wire (CliSessionSummary.taskId). Only the session-store MAP is
+      // keyed on `sessionKey`; workspace scoping there uses the separate `workspaceRoot` field below.
       taskId: id,
+      // FLUX-1580: which workspace owns this session — lets detached callbacks (exit handlers,
+      // notifications) rebind to the OWNING board instead of whichever workspace is ambiently
+      // active when they fire (see board-core.ts's exit handler and claude-code.ts's dispatch tee).
+      workspaceRoot: wsRoot,
       framework: fw,
       status: 'pending',
       command: fw,
@@ -707,7 +783,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
       ...(boardFocusComment ? { focusComment: boardFocusComment } : {}),
     };
     cliSessionsById.set(boardSession.id, boardSession);
-    registerSession(id, boardSession.id);
+    registerSession(sessionKey, boardSession.id);
     if (typeof req.body?.model === 'string' && req.body.model.trim()) boardSession.model = req.body.model.trim();
     if (typeof req.body?.effortOverride === 'string' && req.body.effortOverride.trim()) boardSession.effortOverride = req.body.effortOverride.trim();
     // Orchestrator/Furnace default comes from the workspace risk-tolerance setting (board default
@@ -717,19 +793,19 @@ router.post('/:id/cli-session/start', async (req, res) => {
       'board',
     );
     try {
-      await getBoardAdapter(fw).startBoardSession(boardSession, firstMessage, getWorkspaceRoot()!, {
+      await getBoardAdapter(fw).startBoardSession(boardSession, firstMessage, wsRoot, {
         attachments: chatAttachments,
         ...(boardPersonaPrompt ? { personaPrompt: boardPersonaPrompt } : {}),
       });
-      return res.status(201).json({ session: getCliSessionSummaryForTask(id) });
+      return res.status(201).json({ session: getCliSessionSummaryForTask(sessionKey) });
     } catch (error: unknown) {
-      unregisterSession(id, boardSession.id);
+      unregisterSession(sessionKey, boardSession.id);
       cliSessionsById.delete(boardSession.id);
       return res.status(500).json({ error: errorMessage(error, `Failed to start ${conversationLabel.toLowerCase()} session`) });
     }
   }
 
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   const frameworkRaw = String(req.body?.framework || resolveDefaultFramework()).trim().toLowerCase();
@@ -747,7 +823,9 @@ router.post('/:id/cli-session/start', async (req, res) => {
   // Launch phase / intent (portal tells engine why this session exists).
   // An unrecognized phase is ignored (buildInitialPrompt falls back to status-based logic).
   const phaseRaw = typeof req.body?.phase === 'string' ? req.body.phase.trim() : '';
-  const phase: LaunchPhase | undefined = (VALID_LAUNCH_PHASES as string[]).includes(phaseRaw)
+  // FLUX-1383: 'let', not 'const' — a single-eligible-member batch-grooming request degrades to
+  // plain 'grooming' below (design decision #4), reassigning this after the initial parse.
+  let phase: LaunchPhase | undefined = (VALID_LAUNCH_PHASES as string[]).includes(phaseRaw)
     ? (phaseRaw as LaunchPhase)
     : undefined;
 
@@ -777,6 +855,69 @@ router.post('/:id/cli-session/start', async (req, res) => {
     }
   }
 
+  // FLUX-1383: batch-grooming — one session grooms up to 5 sibling tickets (sharing one
+  // parentId) in one sitting instead of one session per ticket. `batchTicketIds` is the full
+  // member set; `id` (the URL :ticketId) is the anchor and MUST be one of them. Ineligible
+  // members are excluded and named in the mission text (never silently dropped or force-included)
+  // — only refuse outright when the request itself is malformed or nothing eligible remains.
+  let batchTicketIds: string[] | undefined;
+  let batchExcluded: { id: string; reason: string }[] | undefined;
+  if (phase === 'batch-grooming') {
+    const rawIds: string[] = Array.isArray(req.body?.batchTicketIds)
+      ? req.body.batchTicketIds.filter((v: unknown): v is string => typeof v === 'string')
+      : [];
+    const uniqueIds: string[] = Array.from(new Set(rawIds));
+    if (uniqueIds.length === 0) {
+      return res.status(400).json({ error: 'batch-grooming requires a non-empty batchTicketIds array' });
+    }
+    if (uniqueIds.length > 5) {
+      return res.status(400).json({ error: 'batch-grooming supports at most 5 tickets — select 5 or fewer' });
+    }
+    if (!uniqueIds.includes(id)) {
+      return res.status(400).json({ error: 'batchTicketIds must include the launched ticket id' });
+    }
+    const ws = reqWorkspace(req);
+    const members = uniqueIds.map((memberId) => ws.tasks[memberId]);
+    const missingIndex = members.findIndex((m) => !m);
+    if (missingIndex !== -1) {
+      return res.status(400).json({ error: `batchTicketIds member not found: ${uniqueIds[missingIndex]}` });
+    }
+    const resolvedMembers = members as TaskRecord[];
+    const parentIds = new Set(resolvedMembers.map((m) => (typeof m.parentId === 'string' ? m.parentId : undefined)));
+    if (parentIds.size !== 1 || parentIds.has(undefined)) {
+      return res.status(400).json({ error: 'batch-grooming requires every ticket in batchTicketIds to share one parentId' });
+    }
+    const eligible: TaskRecord[] = [];
+    const excluded: { id: string; reason: string }[] = [];
+    for (const member of resolvedMembers) {
+      if (isBatchGroomingEligible(member)) {
+        eligible.push(member);
+      } else {
+        const memberEffort = typeof member.effort === 'string' ? member.effort : undefined;
+        const reason =
+          memberEffort === 'L' || memberEffort === 'XL'
+            ? `${memberEffort}-effort — too large for batch-grooming`
+            : subtaskIds(member.subtasks).length > 0
+              ? 'has its own subtasks (epic parent)'
+              : `status is ${member.status}, not Grooming/Require Input`;
+        excluded.push({ id: member.id, reason });
+      }
+    }
+    if (eligible.length === 0) {
+      return res.status(400).json({ error: 'none of the selected tickets are eligible for batch-grooming' });
+    }
+    if (!eligible.some((m) => m.id === id)) {
+      return res.status(400).json({ error: `the launched ticket ${id} is not eligible for batch-grooming: ${excluded.find((e) => e.id === id)?.reason ?? 'ineligible'}` });
+    }
+    if (eligible.length === 1) {
+      // Design decision #4: a single-eligible-member "batch" is just normal single-ticket grooming.
+      phase = 'grooming';
+    } else {
+      batchTicketIds = eligible.map((m) => m.id);
+      batchExcluded = excluded;
+    }
+  }
+
   // Persona resolution: when a personaId is supplied the engine owns the prompt
   // text (it never ships to the client). A raw appendPrompt is still accepted
   // for ad-hoc, non-persona launches. FLUX-1170: the launch phase (above) picks
@@ -784,6 +925,11 @@ router.post('/:id/cli-session/start', async (req, res) => {
   const personaId = typeof req.body?.personaId === 'string' ? req.body.personaId.trim() : '';
   const focusComment = typeof req.body?.focusComment === 'string' ? req.body.focusComment.trim() : '';
   const enableTools = parseEnableTools(req.body?.enableTools);
+  // FLUX-850: explicit, caller-stamped "this is an unattended dispatch" marker — see
+  // CliSessionRecord.dispatched (agents/types.ts). Only the MCP `start_session` tool,
+  // board-rebase's `dispatch` verb, and Furnace's `dispatchSession` set this true; the portal
+  // (chat send, phase-launch buttons) never does, even though it posts to this same route.
+  const dispatched = req.body?.dispatched === true;
   const launchedBy = typeof req.body?.user === 'string' && req.body.user.trim() ? req.body.user.trim() : 'User';
   let appendPrompt = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
   if (personaId) {
@@ -821,13 +967,14 @@ router.post('/:id/cli-session/start', async (req, res) => {
   // FLUX-1018 branch⇒worktree invariant exists to forbid — that invariant never engaged because
   // the ticket had no branch). Defaulting here, in the route, closes the gap for every caller
   // instead of trusting each one to know. An explicit 'branch' request (MCP worktree:false) is
-  // still honored — FLUX-1018 worktree-isolates that spawn anyway. Only 'grooming' ever runs
-  // branchless.
+  // still honored — FLUX-1018 worktree-isolates that spawn anyway. 'grooming' and, per FLUX-1383
+  // (design decision #4 — batch-grooming writes no code either), 'batch-grooming' are the only
+  // phases that ever run branchless.
   const isolationRaw = typeof req.body?.isolation === 'string' ? req.body.isolation.trim() : '';
   const requestedIsolation: 'worktree' | 'branch' | undefined =
     isolationRaw === 'worktree' || isolationRaw === 'branch' ? isolationRaw : undefined;
   const isolation: 'worktree' | 'branch' | undefined =
-    phase === 'grooming'
+    phase === 'grooming' || phase === 'batch-grooming'
       ? undefined
       : phase === 'fast-path'
         ? requestedIsolation ?? 'worktree'
@@ -946,6 +1093,9 @@ router.post('/:id/cli-session/start', async (req, res) => {
       personaId: personaId || undefined,
       focusComment: focusComment || undefined,
       enableTools,
+      dispatched,
+      batchTicketIds,
+      batchExcluded,
     };
     const session = createPendingSession(task, spawnOpts);
 
@@ -987,13 +1137,13 @@ router.post('/:id/cli-session/start', async (req, res) => {
             new Date().toISOString(),
             summary ? { summary } : {},
           )],
-        });
+        }, req.workspace);
       } catch (focusErr: unknown) {
         console.warn(`[cli-session] Failed to persist launch focus for ${id}: ${focusErr instanceof Error ? focusErr.message : focusErr}`);
       }
     }
 
-    void prepareAndLaunchSession(session, task, spawnOpts, isolation);
+    void prepareAndLaunchSession(session, task, spawnOpts, isolation, reqWorkspace(req));
 
     res.status(201).json({ session: getCliSessionSummaryForTask(id) });
   } catch (error: unknown) {
@@ -1005,7 +1155,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
 // only once every worker ("step") session in that group reaches a terminal state.
 router.post('/:id/cli-session/register-combiner', (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   const frameworkRaw = String(req.body?.framework || resolveDefaultFramework()).trim().toLowerCase();
@@ -1060,7 +1210,7 @@ router.post('/:id/cli-session/register-combiner', (req, res) => {
 // Cancel a deferred combiner (e.g. when all workers failed to launch).
 router.post('/:id/cli-session/unregister-combiner', (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
   const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : '';
   if (!groupId) return res.status(400).json({ error: 'groupId is required' });
@@ -1072,7 +1222,7 @@ router.post('/:id/cli-session/unregister-combiner', (req, res) => {
 // Subsequent steps spawn automatically via the relay barrier as each finishes.
 router.post('/:id/cli-session/register-relay', (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   const frameworkRaw = String(req.body?.framework || resolveDefaultFramework()).trim().toLowerCase();
@@ -1116,7 +1266,7 @@ router.post('/:id/cli-session/register-relay', (req, res) => {
 // Cancel a pending relay pipeline (e.g. when step 0 fails to launch).
 router.post('/:id/cli-session/unregister-relay', (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
   const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : '';
   if (!groupId) return res.status(400).json({ error: 'groupId is required' });
@@ -1130,7 +1280,7 @@ router.post('/:id/cli-session/unregister-relay', (req, res) => {
 // and awaits the response — no polling needed.
 router.post('/:id/cli-session/delegate', async (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   const frameworkRaw = String(req.body?.framework || resolveDefaultFramework()).trim().toLowerCase();
@@ -1245,7 +1395,7 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
       groupId,
       groupType: 'supervisor',
       groupVariant: 'combiner',
-    });
+    }, req.workspace);
   } catch (error: unknown) {
     reservation.fail(error);
     return res.status(500).json({ error: errorMessage(error, 'Failed to spawn delegate') });
@@ -1294,18 +1444,22 @@ router.post('/:id/cli-session/input', async (req, res) => {
   // orchestrator or the Furnace-chat.
   if (isVirtualConversationId(id)) {
     const conversationLabel = id === BOARD_CONVERSATION_ID ? 'Orchestrator' : 'Furnace';
+    // FLUX-1580: scoped to the requester's own workspace — see the /start branch above.
+    const ws = reqWorkspace(req);
+    const wsRoot = ws.root ?? '';
+    const sessionKey = virtualConversationSessionKey(id, wsRoot);
     const boardMessage = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     // FLUX-676: a turn may carry pasted images; allow an image-only turn (empty text).
     const boardAttachments = parseChatAttachments(req.body?.attachments);
     if (!boardMessage && boardAttachments.length === 0) return res.status(400).json({ error: 'message is required' });
-    const sid = cliSessionIdByTaskId.get(id);
+    const sid = cliSessionIdByTaskId.get(sessionKey);
     const boardSession = sid ? cliSessionsById.get(sid) : undefined;
     if (!boardSession) return res.status(409).json({ error: `No ${conversationLabel.toLowerCase()} session — start one first` });
     // FLUX-714: a turn already in flight must not be double-sent. A second resume against the same
     // resumeSessionId spawns a concurrent `claude --resume` that races the first on the session
     // JSONL and loses turns. Mirror the start-path guard (line ~347): 409 while genuinely running.
     if (boardSession.status === 'running' || boardSession.status === 'pending') {
-      return res.status(409).json({ error: `${conversationLabel} is mid-turn — wait for the current turn to finish.`, session: getCliSessionSummaryForTask(id) });
+      return res.status(409).json({ error: `${conversationLabel} is mid-turn — wait for the current turn to finish.`, session: getCliSessionSummaryForTask(sessionKey) });
     }
     if (!boardSession.resumeSessionId) {
       return res.status(409).json({ error: 'Session ID not yet available — wait for the initial response to complete' });
@@ -1313,17 +1467,31 @@ router.post('/:id/cli-session/input', async (req, res) => {
     if (typeof req.body?.model === 'string') boardSession.model = req.body.model.trim() || undefined;
     if (typeof req.body?.effortOverride === 'string') boardSession.effortOverride = req.body.effortOverride.trim() || undefined;
     applyPermissionModeChange(boardSession, req.body?.permissionMode, 'board');
+    // FLUX-1494: claim the session SYNCHRONOUSLY here — in the same JS turn as the guard check
+    // above, before any `await`. sendBoardInput only sets status='running' after awaited pre-work
+    // (checkBinaryInstalled, etc.), so without this claim a second POST arriving during that window
+    // would still see the pre-claim status and pass the guard too, double-spawning `claude --resume`
+    // against the same session — the exact TOCTOU the FLUX-714 guard was meant to close. Roll back
+    // only if the status is still exactly what we claimed (nothing downstream — a real spawn success,
+    // or a concurrent stop — already moved it on); every throw out of sendBoardInput happens before
+    // any process actually spawns, so this is always safe to retry.
+    const previousStatus = boardSession.status;
+    boardSession.status = 'pending';
     try {
       // FLUX-959: framework is fixed for a board session's life — resolve via the session
       // record, not the request (resumeSessionId is CLI-specific; switching = a new session).
-      await getBoardAdapter(boardSession.framework).sendBoardInput(boardSession, boardMessage, getWorkspaceRoot()!, { attachments: boardAttachments });
-      return res.json({ session: getCliSessionSummaryForTask(id) });
+      // FLUX-1580: the session's OWN workspaceRoot (set at spawn), not the ambient default —
+      // matters if this route is ever hit from a different in-flight request than the one that
+      // spawned the session.
+      await getBoardAdapter(boardSession.framework).sendBoardInput(boardSession, boardMessage, boardSession.workspaceRoot ?? wsRoot, { attachments: boardAttachments });
+      return res.json({ session: getCliSessionSummaryForTask(sessionKey) });
     } catch (error: unknown) {
+      if (boardSession.status === 'pending' || boardSession.status === 'running') boardSession.status = previousStatus;
       return res.status(500).json({ error: errorMessage(error, `Failed to send message to ${conversationLabel.toLowerCase()}`) });
     }
   }
 
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
@@ -1347,11 +1515,12 @@ router.post('/:id/cli-session/input', async (req, res) => {
   // FLUX-1392: mirror the board branch's FLUX-714 guard (line ~1257) onto this ticket-session
   // branch, which had no equivalent. sendCliSessionInput sets status='running' before several
   // later awaited steps that can still throw (e.g. ensureSharedServersForRoot under resource
-  // contention); if one does, the route's catch below returns 500 but status is left stuck at
-  // 'running'. A caller that blindly retries on failure (furnace-stoker's postResumeInput) would
+  // contention). A caller that blindly retries on failure (furnace-stoker's postResumeInput) would
   // then re-POST into a session already 'running', spawning a second concurrent `claude --resume`
   // that races the first on the session JSONL and loses turns — the exact failure FLUX-714
-  // prevented on the board branch. Reject here too instead of double-dispatching.
+  // prevented on the board branch. Reject here too instead of double-dispatching. FLUX-1494: the
+  // route-level claim below (before `adapter.sendInput`) additionally rolls status back on a
+  // pre-spawn failure, so this guard no longer leaves a genuinely-failed turn stuck at 'running'.
   if (session.status === 'running') {
     return res.status(409).json({ error: 'CLI session is mid-turn — wait for the current turn to finish.', session: getCliSessionSummaryForTask(id) || null });
   }
@@ -1370,7 +1539,34 @@ router.post('/:id/cli-session/input', async (req, res) => {
   if (typeof req.body?.model === 'string') session.model = req.body.model.trim() || undefined;
   if (typeof req.body?.effortOverride === 'string') session.effortOverride = req.body.effortOverride.trim() || undefined;
   applyPermissionModeChange(session, req.body?.permissionMode, 'ticket');
+
+  // FLUX-685: edit-and-resend / retry — rewind this ticket's durable transcript to `fromSeq`
+  // BEFORE appending this turn's resend, so truncate+resend is one atomic request (a truncate-only
+  // follow-up call would risk a chopped transcript with no live turn if the resend then failed).
+  // A malformed/absent value is ignored (an ordinary follow-up send, unchanged).
+  const truncateFromSeqRaw = req.body?.truncateFromSeq;
+  const truncateFromSeq =
+    typeof truncateFromSeqRaw === 'number' && Number.isInteger(truncateFromSeqRaw) && truncateFromSeqRaw >= 0
+      ? truncateFromSeqRaw
+      : undefined;
+
+  // FLUX-1494: claim synchronously — see the board branch above for the full rationale. Each
+  // framework's sendCliSessionInput sets status='running' only after awaited pre-work
+  // (resolveResumeExecutionRoot, checkBinaryInstalled, ...), so without this claim a second POST
+  // arriving in that window would still see the pre-claim status and pass the 'running' guard above
+  // too. previousStatus is never 'running' here (the guard above already rejected that), so rolling
+  // back only when status is still exactly 'running' at catch-time correctly skips the rollback when
+  // something downstream (e.g. surfaceResumeFailure) already moved it to a definitive outcome.
+  const previousStatus = session.status;
+  session.status = 'running';
+  // FLUX-1566: captured only if truncateTranscript actually ran this request — used to undo the
+  // rewind in the catch block below if sendInput throws before ever appending the replacement turn.
+  // keptLength lets restoreTruncatedTail detect (race-free, via the same write queue) whether the
+  // replacement turn landed before a LATER step failed — if so it no-ops instead of resurrecting
+  // the dropped tail after the new turn (see restoreTruncatedTail's doc comment).
+  let truncateResult: { dropped: string[]; keptLength: number } | undefined;
   try {
+    if (truncateFromSeq !== undefined) truncateResult = await truncateTranscript(id, truncateFromSeq);
     await adapter.sendInput(session, message, user, getWorkspaceRoot()!, { attachments });
 
     // Clear swimlane when user sends input (they answered the question)
@@ -1382,13 +1578,29 @@ router.post('/:id/cli-session/input', async (req, res) => {
         ],
         updatedBy: user,
         extraFields: { swimlane: null },
-      });
+      }, req.workspace);
       broadcastEvent('taskUpdated', { id });
       dismissNotificationsForTicket(id);
+    } else if (truncateFromSeq !== undefined) {
+      // FLUX-685: no swimlane change to piggyback on — broadcast directly so any other open view
+      // of this ticket (a second window, the dock) refetches the rewound transcript right away
+      // instead of waiting for the resumed turn's first streamed token.
+      broadcastEvent('taskUpdated', { id });
     }
 
     res.json({ session: getCliSessionSummaryForTask(id) });
   } catch (error: unknown) {
+    if (session.status === 'running') session.status = previousStatus;
+    // FLUX-1566: a pre-spawn failure (binary check / resource contention) throws before sendInput
+    // ever appends the replacement turn — restore the tail the truncate above dropped so the
+    // durable transcript isn't left rewound with the edited turn gone and nothing put back.
+    // restoreTruncatedTail no-ops if the replacement turn (or anything else) was appended after the
+    // truncate, so a POST-append failure never resurrects the dropped tail behind the new turn.
+    if (truncateResult !== undefined) {
+      try { await restoreTruncatedTail(id, truncateResult.dropped, truncateResult.keptLength); } catch (restoreError) {
+        log.error(`Failed to restore truncated transcript tail for ${id}:`, restoreError);
+      }
+    }
     res.status(500).json({ error: errorMessage(error, 'Failed to send message to CLI session') });
   }
 });
@@ -1399,7 +1611,9 @@ router.post('/:id/cli-session/stop', async (req, res) => {
   // FLUX-604 / FLUX-1209: stop a virtual (non-ticket) conversation's session — the board
   // orchestrator or the Furnace-chat.
   if (isVirtualConversationId(id)) {
-    const sid = cliSessionIdByTaskId.get(id);
+    // FLUX-1580: scoped to the requester's own workspace — see the /start branch above.
+    const sessionKey = virtualConversationSessionKey(id, reqWorkspace(req).root ?? '');
+    const sid = cliSessionIdByTaskId.get(sessionKey);
     const boardSession = sid ? cliSessionsById.get(sid) : undefined;
     if (boardSession) {
       boardSession.requestedStop = true;
@@ -1431,10 +1645,10 @@ router.post('/:id/cli-session/stop', async (req, res) => {
     // previously broadcast nothing — the only signal was the proc exit handler, invisible if the
     // SSE stream stalled or the proc lingered.
     broadcastEvent('taskUpdated', { id });
-    return res.json({ session: getCliSessionSummaryForTask(id) || null });
+    return res.json({ session: getCliSessionSummaryForTask(sessionKey) || null });
   }
 
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   const targetSessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : undefined;
@@ -1470,7 +1684,7 @@ router.post('/:id/cli-session/stop', async (req, res) => {
         'Agent',
         now,
       )],
-    });
+    }, req.workspace);
     return res.json({ session: getCliSessionSummaryForTask(id) });
   }
 
@@ -1498,7 +1712,7 @@ router.post('/:id/cli-session/stop', async (req, res) => {
   await updateTaskWithHistory(id, {
     updatedBy: 'Agent',
     entries: [buildActivityEntry(`${session.label} session stopped.`, 'Agent', session.endedAt)],
-  });
+  }, req.workspace);
   try {
     adapter.stop(session);
     res.json({ session: getCliSessionSummaryForTask(id) });

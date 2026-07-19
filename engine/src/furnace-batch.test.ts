@@ -27,6 +27,7 @@ import {
   furnaceReservedTicketIds,
   computeSlotsInUse,
   validateBatchTrigger,
+  batchBelongsToWorkspaceRoot,
   MAX_BURN_RATE,
   type FurnaceBatch,
   type BatchTicket,
@@ -150,6 +151,25 @@ describe('slot math', () => {
     });
     // Both the active AND the cooling-down ticket hold a slot; the queued one does not.
     expect(batchSlotUsage(b)).toBe(2);
+  });
+});
+
+describe('batchBelongsToWorkspaceRoot (FLUX-1513/1527)', () => {
+  it('a tagged batch matches only its own workspaceRoot, not a sibling or the default', () => {
+    const b = mkBatch({ workspaceRoot: '/ws-a' });
+    expect(batchBelongsToWorkspaceRoot(b, '/ws-a', '/default')).toBe(true);
+    expect(batchBelongsToWorkspaceRoot(b, '/ws-b', '/default')).toBe(false);
+    expect(batchBelongsToWorkspaceRoot(b, '/default', '/default')).toBe(false);
+  });
+  it('an untagged legacy batch falls back to the default workspace root, not a sibling pass', () => {
+    const b = mkBatch(); // no workspaceRoot override — untagged, like a batch created before FLUX-1513
+    expect(batchBelongsToWorkspaceRoot(b, '/default', '/default')).toBe(true);
+    expect(batchBelongsToWorkspaceRoot(b, '/ws-a', '/default')).toBe(false);
+  });
+  it('null-root edge: a null default workspace root still resolves an untagged legacy batch to the default pass', () => {
+    const b = mkBatch(); // no workspaceRoot override — untagged, like a batch created before FLUX-1513
+    expect(batchBelongsToWorkspaceRoot(b, null, null)).toBe(true);
+    expect(batchBelongsToWorkspaceRoot(b, '/ws-a', null)).toBe(false);
   });
 });
 

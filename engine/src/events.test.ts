@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Response } from 'express';
-import { addSseClient, broadcastEvent } from './events.js';
+import { addSseClient, broadcastEvent, getTasksVersion } from './events.js';
 import { snapshot, resetForTest } from './perf/registry.js';
+import { Workspace } from './workspace-context.js';
 
 /** Minimal stand-in for an Express Response an SSE route hands to addSseClient/broadcastEvent. */
 function fakeClient(): { res: Response; close: () => void; writes: string[] } {
@@ -85,5 +86,43 @@ describe('events perf instrumentation (FLUX-1132)', () => {
     broadcastEvent('taskUpdated', {});
     const { histograms } = snapshot();
     expect(histograms['sse.broadcastFanout']?.count).toBe(1);
+  });
+});
+
+describe('per-workspace SSE isolation (FLUX-1450)', () => {
+  it('fans a broadcast out only to the originating workspace\'s clients', () => {
+    const wsA = new Workspace();
+    const wsB = new Workspace();
+    const a = fakeClient();
+    const b = fakeClient();
+    addSseClient(a.res, wsA);
+    addSseClient(b.res, wsB);
+    a.writes.length = 0;
+    b.writes.length = 0;
+
+    broadcastEvent('taskUpdated', { id: 'FLUX-1' }, wsA);
+
+    expect(a.writes.some((w) => w.includes('taskUpdated'))).toBe(true);
+    expect(b.writes.some((w) => w.includes('taskUpdated'))).toBe(false);
+
+    a.close();
+    b.close();
+  });
+
+  it('bumps tasksVersion only on the workspace a mutation broadcasts against', () => {
+    const wsA = new Workspace();
+    const wsB = new Workspace();
+    const a = fakeClient();
+    addSseClient(a.res, wsA);
+
+    expect(getTasksVersion(wsA)).toBe(0);
+    expect(getTasksVersion(wsB)).toBe(0);
+
+    broadcastEvent('taskUpdated', { id: 'FLUX-1' }, wsA);
+
+    expect(getTasksVersion(wsA)).toBe(1);
+    expect(getTasksVersion(wsB)).toBe(0);
+
+    a.close();
   });
 });

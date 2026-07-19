@@ -12,6 +12,8 @@ import {
   getTerminalSession,
   renameTerminalSession,
   getTerminalWsUrl,
+  fetchConfig,
+  saveConfig,
 } from '../api';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import type { EngineEvent } from '../store/appStore';
@@ -392,15 +394,10 @@ function QuickLaunchRow({
   async function handleAddShortcut() {
     if (!newLabel.trim() || !newCmd.trim()) return;
     try {
-      const res = await fetch('/api/config', { method: 'GET' });
-      const config = await res.json();
+      const config = await fetchConfig();
       const existing: TerminalCommand[] = config.terminalCommands || [];
       const updated = [...existing, { id: `custom-${Date.now()}`, label: newLabel.trim(), command: newCmd.trim(), runMode: newMode }];
-      await fetch('/api/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ terminalCommands: updated }),
-      });
+      await saveConfig({ ...config, terminalCommands: updated });
       setShowAddForm(false);
       setNewLabel('');
       setNewCmd('');

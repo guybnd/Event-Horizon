@@ -59,6 +59,10 @@ export interface PendingBatch {
   items: RebaseItem[];
   conversationId: string | null;
   createdAt: string;
+  /** FLUX-1555 (finding E): the board this batch was proposed on. Stamped from the bound request's
+   *  `getWorkspace()`; `listPendingBoardRebases` filters on it so `GET /api/board/board-rebase`
+   *  never returns a background board's pending restructurings to the active one. */
+  workspaceRoot: string;
 }
 
 export interface RebaseItemResult {
@@ -78,14 +82,16 @@ export function proposeBoardRebase(
   const id = randomUUID();
   const createdAt = new Date().toISOString();
   const items: RebaseItem[] = rawItems.map((it) => ({ ...it, id: randomUUID() }));
-  const batch: PendingBatch = { id, items, conversationId, createdAt };
+  const workspaceRoot = getWorkspace().root ?? '';
+  const batch: PendingBatch = { id, items, conversationId, createdAt, workspaceRoot };
   pending.set(id, batch);
   broadcastEvent('board-rebase-proposed', batch);
   return batch;
 }
 
 export function listPendingBoardRebases(): PendingBatch[] {
-  return Array.from(pending.values());
+  const root = getWorkspace().root ?? '';
+  return Array.from(pending.values()).filter((b) => b.workspaceRoot === root);
 }
 
 /**
@@ -221,7 +227,9 @@ function registerDefaults(): void {
     // FLUX-845: board-rebase dispatch is unattended and often launches several sessions in one
     // approved batch — isolate each in its own worktree by default so they never share a checkout
     // (the FLUX-840/841/844 tangle). The engine creates the branch+worktree before spawning.
-    const body: Record<string, unknown> = { framework: 'claude', skipPermissions: true, patternPosition: 'standalone', isolation: 'worktree' };
+    // FLUX-850: `dispatched: true` marks this an unattended, no-human-present launch so
+    // change_status/finish_ticket hard-gate it from silently advancing the ticket past Ready.
+    const body: Record<string, unknown> = { framework: 'claude', skipPermissions: true, patternPosition: 'standalone', isolation: 'worktree', dispatched: true };
     if (item.phase) body.phase = item.phase;
     try {
       const res = await fetch(`http://127.0.0.1:${getEnginePort()}/api/tasks/${ticketId}/cli-session/start`, {

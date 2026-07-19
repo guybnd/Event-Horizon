@@ -3,13 +3,14 @@ import type { JSX } from 'react';
 import { GitMerge, AlertTriangle, ShieldCheck, Loader2, Bot, Wrench, RotateCcw, Undo2, Plus, Link2, ExternalLink, CheckCircle2, XCircle, Clock } from 'lucide-react';
 import type { Task } from '../types';
 import { reviewChip, internalApprovedChip, reviewProgressChip, aggregateMemberReviews, selectPrReviewChip } from './ReviewChip';
-import { useAppSelector, useAppActions } from '../store/useAppSelector';
+import { useAppSelector, useAppActions, useParentByChildId } from '../store/useAppSelector';
 import type { TaskCardController } from '../hooks/useTaskCardController';
 import { TaskDeck } from './TaskDeck';
+import { MemberStateStrip } from './MemberLine';
+import { getMemberState } from '../lib/memberState';
 import { mergePr, retryPr, updateTask, adoptPr, MergeParkedError } from '../api';
 import { launchPhaseDefault } from '../agentActions';
 import { resolveEffectiveAgent, frameworkSupports } from '../utils';
-import { ACTIVE_SESSION_STATUSES } from '../orchestration';
 import { prLink } from '../lib/ticketActions';
 import { MergeConflictBanner } from './MergeConflictBanner';
 
@@ -64,14 +65,22 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
   const [continueTicketId, setContinueTicketId] = useState('');
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueErr, setContinueErr] = useState('');
+  const furnaceTicketById = useAppSelector((s) => s.furnaceTicketById);
   const members = (task.members ?? []).map((id) => taskById.get(id)).filter((t): t is Task => !!t);
   const memberCount = members.length;
-  // Members with a live session (FLUX-1310) — the member deck folds by default (TaskDeck), so
-  // without this a running/parked session on a member ticket is invisible until manually unwound.
-  // Same status set as `hasActiveCliSession` (useTaskCardController.tsx) and the engine's merge
-  // guard (getBlockingSessionsForTask/getParkedSessionsForTask in session-store.ts) — advisory only,
-  // does not change merge-gating behavior.
-  const membersWithActiveSession = members.filter((m) => m.cliSession && ACTIVE_SESSION_STATUSES.includes(m.cliSession.status));
+  // FLUX-1503: each PR member independently resolves its OWN epic parent (a member can be both a
+  // PR member AND some epic's subtask — PR-fold precedence only affects where it renders, not
+  // which epic it belongs to), matching Board's own board-level `parentByChildId` resolution
+  // (the shared store-level selector, FLUX-1553 — no second parent-resolution mechanism).
+  const parentByChildId = useParentByChildId();
+  // Burn order for the deck/strip (PR = furnace burn order, falling back to `members[]` position
+  // for non-furnace PRs). Member lines/segments themselves state-color independently.
+  const memberOrder = (t: Task) => furnaceTicketById[t.id]?.order ?? (task.members ?? []).indexOf(t.id);
+  const memberStates = members.map((m) => getMemberState(m, furnaceTicketById[m.id]));
+  const doneMemberCount = memberStates.filter((s) => s === 'done' || s === 'ready').length;
+  const activeMemberCount = memberStates.filter((s) => s === 'tempering' || s === 'implementing').length;
+  // Strip retires once every member has reached a terminal state — nothing live left to surface.
+  const allMembersTerminal = memberCount > 0 && memberStates.every((s) => s === 'done' || s === 'ready');
   const prUrl = prLink(task);
   // Members a merge would sweep to Done that aren't finished yet (drives the merge-confirm warning
   // + the shared-PR force — FLUX-569). Match the engine's terminal-status set (Done/Released/
@@ -264,17 +273,6 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
             <Bot className="h-3 w-3" /> {task.cliSession.label}{c.currentActivity ? ` · ${c.currentActivity}` : ''}
           </span>
         )}
-        {/* Member-session badge (FLUX-1310) — a folded member ticket still has a live session.
-            Visible in this always-shown header row regardless of whether the deck below is
-            unwound; advisory only, mirrors the merge guard's status set without duplicating it. */}
-        {membersWithActiveSession.length > 0 && (
-          <span
-            title={`Still running: ${membersWithActiveSession.map((m) => `${m.id} (${m.cliSession?.status})`).join(', ')}`}
-            className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300 bot-assignee-glow"
-          >
-            <Bot className="h-3 w-3" /> {membersWithActiveSession.length} member session{membersWithActiveSession.length === 1 ? '' : 's'} running
-          </span>
-        )}
         {/* CI status chip (FLUX-1315) — sourced from GitHub's check-run rollup, refreshed on the
             existing PR-reconcile poll. No chip for 'unknown' (no checks configured) — see
             ciStatusChip. */}
@@ -294,6 +292,24 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
         )}
       </div>
 
+      {/* Member state strip (FLUX-1503) — at-a-glance burn/temper state across every folded
+          member, ordered by furnace burn order (falls back to `members[]` position for
+          non-furnace PRs). Retires once every member has landed on a terminal state — nothing
+          live left worth surfacing. */}
+      {memberCount > 0 && !allMembersTerminal && (
+        <div className="mb-1.5 flex items-center gap-2 px-0.5">
+          <MemberStateStrip
+            members={members.map((m) => ({ task: m }))}
+            order={(item) => memberOrder(item.task)}
+            onSegmentClick={(t) => c.openBoardTask(t)}
+            className="h-1.5 flex-1"
+          />
+          <span className="shrink-0 text-[9px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+            {doneMemberCount} done · {activeMemberCount} active
+          </span>
+        </div>
+      )}
+
       {/* Merge-conflict rebase CTA (FLUX-986), generalized (FLUX-1270) into a shared component so a
           plain non-PR ticket card can render the same CTA — see MergeConflictBanner's doc comment. */}
       {!isResolved && <MergeConflictBanner task={task} c={c} />}
@@ -303,8 +319,10 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
         <TaskDeck
           id={`pr-deck-${task.id}`}
           items={members}
-          label={(n) => `${n} ticket${n === 1 ? '' : 's'} in this PR`}
+          label={(n) => `${n} more ticket${n === 1 ? '' : 's'} in this PR`}
           accent="violet"
+          parentTask={(m) => parentByChildId.get(m.id)}
+          order={memberOrder}
         />
       ) : continuing ? (
         // Unattached PR (FLUX-569): adopt an existing ticket or create a fresh one to hold the work.

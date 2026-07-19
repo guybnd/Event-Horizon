@@ -12,7 +12,7 @@
 
 import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Flame, Bolt, Zap, Layers, FlaskConical, Filter, Play, Square, Plus, Pencil, ExternalLink,
+  Flame, Play, Square, Plus, Pencil, ExternalLink,
   Check, GitMerge, AlertTriangle, Clock, X, Trash2, Search, RotateCcw, Hand, Undo2, GripVertical,
   FileText, Bot,
 } from 'lucide-react';
@@ -34,6 +34,7 @@ import { MAX_BURN_RATE, FURNACE_REFRESH_EVENT, FURNACE_NEW_DROP_ID, furnaceBatch
 import { searchTasks } from '../taskSearch';
 import type { LucideIcon } from 'lucide-react';
 import { getStatusTint } from '../statusStyles';
+import { STATE_META } from '../lib/memberState';
 import { useDockActions } from './DockProvider';
 import { TicketRefChip } from './TicketRefChip';
 import { FurnaceReportModal } from './FurnaceReportModal';
@@ -41,6 +42,7 @@ import { fmtDuration } from '../lib/furnaceFormat';
 import { mergeFurnaceBatches } from '../lib/mergeFurnaceBatches';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { useConfirm } from '../hooks/useConfirm';
+import { iconFor } from './furnace/furnaceVisuals';
 
 const POLL_MS = 3000;
 // FLUX-1487: a batch's ticket list collapses behind a "+ N more" row past this many rows.
@@ -51,27 +53,6 @@ const TICKET_PREVIEW_COUNT = 5;
 // Exported (FLUX-1039) so FurnaceReportModal reuses the same tokens instead of duplicating the CSS var strings.
 export const FURNACE_ACCENT = 'var(--eh-furnace-accent)';
 export const FURNACE_ACCENT_GLOW = 'var(--eh-furnace-accent-glow)';
-
-const ICON_BY_KEY: Record<string, LucideIcon> = {
-  bolt: Bolt, beaker: FlaskConical, layers: Layers, flame: Flame, zap: Zap, filter: Filter,
-};
-function iconFor(batch: FurnaceBatch): LucideIcon {
-  return (batch.icon && ICON_BY_KEY[batch.icon]) || Layers;
-}
-
-const STATE_META: Record<BatchTicketState, { label: string; dot: string; text: string }> = {
-  queued:         { label: 'queued',        dot: '#a8a29e', text: 'var(--eh-text-secondary)' },
-  implementing:   { label: 'impl',          dot: '#22c55e', text: '#22c55e' },
-  reviewing:      { label: 'review',        dot: '#0ea5e9', text: '#0ea5e9' },
-  // FLUX-1487: was `#e05a00` — now sits too close to the fire-orange furnace accent to read as
-  // distinct, so re-impl shifted to the deep-red end of the heat gradient instead.
-  reimplementing: { label: 're-impl',       dot: 'var(--eh-furnace-accent-deep)', text: 'var(--eh-furnace-accent-deep)' },
-  'cooling-down': { label: 'cooling',       dot: '#38bdf8', text: '#38bdf8' },
-  'pr-open':      { label: 'PR open',       dot: FURNACE_ACCENT, text: FURNACE_ACCENT },
-  parked:         { label: 'parked',        dot: '#f59e0b', text: '#f59e0b' },
-  failed:         { label: 'failed',        dot: '#ef4444', text: '#ef4444' },
-  skipped:        { label: 'skipped',       dot: '#a8a29e', text: 'var(--eh-text-secondary)' },
-};
 
 const STATUS_CHIP: Record<BatchStatus, { label: string; bg: string; fg: string }> = {
   draft:   { label: 'draft',   bg: 'var(--eh-surface-raised)', fg: 'var(--eh-text-secondary)' },
@@ -293,7 +274,7 @@ export function FurnaceDrawer({ onClose }: DrawerProps) {
           <button
             ref={setNewDropRef}
             onClick={() => setCreating(true)}
-            className="rounded-lg border border-dashed py-3 text-[11px] flex items-center justify-center gap-1.5 transition-colors"
+            className="rounded-lg border border-dashed py-4 text-[11px] flex items-center justify-center gap-1.5 transition-colors"
             style={{ borderColor: newIsOver ? FURNACE_ACCENT : 'var(--eh-border)', color: newIsOver ? FURNACE_ACCENT : 'var(--eh-text-secondary)', background: newIsOver ? FURNACE_ACCENT_GLOW : 'transparent' }}
           >
             <Plus className="h-3.5 w-3.5" /> {newIsOver ? 'Drop to create a new batch' : 'New batch'}
@@ -1021,7 +1002,7 @@ export const TicketRow = memo(function TicketRow({ ticket, batchId, batchStatus,
           // FLUX-1487: sequential batches get a numbered order rail instead of a plain grip — the
           // burn order IS the information, so it stays visible (not hover-gated like the parallel grip).
           // Still the drag handle when the ticket is queued (attributes/listeners attach here too).
-          <div className="relative flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center" {...(draggable ? { ...attributes, ...listeners } : {})}>
+          <div className={`relative flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center${draggable ? ' touch-none' : ''}`} {...(draggable ? { ...attributes, ...listeners } : {})}>
             <span
               className="flex h-3.5 w-3.5 items-center justify-center rounded-full text-[8px] font-bold leading-none"
               style={{ background: FURNACE_ACCENT_GLOW, color: FURNACE_ACCENT, border: `1px solid ${FURNACE_ACCENT}`, cursor: draggable ? 'grab' : 'default' }}

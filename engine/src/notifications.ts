@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { getWorkflowInstallStatus, checkSkillVersionStaleness, detectWorkspaceFrameworks, type Framework, type ResolvedFramework } from './workflow-installer.js';
 import { resolveSkillSourceRoot, getWorkspaceRoot } from './workspace.js';
+import { getWorkspace, type Workspace } from './workspace-context.js';
 import { broadcastEvent } from './events.js';
 import { getConfig } from './config.js';
 import { BOARD_CONVERSATION_ID } from './agents/board.js';
@@ -23,6 +24,11 @@ export interface Notification {
   createdAt: string;
   read: boolean;
   dismissed: boolean;
+  /** FLUX-1555: the board this notification belongs to. Stamped by `addNotification` from the
+   *  ws it's called with (default `getWorkspace()`) — every read surface (bell, unread count,
+   *  mark-all-read) filters on it so a background board's notifications never bleed into the
+   *  active board's. */
+  workspaceRoot: string;
 }
 
 const notifications: Notification[] = [];
@@ -32,15 +38,17 @@ export function clearNotifications(): void {
   notifications.length = 0;
 }
 
-export function getNotifications(): Notification[] {
+export function getNotifications(ws: Workspace = getWorkspace()): Notification[] {
+  const root = ws.root ?? '';
   return notifications
-    .filter(n => !n.dismissed)
+    .filter(n => !n.dismissed && n.workspaceRoot === root)
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     .slice(0, 50);
 }
 
-export function getUnreadCount(): number {
-  return notifications.filter(n => !n.read && !n.dismissed).length;
+export function getUnreadCount(ws: Workspace = getWorkspace()): number {
+  const root = ws.root ?? '';
+  return notifications.filter(n => !n.read && !n.dismissed && n.workspaceRoot === root).length;
 }
 
 export function markRead(id: string): boolean {
@@ -57,9 +65,12 @@ export function markUnread(id: string): boolean {
   return true;
 }
 
-export function markAllRead(): void {
+/** FLUX-1555: scoped to `ws` (default the calling context's board) — a "mark all read" on board A
+ *  must not silently clear board B's unread state. */
+export function markAllRead(ws: Workspace = getWorkspace()): void {
+  const root = ws.root ?? '';
   for (const n of notifications) {
-    n.read = true;
+    if (n.workspaceRoot === root) n.read = true;
   }
 }
 
@@ -70,21 +81,26 @@ export function dismissNotification(id: string): boolean {
   return true;
 }
 
-export function dismissNotificationsForTicket(ticketId: string): void {
+export function dismissNotificationsForTicket(ticketId: string, ws: Workspace = getWorkspace()): void {
+  const root = ws.root ?? '';
   for (const n of notifications) {
-    if (n.ticketId === ticketId && !n.dismissed) {
+    if (n.ticketId === ticketId && n.workspaceRoot === root && !n.dismissed) {
       n.dismissed = true;
     }
   }
 }
 
-export function addNotification(notification: Omit<Notification, 'id' | 'createdAt' | 'read' | 'dismissed'>): Notification {
+export function addNotification(
+  notification: Omit<Notification, 'id' | 'createdAt' | 'read' | 'dismissed' | 'workspaceRoot'>,
+  ws: Workspace = getWorkspace(),
+): Notification {
   const entry: Notification = {
     ...notification,
     id: randomUUID(),
     createdAt: new Date().toISOString(),
     read: false,
     dismissed: false,
+    workspaceRoot: ws.root ?? '',
   };
 
   notifications.unshift(entry);
@@ -93,11 +109,11 @@ export function addNotification(notification: Omit<Notification, 'id' | 'created
     notifications.splice(MAX_NOTIFICATIONS);
   }
 
-  broadcastEvent('notification', { notification: entry, unreadCount: getUnreadCount() });
+  broadcastEvent('notification', { notification: entry, unreadCount: getUnreadCount(ws) }, ws);
   return entry;
 }
 
-export function generatePromptNotification(ticketId: string, ticketTitle: string, status: string): void {
+export function generatePromptNotification(ticketId: string, ticketTitle: string, status: string, ws: Workspace = getWorkspace()): void {
   // FLUX-777: pertinence by status. Require Input genuinely BLOCKS the agent on you → Action-needed
   // ('prompt'). "Ready" is a review hand-off, not a blocking question → lower-priority Update
   // ('info'), so it doesn't nag the bell the way a real "needs your input" does. (A real escaped
@@ -107,21 +123,22 @@ export function generatePromptNotification(ticketId: string, ticketTitle: string
   const type: NotificationType = isReady ? 'info' : 'prompt';
   const message = isReady ? 'Ready for your review.' : 'The agent needs your input to continue.';
   const title = ticketTitle || ticketId;
+  const root = ws.root ?? '';
 
   // Title-scoped dedup so this never clobbers the distinct needs-action / escaped-question
   // notifications that share type 'prompt' + ticketId.
   const existing = notifications.find(
-    n => n.type === type && n.ticketId === ticketId && n.title === title && !n.dismissed
+    n => n.type === type && n.ticketId === ticketId && n.title === title && n.workspaceRoot === root && !n.dismissed
   );
   if (existing) {
     existing.message = message;
     existing.read = false;
     existing.createdAt = new Date().toISOString();
-    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount() });
+    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount(ws) }, ws);
     return;
   }
 
-  addNotification({ type, title, message, ticketId, actions: [{ label: 'View', actionId: 'view' }] });
+  addNotification({ type, title, message, ticketId, actions: [{ label: 'View', actionId: 'view' }] }, ws);
 }
 
 /**
@@ -134,16 +151,17 @@ export function generatePromptNotification(ticketId: string, ticketTitle: string
  * and the `ask_user_question` timeout reuse this path, where the default hard-park wording reads
  * oddly). Falls back to the generic hard-park text when omitted.
  */
-export function generateNeedsActionNotification(ticketId: string, ticketTitle: string, status: string, message?: string): void {
+export function generateNeedsActionNotification(ticketId: string, ticketTitle: string, status: string, message?: string, ws: Workspace = getWorkspace()): void {
   message ??= `Agent stopped in "${status}" without moving the ticket forward — review and move it on (or resume).`;
+  const root = ws.root ?? '';
   const existing = notifications.find(
-    n => n.type === 'prompt' && n.ticketId === ticketId && n.title?.startsWith('Needs action') && !n.dismissed
+    n => n.type === 'prompt' && n.ticketId === ticketId && n.title?.startsWith('Needs action') && n.workspaceRoot === root && !n.dismissed
   );
   if (existing) {
     existing.message = message;
     existing.read = false;
     existing.createdAt = new Date().toISOString();
-    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount() });
+    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount(ws) }, ws);
     return;
   }
   addNotification({
@@ -152,7 +170,7 @@ export function generateNeedsActionNotification(ticketId: string, ticketTitle: s
     message,
     ticketId,
     actions: [{ label: 'Open ticket', actionId: 'view' }],
-  });
+  }, ws);
 }
 
 /**
@@ -166,19 +184,20 @@ export function generateNeedsActionNotification(ticketId: string, ticketTitle: s
  * persona label like `'Furnace Operator (Smelter)'`) so the message never misattributes a
  * Smelter reply to "the board orchestrator".
  */
-export function generateOrchestratorReplyNotification(conversationId: string, label: string): void {
+export function generateOrchestratorReplyNotification(conversationId: string, label: string, ws: Workspace = getWorkspace()): void {
   const isBoard = conversationId === BOARD_CONVERSATION_ID;
   const title = isBoard ? 'Orchestrator replied' : `${label} replied`;
   const message = isBoard ? 'The board orchestrator answered in the chat.' : `${label} answered in the chat.`;
+  const root = ws.root ?? '';
   const existing = notifications.find(
-    n => n.type === 'info' && n.ticketId === conversationId && !n.dismissed
+    n => n.type === 'info' && n.ticketId === conversationId && n.workspaceRoot === root && !n.dismissed
   );
   if (existing) {
     existing.title = title;
     existing.message = message;
     existing.read = false;
     existing.createdAt = new Date().toISOString();
-    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount() });
+    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount(ws) }, ws);
     return;
   }
   addNotification({
@@ -187,7 +206,7 @@ export function generateOrchestratorReplyNotification(conversationId: string, la
     message,
     ticketId: conversationId,
     actions: [{ label: 'Open chat', actionId: 'view' }],
-  });
+  }, ws);
 }
 
 /**
@@ -199,22 +218,23 @@ export function generateOrchestratorReplyNotification(conversationId: string, la
  * `reviewState` (portal-derived, no payload field) — the title carries the verdict for text-only
  * surfaces (Electron toast).
  */
-export function generateReviewNotification(ticketId: string, ticketTitle: string, verdict: 'approved' | 'changes-requested'): void {
+export function generateReviewNotification(ticketId: string, ticketTitle: string, verdict: 'approved' | 'changes-requested', ws: Workspace = getWorkspace()): void {
   const approved = verdict === 'approved';
   const title = `Review ${approved ? 'approved' : 'changes requested'} — ${ticketTitle || ticketId}`;
   const message = approved
     ? 'The reviewer approved this ticket — ready to merge.'
     : 'The reviewer requested changes — open the review to see what to fix.';
+  const root = ws.root ?? '';
 
   const existing = notifications.find(
-    n => n.type === 'review' && n.ticketId === ticketId && !n.dismissed
+    n => n.type === 'review' && n.ticketId === ticketId && n.workspaceRoot === root && !n.dismissed
   );
   if (existing) {
     existing.title = title;
     existing.message = message;
     existing.read = false;
     existing.createdAt = new Date().toISOString();
-    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount() });
+    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount(ws) }, ws);
     return;
   }
 
@@ -224,7 +244,7 @@ export function generateReviewNotification(ticketId: string, ticketTitle: string
     message,
     ticketId,
     actions: [{ label: 'View review', actionId: 'view' }],
-  });
+  }, ws);
 }
 
 /**
@@ -237,33 +257,39 @@ export function generateReviewNotification(ticketId: string, ticketTitle: string
  * re-auto-approval (e.g. after the plan was revised) creates a fresh notification instead of
  * un-dismissing the old one.
  */
-export function generatePlanAutoApprovedNotification(ticketId: string, ticketTitle: string): void {
+export function generatePlanAutoApprovedNotification(ticketId: string, ticketTitle: string, ws: Workspace = getWorkspace()): void {
   const title = `Plan ready to review — ${ticketTitle || ticketId}`;
   const message = 'A plan was auto-approved and the ticket moved to Todo. Review it when you like — no action needed.';
+  const root = ws.root ?? '';
 
   const existing = notifications.find(
-    n => n.type === 'info' && n.ticketId === ticketId && n.title.startsWith('Plan ready to review') && !n.dismissed
+    n => n.type === 'info' && n.ticketId === ticketId && n.title.startsWith('Plan ready to review') && n.workspaceRoot === root && !n.dismissed
   );
   if (existing) {
     existing.title = title;
     existing.message = message;
     existing.read = false;
     existing.createdAt = new Date().toISOString();
-    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount() });
+    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount(ws) }, ws);
     return;
   }
 
-  addNotification({ type: 'info', title, message, ticketId, actions: [{ label: 'View', actionId: 'view' }] });
+  addNotification({ type: 'info', title, message, ticketId, actions: [{ label: 'View', actionId: 'view' }] }, ws);
 }
 
-export function generateCompletionNotification(ticketId: string, ticketTitle: string): void {
+/** FLUX-1555 (finding B): `ws` defaults to `getWorkspace()` but is threaded explicitly by
+ *  `updateTaskWithHistoryLocked` (task-store.ts), which already has the record's OWNING workspace
+ *  in scope — that write path can be invoked with an explicit `ws` different from whatever board is
+ *  ambiently active (e.g. a background reconcile loop), so relying on the ambient default there
+ *  would misroute the completion toast to the wrong board. */
+export function generateCompletionNotification(ticketId: string, ticketTitle: string, ws: Workspace = getWorkspace()): void {
   addNotification({
     type: 'completion',
     title: ticketTitle || ticketId,
     message: 'The agent finished this ticket — moved to Done.',
     ticketId,
     actions: [{ label: 'View', actionId: 'view' }],
-  });
+  }, ws);
 }
 
 /**
@@ -276,17 +302,18 @@ export function generateCompletionNotification(ticketId: string, ticketTitle: st
  */
 const SYNC_AUTH_NOTIFICATION_TITLE = 'GitHub sign-in needed';
 
-export function generateSyncAuthNotification(): void {
+export function generateSyncAuthNotification(ws: Workspace = getWorkspace()): void {
   const message =
     'Sync is paused — git push/fetch can’t authenticate to GitHub. Fix: run `gh auth login` then `gh auth setup-git`, then retry sync.';
+  const root = ws.root ?? '';
   const existing = notifications.find(
-    n => n.type === 'error' && n.title === SYNC_AUTH_NOTIFICATION_TITLE && !n.dismissed
+    n => n.type === 'error' && n.title === SYNC_AUTH_NOTIFICATION_TITLE && n.workspaceRoot === root && !n.dismissed
   );
   if (existing) {
     existing.message = message;
     existing.read = false;
     existing.createdAt = new Date().toISOString();
-    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount() });
+    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount(ws) }, ws);
     return;
   }
   addNotification({
@@ -297,20 +324,24 @@ export function generateSyncAuthNotification(): void {
       { label: 'Retry sync', actionId: 'retry-sync' },
       { label: 'Dismiss', actionId: 'dismiss' },
     ],
-  });
+  }, ws);
 }
 
-/** Dismiss the standing sync-auth notification (called on a successful sync — FLUX-895). */
-export function clearSyncAuthNotification(): void {
+/** Dismiss the standing sync-auth notification (called on a successful sync — FLUX-895). FLUX-1555:
+ *  `ws` is the `SyncWorker`'s OWN bound workspace (`this.ws`), not the ambient active board — a
+ *  background board's sync recovery must not accidentally clear the active board's identical-titled
+ *  notification, and vice versa. */
+export function clearSyncAuthNotification(ws: Workspace = getWorkspace()): void {
+  const root = ws.root ?? '';
   let changed = false;
   for (const n of notifications) {
-    if (n.type === 'error' && n.title === SYNC_AUTH_NOTIFICATION_TITLE && !n.dismissed) {
+    if (n.type === 'error' && n.title === SYNC_AUTH_NOTIFICATION_TITLE && n.workspaceRoot === root && !n.dismissed) {
       n.dismissed = true;
       changed = true;
     }
   }
   // Engine-internal clear (not a portal action) — broadcast so the bell/toast update.
-  if (changed) broadcastEvent('notification', { notification: null, unreadCount: getUnreadCount() });
+  if (changed) broadcastEvent('notification', { notification: null, unreadCount: getUnreadCount(ws) }, ws);
 }
 
 /**
@@ -325,18 +356,19 @@ export function clearSyncAuthNotification(): void {
  */
 const SYNC_CONFLICT_NOTIFICATION_TITLE = 'Sync conflict needs resolution';
 
-export function generateSyncConflictNotification(conflictCount: number): void {
+export function generateSyncConflictNotification(conflictCount: number, ws: Workspace = getWorkspace()): void {
   const message =
     `Sync is paused — ${conflictCount} ticket file${conflictCount === 1 ? '' : 's'} have a merge ` +
     'conflict that needs resolution before sync can continue. Click the sync indicator to resolve.';
+  const root = ws.root ?? '';
   const existing = notifications.find(
-    n => n.type === 'error' && n.title === SYNC_CONFLICT_NOTIFICATION_TITLE && !n.dismissed
+    n => n.type === 'error' && n.title === SYNC_CONFLICT_NOTIFICATION_TITLE && n.workspaceRoot === root && !n.dismissed
   );
   if (existing) {
     existing.message = message;
     existing.read = false;
     existing.createdAt = new Date().toISOString();
-    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount() });
+    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount(ws) }, ws);
     return;
   }
   addNotification({
@@ -344,24 +376,32 @@ export function generateSyncConflictNotification(conflictCount: number): void {
     title: SYNC_CONFLICT_NOTIFICATION_TITLE,
     message,
     actions: [{ label: 'Dismiss', actionId: 'dismiss' }],
-  });
+  }, ws);
 }
 
-/** Dismiss the standing sync-conflict notification (called once sync recovers — FLUX-1076). */
-export function clearSyncConflictNotification(): void {
+/** Dismiss the standing sync-conflict notification (called once sync recovers — FLUX-1076).
+ *  FLUX-1555: scoped to `ws` — see {@link clearSyncAuthNotification}. */
+export function clearSyncConflictNotification(ws: Workspace = getWorkspace()): void {
+  const root = ws.root ?? '';
   let changed = false;
   for (const n of notifications) {
-    if (n.type === 'error' && n.title === SYNC_CONFLICT_NOTIFICATION_TITLE && !n.dismissed) {
+    if (n.type === 'error' && n.title === SYNC_CONFLICT_NOTIFICATION_TITLE && n.workspaceRoot === root && !n.dismissed) {
       n.dismissed = true;
       changed = true;
     }
   }
-  if (changed) broadcastEvent('notification', { notification: null, unreadCount: getUnreadCount() });
+  if (changed) broadcastEvent('notification', { notification: null, unreadCount: getUnreadCount(ws) }, ws);
 }
 
+/** FLUX-1555 (finding F): reads `getWorkspaceRoot()` (the ambient board), so a post-spawn
+ *  fire-and-forget caller (a session's exit handler) MUST wrap this call in
+ *  `runWithWorkspace(owningWs, …)` — otherwise both the inspected root AND the resulting
+ *  notification silently land on whatever board happens to be active, not the session's board. */
 export async function checkFrameworkHealth(framework: Framework): Promise<void> {
   const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return;
+  const ws = getWorkspace();
+  const root = ws.root ?? '';
 
   try {
     const status = await getWorkflowInstallStatus({
@@ -379,7 +419,7 @@ export async function checkFrameworkHealth(framework: Framework): Promise<void> 
     if (missing.length === 0) return;
 
     const existing = notifications.find(
-      n => n.type === 'error' && n.framework === status.framework && !n.dismissed
+      n => n.type === 'error' && n.framework === status.framework && n.workspaceRoot === root && !n.dismissed
     );
     if (existing) return;
 
@@ -392,15 +432,18 @@ export async function checkFrameworkHealth(framework: Framework): Promise<void> 
         { label: 'Reinstall', actionId: 'reinstall' },
         { label: 'Dismiss', actionId: 'dismiss' },
       ],
-    });
+    }, ws);
   } catch (err) {
     console.error(`[notifications] Health check failed for ${framework}:`, err);
   }
 }
 
+/** FLUX-1555 (finding F): same "bind the caller" contract as {@link checkFrameworkHealth}. */
 export async function checkSkillStaleness(framework: Framework): Promise<void> {
   const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return;
+  const ws = getWorkspace();
+  const root = ws.root ?? '';
 
   try {
     const sourceRoot = resolveSkillSourceRoot();
@@ -426,7 +469,7 @@ export async function checkSkillStaleness(framework: Framework): Promise<void> {
 
     // Don't duplicate existing staleness notifications
     const existing = notifications.find(
-      n => n.type === 'error' && n.title.includes('outdated') && !n.dismissed
+      n => n.type === 'error' && n.title.includes('outdated') && n.workspaceRoot === root && !n.dismissed
     );
     if (existing) return;
 
@@ -442,7 +485,7 @@ export async function checkSkillStaleness(framework: Framework): Promise<void> {
         { label: 'Reinstall', actionId: 'reinstall' },
         { label: 'Dismiss', actionId: 'dismiss' },
       ],
-    });
+    }, ws);
 
     console.warn(`[skills] Outdated installed skills — ${detail} (source v${sourceVersion}). Reinstall recommended.`);
   } catch (err) {

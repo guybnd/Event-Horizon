@@ -12,6 +12,7 @@ import {
   DISPATCH_LIFECYCLES,
 } from '../lib/dispatch';
 import { FilterDropdown, DropdownItem } from './TaskViewControls';
+import { SkeletonRow } from './ui/Skeleton';
 
 /**
  * FLUX-885: Board Activity/History as a header popover. Re-homed from the full-screen `ActivityScreen`
@@ -317,12 +318,8 @@ export const ActivityPanel = memo(function ActivityPanel({ onClose, embedded = f
         {showSkeleton ? (
           <ul className="space-y-1.5" aria-busy="true" aria-label="Loading activity">
             {Array.from({ length: 5 }).map((_, i) => (
-              <li key={i} className="flex items-start gap-3 rounded-lg border border-gray-100 bg-white px-3 py-2.5 dark:border-white/[0.06] dark:bg-white/[0.02]">
-                <span className="mt-1.5 h-2 w-2 flex-none animate-pulse rounded-full bg-gray-200 dark:bg-white/10" />
-                <div className="min-w-0 flex-1">
-                  <div className="h-4 w-2/3 animate-pulse rounded bg-gray-100 dark:bg-white/10" />
-                  <div className="mt-1.5 h-3 w-1/3 animate-pulse rounded bg-gray-100 dark:bg-white/[0.06]" />
-                </div>
+              <li key={i} className="rounded-lg border border-gray-100 bg-white px-3 py-2.5 dark:border-white/[0.06] dark:bg-white/[0.02]">
+                <SkeletonRow />
               </li>
             ))}
           </ul>

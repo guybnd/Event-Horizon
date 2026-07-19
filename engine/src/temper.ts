@@ -30,11 +30,11 @@
 // the new `plan` gate. Only the trigger condition changed here — the loop-forever mechanics below
 // are untouched pending the generalized loop-driver ("Plan-review runner" subtask).
 
-import { getWorkspace } from './workspace-context.js';
+import { getWorkspace, getDefaultWorkspace, liveWorkspaces, runWithWorkspace, type Workspace } from './workspace-context.js';
 import { log } from './log.js';
 import { getConfig } from './config.js';
 import { updateTaskWithHistory } from './task-store.js';
-import { cliSessionsById, getActiveSessionsForTask } from './session-store.js';
+import { cliSessionsById, getActiveSessionsForTaskInWorkspace } from './session-store.js';
 import { getBurningBatches, freeSlots, ticketHasObservedWorktree, setTemperReserved, isTemperReserved } from './furnace-store.js';
 import {
   isActiveTicketState,
@@ -73,17 +73,42 @@ const MAX_TEMPER_SPAWN_ATTEMPTS = 6;
 
 const nowIso = () => new Date().toISOString();
 
+/** A Temper-tracked ticket, tagged with the workspace that owns it (FLUX-1548). In-memory only — never
+ *  persisted (the durable companion is the ticket's own frontmatter, see below), so this extra field
+ *  never reaches disk. */
+type TemperEntry = BatchTicket & { ws: Workspace };
+
 /**
  * In-memory per-ticket loop state, one synthetic `BatchTicket` per actively-tempering ticket. Reusing
  * the `BatchTicket` shape lets `decideTicketAction` consume it unchanged. The durable companion is the
  * ticket's own frontmatter (`tempering`/`temperAttempts`, written via `updateTaskWithHistory`), which is
  * what the portal reads and what {@link rehydrateTemper} restores this map from after an engine restart.
+ *
+ * FLUX-1548: keyed by workspace root FIRST, ticket id second — two boards share the `FLUX-` prefix, so
+ * `FLUX-1490` can exist (and temper independently) on both. A bare `Map<ticketId, BatchTicket>` would
+ * let one board's entry silently overwrite/adopt the other's.
  */
-const temperTickets = new Map<string, BatchTicket>();
+const temperTickets = new Map<string, Map<string, TemperEntry>>();
 
-/** Is this ticket currently being driven by Temper (in-memory)? */
-export function isTempering(ticketId: string): boolean {
-  return temperTickets.has(ticketId);
+function wsKey(ws: Workspace): string {
+  return ws.root ?? '';
+}
+
+function ticketsFor(ws: Workspace): Map<string, TemperEntry> {
+  let m = temperTickets.get(wsKey(ws));
+  if (!m) { m = new Map(); temperTickets.set(wsKey(ws), m); }
+  return m;
+}
+
+function getEntry(ticketId: string, ws: Workspace = getWorkspace()): TemperEntry | undefined {
+  return temperTickets.get(wsKey(ws))?.get(ticketId);
+}
+
+/** Is this ticket currently being driven by Temper (in-memory)? Scoped to `ws` (default: whichever
+ *  workspace is bound in the calling context) so a same-id ticket on a different board never reads
+ *  as tempering here. */
+export function isTempering(ticketId: string, ws: Workspace = getWorkspace()): boolean {
+  return !!getEntry(ticketId, ws);
 }
 
 /** FLUX-1071: a ticket owned by an active Furnace batch must not be double-driven by Temper (AC #7).
@@ -128,7 +153,12 @@ export async function maybeStartTemper(
   // persisted `task.reviewState`, which could be a stale 'approved' from a prior cycle that must not
   // block a genuinely fresh review of re-opened work.
   if (verdictJustRecorded) return;
-  const task = getWorkspace().tasks[ticketId];
+  // FLUX-1548: the ticket's owning workspace is whatever's ALS-bound in this request/tool-call
+  // context (mcp-server.ts's `change_status` handler runs inside `workspaceScope`) — captured once
+  // here so the registry entry, every write, and the dispatch below all stay pinned to this board,
+  // never whichever board happens to be "active" by the time an async continuation resumes.
+  const ws = getWorkspace();
+  const task = ws.tasks[ticketId];
   if (!task) return;
   // FLUX-1261: temperEnabled generalized into gatePolicy.boardDefault.review (+ ticket override
   // cascade). Only 'auto' is wired to Temper's existing loop-forever behavior here — 'auto-then-you'
@@ -138,12 +168,12 @@ export async function maybeStartTemper(
   // "Green PR" is only meaningful with a branch; branchless tickets are left alone (groomed default).
   if (!task.branch) return;
   // Already looping (durable flag or in-memory) → the reconciler owns it; don't reset attempts.
-  if (task.tempering === true || temperTickets.has(ticketId)) return;
+  if (task.tempering === true || isTempering(ticketId, ws)) return;
   // A Furnace batch already drives this ticket — the batch wins (AC #7).
   if (isTicketInActiveFurnaceBatch(ticketId)) return;
 
   // Seed the registry SYNCHRONOUSLY (before any await) so a rapid second trigger can't double-start.
-  temperTickets.set(ticketId, { ticketId, order: 0, state: 'reviewing', attempts: 0, sessionIds: [] });
+  ticketsFor(ws).set(ticketId, { ticketId, ws, order: 0, state: 'reviewing', attempts: 0, sessionIds: [] });
   try {
     await updateTaskWithHistory(ticketId, {
       extraFields: { tempering: true, temperAttempts: 0 },
@@ -154,15 +184,17 @@ export async function maybeStartTemper(
         date: nowIso(),
       }],
       updatedBy: 'Temper',
-    });
+    }, ws);
   } catch (e: unknown) {
     log.warn(`[temper] ${ticketId} start persist failed: ${e instanceof Error ? e.message : String(e)}`);
   }
   // Dispatch the first review now (the tick would also pick it up, but this makes it immediate).
-  await advanceTemperTicket(ticketId, { type: 'review' });
+  // FLUX-1548: bind the dispatch to `ws` explicitly — the self-dispatch fetch below (`spawnTemper` ->
+  // `dispatchSession`) reads the ambient workspace to stamp `X-EH-Workspace`.
+  await runWithWorkspace(ws, () => advanceTemperTicket(ticketId, ws, { type: 'review' }));
   // FLUX-1239: spawnTemper may have returned early (pool full) without dispatching anything — check
   // whether a session actually landed before claiming so, rather than logging "dispatched" unconditionally.
-  const dispatched = !!temperTickets.get(ticketId)?.currentSessionId;
+  const dispatched = !!getEntry(ticketId, ws)?.currentSessionId;
   log.info(dispatched
     ? `[temper] ${ticketId} entered ${readyStatus()} with Temper on — first review dispatched.`
     : `[temper] ${ticketId} entered ${readyStatus()} with Temper on — waiting for a free worktree slot before the first review.`);
@@ -171,24 +203,24 @@ export async function maybeStartTemper(
 // ── Lifecycle helpers ──────────────────────────────────────────────────────────
 
 /** Persist the current re-implementation attempt count onto the ticket (best-effort). */
-async function persistTemperAttempts(ticketId: string, attempts: number): Promise<void> {
+async function persistTemperAttempts(ticketId: string, attempts: number, ws: Workspace): Promise<void> {
   try {
-    await updateTaskWithHistory(ticketId, { extraFields: { temperAttempts: attempts }, updatedBy: 'Temper' });
+    await updateTaskWithHistory(ticketId, { extraFields: { temperAttempts: attempts }, updatedBy: 'Temper' }, ws);
   } catch (e: unknown) {
     log.warn(`[temper] ${ticketId} persist attempts failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
 /** Stop tempering a ticket: drop it from the registry and clear its durable Temper frontmatter fields. */
-async function stopTemper(ticketId: string, note?: string): Promise<void> {
-  temperTickets.delete(ticketId);
-  setTemperReserved(ticketId, false);
+async function stopTemper(ticketId: string, ws: Workspace, note?: string): Promise<void> {
+  temperTickets.get(wsKey(ws))?.delete(ticketId);
+  setTemperReserved(ws.root, ticketId, false);
   try {
     await updateTaskWithHistory(ticketId, {
       deleteFields: ['tempering', 'temperAttempts'],
       ...(note ? { entries: [{ type: 'activity', user: 'Temper', comment: note, date: nowIso() }] } : {}),
       updatedBy: 'Temper',
-    });
+    }, ws);
   } catch (e: unknown) {
     log.warn(`[temper] ${ticketId} stop persist failed: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -199,19 +231,21 @@ async function stopTemper(ticketId: string, note?: string): Promise<void> {
  * deliberate, expected teardown, not a failure. Disarms Temper FIRST so its own tick can never observe
  * the resulting 'cancelled' session and park a ticket whose work already landed (the race the
  * `decideTicketAction` 'yield' branch only catches defensively). No-op if Temper isn't driving this ticket.
+ * `ws` defaults to whatever's ALS-bound in the caller's context (a finish/merge flow runs inside a
+ * request, so this resolves to the ticket's own board there).
  */
-export async function disarmTemperForExternalStop(ticketId: string): Promise<void> {
-  if (!temperTickets.has(ticketId)) return;
-  await stopTemper(ticketId, 'Temper disarmed — a finish/merge flow is taking over session teardown for this ticket.');
+export async function disarmTemperForExternalStop(ticketId: string, ws: Workspace = getWorkspace()): Promise<void> {
+  if (!isTempering(ticketId, ws)) return;
+  await stopTemper(ticketId, ws, 'Temper disarmed — a finish/merge flow is taking over session teardown for this ticket.');
   log.info(`[temper] ${ticketId} disarmed ahead of an external session stop (finish/merge flow).`);
 }
 
 /** Park a Temper ticket for a human (Require Input swimlane) and clear its Temper state. */
-async function parkTemper(ticketId: string, reason: string): Promise<void> {
+async function parkTemper(ticketId: string, reason: string, ws: Workspace): Promise<void> {
   await parkTicketOnBoard(ticketId, `Temper: ${reason}`);
   // parkTicketOnBoard set the swimlane + moved the ticket to In Progress; this only drops the two
   // Temper fields (deleteFields is scoped, so the swimlane/status it just wrote are preserved).
-  await stopTemper(ticketId);
+  await stopTemper(ticketId, ws);
   log.info(`[temper] ${ticketId} parked: ${reason}`);
 }
 
@@ -223,7 +257,7 @@ async function parkTemper(ticketId: string, reason: string): Promise<void> {
  * FLUX-1237: a full shared worktree pool is NOT a spawn failure — it returns early (a `wait`) without
  * touching `spawnFailures`, so contention with the Furnace for slots can never park a ticket.
  */
-async function spawnTemper(ticket: BatchTicket, phase: FurnacePhase, focusComment?: string, useResume = false): Promise<void> {
+async function spawnTemper(ticket: TemperEntry, phase: FurnacePhase, focusComment?: string, useResume = false): Promise<void> {
   // FLUX-1237: Temper and the Furnace draw from the SAME global worktree pool, so gate the isolated
   // dispatch on slot availability exactly as the Stoker does (`freeSlots`, see furnace-stoker.ts). Without
   // this, a burst of branch tickets entering Ready could each try to grab a slot and, after
@@ -236,8 +270,10 @@ async function spawnTemper(ticket: BatchTicket, phase: FurnacePhase, focusCommen
   // (a re-implement/re-review mid-loop reuses it via the shared branch — no new slot) must NOT be blocked:
   // its own worktree counts toward `freeSlots()`, so gating it unconditionally lets a full pool self-stall
   // an in-flight loop until unrelated work frees a slot. A brand-new loop (no worktree yet) still waits.
-  await refreshWorktreePool();
-  const holdsSlot = ticketHasObservedWorktree(ticket.ticketId) || isTemperReserved(ticket.ticketId);
+  // FLUX-1551: worktree pool + reservations are scoped to THIS ticket's own board (`ticket.ws.root`) — a
+  // same-id ticket on a different board must never satisfy `holdsSlot` here or be released by this call.
+  await refreshWorktreePool({ root: ticket.ws.root });
+  const holdsSlot = ticketHasObservedWorktree(ticket.ws.root, ticket.ticketId) || isTemperReserved(ticket.ws.root, ticket.ticketId);
   if (!holdsSlot) {
     // FLUX-1239: `refreshWorktreePool()` is TTL-coalesced, so several sibling tickets entering Ready in the
     // same tick/TTL window would otherwise all read the same stale on-disk count and all pass this gate,
@@ -247,15 +283,15 @@ async function spawnTemper(ticket: BatchTicket, phase: FurnacePhase, focusCommen
       log.info(`[temper] ${ticket.ticketId} waiting for a free worktree slot before its ${phase} session (shared Furnace pool full).`);
       return;
     }
-    setTemperReserved(ticket.ticketId, true);
+    setTemperReserved(ticket.ws.root, ticket.ticketId, true);
   }
   // dispatchSession/resumeOrDispatchSession both return a classified DispatchOutcome (FLUX-1235); Temper
   // only needs the session id (null = refused). A refusal here is a genuine spawn failure — the pool-full
   // case already returned above. FLUX-1378: `useResume` (currently only the 're-implement' dispatch, mirroring
   // gate-runner/furnace-stoker) tries resuming the implementer's prior session before falling back to cold.
   const { sid } = useResume && focusComment
-    ? await resumeOrDispatchSession(ticket.ticketId, phase, { focusComment, resumeMessage: focusComment })
-    : await dispatchSession(ticket.ticketId, phase, focusComment ? { focusComment } : {});
+    ? await resumeOrDispatchSession(ticket.ticketId, phase, { focusComment, resumeMessage: focusComment, workspaceRoot: ticket.ws.root })
+    : await dispatchSession(ticket.ticketId, phase, { ...(focusComment ? { focusComment } : {}), workspaceRoot: ticket.ws.root });
   if (sid) {
     ticket.currentSessionId = sid;
     if (!ticket.sessionIds.includes(sid)) ticket.sessionIds.push(sid);
@@ -264,10 +300,10 @@ async function spawnTemper(ticket: BatchTicket, phase: FurnacePhase, focusCommen
     return;
   }
   // No worktree was actually claimed — release the reservation so it doesn't eat a slot indefinitely.
-  setTemperReserved(ticket.ticketId, false);
+  setTemperReserved(ticket.ws.root, ticket.ticketId, false);
   ticket.spawnFailures = (ticket.spawnFailures || 0) + 1;
   if (ticket.spawnFailures >= MAX_TEMPER_SPAWN_ATTEMPTS) {
-    await parkTemper(ticket.ticketId, `could not start a ${phase} session after ${MAX_TEMPER_SPAWN_ATTEMPTS} attempts (the environment may be broken)`);
+    await parkTemper(ticket.ticketId, `could not start a ${phase} session after ${MAX_TEMPER_SPAWN_ATTEMPTS} attempts (the environment may be broken)`, ticket.ws);
   }
 }
 
@@ -277,8 +313,8 @@ async function spawnTemper(ticket: BatchTicket, phase: FurnacePhase, focusCommen
  * Execute the decision for a single Temper ticket. Handles only the actions Temper can produce (Temper
  * omits the rate-limit/context-exhaustion inputs, so `decideTicketAction` never returns their actions).
  */
-async function advanceTemperTicket(ticketId: string, action: TicketAction): Promise<void> {
-  const ticket = temperTickets.get(ticketId);
+async function advanceTemperTicket(ticketId: string, ws: Workspace, action: TicketAction): Promise<void> {
+  const ticket = getEntry(ticketId, ws);
   if (!ticket) return;
   switch (action.type) {
     case 'wait':
@@ -290,8 +326,8 @@ async function advanceTemperTicket(ticketId: string, action: TicketAction): Prom
       delete ticket.currentSessionId;
       delete ticket.sessionStartedAt;
       ticket.reviewNudgeSent = false; // a fresh review pass gets a fresh nudge budget (FLUX-1078)
-      await clearReviewState(ticketId); // clear a stale verdict before the fresh review reads its own
-      await spawnTemper(ticket, 'review', SOLE_REVIEWER_FOCUS + deltaReviewFocus(ticketId));
+      await clearReviewState(ticketId, ws); // clear a stale verdict before the fresh review reads its own
+      await spawnTemper(ticket, 'review', SOLE_REVIEWER_FOCUS + deltaReviewFocus(ticketId, ws));
       break;
     }
 
@@ -323,7 +359,7 @@ async function advanceTemperTicket(ticketId: string, action: TicketAction): Prom
       ticket.attempts = action.attempt;
       delete ticket.currentSessionId;
       delete ticket.sessionStartedAt;
-      await persistTemperAttempts(ticketId, action.attempt);
+      await persistTemperAttempts(ticketId, action.attempt, ws);
       await spawnTemper(ticket, 'implementation', REIMPLEMENT_FOCUS, true);
       break;
     }
@@ -333,20 +369,20 @@ async function advanceTemperTicket(ticketId: string, action: TicketAction): Prom
       delete ticket.currentSessionId;
       delete ticket.sessionStartedAt;
       const focus = action.phase === 'review'
-        ? SOLE_REVIEWER_FOCUS + deltaReviewFocus(ticketId)
+        ? SOLE_REVIEWER_FOCUS + deltaReviewFocus(ticketId, ws)
         : ticket.state === 'reimplementing' ? REIMPLEMENT_FOCUS : undefined;
       await spawnTemper(ticket, action.phase, focus);
       break;
     }
 
     case 'pr-open': {
-      await stopTemper(ticketId, `Temper complete — the review approved this ticket. PR left open at ${readyStatus()} (not merged).`);
+      await stopTemper(ticketId, ws, `Temper complete — the review approved this ticket. PR left open at ${readyStatus()} (not merged).`);
       log.info(`[temper] ${ticketId} approved — PR left open at ${readyStatus()} (not merged). Temper complete.`);
       break;
     }
 
     case 'park': {
-      await parkTemper(ticketId, action.reason);
+      await parkTemper(ticketId, action.reason, ws);
       break;
     }
 
@@ -354,7 +390,7 @@ async function advanceTemperTicket(ticketId: string, action: TicketAction): Prom
       // FLUX-1297: the ticket already succeeded outside Temper's control (its board status is already
       // merged/terminal) — a finish/merge flow deliberately killed the review session. Disarm quietly
       // instead of parking a ticket that already landed.
-      await stopTemper(ticketId, `Temper yielded — ${action.reason}.`);
+      await stopTemper(ticketId, ws, `Temper yielded — ${action.reason}.`);
       log.info(`[temper] ${ticketId} yielded — ${action.reason}.`);
       break;
     }
@@ -370,29 +406,31 @@ async function advanceTemperTicket(ticketId: string, action: TicketAction): Prom
 // ── Reconcile ──────────────────────────────────────────────────────────────────
 
 /** Observe one Temper ticket's session and advance it. Mirrors the Stoker's `reconcileTicket`. */
-async function reconcileTemperTicket(ticketId: string): Promise<void> {
-  const ticket = temperTickets.get(ticketId);
+async function reconcileTemperTicket(ticketId: string, ws: Workspace): Promise<void> {
+  const ticket = getEntry(ticketId, ws);
   if (!ticket) return;
 
   // A Furnace batch adopted this ticket mid-loop → yield entirely (the batch wins — AC #7).
   if (isTicketInActiveFurnaceBatch(ticketId)) {
-    await stopTemper(ticketId, 'Temper yielded — this ticket is now driven by an active Furnace batch.');
+    await stopTemper(ticketId, ws, 'Temper yielded — this ticket is now driven by an active Furnace batch.');
     log.info(`[temper] ${ticketId} now owned by an active Furnace batch — Temper yielding.`);
     return;
   }
   if (!isActiveTicketState(ticket.state)) return;
 
   const currentPhase: FurnacePhase = ticket.state === 'reviewing' ? 'review' : 'implementation';
-  // Prefer the tracked session (it stays resolvable after it terminates); else adopt the live phase session.
+  // Prefer the tracked session (it stays resolvable after it terminates); else adopt the live phase
+  // session — FLUX-1548: narrowed to THIS workspace so a same-id ticket on a different board can never
+  // be adopted as this one's session.
   let sess = ticket.currentSessionId ? cliSessionsById.get(ticket.currentSessionId) : undefined;
-  if (!sess) sess = pickSessionForPhase(getActiveSessionsForTask(ticketId), currentPhase);
+  if (!sess) sess = pickSessionForPhase(getActiveSessionsForTaskInWorkspace(ticketId, ws.root, getDefaultWorkspace().root), currentPhase);
   if (sess && sess.id !== ticket.currentSessionId) {
     ticket.currentSessionId = sess.id;
     if (!ticket.sessionIds.includes(sess.id)) ticket.sessionIds.push(sess.id);
     if (!ticket.sessionStartedAt) ticket.sessionStartedAt = nowIso();
   }
 
-  const task = getWorkspace().tasks[ticketId];
+  const task = ws.tasks[ticketId];
   const prUrl = extractPrUrl(task);
   const sessionOutcome = findSessionOutcome(task, sess?.id ?? ticket.currentSessionId);
   const action = decideTicketAction({
@@ -409,23 +447,31 @@ async function reconcileTemperTicket(ticketId: string): Promise<void> {
     // can't be mistaken for this round's verdict.
     reviewVerdictMarkerSeen: lastCommentMatchesVerdictMarker(task?.history, ticket.sessionStartedAt),
   });
-  await advanceTemperTicket(ticketId, action);
+  await advanceTemperTicket(ticketId, ws, action);
 }
 
 // ── Tick orchestration ──────────────────────────────────────────────────────────
 
 let ticking = false;
 
-/** Advance every actively-tempering ticket by one tick. Never overlaps itself. */
+/**
+ * Advance every actively-tempering ticket, on every live board, by one tick. Never overlaps itself.
+ * FLUX-1548: each ticket's own recorded `ws` (from {@link ticketsFor}'s outer key) drives which board
+ * it reconciles against — NOT the board that happens to be "active" right now — and every reconcile
+ * pass runs inside a `runWithWorkspace(ws, …)` binding so downstream ambient `getWorkspace()` reads
+ * (`parkTicketOnBoard`, the self-dispatch header fallback) resolve to that same board too.
+ */
 export async function temperTick(): Promise<void> {
   if (ticking) return;
   ticking = true;
   try {
-    for (const ticketId of [...temperTickets.keys()]) {
-      try {
-        await reconcileTemperTicket(ticketId);
-      } catch (e: unknown) {
-        log.error(`[temper] tick for ${ticketId} failed: ${e instanceof Error ? e.message : String(e)}`);
+    for (const [, ticketsByRoot] of [...temperTickets.entries()]) {
+      for (const [ticketId, ticket] of [...ticketsByRoot.entries()]) {
+        try {
+          await runWithWorkspace(ticket.ws, () => reconcileTemperTicket(ticketId, ticket.ws));
+        } catch (e: unknown) {
+          log.error(`[temper] tick for ${ticketId} failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
     }
   } finally {
@@ -438,14 +484,19 @@ export async function temperTick(): Promise<void> {
  * a bounce. Each restored ticket starts in `reviewing` with no session; the first tick observes no live
  * session and re-drives the review (`decideTicketAction` → `redrive`), which is the correct resumption
  * point regardless of which phase was mid-flight when the engine went down.
+ *
+ * FLUX-1548: scans EVERY live workspace (not just the active one) — a temper-armed ticket on the
+ * default board must rehydrate even while a second board is the one most recently opened.
  */
 export function rehydrateTemper(): void {
-  for (const id of Object.keys(getWorkspace().tasks)) {
-    const t = getWorkspace().tasks[id];
-    if (t?.tempering === true && !temperTickets.has(id)) {
-      const attempts = typeof t.temperAttempts === 'number' ? t.temperAttempts : 0;
-      temperTickets.set(id, { ticketId: id, order: 0, state: 'reviewing', attempts, sessionIds: [] });
-      log.info(`[temper] rehydrated ${id} (attempts ${attempts}) — will re-drive its review on the next tick.`);
+  for (const ws of liveWorkspaces()) {
+    for (const id of Object.keys(ws.tasks)) {
+      const t = ws.tasks[id];
+      if (t?.tempering === true && !isTempering(id, ws)) {
+        const attempts = typeof t.temperAttempts === 'number' ? t.temperAttempts : 0;
+        ticketsFor(ws).set(id, { ticketId: id, ws, order: 0, state: 'reviewing', attempts, sessionIds: [] });
+        log.info(`[temper] rehydrated ${id} (attempts ${attempts}, workspace ${ws.root}) — will re-drive its review on the next tick.`);
+      }
     }
   }
 }

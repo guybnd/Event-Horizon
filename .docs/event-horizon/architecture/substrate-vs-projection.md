@@ -61,6 +61,16 @@ stable turn identity to slice on, so no verb could say "turns 12–20 of stream 
 This ticket makes turns **addressable** (stable id + monotonic seq) and **sliceable**
 (`readTurns` / `sliceTurns`).
 
+**FLUX-685** adds the first WRITE-side use of that addressing: `truncateTranscript(streamId,
+fromSeq)` (`transcript.ts`, next to `sliceTurns`) rewrites a stream's own file, keeping only
+turns with `seq < fromSeq`. Because a stream's own substrate always has `seq === line index`
+(see §4.1), truncating is just keeping the first `fromSeq` raw lines — no envelope
+re-parsing needed. It backs the portal's edit-and-resend/retry chat affordances (`POST
+.../cli-session/input`'s `truncateFromSeq` — see `rest-api.md`): the ticket's OWN transcript
+is rewound in the same request that resends the edited/retried turn, before the new turn is
+appended. `TranscriptMessage.seq` (the field `projectTranscript` now stamps onto every message,
+via `Turn.seq`) is what the portal round-trips back as `truncateFromSeq`.
+
 ## 4. The turn envelope
 
 Each appended line is wrapped in a stable envelope (`engine/src/transcript.ts`):

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Cloud, CloudOff, RefreshCw, AlertCircle, AlertTriangle, WifiOff, Lock, Copy, Check, X, ArrowUpCircle } from 'lucide-react';
 import { ConflictResolutionModal } from './ConflictResolutionModal';
 import * as api from '../api';
+import { ehFetch, ehEventSourceUrl } from '../api';
 import type { ConflictInfo, ResolutionStrategy, SyncRemediation } from '../api';
 
 export type SyncStatus =
@@ -70,7 +71,7 @@ export function SyncStatusIndicator() {
     async function connect() {
       try {
         // First fetch to check if sync is configured (orphan mode)
-        const res = await fetch('/api/sync-status');
+        const res = await ehFetch('/sync-status');
         if (!res.ok) {
           // No sync configured (in-repo mode)
           setIsOffline(true);
@@ -82,7 +83,7 @@ export function SyncStatusIndicator() {
         setIsOffline(false);
 
         // Connect to SSE stream for real-time updates
-        es = new EventSource('/api/sync-status/stream');
+        es = new EventSource(ehEventSourceUrl('/sync-status/stream'));
 
         es.onopen = () => { lastEventAt = Date.now(); };
 

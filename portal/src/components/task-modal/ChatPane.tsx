@@ -126,6 +126,8 @@ export function ChatPane({ task }: { task: Task }) {
         quickReplies={quickReplies}
         linkifyTickets
         onSend={chat.send}
+        onEditTurn={chat.editAndResend}
+        onRetryTurn={chat.retryLast}
         queued={chat.queued}
         onEnqueue={chat.enqueue}
         onDequeue={chat.dequeue}

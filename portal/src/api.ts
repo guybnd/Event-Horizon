@@ -7,6 +7,62 @@ function encodeDocPath(docPath: string) {
   return docPath.split('/').map((segment) => encodeURIComponent(segment)).join('/');
 }
 
+// ─── Board-key request plumbing (S9, epic FLUX-1230) ────────────────────────
+
+/** The active board's key (workspace absolute path), threaded onto every board-scoped request by
+ *  `ehFetch`. Set from `AppContext` via `setActiveBoardKey` whenever the active board changes —
+ *  see `AppStoreState.activeBoardId` (appStore.ts). `null` until the first workspace resolves. */
+let activeBoardKey: string | null = null;
+
+/** Point every subsequent `ehFetch` call at `key`. Called from `AppContext`'s `setActiveBoard`
+ *  action, which in S9 just follows the single active workspace; S10's switcher will call this
+ *  directly when repointing to a cached board. */
+export function setActiveBoardKey(key: string | null): void {
+  activeBoardKey = key;
+}
+
+/**
+ * Board-scoped fetch wrapper — injects the active board key as an `X-EH-Workspace` header so a
+ * request always resolves against the board the user is VIEWING, matching the header name the
+ * engine's MCP HTTP binding already reads (`x-eh-workspace`, FLUX-1448 S3) and the HTTP middleware
+ * (`attachWorkspace`/`workspaceScope`, mounted globally in index.ts) honors on every route.
+ *
+ * Workspace-*registry mutation* endpoints (add/remove/switch/open/close workspaces, the raw
+ * configured-workspace pointer) intentionally bypass this and call `fetch` directly — they operate
+ * on the registry itself, not a specific board's data, so tagging them with "the current board"
+ * would be circular (e.g. a switch-workspace request tagged with the board being switched away
+ * from). `fetchHealth`/`fetchWorkspaces` (FLUX-1557) DO go through this, though — they're reads
+ * whose `workspace`/`active` fields should reflect the viewed board, not whichever board the
+ * engine's now-deterministic unbound fallback resolves to (see `getWorkspace()`'s doc comment,
+ * workspace-context.ts).
+ */
+export async function ehFetch(path: string, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  if (activeBoardKey) headers.set('X-EH-Workspace', activeBoardKey);
+  return fetch(`${API_URL}${path}`, { ...init, headers });
+}
+
+/**
+ * Board-scoped `EventSource` URL — the SSE equivalent of `ehFetch`. `EventSource` can't set
+ * custom request headers, so the active board key is threaded as a `?ws=` query param instead
+ * of the `X-EH-Workspace` header (matching `AppContext.tsx`'s `/api/events` subscription, S9).
+ */
+export function ehEventSourceUrl(path: string): string {
+  const qs = activeBoardKey ? `${path.includes('?') ? '&' : '?'}ws=${encodeURIComponent(activeBoardKey)}` : '';
+  return `${API_URL}${path}${qs}`;
+}
+
+/**
+ * Board-scope an already-absolute portal API URL (e.g. an attachment's `/api/assets/...`) with
+ * `?ws=` — for browser-loaded resources (`<img src>`, `<a href>`, iframes) that, like
+ * `EventSource`, can't carry the `X-EH-Workspace` header. Without it the engine resolves such a
+ * request against whichever board was most recently opened, not the one this URL belongs to.
+ */
+export function ehBrowserUrl(url: string): string {
+  if (!activeBoardKey) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}ws=${encodeURIComponent(activeBoardKey)}`;
+}
+
 // FLUX-1144: last-seen ETag per query variant (full vs `?active=true` serialize different sets,
 // so each needs its own conditional-GET state). Module-level — the poll interval and every SSE-
 // triggered refetch share one `fetchTasks` call site, so this is naturally a singleton per tab.
@@ -20,7 +76,7 @@ export async function fetchTasks(opts?: { active?: boolean }): Promise<Task[] | 
   const headers: HeadersInit = {};
   const knownEtag = taskListETags.get(variant);
   if (knownEtag) headers['If-None-Match'] = knownEtag;
-  const res = await fetch(`${API_URL}/tasks${query}`, { headers });
+  const res = await ehFetch(`/tasks${query}`, { headers });
   if (res.status === 304) return null;
   if (!res.ok) throw new Error('Failed to fetch tasks');
   const etag = res.headers.get('ETag');
@@ -36,7 +92,7 @@ export interface ParseError {
 }
 
 export async function fetchParseErrors(): Promise<ParseError[]> {
-  const res = await fetch(`${API_URL}/tasks/errors`);
+  const res = await ehFetch(`/tasks/errors`);
   if (!res.ok) throw new Error('Failed to fetch parse errors');
   return res.json();
 }
@@ -49,7 +105,7 @@ export interface UncommittedStatus {
 }
 
 export async function fetchUncommittedStatus(): Promise<UncommittedStatus> {
-  const res = await fetch(`${API_URL}/tasks/uncommitted-count`);
+  const res = await ehFetch(`/tasks/uncommitted-count`);
   if (!res.ok) throw new Error('Failed to fetch uncommitted status');
   const data = await res.json();
   return {
@@ -69,7 +125,7 @@ export async function openWorkspaceEditor(file?: string, ref?: string): Promise<
   const body: Record<string, string> = {};
   if (file) body.file = file;
   if (ref) body.ref = ref;
-  const res = await fetch(`${API_URL}/tasks/open-editor`, {
+  const res = await ehFetch(`/tasks/open-editor`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -85,7 +141,7 @@ export async function openWorkspaceEditor(file?: string, ref?: string): Promise<
  * root; a branch → that worktree). Returns the new short hash, or an error string.
  */
 export async function commitFiles(ref: string, files: string[], message: string): Promise<{ hash?: string; error?: string }> {
-  const res = await fetch(`${API_URL}/tasks/commit`, {
+  const res = await ehFetch(`/tasks/commit`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ref, files, message }),
@@ -109,7 +165,7 @@ export interface DiscardFileResult {
  * comes back as `error`.
  */
 export async function discardFiles(ref: string, files: string[]): Promise<{ results?: DiscardFileResult[]; error?: string }> {
-  const res = await fetch(`${API_URL}/tasks/discard`, {
+  const res = await ehFetch(`/tasks/discard`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ref, files }),
@@ -128,7 +184,7 @@ export async function finishBranchless(
   taskId: string,
   body: { message: string; files: string[]; completionComment?: string },
 ): Promise<{ finished: boolean; hash: string; link: string }> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/finish`, {
+  const res = await ehFetch(`/tasks/${taskId}/finish`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -139,7 +195,18 @@ export async function finishBranchless(
 }
 
 export async function fetchTask(id: string): Promise<Task> {
-  const res = await fetch(`${API_URL}/tasks/${id}`);
+  const res = await ehFetch(`/tasks/${id}`);
+  if (!res.ok) throw new Error('Failed to fetch task');
+  return res.json();
+}
+
+/** FLUX-1505: list-shaped single-task fetch (`?view=list` — same `serializeTaskForList` shape as
+ *  `GET /api/tasks`: capped inline history, derived `historyDigest`, truncated `liveOutput`).
+ *  Used by the patch-first `taskUpdated` SSE handler so a single-task refresh can merge directly
+ *  into the list-shaped `tasks` store without producing a detail/list hybrid record — the plain
+ *  `fetchTask` above returns the full detail shape and must never be merged into that store. */
+export async function fetchTaskListShape(id: string): Promise<Task> {
+  const res = await ehFetch(`/tasks/${id}?view=list`);
   if (!res.ok) throw new Error('Failed to fetch task');
   return res.json();
 }
@@ -161,7 +228,7 @@ export interface AgentPayloadMetrics {
 
 /** Debug-only: byte/token breakdown of the agent-facing get_ticket payload. */
 export async function fetchTaskDebugSizes(id: string): Promise<AgentPayloadMetrics> {
-  const res = await fetch(`${API_URL}/tasks/${id}/debug/sizes`);
+  const res = await ehFetch(`/tasks/${id}/debug/sizes`);
   if (!res.ok) throw new Error('Failed to fetch payload sizes');
   return res.json();
 }
@@ -185,7 +252,7 @@ export interface EnginePerfSnapshot {
 
 /** Not workspace-scoped — works even with no workspace configured (FLUX-1134 perf panel). */
 export async function fetchEnginePerf(): Promise<EnginePerfSnapshot> {
-  const res = await fetch(`${API_URL}/perf`);
+  const res = await ehFetch(`/perf`);
   if (!res.ok) throw new Error('Failed to fetch perf snapshot');
   return res.json();
 }
@@ -229,13 +296,54 @@ export interface ContextBudget {
   ehToolSchemas: McpServerSchemaMetrics;
   ehMeasurableTotalTokensEst: number;
   session?: SessionTokenTotals;
+  /** FLUX-1512: how much the FLUX-501/503 history digest actually saves for this ticket —
+   * digested `agentPayload` vs. an undigested re-serialization of the same in-memory task. */
+  digestSavings: { undigestedTokensEst: number; actualTokensEst: number; tokensSaved: number; pctSaved: number };
+  /** FLUX-1512: cheap heuristic flags for a body/history that's disproportionately large. */
+  bodyOversized: boolean;
+  historyOversized: boolean;
   caveats: string[];
 }
 
 /** Debug-only: full context-budget view — payload + launch prompt + skill modules. */
 export async function fetchTaskContextBudget(id: string): Promise<ContextBudget> {
-  const res = await fetch(`${API_URL}/tasks/${id}/debug/budget`);
+  const res = await ehFetch(`/tasks/${id}/debug/budget`);
   if (!res.ok) throw new Error('Failed to fetch context budget');
+  return res.json();
+}
+
+/** Mirrors `engine/src/routes/stats.ts`'s `GET /api/stats/tokens` lifetime totals. */
+export interface TokenStatsLifetime {
+  inputTokens: number;
+  outputTokens: number;
+  costUSD: number;
+  costIsEstimated: boolean;
+}
+
+/** Mirrors `engine/src/routes/stats.ts`'s `TokenStatsRow` (FLUX-1512 adds the last four,
+ * all optional — may be absent if that task's computation failed). */
+export interface TokenStatsTaskRow {
+  inputTokens: number;
+  outputTokens: number;
+  costUSD: number;
+  costIsEstimated: boolean;
+  pctSaved?: number;
+  tokensSaved?: number;
+  bodyOversized?: boolean;
+  historyOversized?: boolean;
+}
+
+export interface TokenStatsResponse {
+  lifetime: TokenStatsLifetime;
+  byTask: Record<string, TokenStatsTaskRow>;
+}
+
+/** FLUX-1512: board-wide per-task token/cost/savings stats — backs `TokenCostsScreen`.
+ * `LifetimeTokenStats.tsx` calls the raw endpoint directly (pre-existing); this wrapper is for
+ * new consumers, following the `fetchTaskContextBudget`/`fetchEnginePerf` convention. */
+export async function fetchTokenStats(): Promise<TokenStatsResponse> {
+  const res = await ehFetch('/stats/tokens');
+  if (!res.ok) throw new Error('Failed to fetch token stats');
   return res.json();
 }
 
@@ -262,7 +370,7 @@ export interface McpSchemaReport {
 
 /** Debug-only: probe module MCP servers and measure per-server tool-schema cost. Slow (spawns servers). */
 export async function fetchMcpSchemas(): Promise<McpSchemaReport> {
-  const res = await fetch(`${API_URL}/tasks/debug/mcp-schemas`);
+  const res = await ehFetch(`/tasks/debug/mcp-schemas`);
   if (!res.ok) throw new Error('Failed to probe MCP schemas');
   return res.json();
 }
@@ -275,7 +383,7 @@ export interface SpawnServersReport {
 
 /** Debug-only: which MCP servers each phase's agent gets (per-phase profiles, FLUX-490). Cheap. */
 export async function fetchSpawnServers(): Promise<SpawnServersReport> {
-  const res = await fetch(`${API_URL}/tasks/debug/spawn-servers`);
+  const res = await ehFetch(`/tasks/debug/spawn-servers`);
   if (!res.ok) throw new Error('Failed to fetch spawn servers');
   return res.json();
 }
@@ -288,13 +396,13 @@ export interface McpPhasesConfig {
 
 /** Per-phase MCP server scoping config (FLUX-490 UI). */
 export async function fetchMcpPhases(): Promise<McpPhasesConfig> {
-  const res = await fetch(`${API_URL}/config/mcp-phases`);
+  const res = await ehFetch(`/config/mcp-phases`);
   if (!res.ok) throw new Error('Failed to fetch MCP phase config');
   return res.json();
 }
 
 export async function saveMcpPhases(mcpServerPhases: Record<string, string[]>): Promise<{ mcpServerPhases: Record<string, string[]> }> {
-  const res = await fetch(`${API_URL}/config/mcp-phases`, {
+  const res = await ehFetch(`/config/mcp-phases`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mcpServerPhases }),
@@ -303,7 +411,7 @@ export async function saveMcpPhases(mcpServerPhases: Record<string, string[]>): 
   return res.json();
 }
 
-export async function updateTask(id: string, updates: Partial<Task> & { skipCommentRequirement?: boolean; appendHistory?: HistoryEntryDraft[] }): Promise<Task> {
+export async function updateTask(id: string, updates: Partial<Task> & { skipCommentRequirement?: boolean; appendHistory?: HistoryEntryDraft[]; baseBodyVersion?: string }): Promise<Task> {
   // FLUX-1485: 15s ceiling matching resolveBoardRebase (api.ts, FLUX-773) so a wedged engine can
   // never hold this connection open forever — every Approve surface (plan panel, AttentionDock,
   // chat card) funnels through this one call, and a hung PUT was starving the browser's per-origin
@@ -312,7 +420,7 @@ export async function updateTask(id: string, updates: Partial<Task> & { skipComm
   const timer = setTimeout(() => controller.abort(), 15_000);
   let res: Response;
   try {
-    res = await fetch(`${API_URL}/tasks/${id}`, {
+    res = await ehFetch(`/tasks/${id}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json'
@@ -331,16 +439,21 @@ export async function updateTask(id: string, updates: Partial<Task> & { skipComm
   if (!res.ok) {
     let message = 'Failed to update task';
     let code: string | undefined;
+    // FLUX-1550: a 409 stale_body carries the fresh on-disk version so the caller can
+    // re-read-and-retry without a second round trip just to fetch the new token.
+    let currentBodyVersion: string | undefined;
     try {
       const errorPayload = await res.json();
       if (errorPayload.message) message = errorPayload.message;
       else if (errorPayload.error) message = errorPayload.error;
       if (typeof errorPayload?.error === 'string') code = errorPayload.error;
+      if (typeof errorPayload?.currentBodyVersion === 'string') currentBodyVersion = errorPayload.currentBodyVersion;
     } catch {
       // ignore
     }
-    const err = new Error(message) as Error & { code?: string };
+    const err = new Error(message) as Error & { code?: string; currentBodyVersion?: string };
     if (code) err.code = code;
+    if (currentBodyVersion) err.currentBodyVersion = currentBodyVersion;
     throw err;
   }
   return res.json();
@@ -353,7 +466,7 @@ export interface TaskAssetUploadResult {
 }
 
 export async function uploadTaskAsset(id: string, payload: { fileName: string; mimeType: string; content: string }): Promise<TaskAssetUploadResult> {
-  const res = await fetch(`${API_URL}/tasks/${id}/assets`, {
+  const res = await ehFetch(`/tasks/${id}/assets`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -379,14 +492,20 @@ export async function uploadTaskAsset(id: string, payload: { fileName: string; m
 }
 
 export async function deleteTask(id: string): Promise<void> {
-  const res = await fetch(`${API_URL}/tasks/${id}`, {
+  const res = await ehFetch(`/tasks/${id}`, {
     method: 'DELETE'
   });
   if (!res.ok) throw new Error('Failed to delete task');
 }
 
+// S9: the workspace-registry *mutation* surface below (the configured-workspace pointer, and the
+// workspaces add/remove/switch/open/close endpoints) intentionally calls `fetch` directly rather
+// than `ehFetch` — see the `ehFetch` doc comment above. `fetchHealth`/`fetchWorkspaces` are reads
+// and DO go through `ehFetch` (FLUX-1557) so their `workspace`/`active` fields reflect the viewed
+// board.
+
 export async function fetchHealth(): Promise<{ status: string; workspace: string | null; ghAuthAvailable: boolean | null }> {
-  const res = await fetch(`${API_URL}/health`);
+  const res = await ehFetch('/health');
   if (!res.ok) throw new Error('Failed to fetch health');
   return res.json();
 }
@@ -462,10 +581,17 @@ export interface WorkspaceInfo {
   active: boolean;
   available: boolean;
   group?: WorkspaceGroupInfo;
+  /** S10: live right now (the legacy active binding, or brought up via `openBoardLive`) — only
+   *  `open` boards get a tab in the switcher. */
+  open: boolean;
+  /** S10: can be closed via `closeBoardLive` — false for the legacy active binding. */
+  closable: boolean;
+  /** S10: live agent session count scoped to this board, for the tab strip's live-session dot. */
+  liveSessionCount: number;
 }
 
 export async function fetchWorkspaces(): Promise<WorkspaceInfo[]> {
-  const res = await fetch(`${API_URL}/workspaces`);
+  const res = await ehFetch('/workspaces');
   if (!res.ok) return [];
   return res.json();
 }
@@ -527,8 +653,52 @@ export async function switchWorkspace(wsPath: string, force?: boolean): Promise<
   return res.json();
 }
 
+export interface CloseBoardBlockedResult {
+  blocked: true;
+  activeSessions: number;
+  message: string;
+}
+
+/**
+ * S10 (epic FLUX-1230): non-destructive counterpart to `switchWorkspace` — brings a registered-
+ * but-not-live board up (engine `POST /workspaces/open`) without rebinding the single-active root
+ * or touching any other board's sessions. Callers still need `AppContext`'s `setActiveBoard` to
+ * actually flip the client's active-board dimension afterward.
+ */
+export async function openBoardLive(wsPath: string): Promise<WorkspaceInfo[]> {
+  const res = await fetch(`${API_URL}/workspaces/open`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: wsPath }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to open board');
+  }
+  return res.json();
+}
+
+/** S10: evicts an open, registry-backed board (`closable: true`). 409s (like `switchWorkspace`) if
+ *  it still has live sessions unless `force`. */
+export async function closeBoardLive(wsPath: string, force?: boolean): Promise<WorkspaceInfo[] | CloseBoardBlockedResult> {
+  const res = await fetch(`${API_URL}/workspaces/close`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: wsPath, force }),
+  });
+  if (res.status === 409) {
+    const payload = await res.json();
+    return { blocked: true, activeSessions: payload.activeSessions, message: payload.message };
+  }
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to close board');
+  }
+  return res.json();
+}
+
 export async function fetchConfig(): Promise<Config> {
-  const res = await fetch(`${API_URL}/config`);
+  const res = await ehFetch(`/config`);
   if (!res.ok) throw new Error('Failed to fetch config');
   const config: Config = await res.json();
   // FLUX-906 (audit E.1/E.8): the board sentinel must stay in lockstep with the engine. The portal
@@ -546,35 +716,35 @@ export async function fetchConfig(): Promise<Config> {
 }
 
 export async function fetchModuleCatalog(): Promise<ModuleDeclaration[]> {
-  const res = await fetch(`${API_URL}/config/modules/catalog`);
+  const res = await ehFetch(`/config/modules/catalog`);
   if (!res.ok) throw new Error('Failed to fetch module catalog');
   return res.json();
 }
 
 export async function fetchModuleStatuses(): Promise<Record<string, import('./types').ProbeResult>> {
-  const res = await fetch(`${API_URL}/config/modules/status`);
+  const res = await ehFetch(`/config/modules/status`);
   if (!res.ok) throw new Error('Failed to fetch module statuses');
   return res.json();
 }
 
 export async function triggerModuleProbe(id: string): Promise<void> {
-  await fetch(`${API_URL}/config/modules/${encodeURIComponent(id)}/probe`, { method: 'POST' });
+  await ehFetch(`/config/modules/${encodeURIComponent(id)}/probe`, { method: 'POST' });
 }
 
 export async function fetchDocs(): Promise<Doc[]> {
-  const res = await fetch(`${API_URL}/docs`);
+  const res = await ehFetch(`/docs`);
   if (!res.ok) throw new Error('Failed to fetch docs');
   return res.json();
 }
 
 export async function fetchDoc(docPath: string): Promise<Doc> {
-  const res = await fetch(`${API_URL}/docs/${encodeDocPath(docPath)}`);
+  const res = await ehFetch(`/docs/${encodeDocPath(docPath)}`);
   if (!res.ok) throw new Error('Failed to fetch doc');
   return res.json();
 }
 
 export async function createDoc(payload: { path: string; title?: string; body?: string; order?: number }): Promise<Doc> {
-  const res = await fetch(`${API_URL}/docs`, {
+  const res = await ehFetch(`/docs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -584,7 +754,7 @@ export async function createDoc(payload: { path: string; title?: string; body?: 
 }
 
 export async function updateDoc(docPath: string, payload: { title?: string; body?: string; order?: number | null }): Promise<Doc> {
-  const res = await fetch(`${API_URL}/docs/${encodeDocPath(docPath)}`, {
+  const res = await ehFetch(`/docs/${encodeDocPath(docPath)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -594,7 +764,7 @@ export async function updateDoc(docPath: string, payload: { title?: string; body
 }
 
 export async function deleteDoc(docPath: string): Promise<void> {
-  const res = await fetch(`${API_URL}/docs/${encodeDocPath(docPath)}`, {
+  const res = await ehFetch(`/docs/${encodeDocPath(docPath)}`, {
     method: 'DELETE',
   });
   if (!res.ok) throw new Error('Failed to delete doc');
@@ -602,7 +772,7 @@ export async function deleteDoc(docPath: string): Promise<void> {
 
 /** Rename a docs folder, moving every local doc under `from/` to `to/`. */
 export async function renameDocsFolder(from: string, to: string): Promise<void> {
-  const res = await fetch(`${API_URL}/docs/rename-folder`, {
+  const res = await ehFetch(`/docs/rename-folder`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ from, to }),
@@ -629,7 +799,7 @@ export interface SkillStatus {
 }
 
 export async function fetchSkillStatus(framework: string = 'auto'): Promise<SkillStatus> {
-  const res = await fetch(`${API_URL}/skill/status?framework=${framework}`);
+  const res = await ehFetch(`/skill/status?framework=${framework}`);
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Failed to fetch skill status');
@@ -638,7 +808,7 @@ export async function fetchSkillStatus(framework: string = 'auto'): Promise<Skil
 }
 
 export async function installWorkspaceSkill(framework: string = 'auto'): Promise<{ success: boolean; skillInstalledPath: string; instructionsInstalledPath?: string }> {
-  const res = await fetch(`${API_URL}/skill/install`, {
+  const res = await ehFetch(`/skill/install`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ framework }),
@@ -651,7 +821,7 @@ export async function installWorkspaceSkill(framework: string = 'auto'): Promise
 }
 
 export const saveConfig = async (config: Config): Promise<Config> => {
-  const response = await fetch(`${API_URL}/config`, {
+  const response = await ehFetch(`/config`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
@@ -663,13 +833,13 @@ export const saveConfig = async (config: Config): Promise<Config> => {
 export type ReadState = Record<string, Record<string, string[]>>;
 
 export async function fetchReadState(): Promise<ReadState> {
-  const res = await fetch(`${API_URL}/read-state`);
+  const res = await ehFetch(`/read-state`);
   if (!res.ok) return {};
   return res.json();
 }
 
 export async function saveReadState(patch: ReadState): Promise<ReadState> {
-  const res = await fetch(`${API_URL}/read-state`, {
+  const res = await ehFetch(`/read-state`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
@@ -679,7 +849,7 @@ export async function saveReadState(patch: ReadState): Promise<ReadState> {
 }
 
 export const bulkRename = async (payload: { tags?: Record<string, string>, statuses?: Record<string, string>, users?: Record<string, string>, priorities?: Record<string, string> }): Promise<{success: boolean, modifiedCount: number}> => {
-  const response = await fetch(`${API_URL}/bulk-rename`, {
+  const response = await ehFetch(`/bulk-rename`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -694,7 +864,7 @@ export const bulkRename = async (payload: { tags?: Record<string, string>, statu
 export const TASK_CREATED_LOCALLY_EVENT = 'flux:task-created-locally';
 
 export async function createTask(taskData: Partial<Task> & { projectKey: string, author: string }): Promise<Task> {
-  const res = await fetch(`${API_URL}/tasks`, {
+  const res = await ehFetch(`/tasks`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(taskData)
@@ -706,7 +876,7 @@ export async function createTask(taskData: Partial<Task> & { projectKey: string,
 }
 
 export async function fetchTaskCliSession(taskId: string): Promise<CliSessionSummary | null> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session`);
+  const res = await ehFetch(`/tasks/${taskId}/cli-session`);
   if (!res.ok) throw new Error('Failed to fetch CLI session');
   const payload = await res.json();
   return payload.session || null;
@@ -743,10 +913,12 @@ export interface StartSessionOptions {
   attachments?: ChatAttachment[];
   /** FLUX-1235/1456: reclaim an idle parked `waiting-input` session instead of 409-ing. */
   supersedeParked?: boolean;
+  /** FLUX-1383: for phase:'batch-grooming' — the sibling ticket ids to groom in this one session. */
+  batchTicketIds?: string[];
 }
 
 export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOptions): Promise<CliSessionSummary> {
-  const { framework, appendPrompt, personaId, focusComment, skipPermissions = true, effortOverride, model, permissionMode, phase, role, pattern, patternPosition, groupId, groupSeq, groupTotal, groupType, groupVariant, lockedPaths, attachments, supersedeParked } = opts;
+  const { framework, appendPrompt, personaId, focusComment, skipPermissions = true, effortOverride, model, permissionMode, phase, role, pattern, patternPosition, groupId, groupSeq, groupTotal, groupType, groupVariant, lockedPaths, attachments, supersedeParked, batchTicketIds } = opts;
   const body: Record<string, unknown> = { skipPermissions };
   // FLUX-906: omit `framework` when unset so the engine resolves the configured default.
   if (framework) body.framework = framework;
@@ -768,8 +940,9 @@ export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOp
   if (groupVariant) body.groupVariant = groupVariant;
   if (lockedPaths?.length) body.lockedPaths = lockedPaths;
   if (supersedeParked) body.supersedeParked = true;
+  if (batchTicketIds?.length) body.batchTicketIds = batchTicketIds;
 
-  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/start`, {
+  const res = await ehFetch(`/tasks/${taskId}/cli-session/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -785,7 +958,7 @@ export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOp
 /** FLUX-1289: "Re-run review" — the portal's manual entry point for one plan-review pass (the REST
  *  twin of the `start_plan_review` MCP tool, for a human clicking a button instead of an agent). */
 export async function startPlanReview(taskId: string): Promise<{ ok: boolean; message: string }> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/plan-review/start`, { method: 'POST' });
+  const res = await ehFetch(`/tasks/${taskId}/plan-review/start`, { method: 'POST' });
   const payload = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(payload.error || 'Failed to start plan review');
   return payload;
@@ -797,7 +970,7 @@ export async function startPlanReview(taskId: string): Promise<{ ok: boolean; me
  *  automatically re-reviewed. Replaces the old two-step (dispatch session, then a follow-up PUT to
  *  clear the verdict) that could strand a stale changes-requested card when the second call failed. */
 export async function startPlanRevise(taskId: string, opts: { notes?: string; user?: string } = {}): Promise<{ ok: boolean; message: string }> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/plan-review/revise`, {
+  const res = await ehFetch(`/tasks/${taskId}/plan-review/revise`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(opts),
@@ -842,7 +1015,7 @@ export async function registerDeferredCombiner(taskId: string, opts: RegisterCom
   if (opts.groupType) body.groupType = opts.groupType;
   if (opts.groupVariant) body.groupVariant = opts.groupVariant;
 
-  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/register-combiner`, {
+  const res = await ehFetch(`/tasks/${taskId}/cli-session/register-combiner`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -855,7 +1028,7 @@ export async function registerDeferredCombiner(taskId: string, opts: RegisterCom
 
 /** Cancel a previously registered deferred combiner (e.g. when no workers started). */
 export async function unregisterDeferredCombiner(taskId: string, groupId: string): Promise<void> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/unregister-combiner`, {
+  const res = await ehFetch(`/tasks/${taskId}/cli-session/unregister-combiner`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ groupId }),
@@ -888,7 +1061,7 @@ export interface RegisterRelayOptions {
  * The portal only needs to launch step 0 after registration.
  */
 export async function registerRelayChain(taskId: string, opts: RegisterRelayOptions): Promise<void> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/register-relay`, {
+  const res = await ehFetch(`/tasks/${taskId}/cli-session/register-relay`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -908,7 +1081,7 @@ export async function registerRelayChain(taskId: string, opts: RegisterRelayOpti
 
 /** Cancel a pending relay pipeline (e.g. when step 0 fails to launch). */
 export async function unregisterRelayChain(taskId: string, groupId: string): Promise<void> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/unregister-relay`, {
+  const res = await ehFetch(`/tasks/${taskId}/cli-session/unregister-relay`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ groupId }),
@@ -943,7 +1116,7 @@ export interface OrchestrationPersona extends OrchestrationPersonaMeta {
 /** Fetch the selectable orchestration personas (metadata only) from the engine. */
 export async function fetchOrchestrationPersonas(phase?: string): Promise<OrchestrationPersonaMeta[]> {
   const qs = phase ? `?phase=${encodeURIComponent(phase)}` : '';
-  const res = await fetch(`${API_URL}/orchestration/personas${qs}`);
+  const res = await ehFetch(`/orchestration/personas${qs}`);
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Failed to load orchestration personas');
@@ -954,7 +1127,7 @@ export async function fetchOrchestrationPersonas(phase?: string): Promise<Orches
 
 /** Fetch a single custom persona with its prompt for editing (built-ins 404). */
 export async function fetchEditablePersona(id: string): Promise<OrchestrationPersona> {
-  const res = await fetch(`${API_URL}/orchestration/personas/${encodeURIComponent(id)}`);
+  const res = await ehFetch(`/orchestration/personas/${encodeURIComponent(id)}`);
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Failed to load persona');
@@ -975,7 +1148,7 @@ export interface PersonaInput {
 
 /** Create a new custom persona. */
 export async function createPersona(input: PersonaInput): Promise<OrchestrationPersonaMeta> {
-  const res = await fetch(`${API_URL}/orchestration/personas`, {
+  const res = await ehFetch(`/orchestration/personas`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -987,7 +1160,7 @@ export async function createPersona(input: PersonaInput): Promise<OrchestrationP
 
 /** Update an existing custom persona. */
 export async function updatePersona(id: string, input: PersonaInput): Promise<OrchestrationPersonaMeta> {
-  const res = await fetch(`${API_URL}/orchestration/personas/${encodeURIComponent(id)}`, {
+  const res = await ehFetch(`/orchestration/personas/${encodeURIComponent(id)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -999,7 +1172,7 @@ export async function updatePersona(id: string, input: PersonaInput): Promise<Or
 
 /** Delete a custom persona (built-ins refused server-side). */
 export async function deletePersona(id: string): Promise<void> {
-  const res = await fetch(`${API_URL}/orchestration/personas/${encodeURIComponent(id)}`, {
+  const res = await ehFetch(`/orchestration/personas/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
   if (!res.ok) {
@@ -1048,14 +1221,14 @@ export function workflowPhaseMembers(cfg: WorkflowPhaseConfig | undefined): stri
 
 /** List all workflow templates. */
 export async function fetchWorkflows(): Promise<WorkflowTemplate[]> {
-  const res = await fetch(`${API_URL}/workflows`);
+  const res = await ehFetch(`/workflows`);
   if (!res.ok) throw new Error('Failed to load workflows');
   return res.json();
 }
 
 /** Create a workflow template. */
 export async function createWorkflow(input: WorkflowInput): Promise<WorkflowTemplate> {
-  const res = await fetch(`${API_URL}/workflows`, {
+  const res = await ehFetch(`/workflows`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -1067,7 +1240,7 @@ export async function createWorkflow(input: WorkflowInput): Promise<WorkflowTemp
 
 /** Update a workflow template. */
 export async function updateWorkflow(id: string, input: Partial<WorkflowInput>): Promise<WorkflowTemplate> {
-  const res = await fetch(`${API_URL}/workflows/${encodeURIComponent(id)}`, {
+  const res = await ehFetch(`/workflows/${encodeURIComponent(id)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -1079,7 +1252,7 @@ export async function updateWorkflow(id: string, input: Partial<WorkflowInput>):
 
 /** Delete a workflow template. */
 export async function deleteWorkflow(id: string): Promise<void> {
-  const res = await fetch(`${API_URL}/workflows/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const res = await ehFetch(`/workflows/${encodeURIComponent(id)}`, { method: 'DELETE' });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Failed to delete workflow');
@@ -1087,7 +1260,7 @@ export async function deleteWorkflow(id: string): Promise<void> {
 }
 
 export async function fetchTaskCliSessions(taskId: string): Promise<CliSessionSummary[]> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-sessions`);
+  const res = await ehFetch(`/tasks/${taskId}/cli-sessions`);
   if (!res.ok) throw new Error('Failed to fetch CLI sessions');
   const payload = await res.json();
   return payload.sessions || [];
@@ -1138,7 +1311,7 @@ export interface TranscriptMessage {
   /** FLUX-865: on a `dispatch` note, the work phase the dispatched session is running (groom /
    *  implement / review / finalize). Mirrors the engine's `AgentSession.phase` union so the board
    *  chip can say *what kind* of session a row narrates. Absent on older rows / non-phase sessions. */
-  phase?: 'grooming' | 'implementation' | 'review' | 'finalize' | 'fast-path';
+  phase?: 'grooming' | 'implementation' | 'review' | 'finalize' | 'fast-path' | 'batch-grooming';
   /** FLUX-869: on a `dispatch` note, the dispatched session's start time (ISO) — powers the board
    *  chip's run-duration token (live-ticking `running Xm` while working, final `ran Xm` on terminal
    *  rows). Absent on older rows; the chip omits the duration token when missing. */
@@ -1154,10 +1327,19 @@ export interface TranscriptMessage {
   removed?: number;
   /** FLUX-674: images attached to a user turn — rendered inline in the user bubble. */
   attachments?: ChatAttachment[];
+  /** FLUX-656: when this message's turn was carved from another stream (extract op), the source
+   *  stream id (e.g. `__board__`) — present only on FOREIGN turns gathered into a card's view. */
+  sourceStream?: string;
+  /** FLUX-685: the originating turn's stable `seq` within its own stream — the address
+   *  edit-and-resend/retry truncate from (`sendTaskCliInput`'s `truncateFromSeq`). Always set for
+   *  a native turn; a message carrying `sourceStream` (foreign, gathered from another stream) has
+   *  a `seq` relative to THAT stream, not this ticket's own transcript — not a valid truncation
+   *  target here. */
+  seq?: number;
 }
 
 export async function fetchTaskTranscript(taskId: string): Promise<TranscriptMessage[]> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/transcript`);
+  const res = await ehFetch(`/tasks/${taskId}/transcript`);
   if (!res.ok) throw new Error('Failed to fetch transcript');
   const payload = await res.json();
   return payload.messages || [];
@@ -1188,7 +1370,7 @@ export async function fetchBoardActivity(filters: BoardActivityFilters = {}): Pr
   if (filters.to) params.set('to', filters.to);
   if (filters.limit) params.set('limit', String(filters.limit));
   const qs = params.toString();
-  const res = await fetch(`${API_URL}/tasks/${BOARD_CONVERSATION_ID}/activity${qs ? `?${qs}` : ''}`);
+  const res = await ehFetch(`/tasks/${BOARD_CONVERSATION_ID}/activity${qs ? `?${qs}` : ''}`);
   if (!res.ok) throw new Error('Failed to fetch board activity');
   const payload = await res.json();
   return payload.messages || [];
@@ -1196,7 +1378,7 @@ export async function fetchBoardActivity(filters: BoardActivityFilters = {}): Pr
 
 /** Wipe a conversation's durable transcript (backs the orchestrator "reset"). */
 export async function clearTaskTranscript(taskId: string): Promise<void> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/transcript`, { method: 'DELETE' });
+  const res = await ehFetch(`/tasks/${taskId}/transcript`, { method: 'DELETE' });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Failed to clear transcript');
@@ -1213,14 +1395,14 @@ export interface PendingApproval {
 }
 
 export async function fetchPendingApprovals(): Promise<PendingApproval[]> {
-  const res = await fetch(`${API_URL}/board/permission-pending`);
+  const res = await ehFetch(`/board/permission-pending`);
   if (!res.ok) return [];
   const payload = await res.json();
   return payload.pending || [];
 }
 
 export async function resolvePermission(id: string, behavior: 'allow' | 'deny', message?: string): Promise<void> {
-  await fetch(`${API_URL}/board/permission-resolve`, {
+  await ehFetch(`/board/permission-resolve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id, behavior, message }),
@@ -1275,7 +1457,7 @@ export interface BoardRebaseFailure {
 }
 
 export async function fetchPendingBoardRebases(): Promise<PendingBoardRebase[]> {
-  const res = await fetch(`${API_URL}/board/board-rebase`);
+  const res = await ehFetch(`/board/board-rebase`);
   if (!res.ok) return [];
   const payload = await res.json();
   return payload.pending || [];
@@ -1291,7 +1473,7 @@ export async function resolveBoardRebase(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
   try {
-    const res = await fetch(`${API_URL}/board/board-rebase-resolve`, {
+    const res = await ehFetch(`/board/board-rebase-resolve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, approvedItemIds }),
@@ -1319,7 +1501,7 @@ export async function fetchTriageSignals(): Promise<string | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20_000);
   try {
-    const res = await fetch(`${API_URL}/board/triage-signals`, { signal: controller.signal });
+    const res = await ehFetch(`/board/triage-signals`, { signal: controller.signal });
     if (!res.ok) return null;
     const payload = await res.json();
     return typeof payload.fragment === 'string' ? payload.fragment : null;
@@ -1353,7 +1535,7 @@ export interface PendingQuestion {
 }
 
 export async function fetchPendingQuestions(): Promise<PendingQuestion[]> {
-  const res = await fetch(`${API_URL}/board/pending-questions`);
+  const res = await ehFetch(`/board/pending-questions`);
   if (!res.ok) return [];
   const payload = await res.json();
   return payload.pending || [];
@@ -1370,7 +1552,7 @@ export async function answerQuestion(
   // caller keeps the card for a retry. The endpoint also returns HTTP 200 with `{ ok: false }`
   // when there was no parked question to resolve (already answered / timed out), so treat that as
   // a failure too — removing the card on `ok:false` would silently lose the user's selection.
-  const res = await fetch(`${API_URL}/board/ask-question/${id}/answer`, {
+  const res = await ehFetch(`/board/ask-question/${id}/answer`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ answers, notes }),
@@ -1380,7 +1562,7 @@ export async function answerQuestion(
   if (payload.ok === false) throw new Error('Question is no longer pending (already answered or timed out)');
 }
 
-export async function sendTaskCliInput(taskId: string, message: string, user: string, opts?: { model?: string; effort?: string; permissionMode?: string; attachments?: ChatAttachment[] }): Promise<CliSessionSummary> {
+export async function sendTaskCliInput(taskId: string, message: string, user: string, opts?: { model?: string; effort?: string; permissionMode?: string; attachments?: ChatAttachment[]; truncateFromSeq?: number }): Promise<CliSessionSummary> {
   const body: Record<string, unknown> = { message, user };
   if (opts?.model) body.model = opts.model;
   if (opts?.effort) body.effortOverride = opts.effort;
@@ -1390,7 +1572,10 @@ export async function sendTaskCliInput(taskId: string, message: string, user: st
   // composer omits it on untouched sends (permissionTouched), so ordinary follow-ups never wipe it.
   if (opts?.permissionMode !== undefined) body.permissionMode = opts.permissionMode || 'default';
   if (opts?.attachments?.length) body.attachments = opts.attachments;
-  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/input`, {
+  // FLUX-685: edit-and-resend / retry — rewind the durable transcript to this seq before the
+  // engine appends/resends this turn (see `truncateTranscript` in the engine's transcript.ts).
+  if (opts?.truncateFromSeq !== undefined) body.truncateFromSeq = opts.truncateFromSeq;
+  const res = await ehFetch(`/tasks/${taskId}/cli-session/input`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -1404,13 +1589,13 @@ export async function sendTaskCliInput(taskId: string, message: string, user: st
 }
 
 export async function fetchPathInfo(): Promise<{ binaryDir: string | null; isPkg: boolean; platform: string }> {
-  const res = await fetch(`${API_URL}/path-info`);
+  const res = await ehFetch(`/path-info`);
   if (!res.ok) throw new Error('Failed to fetch path info');
   return res.json();
 }
 
 export async function setupPath(mode: 'auto' | 'instructional'): Promise<{ ok: boolean; snippet: string | null; note?: string }> {
-  const res = await fetch(`${API_URL}/path-setup`, {
+  const res = await ehFetch(`/path-setup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mode }),
@@ -1428,7 +1613,7 @@ export async function stopTaskCliSession(
 ): Promise<CliSessionSummary> {
   const body = opts ?? {};
   const hasBody = !!(body.sessionId || body.groupId || body.stopAll);
-  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/stop`, {
+  const res = await ehFetch(`/tasks/${taskId}/cli-session/stop`, {
     method: 'POST',
     headers: hasBody ? { 'Content-Type': 'application/json' } : undefined,
     body: hasBody ? JSON.stringify(body) : undefined,
@@ -1442,13 +1627,13 @@ export async function stopTaskCliSession(
 }
 
 export async function fetchStorageMode(): Promise<{ mode: 'in-repo' | 'orphan' }> {
-  const res = await fetch(`${API_URL}/storage/mode`);
+  const res = await ehFetch(`/storage/mode`);
   if (!res.ok) throw new Error('Failed to fetch storage mode');
   return res.json();
 }
 
 export async function migrateStorage(): Promise<{ ok: boolean; mode: string }> {
-  const res = await fetch(`${API_URL}/storage/migrate`, { method: 'POST' });
+  const res = await ehFetch(`/storage/migrate`, { method: 'POST' });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Migration failed');
@@ -1457,7 +1642,7 @@ export async function migrateStorage(): Promise<{ ok: boolean; mode: string }> {
 }
 
 export async function restoreStorage(): Promise<{ ok: boolean; mode: string }> {
-  const res = await fetch(`${API_URL}/storage/restore`, { method: 'POST' });
+  const res = await ehFetch(`/storage/restore`, { method: 'POST' });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Restore failed');
@@ -1495,7 +1680,7 @@ export interface SyncStatus {
 }
 
 export async function fetchSyncStatus(): Promise<SyncStatus> {
-  const res = await fetch(`${API_URL}/sync-status`);
+  const res = await ehFetch(`/sync-status`);
   if (!res.ok) throw new Error('Failed to fetch sync status');
   return res.json();
 }
@@ -1528,7 +1713,7 @@ export async function triggerSync(): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
   try {
-    await fetch(`${API_URL}/sync-status/sync`, { method: 'POST', signal: controller.signal });
+    await ehFetch(`/sync-status/sync`, { method: 'POST', signal: controller.signal });
   } catch {
     /* engine slow/unreachable — the sync-status stream is the source of truth */
   } finally {
@@ -1548,7 +1733,7 @@ export async function resolveConflicts(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), RESOLVE_CONFLICTS_TIMEOUT_MS);
   try {
-    const res = await fetch(`${API_URL}/storage/resolve-conflicts`, {
+    const res = await ehFetch(`/storage/resolve-conflicts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ resolutions }),
@@ -1590,7 +1775,7 @@ export async function resetToRemote(): Promise<ResetToRemoteResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), RESET_TO_REMOTE_TIMEOUT_MS);
   try {
-    const res = await fetch(`${API_URL}/storage/reset-remote`, { method: 'POST', signal: controller.signal });
+    const res = await ehFetch(`/storage/reset-remote`, { method: 'POST', signal: controller.signal });
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(payload.error || 'Failed to reset to remote');
@@ -1632,29 +1817,29 @@ export interface NotificationsResponse {
 }
 
 export async function fetchNotifications(): Promise<NotificationsResponse> {
-  const res = await fetch(`${API_URL}/notifications`);
+  const res = await ehFetch(`/notifications`);
   if (!res.ok) return { notifications: [], unreadCount: 0 };
   return res.json();
 }
 
 export async function markNotificationRead(id: string): Promise<void> {
-  await fetch(`${API_URL}/notifications/${id}/read`, { method: 'POST' });
+  await ehFetch(`/notifications/${id}/read`, { method: 'POST' });
 }
 
 export async function markNotificationUnread(id: string): Promise<void> {
-  await fetch(`${API_URL}/notifications/${id}/unread`, { method: 'POST' });
+  await ehFetch(`/notifications/${id}/unread`, { method: 'POST' });
 }
 
 export async function markAllNotificationsRead(): Promise<void> {
-  await fetch(`${API_URL}/notifications/read-all`, { method: 'POST' });
+  await ehFetch(`/notifications/read-all`, { method: 'POST' });
 }
 
 export async function dismissNotification(id: string): Promise<void> {
-  await fetch(`${API_URL}/notifications/${id}/dismiss`, { method: 'POST' });
+  await ehFetch(`/notifications/${id}/dismiss`, { method: 'POST' });
 }
 
 export async function executeNotificationAction(id: string, actionId: string): Promise<unknown> {
-  const res = await fetch(`${API_URL}/notifications/${id}/action`, {
+  const res = await ehFetch(`/notifications/${id}/action`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ actionId }),
@@ -1690,13 +1875,13 @@ export interface GlobalSettings {
 }
 
 export async function fetchBootStatus(): Promise<BootStatus> {
-  const res = await fetch(`${API_URL}/settings/boot-status`);
+  const res = await ehFetch(`/settings/boot-status`);
   if (!res.ok) throw new Error('Failed to fetch boot status');
   return res.json();
 }
 
 export async function confirmBoot(migrate?: boolean): Promise<{ ok: boolean; settings: GlobalSettings }> {
-  const res = await fetch(`${API_URL}/settings/confirm-boot`, {
+  const res = await ehFetch(`/settings/confirm-boot`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ migrate }),
@@ -1706,13 +1891,13 @@ export async function confirmBoot(migrate?: boolean): Promise<{ ok: boolean; set
 }
 
 export async function fetchGlobalSettings(): Promise<GlobalSettings> {
-  const res = await fetch(`${API_URL}/settings/global`);
+  const res = await ehFetch(`/settings/global`);
   if (!res.ok) throw new Error('Failed to fetch global settings');
   return res.json();
 }
 
 export async function updateGlobalSettings(updates: Partial<GlobalSettings>): Promise<GlobalSettings> {
-  const res = await fetch(`${API_URL}/settings/global`, {
+  const res = await ehFetch(`/settings/global`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates),
@@ -1731,7 +1916,7 @@ export interface BranchStatus {
 }
 
 export async function fetchBranchStatus(taskId: string): Promise<BranchStatus> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/branch`);
+  const res = await ehFetch(`/tasks/${taskId}/branch`);
   if (!res.ok) throw new Error('Failed to fetch branch status');
   return res.json();
 }
@@ -1743,7 +1928,7 @@ export async function createBranch(
   const body: Record<string, unknown> = {};
   if (opts?.baseBranch) body.baseBranch = opts.baseBranch;
   if (typeof opts?.worktree === 'boolean') body.worktree = opts.worktree;
-  const res = await fetch(`${API_URL}/tasks/${taskId}/branch`, {
+  const res = await ehFetch(`/tasks/${taskId}/branch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -1770,7 +1955,7 @@ export interface PrStatus {
 
 /** Live PR state for a ticket's branch. `null` when no branch/PR or gh unavailable. */
 export async function fetchPrStatus(taskId: string): Promise<PrStatus | null> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/pr`);
+  const res = await ehFetch(`/tasks/${taskId}/pr`);
   if (!res.ok) return null;
   const data = await res.json().catch(() => ({ pr: null }));
   return (data.pr ?? null) as PrStatus | null;
@@ -1778,7 +1963,7 @@ export async function fetchPrStatus(taskId: string): Promise<PrStatus | null> {
 
 /** Raise a PR for the ticket's branch (push + open) without moving to Done. */
 export async function raisePr(taskId: string): Promise<{ url: string; number: number | null }> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/pr`, { method: 'POST' });
+  const res = await ehFetch(`/tasks/${taskId}/pr`, { method: 'POST' });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(err.error || 'Failed to raise PR');
@@ -1837,7 +2022,7 @@ export class MergeForceRequiredError extends Error {
  * Pass `stopParkedSessions` to auto-end waiting-input sessions and proceed (FLUX-636).
  */
 export async function mergePr(taskId: string, opts?: { force?: boolean; stopParkedSessions?: boolean }): Promise<MergePrResult> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/pr/merge`, {
+  const res = await ehFetch(`/tasks/${taskId}/pr/merge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ force: opts?.force === true, stopParkedSessions: opts?.stopParkedSessions === true }),
@@ -1872,7 +2057,7 @@ export async function adoptPr(
   prId: string,
   opts: { mode: 'adopt'; ticketId: string; updatedBy: string } | { mode: 'create'; title: string; body?: string; updatedBy: string },
 ): Promise<AdoptPrResult> {
-  const res = await fetch(`${API_URL}/tasks/${prId}/pr/adopt`, {
+  const res = await ehFetch(`/tasks/${prId}/pr/adopt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(opts),
@@ -1892,7 +2077,7 @@ export interface RetryPrResult { id: string; branch: string | null }
  * the new ticket id (+ branch if created). The merged PR is immutable — this is a fresh cycle.
  */
 export async function retryPr(prId: string, opts: { reason: string; createBranch: boolean; updatedBy: string }): Promise<RetryPrResult> {
-  const res = await fetch(`${API_URL}/tasks/${prId}/retry`, {
+  const res = await ehFetch(`/tasks/${prId}/retry`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ reason: opts.reason, createBranch: opts.createBranch, updatedBy: opts.updatedBy }),
@@ -1906,7 +2091,7 @@ export async function retryPr(prId: string, opts: { reason: string; createBranch
 
 /** Refresh a stale PR branch by merging the default branch into it (FLUX-559). */
 export async function updatePrBranch(taskId: string): Promise<{ updated: boolean; branch: string }> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/pr/update-branch`, { method: 'POST' });
+  const res = await ehFetch(`/tasks/${taskId}/pr/update-branch`, { method: 'POST' });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(err.error || 'Failed to update branch');
@@ -1922,7 +2107,7 @@ export async function updatePrBranch(taskId: string): Promise<{ updated: boolean
 export async function detachWorktree(
   taskId: string,
 ): Promise<{ outcome: 'clean' | 'applied' | 'stashed'; stashRef?: string; message: string }> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/worktree/detach`, { method: 'POST' });
+  const res = await ehFetch(`/tasks/${taskId}/worktree/detach`, { method: 'POST' });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(err.error || 'Failed to detach worktree');
@@ -1938,7 +2123,7 @@ export async function detachWorktree(
 export async function openWorktreeWindow(
   taskId: string,
 ): Promise<{ worktree: string; branch: string; opened: boolean; seedPrompt: string }> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/worktree/open`, {
+  const res = await ehFetch(`/tasks/${taskId}/worktree/open`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
@@ -1963,7 +2148,7 @@ export interface WorktreeInfo {
 
 /** All active task worktrees (FLUX-516) — drives the worktree badges + Join picker. */
 export async function fetchWorktrees(): Promise<WorktreeInfo[]> {
-  const res = await fetch(`${API_URL}/tasks/worktrees`);
+  const res = await ehFetch(`/tasks/worktrees`);
   if (!res.ok) throw new Error('Failed to fetch worktrees');
   const data = await res.json();
   return (data.worktrees ?? []) as WorktreeInfo[];
@@ -1977,7 +2162,7 @@ export interface BranchOption {
 
 /** Local branch names for the "Attach to branch" picker (FLUX-516). */
 export async function fetchBranches(): Promise<BranchOption[]> {
-  const res = await fetch(`${API_URL}/tasks/branches`);
+  const res = await ehFetch(`/tasks/branches`);
   if (!res.ok) throw new Error('Failed to fetch branches');
   const data = await res.json();
   return (data.branches ?? []) as BranchOption[];
@@ -2009,7 +2194,7 @@ export async function joinWorktree(
   taskId: string,
   branch: string,
 ): Promise<{ branch: string; worktree: string; joined: boolean }> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/worktree/join`, {
+  const res = await ehFetch(`/tasks/${taskId}/worktree/join`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ branch }),
@@ -2026,8 +2211,8 @@ export async function fetchTaskDiff(taskId: string, file?: string, mode?: 'commi
   if (file) params.set('file', file);
   if (mode) params.set('mode', mode);
   const qs = params.toString();
-  const url = qs ? `${API_URL}/tasks/${taskId}/diff?${qs}` : `${API_URL}/tasks/${taskId}/diff`;
-  const res = await fetch(url);
+  const path = qs ? `/tasks/${taskId}/diff?${qs}` : `/tasks/${taskId}/diff`;
+  const res = await ehFetch(path);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error('Failed to fetch diff');
   return res.text();
@@ -2072,7 +2257,7 @@ export interface DiffOverview {
 
 /** Cross-worktree change overview: every active worktree + the main tree's loose changes (FLUX-527). */
 export async function fetchDiffOverview(uncommittedOnly = false): Promise<DiffOverview> {
-  const res = await fetch(`${API_URL}/diffs/overview${uncommittedOnly ? '?uncommitted=1' : ''}`);
+  const res = await ehFetch(`/diffs/overview${uncommittedOnly ? '?uncommitted=1' : ''}`);
   if (!res.ok) throw new Error('Failed to fetch diff overview');
   return res.json();
 }
@@ -2080,7 +2265,7 @@ export async function fetchDiffOverview(uncommittedOnly = false): Promise<DiffOv
 /** One file's unified diff in the right root: `ref='main'` or a branch name. Null when nothing to show. */
 export async function fetchDiffFile(ref: string, path: string): Promise<string | null> {
   const params = new URLSearchParams({ ref, path });
-  const res = await fetch(`${API_URL}/diffs/file?${params.toString()}`);
+  const res = await ehFetch(`/diffs/file?${params.toString()}`);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error('Failed to fetch file diff');
   return res.text();
@@ -2098,7 +2283,7 @@ export interface BranchDiffSummary {
 
 /** The ticket branch's changed files (worktree-aware, vs merge-base). Empty when no branch. */
 export async function fetchBranchDiff(taskId: string): Promise<BranchDiffSummary> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/branch-diff`);
+  const res = await ehFetch(`/tasks/${taskId}/branch-diff`);
   if (!res.ok) throw new Error('Failed to fetch branch diff');
   return res.json();
 }
@@ -2137,13 +2322,13 @@ export interface BootstrapImportResult {
 }
 
 export async function scanBootstrap(): Promise<BootstrapScanResult> {
-  const res = await fetch(`${API_URL}/bootstrap/scan`);
+  const res = await ehFetch(`/bootstrap/scan`);
   if (!res.ok) throw new Error('Failed to scan workspace for bootstrap');
   return res.json();
 }
 
 export async function importBootstrap(selections: BootstrapImportSelections): Promise<BootstrapImportResult> {
-  const res = await fetch(`${API_URL}/bootstrap/import`, {
+  const res = await ehFetch(`/bootstrap/import`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(selections),
@@ -2276,7 +2461,7 @@ export interface EnsureRegisteredResult {
 
 /** Current multi-repo group status (mirrors the get_project_group MCP tool). */
 export async function fetchGroupStatus(): Promise<GroupStatus> {
-  const res = await fetch(`${API_URL}/group`);
+  const res = await ehFetch(`/group`);
   if (!res.ok) throw new Error('Failed to fetch group status');
   return res.json();
 }
@@ -2286,7 +2471,7 @@ export async function fetchGroupStatus(): Promise<GroupStatus> {
  * Case-1 member binding can resolve. Runs only on explicit user consent.
  */
 export async function ensureGroupRegistered(): Promise<EnsureRegisteredResult> {
-  const res = await fetch(`${API_URL}/group/ensure-registered`, { method: 'POST' });
+  const res = await ehFetch(`/group/ensure-registered`, { method: 'POST' });
   if (!res.ok) {
     let message = 'Failed to register group workspaces';
     try {
@@ -2299,7 +2484,7 @@ export async function ensureGroupRegistered(): Promise<EnsureRegisteredResult> {
 }
 
 async function groupSetupRequest<T>(path: string, body: GroupSetupRequest): Promise<T> {
-  const res = await fetch(`${API_URL}/group/${path}`, {
+  const res = await ehFetch(`/group/${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -2363,7 +2548,7 @@ export interface MemberRegistration {
 
 /** Discovery source: repos EH already knows (workspace registry). */
 export async function discoverGroupRegistry(): Promise<DiscoveredRepo[]> {
-  const res = await fetch(`${API_URL}/group/discover/registry`);
+  const res = await ehFetch(`/group/discover/registry`);
   if (!res.ok) throw new Error('Failed to read workspace registry');
   const data = await res.json();
   return data.repos as DiscoveredRepo[];
@@ -2371,7 +2556,7 @@ export async function discoverGroupRegistry(): Promise<DiscoveredRepo[]> {
 
 /** Discovery source: scan a folder for immediate-child git repos. */
 export async function discoverGroupFolder(folder: string): Promise<FolderScanResult> {
-  const res = await fetch(`${API_URL}/group/discover/folder`, {
+  const res = await ehFetch(`/group/discover/folder`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ folder }),
@@ -2396,7 +2581,7 @@ export async function createGroupParent(body: {
   name: string;
   members: (GroupMemberInput & { path?: string })[];
 }): Promise<CreateParentResult> {
-  const res = await fetch(`${API_URL}/group/create-parent`, {
+  const res = await ehFetch(`/group/create-parent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -2448,7 +2633,7 @@ export interface DocsPromotionResult {
 
 /** Dry-run: list promotable `.docs/` files with proposed store targets. No mutation. */
 export async function planDocsPromotion(): Promise<DocsPromotionPlan> {
-  const res = await fetch(`${API_URL}/group/promote-docs/plan`, { method: 'POST' });
+  const res = await ehFetch(`/group/promote-docs/plan`, { method: 'POST' });
   if (!res.ok) {
     let message = 'Failed to plan doc promotion';
     try {
@@ -2462,7 +2647,7 @@ export async function planDocsPromotion(): Promise<DocsPromotionPlan> {
 
 /** Apply: move selected docs into the store, remove from main, commit, and fan out. */
 export async function applyDocsPromotion(selections: PromotionCandidate[]): Promise<DocsPromotionResult> {
-  const res = await fetch(`${API_URL}/group/promote-docs/apply`, {
+  const res = await ehFetch(`/group/promote-docs/apply`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ selections }),
@@ -2480,7 +2665,7 @@ export async function applyDocsPromotion(selections: PromotionCandidate[]): Prom
 
 /** Update the docs label for the active group (the prefix shown for group docs in the wiki). Parent workspace only. */
 export async function updateGroupDocsLabel(label: string): Promise<void> {
-  const res = await fetch(`${API_URL}/group/docs-label`, {
+  const res = await ehFetch(`/group/docs-label`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ label }),
@@ -2503,7 +2688,7 @@ import type { OnboardingFeaturesConfig } from './config/onboardingFeatures';
 
 /** GET the live onboarding-features config from the engine (reads the committed file). */
 export async function fetchOnboardingFeatures(): Promise<OnboardingFeaturesConfig> {
-  const res = await fetch(`${API_URL}/dev/onboarding-features`);
+  const res = await ehFetch(`/dev/onboarding-features`);
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Failed to fetch onboarding features');
@@ -2513,7 +2698,7 @@ export async function fetchOnboardingFeatures(): Promise<OnboardingFeaturesConfi
 
 /** PUT the onboarding-features config to the engine (writes the committed file). Returns the saved config. */
 export async function saveOnboardingFeatures(data: OnboardingFeaturesConfig): Promise<OnboardingFeaturesConfig> {
-  const res = await fetch(`${API_URL}/dev/onboarding-features`, {
+  const res = await ehFetch(`/dev/onboarding-features`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -2537,7 +2722,7 @@ import type { OnboardingFlowConfig } from './config/onboardingFlow';
 
 /** GET the live onboarding-flow config from the engine (reads the committed file). */
 export async function fetchOnboardingFlow(): Promise<OnboardingFlowConfig> {
-  const res = await fetch(`${API_URL}/dev/onboarding-flow`);
+  const res = await ehFetch(`/dev/onboarding-flow`);
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Failed to fetch onboarding flow');
@@ -2547,7 +2732,7 @@ export async function fetchOnboardingFlow(): Promise<OnboardingFlowConfig> {
 
 /** PUT the onboarding-flow config to the engine (writes the committed file). Returns the saved config. */
 export async function saveOnboardingFlow(data: OnboardingFlowConfig): Promise<OnboardingFlowConfig> {
-  const res = await fetch(`${API_URL}/dev/onboarding-flow`, {
+  const res = await ehFetch(`/dev/onboarding-flow`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -2578,7 +2763,7 @@ export interface OnboardingValidationIssue {
 
 /** GET the live onboarding-flow DRAFT (engine seeds it from the committed file on first read). */
 export async function fetchOnboardingFlowDraft(): Promise<OnboardingFlowConfig> {
-  const res = await fetch(`${API_URL}/dev/onboarding-flow-draft`);
+  const res = await ehFetch(`/dev/onboarding-flow-draft`);
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Failed to fetch onboarding flow draft');
@@ -2588,7 +2773,7 @@ export async function fetchOnboardingFlowDraft(): Promise<OnboardingFlowConfig> 
 
 /** PUT the onboarding-flow DRAFT (the gitignored Save target — never the committed file). */
 export async function saveOnboardingFlowDraft(data: OnboardingFlowConfig): Promise<OnboardingFlowConfig> {
-  const res = await fetch(`${API_URL}/dev/onboarding-flow-draft`, {
+  const res = await ehFetch(`/dev/onboarding-flow-draft`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -2602,7 +2787,7 @@ export async function saveOnboardingFlowDraft(data: OnboardingFlowConfig): Promi
 
 /** GET the live onboarding-features DRAFT (engine seeds it from the committed file on first read). */
 export async function fetchOnboardingFeaturesDraft(): Promise<OnboardingFeaturesConfig> {
-  const res = await fetch(`${API_URL}/dev/onboarding-features-draft`);
+  const res = await ehFetch(`/dev/onboarding-features-draft`);
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Failed to fetch onboarding features draft');
@@ -2614,7 +2799,7 @@ export async function fetchOnboardingFeaturesDraft(): Promise<OnboardingFeatures
 export async function saveOnboardingFeaturesDraft(
   data: OnboardingFeaturesConfig,
 ): Promise<OnboardingFeaturesConfig> {
-  const res = await fetch(`${API_URL}/dev/onboarding-features-draft`, {
+  const res = await ehFetch(`/dev/onboarding-features-draft`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -2649,7 +2834,7 @@ export interface OnboardingPublishResult {
  * OnboardingPublishError carrying { errors }. On success returns { published, warnings }.
  */
 export async function publishOnboarding(): Promise<OnboardingPublishResult> {
-  const res = await fetch(`${API_URL}/dev/onboarding-publish`, { method: 'POST' });
+  const res = await ehFetch(`/dev/onboarding-publish`, { method: 'POST' });
   if (res.status === 422) {
     const payload = await res.json().catch(() => ({ errors: [] as OnboardingValidationIssue[] }));
     throw new OnboardingPublishError(Array.isArray(payload.errors) ? payload.errors : []);
@@ -2666,7 +2851,7 @@ export async function discardOnboardingDraft(): Promise<{
   flow: OnboardingFlowConfig;
   features: OnboardingFeaturesConfig;
 }> {
-  const res = await fetch(`${API_URL}/dev/onboarding-discard`, { method: 'POST' });
+  const res = await ehFetch(`/dev/onboarding-discard`, { method: 'POST' });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Failed to discard onboarding drafts');
@@ -2698,7 +2883,7 @@ export async function uploadOnboardingAsset(
   id: string,
   payload: { fileName: string; mimeType: string; content: string },
 ): Promise<OnboardingAssetUploadResult> {
-  const res = await fetch(`${API_URL}/dev/onboarding-asset`, {
+  const res = await ehFetch(`/dev/onboarding-asset`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ kind, id, ...payload }),
@@ -2723,7 +2908,7 @@ export async function uploadOnboardingAsset(
 /** Delete the committed onboarding image for a kind+id (idempotent — missing file is success). */
 export async function deleteOnboardingAsset(kind: 'page' | 'feature', id: string): Promise<void> {
   const params = new URLSearchParams({ kind, id });
-  const res = await fetch(`${API_URL}/dev/onboarding-asset?${params.toString()}`, {
+  const res = await ehFetch(`/dev/onboarding-asset?${params.toString()}`, {
     method: 'DELETE',
   });
   if (!res.ok) {
@@ -2739,7 +2924,7 @@ export async function createTerminalSession(cols?: number, rows?: number, title?
   if (cols !== undefined) body.cols = cols;
   if (rows !== undefined) body.rows = rows;
   if (title !== undefined) body.title = title;
-  const res = await fetch(`${API_URL}/terminal/sessions`, {
+  const res = await ehFetch(`/terminal/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -2754,29 +2939,29 @@ export async function createTerminalSession(cols?: number, rows?: number, title?
 }
 
 export async function listTerminalSessions(): Promise<TerminalSessionInfo[]> {
-  const res = await fetch(`${API_URL}/terminal/sessions`);
+  const res = await ehFetch(`/terminal/sessions`);
   if (!res.ok) throw new Error('Failed to list terminal sessions');
   return res.json();
 }
 
 export async function getTerminalSession(id: string): Promise<TerminalSessionInfo & { scrollback: string }> {
-  const res = await fetch(`${API_URL}/terminal/sessions/${encodeURIComponent(id)}`);
+  const res = await ehFetch(`/terminal/sessions/${encodeURIComponent(id)}`);
   if (!res.ok) throw new Error('Failed to get terminal session');
   return res.json();
 }
 
 export async function destroyTerminalSession(id: string): Promise<void> {
-  const res = await fetch(`${API_URL}/terminal/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const res = await ehFetch(`/terminal/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
   if (!res.ok) throw new Error('Failed to destroy terminal session');
 }
 
 export async function killTerminalSession(id: string): Promise<void> {
-  const res = await fetch(`${API_URL}/terminal/sessions/${encodeURIComponent(id)}/kill`, { method: 'POST' });
+  const res = await ehFetch(`/terminal/sessions/${encodeURIComponent(id)}/kill`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to kill terminal session');
 }
 
 export async function renameTerminalSession(id: string, title: string): Promise<void> {
-  const res = await fetch(`${API_URL}/terminal/sessions/${encodeURIComponent(id)}/title`, {
+  const res = await ehFetch(`/terminal/sessions/${encodeURIComponent(id)}/title`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title }),
@@ -2804,7 +2989,7 @@ export async function fetchRecentOperations(opts?: {
   if (opts?.outcome) params.set('outcome', opts.outcome);
   if (opts?.limit) params.set('limit', String(opts.limit));
   const query = params.toString();
-  const res = await fetch(`${API_URL}/operations${query ? `?${query}` : ''}`);
+  const res = await ehFetch(`/operations${query ? `?${query}` : ''}`);
   if (!res.ok) throw new Error('Failed to fetch operations');
   const data = await res.json();
   return (data.operations ?? []) as OperationEvent[];
@@ -2814,13 +2999,13 @@ export async function fetchRecentOperations(opts?: {
 
 export async function fetchFurnaceBatches(status?: BatchStatus): Promise<FurnaceBatch[]> {
   const q = status ? `?status=${encodeURIComponent(status)}` : '';
-  const res = await fetch(`${API_URL}/furnace${q}`);
+  const res = await ehFetch(`/furnace${q}`);
   if (!res.ok) throw new Error('Failed to fetch furnace batches');
   return res.json();
 }
 
 export async function fetchFurnaceSlots(): Promise<SlotInfo> {
-  const res = await fetch(`${API_URL}/furnace/slots`);
+  const res = await ehFetch(`/furnace/slots`);
   if (!res.ok) throw new Error('Failed to fetch worktree slots');
   return res.json();
 }
@@ -2834,7 +3019,7 @@ export interface CreateBatchOptions {
 }
 
 export async function createFurnaceBatch(opts: CreateBatchOptions): Promise<FurnaceBatch> {
-  const res = await fetch(`${API_URL}/furnace`, {
+  const res = await ehFetch(`/furnace`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(opts),
@@ -2876,7 +3061,7 @@ export async function updateFurnaceBatch(
   // this can't be used to smuggle in a new ticket unchecked.
   patch: { title?: string; kind?: BatchKind; branch?: string; burnRate?: number; trigger?: BatchTrigger | null; ticketIds?: string[]; tickets?: BatchTicket[] },
 ): Promise<FurnaceBatch> {
-  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}`, {
+  const res = await ehFetch(`/furnace/${encodeURIComponent(id)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
@@ -2890,7 +3075,7 @@ export async function updateFurnaceBatch(
 
 /** Append a single ticket to an existing batch (draft or burning). */
 export async function appendFurnaceTicket(id: string, ticketId: string): Promise<FurnaceBatch> {
-  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/ticket`, {
+  const res = await ehFetch(`/furnace/${encodeURIComponent(id)}/ticket`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ticketId }),
@@ -2904,7 +3089,7 @@ export async function appendFurnaceTicket(id: string, ticketId: string): Promise
 
 /** Remove a ticket from a batch (disallowed while it is actively burning). */
 export async function removeFurnaceTicket(id: string, ticketId: string): Promise<FurnaceBatch> {
-  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/ticket/${encodeURIComponent(ticketId)}`, { method: 'DELETE' });
+  const res = await ehFetch(`/furnace/${encodeURIComponent(id)}/ticket/${encodeURIComponent(ticketId)}`, { method: 'DELETE' });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err?.error || 'Failed to remove ticket');
@@ -2925,7 +3110,7 @@ export interface IgniteResult {
 }
 
 export async function igniteFurnaceBatch(id: string): Promise<IgniteResult> {
-  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/ignite`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  const res = await ehFetch(`/furnace/${encodeURIComponent(id)}/ignite`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
   if (res.ok) return { ok: true, batch: await res.json() };
   const err = await res.json().catch(() => ({}));
   if (res.status === 409 && err?.error === 'no_slots') return { ok: false, noSlots: true, used: err.used, max: err.max, holders: err.holders };
@@ -2933,7 +3118,7 @@ export async function igniteFurnaceBatch(id: string): Promise<IgniteResult> {
 }
 
 export async function stopFurnaceBatch(id: string, opts?: { reason?: string; hard?: boolean }): Promise<FurnaceBatch> {
-  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/stop`, {
+  const res = await ehFetch(`/furnace/${encodeURIComponent(id)}/stop`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(opts ?? {}),
@@ -2946,13 +3131,13 @@ export async function stopFurnaceBatch(id: string, opts?: { reason?: string; har
 }
 
 export async function deleteFurnaceBatch(id: string): Promise<void> {
-  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const res = await ehFetch(`/furnace/${encodeURIComponent(id)}`, { method: 'DELETE' });
   if (!res.ok) throw new Error('Failed to delete furnace batch');
 }
 
 /** Merge a batch's PR(s): a specific one by `prBranch`, else every approved PR. Marks them `merged`. */
 export async function mergeFurnaceBatch(id: string, prBranch?: string): Promise<{ batch: FurnaceBatch; merged: string[]; failed: Array<{ branch: string; error: string }> }> {
-  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/merge`, {
+  const res = await ehFetch(`/furnace/${encodeURIComponent(id)}/merge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(prBranch ? { prBranch } : {}),
@@ -2968,7 +3153,7 @@ export async function mergeFurnaceBatch(id: string, prBranch?: string): Promise<
 
 /** Retry a single parked/failed ticket → reset to queued with a fresh attempt budget. */
 export async function retryFurnaceTicket(id: string, ticketId: string): Promise<FurnaceBatch> {
-  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/tickets/${encodeURIComponent(ticketId)}/retry`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  const res = await ehFetch(`/furnace/${encodeURIComponent(id)}/tickets/${encodeURIComponent(ticketId)}/retry`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err?.error || 'Failed to retry ticket');
@@ -2978,7 +3163,7 @@ export async function retryFurnaceTicket(id: string, ticketId: string): Promise<
 
 /** Resume a halted/finished batch → burning. `noSlots` when the worktree pool is full (HTTP 409). */
 export async function resumeFurnaceBatch(id: string): Promise<IgniteResult> {
-  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/resume`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  const res = await ehFetch(`/furnace/${encodeURIComponent(id)}/resume`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
   if (res.ok) return { ok: true, batch: await res.json() };
   const err = await res.json().catch(() => ({}));
   if (res.status === 409 && err?.error === 'no_slots') return { ok: false, noSlots: true, used: err.used, max: err.max, holders: err.holders };
@@ -2987,7 +3172,7 @@ export async function resumeFurnaceBatch(id: string): Promise<IgniteResult> {
 
 /** Dismiss the Furnace-raised flag on a ticket ("I've got this") — no re-queue. */
 export async function dismissFurnaceTicket(id: string, ticketId: string): Promise<FurnaceBatch> {
-  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/tickets/${encodeURIComponent(ticketId)}/dismiss`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  const res = await ehFetch(`/furnace/${encodeURIComponent(id)}/tickets/${encodeURIComponent(ticketId)}/dismiss`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err?.error || 'Failed to dismiss ticket flag');
@@ -2997,7 +3182,7 @@ export async function dismissFurnaceTicket(id: string, ticketId: string): Promis
 
 /** Take over a ticket (owner → human): the Furnace yields. */
 export async function takeoverFurnaceTicket(id: string, ticketId: string): Promise<FurnaceBatch> {
-  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/tickets/${encodeURIComponent(ticketId)}/takeover`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  const res = await ehFetch(`/furnace/${encodeURIComponent(id)}/tickets/${encodeURIComponent(ticketId)}/takeover`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err?.error || 'Failed to take over ticket');
@@ -3007,7 +3192,7 @@ export async function takeoverFurnaceTicket(id: string, ticketId: string): Promi
 
 /** Hand a taken-over ticket back to the Furnace (owner → furnace): re-queue with a fresh attempt budget. */
 export async function handBackFurnaceTicket(id: string, ticketId: string): Promise<FurnaceBatch> {
-  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/tickets/${encodeURIComponent(ticketId)}/handback`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  const res = await ehFetch(`/furnace/${encodeURIComponent(id)}/tickets/${encodeURIComponent(ticketId)}/handback`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err?.error || 'Failed to hand ticket back');

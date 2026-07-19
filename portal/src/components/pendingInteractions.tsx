@@ -715,25 +715,43 @@ export function PlanReviewActions({ task, onOpenFull, openLabel, onSetAside, set
   const [composing, setComposing] = useState(false);
   const [notes, setNotes] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // FLUX-1505: decision-collapse — the action row folds into a compact "chosen action" chip the
+  // instant a verb is clicked (not after the POST resolves), and springs back open on failure.
+  const [chosenLabel, setChosenLabel] = useState<string | null>(null);
 
   const changesRequested = task.planReviewState === 'changes-requested';
   const notesRequired = !changesRequested;
 
-  async function run(action: () => Promise<void>) {
+  async function run(action: () => Promise<void>, label: string) {
     if (busy) return;
     setBusy(true);
     setError(null);
+    setChosenLabel(label);
     try {
       await action();
       triggerRefresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Action failed — is the engine running?');
+      setChosenLabel(null); // springs back open
     } finally {
       // Reset on success too — the card usually unmounts/flips via SSE right after, but if the
       // refresh is slow (or the server accepted without a visible state change) the buttons must
-      // not stay wedged behind a permanent spinner.
+      // not stay wedged behind a permanent spinner. FLUX-1505 review fix: clear chosenLabel here
+      // too, not just busy — otherwise that same no-visible-change case leaves the row permanently
+      // collapsed as a done chip with no way back. A component that DOES unmount/flip via SSE
+      // right after never renders this reset, so the normal decision-collapse feel is unaffected.
       setBusy(false);
+      setChosenLabel(null);
     }
+  }
+
+  if (chosenLabel) {
+    return (
+      <div className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-[var(--eh-text-primary)] ${busy ? 'animate-pulse' : ''}`}>
+        {busy ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" /> : <Check className="h-3.5 w-3.5 shrink-0 text-primary" />}
+        <span className="truncate">{chosenLabel}</span>
+      </div>
+    );
   }
 
   if (isPlanGateRevising(task)) {
@@ -806,7 +824,7 @@ export function PlanReviewActions({ task, onOpenFull, openLabel, onSetAside, set
               intent="warn"
               icon={<Undo2 className="h-3.5 w-3.5" />}
               busy={busy}
-              onClick={() => void run(() => revisePlan(task.id, currentUser, notes))}
+              onClick={() => void run(() => revisePlan(task.id, currentUser, notes), 'Sending for re-grooming…')}
               disabled={busy || (notesRequired && !notes.trim())}
               title={notesRequired && !notes.trim() ? 'Add notes — overriding an approved plan needs a stated reason' : undefined}
             >
@@ -833,7 +851,7 @@ export function PlanReviewActions({ task, onOpenFull, openLabel, onSetAside, set
             intent="approve"
             icon={<Play className="h-3.5 w-3.5" />}
             busy={busy}
-            onClick={() => void run(() => approvePlanAndStart(task, config, currentUser, notify))}
+            onClick={() => void run(() => approvePlanAndStart(task, config, currentUser, notify), 'Approving & starting…')}
             disabled={busy}
             title="Approve into Todo, then immediately create a branch/worktree and dispatch an implementation session"
           >
@@ -846,7 +864,7 @@ export function PlanReviewActions({ task, onOpenFull, openLabel, onSetAside, set
             intent="approve"
             icon={<Check className="h-3.5 w-3.5" />}
             busy={busy}
-            onClick={() => void run(() => approvePlanToTodo(task, config, currentUser))}
+            onClick={() => void run(() => approvePlanToTodo(task, config, currentUser), changesRequested ? 'Approving anyway…' : 'Approving…')}
             disabled={busy}
             title={changesRequested ? 'Explicit override — moves to Todo despite the changes-requested verdict' : 'Move to Todo'}
           >
@@ -858,7 +876,7 @@ export function PlanReviewActions({ task, onOpenFull, openLabel, onSetAside, set
             variant="ghost"
             intent="neutral"
             size="icon"
-            onClick={() => void run(async () => { await onSetAside(); })}
+            onClick={() => void run(async () => { await onSetAside(); }, 'Setting aside…')}
             disabled={busy}
             title={setAsideTitle ?? 'Set aside — clears the pending verdict everywhere; the review comment stays in history'}
             className="ml-auto"

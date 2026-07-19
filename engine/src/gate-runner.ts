@@ -32,14 +32,14 @@
 //                     not re-invoking the tool it was triggered from); retryCap exhaustion parks (raises a
 //                     ⛔ gate-parked item via the existing `parkTicketOnBoard` Furnace-park marker).
 
-import { getWorkspace } from './workspace-context.js';
+import { getWorkspace, getDefaultWorkspace, liveWorkspaces, runWithWorkspace, type Workspace } from './workspace-context.js';
 import { log } from './log.js';
 import { buildActivityEntry, buildCommentEntry } from './history.js';
 import { nextColumnAfter, getConfig } from './config.js';
 import { updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { generateNeedsActionNotification, generatePlanAutoApprovedNotification } from './notifications.js';
-import { cliSessionsById, getActiveSessionsForTask } from './session-store.js';
+import { cliSessionsById, getActiveSessionsForTaskInWorkspace } from './session-store.js';
 import { isActiveTicketState, DEFAULT_RETRY_CAP, type BatchTicket, type FurnacePhase } from './models/furnace.js';
 import { planBodyHash, planGateModeForRevise, resolveGateValue, resolvePlanReviewDepth, type PlanReviewDepth } from './models/gate-policy.js';
 import { planLint, formatLintFindings } from './models/plan-lint.js';
@@ -211,6 +211,8 @@ interface GateRunEntry {
   spec: GateRunSpec;
   mode: PlanGateMode;
   ticket: BatchTicket;
+  /** FLUX-1548: the workspace that owns this run — see the module-level registry doc comment below. */
+  ws: Workspace;
   /** FLUX-1303: true while this entry is mid-registration — seeded in the map (so a rapid second
    *  trigger sees `already-running`) but the initial persist + dispatch below haven't finished yet.
    *  `reconcileGateTicket` skips a `starting` entry outright. Without this, the 5s background tick
@@ -223,11 +225,33 @@ interface GateRunEntry {
   starting?: boolean;
 }
 
-const gateRuns = new Map<string, GateRunEntry>();
+/**
+ * FLUX-1548: keyed by workspace root FIRST, ticket id second — mirrors `temper.ts`'s `temperTickets`.
+ * Two boards share the `FLUX-` prefix, so the same ticket id can be running a plan-review gate
+ * independently on each; a bare `Map<ticketId, GateRunEntry>` would let one board's run silently
+ * overwrite/adopt the other's.
+ */
+const gateRuns = new Map<string, Map<string, GateRunEntry>>();
 
-/** True while a gate run is actively driving this ticket (in-memory). */
-export function isGateRunning(ticketId: string): boolean {
-  return gateRuns.has(ticketId);
+function wsKey(ws: Workspace): string {
+  return ws.root ?? '';
+}
+
+function ticketsFor(ws: Workspace): Map<string, GateRunEntry> {
+  let m = gateRuns.get(wsKey(ws));
+  if (!m) { m = new Map(); gateRuns.set(wsKey(ws), m); }
+  return m;
+}
+
+function getEntry(ticketId: string, ws: Workspace = getWorkspace()): GateRunEntry | undefined {
+  return gateRuns.get(wsKey(ws))?.get(ticketId);
+}
+
+/** True while a gate run is actively driving this ticket (in-memory). Scoped to `ws` (default:
+ *  whichever workspace is bound in the calling context) so a same-id ticket on a different board
+ *  never reads as running here. */
+export function isGateRunning(ticketId: string, ws: Workspace = getWorkspace()): boolean {
+  return !!getEntry(ticketId, ws);
 }
 
 const GROOMING_STATUS = 'Grooming';
@@ -285,9 +309,9 @@ const PLAN_GATE_SPEC: GateRunSpec = {
 
 // ── Lifecycle helpers ────────────────────────────────────────────────────────────────────────────
 
-async function persistGateAttempts(spec: GateRunSpec, ticketId: string, attempts: number): Promise<void> {
+async function persistGateAttempts(spec: GateRunSpec, ticketId: string, attempts: number, ws: Workspace): Promise<void> {
   try {
-    await updateTaskWithHistory(ticketId, { extraFields: { [spec.attemptsField]: attempts }, updatedBy: 'Plan Gate' });
+    await updateTaskWithHistory(ticketId, { extraFields: { [spec.attemptsField]: attempts }, updatedBy: 'Plan Gate' }, ws);
   } catch (e: unknown) {
     log.warn(`[gate:${spec.gate}] ${ticketId} persist attempts failed: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -303,17 +327,17 @@ async function persistGateAttempts(spec: GateRunSpec, ticketId: string, attempts
  * with the accurate, plan-specific one the AttentionDock/board lane actually want the human to read.
  * (On the FLUX-1320 eager path the order inverts — this runs while the review session is still alive —
  * and `flagIfParked` defers to an already-set flag instead, so the specific message wins either way.) */
-async function stopGateRun(spec: GateRunSpec, ticketId: string, note?: string, needsActionMessage?: string): Promise<void> {
-  gateRuns.delete(ticketId);
+async function stopGateRun(spec: GateRunSpec, ticketId: string, ws: Workspace, note?: string, needsActionMessage?: string): Promise<void> {
+  gateRuns.get(wsKey(ws))?.delete(ticketId);
   try {
     await updateTaskWithHistory(ticketId, {
       deleteFields: [spec.runningField, spec.attemptsField, 'planGateMode'],
       ...(note ? { entries: [{ type: 'activity', user: 'Plan Gate', comment: note, date: nowIso() }] } : {}),
       ...(needsActionMessage ? { extraFields: { needsAction: needsActionMessage } } : {}),
       updatedBy: 'Plan Gate',
-    });
+    }, ws);
     if (needsActionMessage) {
-      const task = getWorkspace().tasks[ticketId];
+      const task = ws.tasks[ticketId];
       generateNeedsActionNotification(ticketId, task?.title || ticketId, task?.status ?? '', needsActionMessage);
     }
   } catch (e: unknown) {
@@ -321,18 +345,18 @@ async function stopGateRun(spec: GateRunSpec, ticketId: string, note?: string, n
   }
 }
 
-async function parkGate(spec: GateRunSpec, ticketId: string, reason: string): Promise<void> {
+async function parkGate(spec: GateRunSpec, ticketId: string, reason: string, ws: Workspace): Promise<void> {
   await parkTicketOnBoard(ticketId, `${spec.gate} review: ${reason}`, { ...(spec.parkStatus ? { status: spec.parkStatus() } : {}) });
-  await stopGateRun(spec, ticketId);
+  await stopGateRun(spec, ticketId, ws);
   log.info(`[gate:${spec.gate}] ${ticketId} parked: ${reason}`);
 }
 
 /** Clear a stale verdict before dispatching a fresh review (mirrors Temper's `clearReviewState`). */
-async function clearGateVerdict(spec: GateRunSpec, ticketId: string): Promise<void> {
-  const t = getWorkspace().tasks[ticketId];
+async function clearGateVerdict(spec: GateRunSpec, ticketId: string, ws: Workspace): Promise<void> {
+  const t = ws.tasks[ticketId];
   if (t && t[spec.verdictField] != null) {
     try {
-      await updateTaskWithHistory(ticketId, { extraFields: { [spec.verdictField]: null }, updatedBy: 'Plan Gate' });
+      await updateTaskWithHistory(ticketId, { extraFields: { [spec.verdictField]: null }, updatedBy: 'Plan Gate' }, ws);
     } catch (e: unknown) {
       log.warn(`[gate:${spec.gate}] clear verdict on ${ticketId} failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -346,7 +370,7 @@ async function clearGateVerdict(spec: GateRunSpec, ticketId: string): Promise<vo
  *  the plan's independence policy: a reviewer resuming its own session would anchor on its own prior
  *  verdict instead of judging the revision on its own merits. */
 async function spawnGate(entry: GateRunEntry, phase: FurnacePhase | 'grooming', focusComment: string, useResume = false): Promise<void> {
-  const { spec, ticket } = entry;
+  const { spec, ticket, ws } = entry;
   // FLUX-1373: this module ONLY drives the plan gate (see file header) — so every 'review' dispatch
   // here IS the plan gate's own review pass, never Temper's separate code-review pass (a different
   // module, temper.ts, which calls dispatchSession with no taskKey override and so derives the
@@ -354,8 +378,8 @@ async function spawnGate(entry: GateRunEntry, phase: FurnacePhase | 'grooming', 
   // the 'grooming' revise-pass dispatch is left alone (derives `grooming.lead` normally).
   const taskKey = phase === 'review' ? 'planReview' : undefined;
   const { sid } = useResume
-    ? await resumeOrDispatchSession(ticket.ticketId, phase, { focusComment, skipIsolation: spec.skipIsolation, resumeMessage: focusComment })
-    : await dispatchSession(ticket.ticketId, phase, { focusComment, skipIsolation: spec.skipIsolation, ...(taskKey ? { taskKey } : {}) });
+    ? await resumeOrDispatchSession(ticket.ticketId, phase, { focusComment, skipIsolation: spec.skipIsolation, resumeMessage: focusComment, workspaceRoot: ws.root })
+    : await dispatchSession(ticket.ticketId, phase, { focusComment, skipIsolation: spec.skipIsolation, workspaceRoot: ws.root, ...(taskKey ? { taskKey } : {}) });
   if (sid) {
     ticket.currentSessionId = sid;
     if (!ticket.sessionIds.includes(sid)) ticket.sessionIds.push(sid);
@@ -365,14 +389,14 @@ async function spawnGate(entry: GateRunEntry, phase: FurnacePhase | 'grooming', 
   }
   ticket.spawnFailures = (ticket.spawnFailures || 0) + 1;
   if (ticket.spawnFailures >= MAX_GATE_SPAWN_ATTEMPTS) {
-    await parkGate(spec, ticket.ticketId, `could not start a ${phase} session after ${MAX_GATE_SPAWN_ATTEMPTS} attempts (the environment may be broken)`);
+    await parkGate(spec, ticket.ticketId, `could not start a ${phase} session after ${MAX_GATE_SPAWN_ATTEMPTS} attempts (the environment may be broken)`, ws);
   }
 }
 
 // ── Executor ─────────────────────────────────────────────────────────────────────────────────────
 
-async function advanceGateTicket(ticketId: string, action: TicketAction): Promise<void> {
-  const entry = gateRuns.get(ticketId);
+async function advanceGateTicket(ticketId: string, ws: Workspace, action: TicketAction): Promise<void> {
+  const entry = getEntry(ticketId, ws);
   if (!entry) return;
   const { spec, ticket, mode } = entry;
   switch (action.type) {
@@ -384,7 +408,7 @@ async function advanceGateTicket(ticketId: string, action: TicketAction): Promis
       delete ticket.currentSessionId;
       delete ticket.sessionStartedAt;
       ticket.reviewNudgeSent = false;
-      await clearGateVerdict(spec, ticketId);
+      await clearGateVerdict(spec, ticketId, ws);
       await spawnGate(entry, 'review', await spec.reviewFocus(ticketId));
       break;
     }
@@ -416,7 +440,7 @@ async function advanceGateTicket(ticketId: string, action: TicketAction): Promis
       // `loop-auto` (`auto`) both dispatch the revise pass and re-review automatically.
       if (mode === 'one-pass') {
         await stopGateRun(
-          spec, ticketId,
+          spec, ticketId, ws,
           `${spec.gate} gate (one pass): changes requested — flagged for you; Auto→You never auto-revises.`,
           `Plan reviewed — verdict: changes requested. Open the plan to read the feedback and confirm your next step.`,
         );
@@ -426,7 +450,7 @@ async function advanceGateTicket(ticketId: string, action: TicketAction): Promis
       ticket.attempts = action.attempt;
       delete ticket.currentSessionId;
       delete ticket.sessionStartedAt;
-      await persistGateAttempts(spec, ticketId, action.attempt);
+      await persistGateAttempts(spec, ticketId, action.attempt, ws);
       await spawnGate(entry, spec.revisePhase, spec.reviseFocus, true);
       break;
     }
@@ -449,21 +473,21 @@ async function advanceGateTicket(ticketId: string, action: TicketAction): Promis
       // there by looping first, so the human is confirming a plan the automation already iterated on.
       if (mode === 'loop-auto') {
         await spec.onApproved(ticketId);
-        await stopGateRun(spec, ticketId);
+        await stopGateRun(spec, ticketId, ws);
         break;
       }
       const note = mode === 'one-pass'
         ? `${spec.gate} gate (one pass): approved — flagged for you to confirm; Auto→You never loops.`
         : `${spec.gate} gate: approved after looping — flagged for you to confirm the move to Todo.`;
       await stopGateRun(
-        spec, ticketId, note,
+        spec, ticketId, ws, note,
         `Plan reviewed — verdict: approved. Confirm to move this ticket to Todo.`,
       );
       break;
     }
 
     case 'park': {
-      await parkGate(spec, ticketId, action.reason);
+      await parkGate(spec, ticketId, action.reason, ws);
       break;
     }
 
@@ -473,7 +497,7 @@ async function advanceGateTicket(ticketId: string, action: TicketAction): Promis
       // the review session on purpose). Stop tracking quietly instead of leaving the run wedged: with
       // no case here it fell through silently, so `gateRuns` never cleared and the ticket got
       // silently re-evaluated (still yielding, still no-op) on every subsequent tick forever.
-      await stopGateRun(spec, ticketId, `${spec.gate} gate yielded — ${action.reason}.`);
+      await stopGateRun(spec, ticketId, ws, `${spec.gate} gate yielded — ${action.reason}.`);
       log.info(`[gate:${spec.gate}] ${ticketId} yielded — ${action.reason}.`);
       break;
     }
@@ -497,15 +521,15 @@ async function advanceGateTicket(ticketId: string, action: TicketAction): Promis
 
 // ── Reconcile ────────────────────────────────────────────────────────────────────────────────────
 
-async function reconcileGateTicket(ticketId: string): Promise<void> {
-  const entry = gateRuns.get(ticketId);
+async function reconcileGateTicket(ticketId: string, ws: Workspace): Promise<void> {
+  const entry = getEntry(ticketId, ws);
   if (!entry) return;
   if (entry.starting) return; // mid-registration — see `GateRunEntry.starting`
   const { spec, ticket } = entry;
 
   // FLUX-1263: preserves Temper's exact "yield to an active Furnace batch" precedence (AC #7 there).
   if (isTicketInActiveFurnaceBatch(ticketId)) {
-    await stopGateRun(spec, ticketId, `${spec.gate} gate yielded — this ticket is now driven by an active Furnace batch.`);
+    await stopGateRun(spec, ticketId, ws, `${spec.gate} gate yielded — this ticket is now driven by an active Furnace batch.`);
     log.info(`[gate:${spec.gate}] ${ticketId} now owned by an active Furnace batch — yielding.`);
     return;
   }
@@ -513,24 +537,26 @@ async function reconcileGateTicket(ticketId: string): Promise<void> {
   // or an agent moved the ticket out of Grooming while a run was in flight, stop the run instead of
   // driving a re-review against a Todo/In-Progress ticket (whose reviewer would then yank it back
   // to Grooming via its verdict-recording change_status, or park it there via parkStatus).
-  const currentTask = getWorkspace().tasks[ticketId];
+  const currentTask = ws.tasks[ticketId];
   if (currentTask && currentTask.status !== GROOMING_STATUS) {
-    await stopGateRun(spec, ticketId, `${spec.gate} gate stopped — the ticket left ${GROOMING_STATUS} (now ${currentTask.status}) while a run was in flight.`);
+    await stopGateRun(spec, ticketId, ws, `${spec.gate} gate stopped — the ticket left ${GROOMING_STATUS} (now ${currentTask.status}) while a run was in flight.`);
     log.info(`[gate:${spec.gate}] ${ticketId} left ${GROOMING_STATUS} mid-run — stopping.`);
     return;
   }
   if (!isActiveTicketState(ticket.state)) return;
 
   const currentPhase: FurnacePhase | 'grooming' = ticket.state === 'reviewing' ? 'review' : spec.revisePhase;
+  // FLUX-1548: narrowed to THIS workspace so a same-id ticket on a different board can never be
+  // adopted as this run's session.
   let sess = ticket.currentSessionId ? cliSessionsById.get(ticket.currentSessionId) : undefined;
-  if (!sess) sess = pickSessionForPhase(getActiveSessionsForTask(ticketId), currentPhase);
+  if (!sess) sess = pickSessionForPhase(getActiveSessionsForTaskInWorkspace(ticketId, ws.root, getDefaultWorkspace().root), currentPhase);
   if (sess && sess.id !== ticket.currentSessionId) {
     ticket.currentSessionId = sess.id;
     if (!ticket.sessionIds.includes(sess.id)) ticket.sessionIds.push(sess.id);
     if (!ticket.sessionStartedAt) ticket.sessionStartedAt = nowIso();
   }
 
-  const task = getWorkspace().tasks[ticketId];
+  const task = ws.tasks[ticketId];
   const verdict = (task?.[spec.verdictField] ?? null) as 'approved' | 'changes-requested' | null;
   const sessionOutcome = findSessionOutcome(task, sess?.id ?? ticket.currentSessionId);
   const action = decideTicketAction({
@@ -544,7 +570,7 @@ async function reconcileGateTicket(ticketId: string): Promise<void> {
     retryCap: DEFAULT_RETRY_CAP,
     reviewVerdictMarkerSeen: lastCommentMatchesVerdictMarker(task?.history, ticket.sessionStartedAt),
   });
-  await advanceGateTicket(ticketId, action);
+  await advanceGateTicket(ticketId, ws, action);
 }
 
 // ── Trigger (manual entry point + the `change_status` guard's redirect) ────────────────────────────
@@ -565,14 +591,15 @@ async function reconcileGateTicket(ticketId: string): Promise<void> {
 function planGateStartRefusal(
   ticketId: string,
   kind: 'review' | 'revise',
+  ws: Workspace,
 ): { ok: false; message: string; reason: 'not-found' | 'wrong-status' | 'already-running' | 'furnace-owned' } | null {
-  const task = getWorkspace().tasks[ticketId];
+  const task = ws.tasks[ticketId];
   if (!task) return { ok: false, message: `Ticket ${ticketId} not found.`, reason: 'not-found' };
   if (task.status !== GROOMING_STATUS) {
     const verb = kind === 'review' ? 'the plan-review gate only runs' : 'a plan revise only runs';
     return { ok: false, message: `${ticketId} is not in ${GROOMING_STATUS} — ${verb} on a Grooming ticket.`, reason: 'wrong-status' };
   }
-  if (gateRuns.has(ticketId)) {
+  if (isGateRunning(ticketId, ws)) {
     const flight = kind === 'review' ? 'a plan-review pass' : 'a plan-gate run';
     return { ok: false, message: `${ticketId} already has ${flight} in flight.`, reason: 'already-running' };
   }
@@ -586,7 +613,10 @@ export async function startPlanGateNow(
   ticketId: string,
   opts: { mode: PlanGateMode },
 ): Promise<{ ok: boolean; message: string; reason?: 'not-found' | 'wrong-status' | 'already-running' | 'furnace-owned' }> {
-  const refusal = planGateStartRefusal(ticketId, 'review');
+  // FLUX-1548: capture the ALS-bound workspace once, same idiom as `maybeStartTemper` — pins this run
+  // (registry entry, every write, every dispatch) to the board this call targeted.
+  const ws = getWorkspace();
+  const refusal = planGateStartRefusal(ticketId, 'review', ws);
   if (refusal) return refusal;
 
   const spec = PLAN_GATE_SPEC;
@@ -595,8 +625,8 @@ export async function startPlanGateNow(
   // mirrors `maybeStartTemper`'s exact race-closing idiom. `starting: true` also blocks the
   // background tick from redriving this ticket while the persist + initial dispatch below are still
   // in flight (FLUX-1303 — see `GateRunEntry.starting`).
-  const entry: GateRunEntry = { spec, mode, ticket: { ticketId, order: 0, state: 'reviewing', attempts: 0, sessionIds: [] }, starting: true };
-  gateRuns.set(ticketId, entry);
+  const entry: GateRunEntry = { spec, mode, ws, ticket: { ticketId, order: 0, state: 'reviewing', attempts: 0, sessionIds: [] }, starting: true };
+  ticketsFor(ws).set(ticketId, entry);
   try {
     try {
       await updateTaskWithHistory(ticketId, {
@@ -612,15 +642,15 @@ export async function startPlanGateNow(
           date: nowIso(),
         }],
         updatedBy: 'Plan Gate',
-      });
+      }, ws);
     } catch (e: unknown) {
       log.warn(`[gate:plan] ${ticketId} start persist failed: ${e instanceof Error ? e.message : String(e)}`);
     }
-    await advanceGateTicket(ticketId, { type: 'review' });
+    await runWithWorkspace(ws, () => advanceGateTicket(ticketId, ws, { type: 'review' }));
   } finally {
     entry.starting = false;
   }
-  const dispatched = !!gateRuns.get(ticketId)?.ticket.currentSessionId;
+  const dispatched = !!getEntry(ticketId, ws)?.ticket.currentSessionId;
   return {
     ok: true,
     message: dispatched
@@ -661,9 +691,10 @@ export async function startPlanReviseNow(
   ticketId: string,
   opts: { notes?: string; user?: string } = {},
 ): Promise<{ ok: boolean; message: string; reason?: 'not-found' | 'wrong-status' | 'already-running' | 'furnace-owned' | 'notes-required' | 'persist-failed' }> {
-  const refusal = planGateStartRefusal(ticketId, 'revise');
+  const ws = getWorkspace();
+  const refusal = planGateStartRefusal(ticketId, 'revise', ws);
   if (refusal) return refusal;
-  const task = getWorkspace().tasks[ticketId]!;
+  const task = ws.tasks[ticketId]!;
 
   const spec = PLAN_GATE_SPEC;
   const gateValue = resolveGateValue(getConfig().gatePolicy, task.gatePolicyOverride, 'plan');
@@ -684,8 +715,8 @@ export async function startPlanReviseNow(
   // notes-FREE `redrive` while the notes-bearing dispatch below is still in flight (FLUX-1303 — see
   // `GateRunEntry.starting`; unlike the review-pass redrive, a raced revise redrive uses a genuinely
   // DIFFERENT — notes-less — focus, so losing that race silently drops the user's notes).
-  const entry: GateRunEntry = { spec, mode, ticket: { ticketId, order: 0, state: 'reimplementing', attempts: 1, sessionIds: [] }, starting: true };
-  gateRuns.set(ticketId, entry);
+  const entry: GateRunEntry = { spec, mode, ws, ticket: { ticketId, order: 0, state: 'reimplementing', attempts: 1, sessionIds: [] }, starting: true };
+  ticketsFor(ws).set(ticketId, entry);
   try {
     await updateTaskWithHistory(ticketId, {
       extraFields: {
@@ -713,13 +744,13 @@ export async function startPlanReviseNow(
         ),
       ],
       updatedBy: user,
-    });
+    }, ws);
   } catch (e: unknown) {
     // ABORT — dispatching anyway would run a revise session against a ticket whose durable record
     // (notes comment, verdict, running flag) never landed: the board would show live Approve
     // buttons while an agent rewrites the plan, and the user's notes would exist only inside the
     // ephemeral session focus. The caller keeps the composer content and can simply retry.
-    gateRuns.delete(ticketId);
+    gateRuns.get(wsKey(ws))?.delete(ticketId);
     const msg = e instanceof Error ? e.message : String(e);
     log.warn(`[gate:plan] ${ticketId} revise persist failed — aborted, nothing dispatched: ${msg}`);
     return { ok: false, message: `Could not record the re-groom on ${ticketId} (${msg}) — nothing was dispatched; try again.`, reason: 'persist-failed' };
@@ -732,11 +763,11 @@ export async function startPlanReviseNow(
     const focus = notes
       ? `${spec.reviseFocus}\n\nThe user attached these notes for this revision — address every point in them too (verbatim, from the human):\n${notes}`
       : spec.reviseFocus;
-    await spawnGate(entry, spec.revisePhase, focus, true);
+    await runWithWorkspace(ws, () => spawnGate(entry, spec.revisePhase, focus, true));
   } finally {
     entry.starting = false;
   }
-  const dispatched = !!gateRuns.get(ticketId)?.ticket.currentSessionId;
+  const dispatched = !!getEntry(ticketId, ws)?.ticket.currentSessionId;
   return {
     ok: true,
     message: dispatched
@@ -762,7 +793,8 @@ export async function startPlanReviseNow(
  * double-move).
  */
 export async function resolvePlanVerdictNow(ticketId: string, verdict: 'approved' | 'changes-requested'): Promise<void> {
-  const entry = gateRuns.get(ticketId);
+  const ws = getWorkspace();
+  const entry = getEntry(ticketId, ws);
   if (!entry || entry.starting) return;
   // A verdict concludes a REVIEW pass only — one recorded mid-revise (against the revise focus's
   // explicit "do not call change_status") must not stop the loop before the re-review ran.
@@ -771,12 +803,12 @@ export async function resolvePlanVerdictNow(ticketId: string, verdict: 'approved
   // active Furnace batch, or one that already left Grooming, is stopped by the tick with its own
   // dedicated note — leave both to it.
   if (isTicketInActiveFurnaceBatch(ticketId)) return;
-  if (getWorkspace().tasks[ticketId]?.status !== GROOMING_STATUS) return;
+  if (ws.tasks[ticketId]?.status !== GROOMING_STATUS) return;
 
   if (verdict === 'approved') {
-    await advanceGateTicket(ticketId, { type: 'pr-open' });
+    await advanceGateTicket(ticketId, ws, { type: 'pr-open' });
   } else if (entry.mode === 'one-pass') {
-    await advanceGateTicket(ticketId, { type: 'reimplement', attempt: entry.ticket.attempts + 1 });
+    await advanceGateTicket(ticketId, ws, { type: 'reimplement', attempt: entry.ticket.attempts + 1 });
   }
 }
 
@@ -784,16 +816,24 @@ export async function resolvePlanVerdictNow(ticketId: string, verdict: 'approved
 
 let ticking = false;
 
-/** Advance every actively-running gate ticket by one tick. Never overlaps itself. */
+/**
+ * Advance every actively-running gate ticket, on every live board, by one tick. Never overlaps itself.
+ * FLUX-1548: mirrors `temperTick` — each entry's own recorded `ws` drives which board it reconciles
+ * against, and every pass runs inside a `runWithWorkspace(ws, …)` binding so ambient `getWorkspace()`
+ * reads downstream (`parkTicketOnBoard`, `spec.onApproved`, the self-dispatch header fallback) resolve
+ * to that same board.
+ */
 export async function gateRunnerTick(): Promise<void> {
   if (ticking) return;
   ticking = true;
   try {
-    for (const ticketId of [...gateRuns.keys()]) {
-      try {
-        await reconcileGateTicket(ticketId);
-      } catch (e: unknown) {
-        log.error(`[gate] tick for ${ticketId} failed: ${e instanceof Error ? e.message : String(e)}`);
+    for (const [, ticketsByRoot] of [...gateRuns.entries()]) {
+      for (const [ticketId, entry] of [...ticketsByRoot.entries()]) {
+        try {
+          await runWithWorkspace(entry.ws, () => reconcileGateTicket(ticketId, entry.ws));
+        } catch (e: unknown) {
+          log.error(`[gate] tick for ${ticketId} failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
     }
   } finally {
@@ -801,25 +841,30 @@ export async function gateRunnerTick(): Promise<void> {
   }
 }
 
-/** Restore the in-memory registry from durable frontmatter after an engine restart (mirrors `rehydrateTemper`). */
+/**
+ * Restore the in-memory registry from durable frontmatter after an engine restart (mirrors
+ * `rehydrateTemper`). FLUX-1548: scans EVERY live workspace, not just the active one.
+ */
 export function rehydrateGateRunner(): void {
   const spec = PLAN_GATE_SPEC;
-  for (const id of Object.keys(getWorkspace().tasks)) {
-    const t = getWorkspace().tasks[id];
-    if (t?.[spec.runningField] === true && !gateRuns.has(id)) {
-      const attempts = typeof t[spec.attemptsField] === 'number' ? t[spec.attemptsField] : 0;
-      // FLUX-1288: a ticket already mid-loop when this upgrade deploys still carries the legacy boolean
-      // frontmatter field — map it to the mode with equivalent semantics rather than losing it.
-      const mode: PlanGateMode = PLAN_GATE_MODES.includes(t.planGateMode as PlanGateMode)
-        ? (t.planGateMode as PlanGateMode)
-        : t.planGateOneShot === true ? 'one-pass' : 'loop-auto';
-      // FLUX-1303: restore the phase from any surviving session rather than assuming 'reviewing' —
-      // a run rehydrated mid-REVISE as 'reviewing' would redrive a plan-review session concurrently
-      // with the still-running grooming revise (two agents writing the same ticket at once).
-      const liveRevise = pickSessionForPhase(getActiveSessionsForTask(id), spec.revisePhase);
-      const state = liveRevise ? ('reimplementing' as const) : ('reviewing' as const);
-      gateRuns.set(id, { spec, mode, ticket: { ticketId: id, order: 0, state, attempts, sessionIds: [] } });
-      log.info(`[gate:${spec.gate}] rehydrated ${id} (attempts ${attempts}, mode ${mode}, state ${state}) — will re-drive on the next tick.`);
+  for (const ws of liveWorkspaces()) {
+    for (const id of Object.keys(ws.tasks)) {
+      const t = ws.tasks[id];
+      if (t?.[spec.runningField] === true && !isGateRunning(id, ws)) {
+        const attempts = typeof t[spec.attemptsField] === 'number' ? t[spec.attemptsField] : 0;
+        // FLUX-1288: a ticket already mid-loop when this upgrade deploys still carries the legacy boolean
+        // frontmatter field — map it to the mode with equivalent semantics rather than losing it.
+        const mode: PlanGateMode = PLAN_GATE_MODES.includes(t.planGateMode as PlanGateMode)
+          ? (t.planGateMode as PlanGateMode)
+          : t.planGateOneShot === true ? 'one-pass' : 'loop-auto';
+        // FLUX-1303: restore the phase from any surviving session rather than assuming 'reviewing' —
+        // a run rehydrated mid-REVISE as 'reviewing' would redrive a plan-review session concurrently
+        // with the still-running grooming revise (two agents writing the same ticket at once).
+        const liveRevise = pickSessionForPhase(getActiveSessionsForTaskInWorkspace(id, ws.root, getDefaultWorkspace().root), spec.revisePhase);
+        const state = liveRevise ? ('reimplementing' as const) : ('reviewing' as const);
+        ticketsFor(ws).set(id, { spec, mode, ws, ticket: { ticketId: id, order: 0, state, attempts, sessionIds: [] } });
+        log.info(`[gate:${spec.gate}] rehydrated ${id} (attempts ${attempts}, mode ${mode}, state ${state}, workspace ${ws.root}) — will re-drive on the next tick.`);
+      }
     }
   }
 }

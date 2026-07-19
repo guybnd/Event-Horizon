@@ -1,13 +1,12 @@
 // PR-card operations (FLUX-349 split): routes that act on `kind:'pr'` deck tickets —
 // "Continue development" (adopt/create a member ticket) and "Retry" (fresh cycle on a
 // merged/closed PR). Branch-scoped PR lifecycle routes live in pr.ts.
-import { getWorkspace } from '../../workspace-context.js';
 import express from 'express';
 import { updateTaskWithHistory, upsertManagedTicket, createTask } from '../../task-store.js';
 import { createTicketBranch } from '../../branch-manager.js';
 import { broadcastEvent } from '../../events.js';
 import { selectMembers } from '../../pr-tickets.js';
-import { errorMessage } from './helpers.js';
+import { errorMessage, reqWorkspace } from './helpers.js';
 import type { TaskRecord } from './helpers.js';
 
 const router = express.Router();
@@ -21,7 +20,7 @@ const router = express.Router();
 // we recompute + stamp the PR ticket's members immediately rather than wait for the 90s poll.
 router.post('/:id/pr/adopt', async (req, res) => {
   const { id } = req.params;
-  const pr = getWorkspace().tasks[id] as TaskRecord;
+  const pr = reqWorkspace(req).tasks[id] as TaskRecord;
   if (!pr) return res.status(404).json({ error: `Ticket ${id} not found` });
   if (pr.kind !== 'pr') return res.status(409).json({ error: 'Adopt/create is only available for PR tickets.' });
   const branch: string | undefined = pr.branch ?? undefined;
@@ -34,7 +33,7 @@ router.post('/:id/pr/adopt', async (req, res) => {
     let memberId: string;
     if (mode === 'adopt') {
       const targetId: string = (req.body?.ticketId ?? '').toString().trim();
-      const target = getWorkspace().tasks[targetId] as TaskRecord;
+      const target = reqWorkspace(req).tasks[targetId] as TaskRecord;
       if (!target) return res.status(404).json({ error: `Ticket ${targetId} not found` });
       if (target.kind === 'pr') return res.status(409).json({ error: 'Cannot adopt a PR ticket into another PR.' });
       // Don't silently re-point a ticket that's already bound to a DIFFERENT branch (FLUX-569
@@ -51,7 +50,7 @@ router.post('/:id/pr/adopt', async (req, res) => {
         entries: [{ type: 'comment', user: author, comment: `Adopted into PR #${pr.prNumber} — bound to branch \`${branch}\` to continue its work.`, date: new Date().toISOString() }],
         nextStatus: 'In Progress',
         extraFields: { branch, ...(target.implementationLink ? {} : { implementationLink: pr.implementationLink }) },
-      });
+      }, req.workspace);
       memberId = targetId;
     } else if (mode === 'create') {
       const title: string = (req.body?.title ?? '').toString().trim();
@@ -63,16 +62,16 @@ router.post('/:id/pr/adopt', async (req, res) => {
         body: reqBody || `Continues the work in PR #${pr.prNumber}${pr.implementationLink ? ` ([link](${pr.implementationLink}))` : ''}.`,
         author,
         links: [{ type: 'continues', target: id, label: `PR #${pr.prNumber}` }],
-      });
-      await updateTaskWithHistory(newId, { updatedBy: 'Agent', extraFields: { branch, implementationLink: pr.implementationLink } });
+      }, req.workspace);
+      await updateTaskWithHistory(newId, { updatedBy: 'Agent', extraFields: { branch, implementationLink: pr.implementationLink } }, req.workspace);
       memberId = newId;
     } else {
       return res.status(400).json({ error: `Unknown mode "${mode}" — expected "adopt" or "create".` });
     }
 
     // Fold the new member into the PR deck immediately (don't wait for the 90s sync poll).
-    const members = selectMembers(Object.values(getWorkspace().tasks), branch);
-    await upsertManagedTicket(id, { members }).catch(() => {});
+    const members = selectMembers(Object.values(reqWorkspace(req).tasks), branch);
+    await upsertManagedTicket(id, { members }, '', req.workspace).catch(() => {});
     broadcastEvent('taskUpdated', { id });
     broadcastEvent('taskUpdated', { id: memberId });
     res.json({ memberId, members });
@@ -87,7 +86,7 @@ router.post('/:id/pr/adopt', async (req, res) => {
 // 'retries' link is the first instance of the typed-relationships model (epic FLUX-596).
 router.post('/:id/retry', async (req, res) => {
   const { id } = req.params;
-  const pr = getWorkspace().tasks[id] as TaskRecord;
+  const pr = reqWorkspace(req).tasks[id] as TaskRecord;
   if (!pr) return res.status(404).json({ error: `Ticket ${id} not found` });
   if (pr.kind !== 'pr') return res.status(409).json({ error: 'Retry is only available for PR tickets.' });
 
@@ -100,7 +99,7 @@ router.post('/:id/retry', async (req, res) => {
   const prUrl: string = pr.implementationLink || '';
   const baseTitle = (pr.title || `PR #${prNum}`).replace(/^PR #\d+:\s*/, ''); // drop "PR #n: " prefix
   const members: string[] = Array.isArray(pr.members) ? pr.members : [];
-  const memberTask = members.map((m) => getWorkspace().tasks[m]).find(Boolean) as TaskRecord | undefined;
+  const memberTask = members.map((m) => reqWorkspace(req).tasks[m]).find(Boolean) as TaskRecord | undefined;
   const tags: string[] = Array.isArray(memberTask?.tags) ? memberTask.tags : [];
 
   const stateWord = pr.prState === 'MERGED' ? 'merged' : pr.prState === 'CLOSED' ? 'was closed without merging' : 'is resolved';
@@ -127,19 +126,19 @@ router.post('/:id/retry', async (req, res) => {
       body,
       author,
       links: [{ type: 'retries', target: id, label: `PR #${prNum}` }],
-    });
+    }, req.workspace);
 
     let branch: string | undefined;
     if (createBranch) {
       try {
         branch = await createTicketBranch(newId, task.title || newId);
-        await updateTaskWithHistory(newId, { updatedBy: 'Agent', extraFields: { branch } });
+        await updateTaskWithHistory(newId, { updatedBy: 'Agent', extraFields: { branch } }, req.workspace);
       } catch (err: unknown) {
         // Best-effort — the ticket exists regardless; note why the branch didn't get created.
         await updateTaskWithHistory(newId, {
           updatedBy: 'Agent',
           entries: [{ type: 'comment', user: 'Agent', comment: `Retry branch could not be created automatically: ${errorMessage(err)}. Create one via Start.`, date: new Date().toISOString() }],
-        });
+        }, req.workspace);
       }
     }
     broadcastEvent('taskUpdated', { id: newId });

@@ -5,7 +5,8 @@ import path from 'path';
 import { broadcastEvent } from './events.js';
 import { appendTranscriptEvent, isSafeStreamId } from './transcript.js';
 import { raiseNeedsAction } from './parked-ticket.js';
-import { getActiveFluxDir } from './workspace.js';
+import { getActiveFluxDir, getWorkspaceRoot } from './workspace.js';
+import { getWorkspace, resolveWorkspaceByRoot, runWithWorkspace, type Workspace } from './workspace-context.js';
 
 /**
  * FLUX-833 (Phase 2) — the unified, restart-durable store behind the two human-in-the-loop
@@ -89,6 +90,13 @@ export interface OpenPromptRecord {
    *  prompt can re-arm its timeout after a restart (FLUX-833 review M3). Optional for back-compat
    *  with index files written before this field existed. */
   expiresAt?: string;
+  /** FLUX-1555: the board that parked this prompt. Persisted so the durable index can be split
+   *  per-board (a prompt parked on board A must write only to A's open-prompts.json) and so
+   *  `settle()` can rebind its needsAction/broadcast/transcript side effects to the OWNING board
+   *  even when it fires from a bare timer with no ambient request binding. Optional for back-compat
+   *  — a record written before this field existed has none; `rehydrateOpenPrompts` defaults it to
+   *  the board whose file it was loaded from. */
+  workspaceRoot?: string;
 }
 
 interface LivePrompt {
@@ -102,45 +110,63 @@ const durable = new Map<string, OpenPromptRecord>();
 /** The live, resolvable half — only for prompts parked in THIS process. */
 const live = new Map<string, LivePrompt>();
 
-function promptsFile() {
-  return path.join(getActiveFluxDir(), 'open-prompts.json');
+/** Resolve `root`'s own flux dir — NOT `getActiveFluxDir()` (which resolves whatever board is
+ *  ambiently active) — so a per-board index write/read always lands in the RIGHT board's dir
+ *  regardless of what else is active when it runs (FLUX-1555). `resolveWorkspaceByRoot` misses for
+ *  a root that was never registered (the common single-board case, where the registry is empty and
+ *  the boot board isn't a registry entry either) — `runWithWorkspace(null, …)` then falls through
+ *  to the registry's active/default resolution, which in single-board mode IS `root`, so this is a
+ *  byte-for-byte pass-through there. */
+function fluxDirForRoot(root: string): string {
+  return runWithWorkspace(resolveWorkspaceByRoot(root), () => getActiveFluxDir());
 }
 
+function promptsFile(root: string) {
+  return path.join(fluxDirForRoot(root), 'open-prompts.json');
+}
+
+/** Roots with durable-index mutations not yet flushed to disk. `''` covers a record with no
+ *  `workspaceRoot` (shouldn't occur at runtime — park stamps it and rehydrate back-fills it — but
+ *  keeps a stray record from silently vanishing rather than erroring). */
+const dirtyRoots = new Set<string>();
 /** A persist is running; pending callers await it via flushOpenPrompts(). */
 let persistInFlight: Promise<void> | null = null;
-/** A mutation landed since the in-flight write captured its snapshot — re-loop once it drains. */
-let persistDirty = false;
 
-/** One atomic rewrite of the durable index (write-tmp-then-rename, FLUX-833 review M2): a crash
- *  mid-write must not leave a torn file that fails JSON.parse on next boot and silently drops the
- *  WHOLE open set. The `.tmp` sibling is excluded from git + flux-data sync alongside
- *  open-prompts.json itself (see storage-sync.ts). Best-effort: a failure is logged, never thrown. */
-async function writeIndex(): Promise<void> {
+/** One atomic rewrite of one board's slice of the durable index (write-tmp-then-rename, FLUX-833
+ *  review M2): a crash mid-write must not leave a torn file that fails JSON.parse on next boot and
+ *  silently drops the WHOLE open set. The `.tmp` sibling is excluded from git + flux-data sync
+ *  alongside open-prompts.json itself (see storage-sync.ts). Best-effort: a failure is logged,
+ *  never thrown. FLUX-1555: filters `durable` down to `root`'s own records — a board with zero
+ *  remaining open prompts (its last one just settled) still gets rewritten, truncating its file to
+ *  `[]` rather than leaving a stale prompt on disk. */
+async function writeIndexForRoot(root: string): Promise<void> {
   try {
-    const file = promptsFile();
+    const file = promptsFile(root);
+    const records = Array.from(durable.values()).filter((r) => (r.workspaceRoot ?? '') === root);
     await fs.promises.mkdir(path.dirname(file), { recursive: true });
     const tmp = `${file}.tmp`;
-    await fs.promises.writeFile(tmp, JSON.stringify(Array.from(durable.values()), null, 2), 'utf-8');
+    await fs.promises.writeFile(tmp, JSON.stringify(records, null, 2), 'utf-8');
     await fs.promises.rename(tmp, file);
   } catch (err) {
-    console.error('[hitl] failed to persist open-prompts.json', err);
+    console.error(`[hitl] failed to persist open-prompts.json for ${root || '(unrouted)'}`, err);
   }
 }
 
 /** Schedule an async, coalesced rewrite of the durable index (FLUX-854). The index is tiny and only
- *  needs *eventual* durability, so it must NOT block the single-threaded event loop the way the old
- *  synchronous `persist()` did (it ran on every park/settle, starving SSE + every portal API
- *  response). A single write is ever in flight; concurrent calls only mark the index dirty, and the
- *  in-flight write re-loops to flush the latest snapshot — so a burst of parks/settles collapses to
- *  at most one extra write. */
-function persist(): void {
-  persistDirty = true;
-  if (persistInFlight) return; // a write is already running; it will re-loop on the dirty flag
+ *  needs *eventual* durability, so it must NOT block the single-threaded event loop the way a
+ *  synchronous write would (it runs on every park/settle, which would otherwise starve SSE + every
+ *  portal API response). A single write is ever in flight; concurrent calls only mark roots dirty,
+ *  and the in-flight write re-loops to flush the latest dirty set — so a burst of parks/settles
+ *  (even across several boards) collapses to at most one extra write per board. */
+function persist(root: string): void {
+  dirtyRoots.add(root);
+  if (persistInFlight) return; // a write is already running; it will re-loop on the dirty set
   persistInFlight = (async () => {
     try {
-      while (persistDirty) {
-        persistDirty = false;
-        await writeIndex();
+      while (dirtyRoots.size > 0) {
+        const roots = Array.from(dirtyRoots);
+        dirtyRoots.clear();
+        for (const r of roots) await writeIndexForRoot(r);
       }
     } finally {
       persistInFlight = null;
@@ -264,27 +290,37 @@ function timeoutNeedsAction(rec: OpenPromptRecord): string {
 function settle(id: string, result: PromptResult, reason?: 'timeout'): boolean {
   const rec = durable.get(id);
   if (!rec) return false; // already settled or unknown id — guard against a double / phantom write
-  durable.delete(id);
-  const l = live.get(id);
-  if (l) {
-    clearTimeout(l.timer);
-    live.delete(id);
-  }
-  appendResolveTranscript(rec, result, reason);
-  broadcastResolved(rec);
-  if (reason === 'timeout' && rec.conversationId) {
-    // No-op for the `__board__` sentinel / unrouted ids (raiseNeedsAction guards on a real
-    // ticket), and best-effort so a failure never blocks settling the prompt.
-    void raiseNeedsAction(rec.conversationId, timeoutNeedsAction(rec));
-  }
-  // Unblock the held fetch (only for a prompt parked in THIS process — rehydrated prompts have
-  // no live resolver; their answer can't reach the dead turn until Phase 3) BEFORE the durable
-  // write: the terminal-state guard above (the up-front `durable.delete`) already makes settle
-  // idempotent, so the on-disk index only needs *eventual* consistency — the held fetch must not
-  // wait on disk I/O (FLUX-854). The write is coalesced and runs off the event loop's hot path.
-  if (l) l.resolve(result);
-  persist();
-  return true;
+  const root = rec.workspaceRoot ?? '';
+  // FLUX-1555 (finding D): settle can fire from a bare `setTimeout` (park timeout, or the re-armed
+  // rehydrate timer) with NO ambient request/tool-call binding — every downstream call here
+  // (appendResolveTranscript → getActiveFluxDir, broadcastResolved → broadcastEvent's default
+  // `ws = getWorkspace()`, raiseNeedsAction → getWorkspace().tasks[...]) would otherwise resolve
+  // against whatever board happens to be ACTIVE, not the board that parked this prompt — on a
+  // non-active board that's a silently misrouted (or, for the needsAction flag, entirely dropped)
+  // timeout. Rebinding the whole settle body to the record's OWNING board fixes all three at once.
+  return runWithWorkspace(resolveWorkspaceByRoot(root), () => {
+    durable.delete(id);
+    const l = live.get(id);
+    if (l) {
+      clearTimeout(l.timer);
+      live.delete(id);
+    }
+    appendResolveTranscript(rec, result, reason);
+    broadcastResolved(rec);
+    if (reason === 'timeout' && rec.conversationId) {
+      // No-op for the `__board__` sentinel / unrouted ids (raiseNeedsAction guards on a real
+      // ticket), and best-effort so a failure never blocks settling the prompt.
+      void raiseNeedsAction(rec.conversationId, timeoutNeedsAction(rec));
+    }
+    // Unblock the held fetch (only for a prompt parked in THIS process — rehydrated prompts have
+    // no live resolver; their answer can't reach the dead turn until Phase 3) BEFORE the durable
+    // write: the terminal-state guard above (the up-front `durable.delete`) already makes settle
+    // idempotent, so the on-disk index only needs *eventual* consistency — the held fetch must not
+    // wait on disk I/O (FLUX-854). The write is coalesced and runs off the event loop's hot path.
+    if (l) l.resolve(result);
+    persist(root);
+    return true;
+  });
 }
 
 /**
@@ -301,14 +337,19 @@ export function parkPrompt(args: {
   const id = randomUUID();
   const now = Date.now();
   const createdAt = new Date(now).toISOString();
+  // FLUX-1555 (finding C): stamp the owning board. `parkPrompt` always runs inside the held MCP
+  // fetch's request binding, so `getWorkspaceRoot()` here is correct — this is what lets `settle()`
+  // rebind to the right board later even when it fires from an unbound timer.
+  const workspaceRoot = getWorkspaceRoot() ?? '';
   const rec: OpenPromptRecord = {
     id, kind: args.kind, payload: args.payload, conversationId: args.conversationId,
     ...(args.resumeSessionId ? { resumeSessionId: args.resumeSessionId } : {}),
     createdAt,
     expiresAt: new Date(now + args.timeoutMs).toISOString(),
+    workspaceRoot,
   };
   durable.set(id, rec);
-  persist();
+  persist(workspaceRoot);
   appendRequestTranscript(rec);
   return new Promise((resolve) => {
     const timer = setTimeout(() => { settle(id, timeoutResult(rec), 'timeout'); }, args.timeoutMs);
@@ -373,11 +414,19 @@ export function settleOpenPromptsForConversation(conversationId: string): number
  *    real resolver, so a forged ALLOW records/broadcasts but executes nothing).
  *  - M4: an unsafe persisted `conversationId` is neutralized to null before it can re-enter the
  *    transcript path on settle.
+ *
+ * FLUX-1555: per-board — reads `ws`'s OWN open-prompts.json (defaults to the calling context's
+ * workspace), not a single global active file. The watcher `ready` hook already wraps this call in
+ * `runWithWorkspace(ws, …)` per board (task-store.ts), so the default resolves correctly there; a
+ * legacy record loaded from disk with no `workspaceRoot` (written before this field existed) is
+ * back-filled with `ws`'s root here — the file it was read from IS the board it belongs to now that
+ * the index is per-board.
  */
-export function rehydrateOpenPrompts(): number {
+export function rehydrateOpenPrompts(ws: Workspace = getWorkspace()): number {
+  const root = ws.root ?? '';
   let records: unknown;
   try {
-    const file = promptsFile();
+    const file = promptsFile(root);
     if (!fs.existsSync(file)) return 0;
     records = JSON.parse(fs.readFileSync(file, 'utf-8'));
   } catch (err) {
@@ -385,33 +434,38 @@ export function rehydrateOpenPrompts(): number {
     return 0;
   }
   if (!Array.isArray(records)) return 0;
-  let count = 0;
-  for (const rec of records) {
-    try {
-      if (!isValidRecord(rec)) continue;
-      // M4: drop a path-unsafe conversationId so settle/broadcast can't escape the transcripts dir.
-      if (rec.conversationId && !isSafeStreamId(rec.conversationId)) rec.conversationId = null;
-      durable.set(rec.id, rec);
-      // M3: re-arm the timeout (unless this id is already parked live in THIS process — e.g. an
-      // in-process re-call — to avoid leaking the existing timer).
-      if (!live.has(rec.id)) {
-        let remaining = rec.expiresAt ? Date.parse(rec.expiresAt) - Date.now() : defaultTimeoutMs(rec.kind);
-        if (!Number.isFinite(remaining)) remaining = defaultTimeoutMs(rec.kind);
-        if (remaining <= 0) {
-          // Deadline already passed while the engine was down — sweep it as a timeout instead of
-          // re-surfacing a prompt that would never expire.
-          settle(rec.id, timeoutResult(rec), 'timeout');
-          continue;
+  return runWithWorkspace(ws, () => {
+    let count = 0;
+    for (const rec of records as unknown[]) {
+      try {
+        if (!isValidRecord(rec)) continue;
+        // FLUX-1555: back-compat default — a record persisted before workspaceRoot existed inherits
+        // the board whose file it was just loaded from.
+        rec.workspaceRoot ??= root;
+        // M4: drop a path-unsafe conversationId so settle/broadcast can't escape the transcripts dir.
+        if (rec.conversationId && !isSafeStreamId(rec.conversationId)) rec.conversationId = null;
+        durable.set(rec.id, rec);
+        // M3: re-arm the timeout (unless this id is already parked live in THIS process — e.g. an
+        // in-process re-call — to avoid leaking the existing timer).
+        if (!live.has(rec.id)) {
+          let remaining = rec.expiresAt ? Date.parse(rec.expiresAt) - Date.now() : defaultTimeoutMs(rec.kind);
+          if (!Number.isFinite(remaining)) remaining = defaultTimeoutMs(rec.kind);
+          if (remaining <= 0) {
+            // Deadline already passed while the engine was down — sweep it as a timeout instead of
+            // re-surfacing a prompt that would never expire.
+            settle(rec.id, timeoutResult(rec), 'timeout');
+            continue;
+          }
+          const timer = setTimeout(() => { settle(rec.id, timeoutResult(rec), 'timeout'); }, remaining);
+          live.set(rec.id, { resolve: () => {}, timer });
         }
-        const timer = setTimeout(() => { settle(rec.id, timeoutResult(rec), 'timeout'); }, remaining);
-        live.set(rec.id, { resolve: () => {}, timer });
+        broadcastRequest(rec);
+        count++;
+      } catch (err) {
+        console.error('[hitl] skipped a malformed open-prompt record on rehydrate', err);
       }
-      broadcastRequest(rec);
-      count++;
-    } catch (err) {
-      console.error('[hitl] skipped a malformed open-prompt record on rehydrate', err);
     }
-  }
-  if (count > 0) log.info(`[hitl] re-surfaced ${count} open prompt(s) after restart`);
-  return count;
+    if (count > 0) log.info(`[hitl] re-surfaced ${count} open prompt(s) after restart`);
+    return count;
+  });
 }

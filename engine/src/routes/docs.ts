@@ -1,4 +1,4 @@
-import { getWorkspace } from '../workspace-context.js';
+import { getWorkspace, type Workspace } from '../workspace-context.js';
 import express from 'express';
 import fs from 'fs/promises';
 import path from 'path';
@@ -9,10 +9,8 @@ import {
 } from '../file-utils.js';
 import { loadDoc, loadGroupDoc } from '../task-store.js';
 import {
-  activeGroupDocsLabel,
-  getGroupContext,
-  getMemberBinding,
   groupDocPathToStoreRelative,
+  groupDocsLabel,
   type GroupContext,
 } from '../group.js';
 import { submitGroupEdit } from '../group-edit.js';
@@ -37,6 +35,18 @@ function docPathFromReq(req: express.Request) {
 }
 
 /**
+ * FLUX-1448 (epic FLUX-1230 S2/S3 boundary): the workspace a route reads/writes — `req.workspace`
+ * (attached globally by `attachWorkspace`, FLUX-343) when present, else the registry default.
+ * Mirrors `routes/tasks/helpers.ts`'s `reqWorkspace` (kept local here rather than imported — this
+ * file isn't part of the `routes/tasks/*` concern split). The fallback also means a route test's
+ * minimal Express app (skipping the full `attachWorkspace` middleware) keeps exercising the real
+ * handler instead of every test needing to reconstruct the full middleware stack.
+ */
+function reqWorkspace(req: express.Request): Workspace {
+  return req.workspace ?? getWorkspace();
+}
+
+/**
  * Human-readable reason a group doc can't be edited from the current
  * workspace. With FLUX-414 the parent edits its own group docs inline, so this
  * only fires for a workspace that surfaces a group doc but owns no writer
@@ -51,9 +61,19 @@ function groupReadOnlyMessage(): string {
  * own context, or a bound member's parent group. `submitGroupEdit` writes into
  * this context's canonical store, commits, and fans out — so both the parent
  * (editing in place) and a member (push-through-parent) use the same path.
+ *
+ * FLUX-1565: reads `ws`'s own `groupContext`/`memberBinding` fields (populated
+ * per-workspace in `hydrateWorkspace`) instead of the `getGroupContext()`/
+ * `getMemberBinding()` singletons — those reflect whichever workspace activated
+ * last, not necessarily the one this request is bound to.
  */
-function groupWriterContext(): GroupContext | null {
-  return getGroupContext() ?? getMemberBinding()?.parentGroup ?? null;
+function groupWriterContext(ws: Workspace): GroupContext | null {
+  return ws.groupContext ?? ws.memberBinding?.parentGroup ?? null;
+}
+
+/** The `docsLabel` group docs surface under for `ws`'s bound group, if any. */
+function docsLabelFor(ws: Workspace): string {
+  return groupDocsLabel(groupWriterContext(ws));
 }
 
 /**
@@ -72,13 +92,13 @@ router.post('/', async (req, res) => {
   const docPath = normalizeDocPathInput(req.body?.path);
 
   if (!docPath) return res.status(400).json({ error: 'Invalid doc path' });
-  if (docPath.split('/')[0] === activeGroupDocsLabel()) {
+  if (docPath.split('/')[0] === docsLabelFor(reqWorkspace(req))) {
     // Group doc: route the create to the canonical store writer — the parent's
     // own context, or a bound member's parent (Case 1). Both commit + fan out.
-    const writer = groupWriterContext();
-    const storeRel = writer ? groupDocPathToStoreRelative(docPath) : null;
+    const writer = groupWriterContext(reqWorkspace(req));
+    const storeRel = writer ? groupDocPathToStoreRelative(docPath, docsLabelFor(reqWorkspace(req))) : null;
     if (writer && storeRel) {
-      if (getWorkspace().docs[docPath]) return res.status(409).json({ error: 'Doc already exists' });
+      if (reqWorkspace(req).docs[docPath]) return res.status(409).json({ error: 'Doc already exists' });
       const title = typeof req.body?.title === 'string' && req.body.title.trim()
         ? req.body.title.trim()
         : titleFromDocPath(docPath);
@@ -87,8 +107,8 @@ router.post('/', async (req, res) => {
       try {
         const storeDir = writer.groupStoreDir;
         await submitGroupEdit(writer, [{ path: storeRel, content: buildDocMarkdown(title, order, body) }]);
-        await loadGroupDoc(storeDir, parentStorePath(storeDir, storeRel));
-        const created = getWorkspace().docs[docPath];
+        await loadGroupDoc(storeDir, parentStorePath(storeDir, storeRel), req.workspace);
+        const created = reqWorkspace(req).docs[docPath];
         return res.status(201).json(created ? serializeDoc(created) : { success: true });
       } catch (error) {
         console.error(`Failed to write new group doc ${docPath}:`, error);
@@ -98,7 +118,7 @@ router.post('/', async (req, res) => {
     }
     return res.status(403).json({ error: groupReadOnlyMessage() });
   }
-  if (getWorkspace().docs[docPath]) return res.status(409).json({ error: 'Doc already exists' });
+  if (reqWorkspace(req).docs[docPath]) return res.status(409).json({ error: 'Doc already exists' });
 
   const title = typeof req.body?.title === 'string' && req.body.title.trim()
     ? req.body.title.trim()
@@ -109,9 +129,9 @@ router.post('/', async (req, res) => {
 
   try {
     await writeDocFile(filePath, title, order, body);
-    await loadDoc(filePath);
+    await loadDoc(filePath, req.workspace);
 
-    const createdDoc = getWorkspace().docs[docPath];
+    const createdDoc = reqWorkspace(req).docs[docPath];
     if (!createdDoc) throw new Error('Doc was not loaded after creation');
 
     res.status(201).json(serializeDoc(createdDoc));
@@ -137,13 +157,13 @@ router.put(/^\/.+$/, async (req, res) => {
 
   if (!docPath) return res.status(400).json({ error: 'Invalid doc path' });
 
-  const existingDoc = getWorkspace().docs[docPath];
+  const existingDoc = reqWorkspace(req).docs[docPath];
   if (!existingDoc) return res.status(404).json({ error: 'Doc not found' });
   if (existingDoc.group) {
     // Group doc: route the edit to the canonical store writer — the parent edits
     // in place (FLUX-414); a bound member pushes through the parent (Case 1).
-    const writer = groupWriterContext();
-    const storeRel = writer ? groupDocPathToStoreRelative(docPath) : null;
+    const writer = groupWriterContext(reqWorkspace(req));
+    const storeRel = writer ? groupDocPathToStoreRelative(docPath, docsLabelFor(reqWorkspace(req))) : null;
     if (writer && storeRel) {
       const title = typeof req.body?.title === 'string' && req.body.title.trim()
         ? req.body.title.trim()
@@ -153,8 +173,8 @@ router.put(/^\/.+$/, async (req, res) => {
       try {
         const storeDir = writer.groupStoreDir;
         await submitGroupEdit(writer, [{ path: storeRel, content: buildDocMarkdown(title, order, body) }]);
-        await loadGroupDoc(storeDir, parentStorePath(storeDir, storeRel));
-        const updated = getWorkspace().docs[docPath];
+        await loadGroupDoc(storeDir, parentStorePath(storeDir, storeRel), req.workspace);
+        const updated = reqWorkspace(req).docs[docPath];
         return res.json(updated ? serializeDoc(updated) : { success: true });
       } catch (error) {
         console.error(`Failed to write group edit for ${docPath}:`, error);
@@ -173,9 +193,9 @@ router.put(/^\/.+$/, async (req, res) => {
 
   try {
     await writeDocFile(existingDoc._path, title, order, body);
-    await loadDoc(existingDoc._path);
+    await loadDoc(existingDoc._path, req.workspace);
 
-    const updatedDoc = getWorkspace().docs[docPath];
+    const updatedDoc = reqWorkspace(req).docs[docPath];
     if (!updatedDoc) throw new Error('Doc was not loaded after update');
 
     res.json(serializeDoc(updatedDoc));
@@ -190,17 +210,17 @@ router.delete(/^\/.+$/, async (req, res) => {
 
   if (!docPath) return res.status(400).json({ error: 'Invalid doc path' });
 
-  const doc = getWorkspace().docs[docPath];
+  const doc = reqWorkspace(req).docs[docPath];
   if (!doc) return res.status(404).json({ error: 'Doc not found' });
   if (doc.group) {
     // Group doc: route the delete to the canonical store writer — the parent
     // deletes in place (FLUX-414); a bound member pushes through the parent.
-    const writer = groupWriterContext();
-    const storeRel = writer ? groupDocPathToStoreRelative(docPath) : null;
+    const writer = groupWriterContext(reqWorkspace(req));
+    const storeRel = writer ? groupDocPathToStoreRelative(docPath, docsLabelFor(reqWorkspace(req))) : null;
     if (writer && storeRel) {
       try {
         await submitGroupEdit(writer, [{ path: storeRel, delete: true }]);
-        delete getWorkspace().docs[docPath];
+        delete reqWorkspace(req).docs[docPath];
         return res.json({ success: true });
       } catch (error) {
         console.error(`Failed to write group delete for ${docPath}:`, error);
@@ -238,7 +258,7 @@ router.post('/rename-folder', async (req, res) => {
     return res.status(400).json({ error: 'Cannot move a folder into itself' });
   }
 
-  const groupLabel = activeGroupDocsLabel();
+  const groupLabel = docsLabelFor(reqWorkspace(req));
   const fromRoot = from.split('/')[0];
   const toRoot = to.split('/')[0];
   if (fromRoot === groupLabel || toRoot === groupLabel) {
@@ -249,7 +269,7 @@ router.post('/rename-folder', async (req, res) => {
 
   // Collect every local doc at the folder or beneath it.
   const prefix = from + '/';
-  const affected = Object.values(getWorkspace().docs).filter(
+  const affected = Object.values(reqWorkspace(req).docs).filter(
     (doc) => !doc.group && (doc.path === from || doc.path.startsWith(prefix)),
   );
   if (affected.length === 0) {
@@ -261,7 +281,7 @@ router.post('/rename-folder', async (req, res) => {
   for (const doc of affected) {
     const suffix = doc.path.slice(from.length); // '' or '/rest...'
     const targetPath = to + suffix;
-    if (getWorkspace().docs[targetPath] && !movingPaths.has(targetPath)) {
+    if (reqWorkspace(req).docs[targetPath] && !movingPaths.has(targetPath)) {
       return res.status(409).json({ error: `A doc already exists at "${targetPath}"` });
     }
   }
@@ -274,9 +294,9 @@ router.post('/rename-folder', async (req, res) => {
       const targetFile = getDocFilePath(targetPath);
       await writeDocFile(targetFile, doc.title, doc.order, doc.body ?? '');
       await fs.unlink(doc._path);
-      delete getWorkspace().docs[doc.path];
+      delete reqWorkspace(req).docs[doc.path];
       await removeEmptyDocDirectories(doc._path);
-      await loadDoc(targetFile);
+      await loadDoc(targetFile, req.workspace);
       moved.push({ from: doc.path, to: targetPath });
     }
     res.json({ success: true, moved });

@@ -81,6 +81,8 @@ export interface RunAgentActionOptions {
   /** FLUX-1235/1456: reclaim an idle parked `waiting-input` session instead of 409-ing on the start
    *  route (`cli-session.ts`). Never supersedes a live `running`/`pending` session. */
   supersedeParked?: boolean;
+  /** FLUX-1383: for phase:'batch-grooming' — the sibling ticket ids to groom in this one session. */
+  batchTicketIds?: string[];
 }
 
 /**
@@ -102,6 +104,7 @@ export async function runAgentAction(opts: RunAgentActionOptions): Promise<CliSe
     pattern,
     patternPosition,
     supersedeParked,
+    batchTicketIds,
   } = opts;
 
   if (preStatus) {
@@ -133,6 +136,7 @@ export async function runAgentAction(opts: RunAgentActionOptions): Promise<CliSe
     role,
     pattern,
     patternPosition,
+    batchTicketIds,
   });
 }
 
@@ -160,7 +164,9 @@ export async function launchPhaseDefault(opts: {
   const { taskId, framework, phase, currentUser, phaseDefaults, skipPermissions, supervisorCapable, focusComment } = opts;
   // FLUX-1380: fast-path is solo-session only (design decision 7) — it never has a workflow
   // template, so it always dispatches directly (see dispatchFastPath) rather than through here.
-  if (phase === 'fast-path') return null;
+  // FLUX-1383: batch-grooming is the same — solo-session only, dispatches directly (see
+  // dispatchBatchGrooming), never through a multi-persona workflow template.
+  if (phase === 'fast-path' || phase === 'batch-grooming') return null;
   const defaultId = resolvePhaseDefaultId(phaseDefaults, phase, 'single');
   const list = await fetchWorkflows();
   const wf = list.find((w) => w.id === defaultId);
@@ -213,8 +219,10 @@ export type OrchestrationMode = 'scatter-gather' | 'parallel' | 'serialized' | '
 /** Ticket lifecycle phase a launch belongs to. Drives which personas are offered.
  *  'fast-path' (FLUX-1380): a launch-time-only choice for Grooming-column tickets — one session
  *  grooms inline and implements in the same sitting. Never returned by `statusToPhase` (it is
- *  never inferred from board status, only chosen explicitly at launch). */
-export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize' | 'fast-path';
+ *  never inferred from board status, only chosen explicitly at launch).
+ *  'batch-grooming' (FLUX-1383): another launch-time-only choice — one session grooms up to 5
+ *  sibling tickets sharing one parent in one sitting. Also never returned by `statusToPhase`. */
+export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize' | 'fast-path' | 'batch-grooming';
 
 /**
  * Map a board status to the launch phase whose personas apply. Uses the board's
@@ -248,6 +256,9 @@ export function phaseLaunchStatus(phase: LaunchPhase): string | undefined {
     // FLUX-1380 design decision 6: fast-path performs no pre-launch status move — the session
     // itself advances Grooming → In Progress → Ready in one sitting.
     case 'fast-path': return undefined;
+    // FLUX-1383: batch-grooming likewise performs no pre-launch status move — each member is
+    // already sitting in Grooming/Require Input and the session moves each independently.
+    case 'batch-grooming': return undefined;
     default: return undefined;
   }
 }

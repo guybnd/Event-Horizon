@@ -1,4 +1,4 @@
-import { getWorkspace } from './workspace-context.js';
+import { getWorkspace, type Workspace } from './workspace-context.js';
 import { upsertManagedTicket, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { TERMINAL_TICKET_STATUSES } from './schema.js';
@@ -126,10 +126,10 @@ export function prTicketsOnBranch(tickets: MaybeTicketRecord[], branch: string):
  * this the card lingers for up to a poll interval. Best-effort per ticket (upsert only writes on
  * a real change); broadcasts each update and returns the resolved PR-ticket ids.
  */
-export async function resolveMergedPrTickets(branch: string): Promise<string[]> {
+export async function resolveMergedPrTickets(branch: string, ws: Workspace = getWorkspace()): Promise<string[]> {
   const resolved: string[] = [];
-  for (const t of prTicketsOnBranch(Object.values(getWorkspace().tasks) as TicketRecord[], branch)) {
-    await upsertManagedTicket(t.id, { status: 'Done', prState: 'MERGED', swimlane: null }).catch(() => {});
+  for (const t of prTicketsOnBranch(Object.values(ws.tasks) as TicketRecord[], branch)) {
+    await upsertManagedTicket(t.id, { status: 'Done', prState: 'MERGED', swimlane: null }, '', ws).catch(() => {});
     broadcastEvent('taskUpdated', { id: t.id });
     resolved.push(t.id);
   }
@@ -195,8 +195,8 @@ export function prTicketFields(pr: GhPr, members: string[], existing: ExistingPr
   return fields;
 }
 
-function membersForBranch(branch: string): string[] {
-  return selectMembers(Object.values(getWorkspace().tasks) as TicketRecord[], branch);
+function membersForBranch(branch: string, ws: Workspace): string[] {
+  return selectMembers(Object.values(ws.tasks) as TicketRecord[], branch);
 }
 
 /**
@@ -217,8 +217,8 @@ export function membersToBounce(tickets: MaybeTicketRecord[], memberIds: string[
  * development. Idempotent via `membersToBounce` — members already In Progress are left alone (no
  * re-comment / churn), and resolved members aren't members anymore (work-gated). Best-effort.
  */
-async function bounceMembersToInProgress(memberIds: string[], comment: string): Promise<void> {
-  for (const id of membersToBounce(Object.values(getWorkspace().tasks) as TicketRecord[], memberIds)) {
+async function bounceMembersToInProgress(memberIds: string[], comment: string, ws: Workspace): Promise<void> {
+  for (const id of membersToBounce(Object.values(ws.tasks) as TicketRecord[], memberIds)) {
     try {
       await updateTaskWithHistory(id, {
         updatedBy: 'Agent',
@@ -234,7 +234,7 @@ async function bounceMembersToInProgress(memberIds: string[], comment: string): 
         // 90s poll via membersToBounce's own idempotency guard. A write lost to a sync race simply
         // gets redone by the next poll instead of needing journal replay.
         derived: true,
-      });
+      }, ws);
       broadcastEvent('taskUpdated', { id });
     } catch {
       /* best-effort — a single member write failure must not abort the sweep */
@@ -269,11 +269,11 @@ async function listOpenPrs(workspaceRoot: string): Promise<GhPr[]> {
  * move to In Progress (P3) isn't clobbered. PRs gone from the open list resolve to the terminal
  * Done (the member advance + worktree teardown on out-of-band merge/close is reconcilePullRequests).
  */
-export async function syncPrTickets(workspaceRoot: string): Promise<void> {
+export async function syncPrTickets(workspaceRoot: string, ws: Workspace = getWorkspace()): Promise<void> {
   const openPrs = await listOpenPrs(workspaceRoot);
   const openNumbers = new Set(openPrs.map((p) => p.number));
   // FLUX-1076: while flux-data sync is wedged (a conflict awaiting resolution, or a hard sync
-  // error), getWorkspace().tasks can be stale/behind the remote — a PR whose full ticket already exists
+  // error), ws.tasks can be stale/behind the remote — a PR whose full ticket already exists
   // there just looks "missing" here. Materializing a fresh skeleton ticket (members: [], minimal
   // history) for it guarantees a fresh add/add conflict on the next successful pull, which is
   // exactly how the prior incident's wedge kept re-triggering itself. Existing PR tickets still
@@ -282,21 +282,21 @@ export async function syncPrTickets(workspaceRoot: string): Promise<void> {
 
   for (const pr of openPrs) {
     const id = prTicketId(pr.number);
-    const existing = getWorkspace().tasks[id] as TicketRecord | undefined;
+    const existing = ws.tasks[id] as TicketRecord | undefined;
     if (!existing && deferCreation) continue;
-    const members = membersForBranch(pr.headRefName);
+    const members = membersForBranch(pr.headRefName, ws);
     const fields = prTicketFields(pr, members, existing ?? null);
     // Pull the gh PR description into the card's markdown body (FLUX-751). Passed as the
     // separate 3rd arg (NOT a frontmatter field); upsert rewrites only when it actually
     // differs, so a null/empty description coerces to '' and never churns.
     const body = pr.body ?? '';
-    await upsertManagedTicket(id, fields, body).catch(() => {});
+    await upsertManagedTicket(id, fields, body, ws).catch(() => {});
     // Review-fail bounce (FLUX-569 / decision #3): when a PR has changes requested, unwind its
     // worked members back to In Progress so they're directly workable again (the deck stays,
     // unwind to fix; a push re-folds + re-reviews). Idempotent — only Ready members move, and
     // once In Progress they're skipped, so no per-poll churn.
     if (pr.reviewDecision === 'CHANGES_REQUESTED') {
-      await bounceMembersToInProgress(members, `Changes requested on PR #${pr.number} — back to In Progress to address review.`);
+      await bounceMembersToInProgress(members, `Changes requested on PR #${pr.number} — back to In Progress to address review.`, ws);
     }
   }
 
@@ -305,7 +305,7 @@ export async function syncPrTickets(workspaceRoot: string): Promise<void> {
   // advanced the PR ticket to Done without updating prState — FLUX-587). We query gh BY NUMBER
   // (reliable once the branch is deleted) rather than by branch. Idempotent: only non-terminal
   // prState gets reconciled, so settled (MERGED/CLOSED) tickets are skipped → no per-poll churn.
-  const stalePrTickets = (Object.values(getWorkspace().tasks) as TicketRecord[]).filter(
+  const stalePrTickets = (Object.values(ws.tasks) as TicketRecord[]).filter(
     (t): t is TicketRecord & { prNumber: number } => t.kind === PR_KIND && typeof t.prNumber === 'number' && !openNumbers.has(t.prNumber)
       && t.prState !== 'MERGED' && t.prState !== 'CLOSED',
   );
@@ -315,7 +315,7 @@ export async function syncPrTickets(workspaceRoot: string): Promise<void> {
       status: 'Done',
       prState: state,
       swimlane: null,
-    }).catch(() => {});
+    }, '', ws).catch(() => {});
   }
 }
 

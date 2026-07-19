@@ -1,4 +1,5 @@
-import { getWorkspace } from './workspace-context.js';
+import { getWorkspace, getDefaultWorkspace, runWithWorkspace, type Workspace } from './workspace-context.js';
+import { resolveWorkspaceFromRoot } from './middleware.js';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { McpError, ErrorCode as McpErrorCode } from '@modelcontextprotocol/sdk/types.js';
@@ -12,7 +13,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
 
-import { serializeTaskForAgent, updateTaskWithHistory, readTaskFromDisk, createTask, getTerminalStatuses, syncParentSubtaskLinks, validateParentLink, type CreateTaskOptions, type TaskRecord } from './task-store.js';
+import { serializeTaskForAgent, updateTaskWithHistory, readTaskFromDisk, createTask, getTerminalStatuses, syncParentSubtaskLinks, validateParentLink, StaleBodyError, type CreateTaskOptions, type TaskRecord } from './task-store.js';
 import { nextColumnAfter, getConfig } from './config.js';
 import { normalizeDocPathInput, type StoredDoc } from './file-utils.js';
 import { resolveDefaultFramework } from './agents/index.js';
@@ -28,22 +29,25 @@ import { buildActivityEntry, type AgentSessionEntry, type AgentSessionProgress }
 import { sanitizeCompletion, completionInputSchema } from './completion-payload.js';
 import { getActiveFluxDir, getWorkspacesList, getWorkspaceRoot, resolveSkillSourceRoot } from './workspace.js';
 import { log } from './log.js';
-import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, getGhAvailability, ghUnavailableMessage, captureDiff, resolveCommit, planFinishPr, type DiffFileSummary } from './branch-manager.js';
+import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, getGhAvailability, ghUnavailableMessage, captureDiff, resolveCommit, planFinishPr, evaluateCiGate, type DiffFileSummary } from './branch-manager.js';
 import { detachTaskWorktree, taskWorktreeDir, findWorktreeForBranch, worktreeUncommittedCount, reclaimWorktrees } from './task-worktree.js';
 import { ensureTicketIsolation } from './ticket-isolation.js';
 import { cleanupMergedBranch, isWorktreeReclaimable } from './pr-cleanup.js';
 import { sharedNonDoneSiblings, prTicketsOnBranch } from './pr-tickets.js';
 import { existsSync } from 'fs';
 import { getActiveSessionsForTask, getLiveStandaloneSessionForTask, stopAllSessionsForTask, reapStaleParkedSessions, getCliSessionSummaryForTask } from './session-store.js';
+import { handoffChatSessionPhase } from './agents/shared.js';
+import type { CliSessionRecord } from './agents/types.js';
 import { SKILL_MODULES, type SkillModule } from './workflow-installer.js';
 import { generatePromptNotification, generateReviewNotification, dismissNotificationsForTicket, addNotification } from './notifications.js';
-import { getGroupContext, getMemberBinding, groupDocsLabel, summarizeGroup, groupDocPathToStoreRelative, activeGroupDocsLabel } from './group.js';
+import { groupDocsLabel, summarizeGroup, groupDocPathToStoreRelative } from './group.js';
+import type { GroupContext } from './group.js';
 import { submitGroupEdit } from './group-edit.js';
 import { writeArtifactRevision, isSafeTicketId, listArtifactRevisionsOnDisk } from './artifacts.js';
-import { ensureFurnaceLoaded, getFurnaceBatch, getFurnaceBatchesCache, updateFurnaceBatch, createFurnaceBatch, deleteFurnaceBatch, mutateFurnaceBatch, globalSlotsInUse, freeSlots, FURNACE_SLOT_CAP } from './furnace-store.js';
+import { ensureFurnaceLoaded, getFurnaceBatch, getFurnaceBatchesCache, getFurnaceBatchesCacheForWorkspace, updateFurnaceBatch, createFurnaceBatch, deleteFurnaceBatch, mutateFurnaceBatch, globalSlotsInUse, freeSlots, FURNACE_SLOT_CAP } from './furnace-store.js';
 import { buildBatchTickets, toBuildCandidate, validateBatchTickets } from './furnace-builder.js';
 import { igniteBatch, stopBatch, burnRateClampWarning, retryTicket, resumeBatch, dismissTicketFlag, takeoverTicket, handBackTicket, reconcileBatchCached, reconcileAllBatchesCached, refreshWorktreePool, isDispatching, clearTakeoverTracking, evictReconcileReadCache } from './furnace-stoker.js';
-import { newBatchTicket, isBatchActive, isTerminalTicketState, validateBatchTrigger, DEFAULT_RETRY_CAP, type BatchKind, type BatchTrigger } from './models/furnace.js';
+import { newBatchTicket, isBatchActive, isTerminalTicketState, validateBatchTrigger, batchBelongsToWorkspaceRoot, DEFAULT_RETRY_CAP, type BatchKind, type BatchTrigger, type FurnaceBatch } from './models/furnace.js';
 import { maybeStartTemper } from './temper.js';
 import { planBodyHash, resolveGateValue, hasHumanGateTouch, SELF_ATTESTED_AUTHOR_FIELD } from './models/gate-policy.js';
 import { planLint, formatLintFindings } from './models/plan-lint.js';
@@ -317,6 +321,94 @@ export function permissionDecisionFor(toolName: string, input?: unknown): 'allow
   if (SAFE_PERMISSION_TOOLS.has(bare)) return 'allow';
   if (CONFIRM_PERMISSION_TOOLS.has(bare)) return 'confirm';
   return 'allow';
+}
+
+// ─── Hard gate: dispatched skip-permission sessions can't silently advance past Ready (FLUX-850) ──
+//
+// `permissionDecisionFor` above only runs for GATED sessions (`--permission-prompt-tool`) — a
+// dispatched session (`start_session` / board-rebase / Furnace) always runs with
+// `skipPermissions: true`, so it never calls `permission_prompt` at all and the gate above is a
+// no-op for it. That's the FLUX-840/841/844 incident: an unattended session could move a ticket
+// straight to Ready with nothing but a notification. `skipPermissions` alone can't distinguish the
+// dangerous case from a normal one, though — an interactive portal session (chat, or a human
+// clicking Groom/Implement/Review/Finalize) can ALSO run skip-permissions, and blocking THOSE would
+// break the ordinary "start a ticket" flow the product depends on. The actual crux is ORIGIN: was
+// a human present to see the move happen. `CliSessionRecord.dispatched` (agents/types.ts) is the
+// explicit marker each unattended dispatch path stamps on itself; the portal never sets it.
+
+/**
+ * True when at least one ACTIVE session on this ticket is both dispatched (unattended, no human
+ * present — see `CliSessionRecord.dispatched`) and running with `skipPermissions`. Pure over
+ * already-resolved session records (mirrors `permissionDecisionFor`'s idiom) so the two call sites
+ * (`change_status`, `finish_ticket`) can unit-test the predicate without touching the live session
+ * store — each derives its input via `getActiveSessionsForTask(ticketId)`.
+ */
+export function hasDispatchedSkipPermissionSession(
+  sessions: readonly Pick<CliSessionRecord, 'status' | 'dispatched' | 'skipPermissions'>[],
+): boolean {
+  return sessions.some((s) => s.status === 'running' && s.dispatched === true && s.skipPermissions === true);
+}
+
+/**
+ * `change_status` variant of the gate: covers a direct move into Ready OR the literal 'Done'
+ * status (an agent can call `change_status` with `newStatus:'Done'` directly, bypassing
+ * `finish_ticket` entirely — the gate must not have a hole there). Only a FORWARD move is
+ * dangerous — a re-affirming call that leaves the ticket at its current status is a no-op the gate
+ * must not re-intercept (it would otherwise bounce the ticket to Require Input every time a
+ * session re-states the same status). Pure + exported for unit test, same idiom as
+ * `evaluatePlanGateTrigger`.
+ */
+export function shouldGateDispatchedAdvance(opts: {
+  hasDispatchedSkipPermissionSession: boolean;
+  currentStatus: string;
+  newStatus: string;
+  readyStatus: string;
+}): boolean {
+  if (!opts.hasDispatchedSkipPermissionSession) return false;
+  if (opts.currentStatus === opts.newStatus) return false;
+  return opts.newStatus === opts.readyStatus || opts.newStatus === 'Done';
+}
+
+/**
+ * The actual redirect once `shouldGateDispatchedAdvance` fires: same "Require Input" swimlane
+ * mechanics as an agent's own `change_status("Require Input")` call below, except the AGENT never
+ * asked a question here — a hard gate intercepted its move — so the comment says that explicitly
+ * rather than reading like the agent's judgement call. Shared by both call sites (`change_status`
+ * → Ready/Done, `finish_ticket` → Done) since the mechanics are identical; only the headline
+ * differs. Returns `null` on a write failure so the caller can fall back to its own error result.
+ */
+async function redirectDispatchedAdvanceToRequireInput(
+  ticketId: string,
+  task: TaskRecord,
+  currentStatusLabel: string,
+  headline: string,
+  agentComment: string | undefined,
+  sanitizedCompletion: ReturnType<typeof sanitizeCompletion>,
+) {
+  const confirmComment = agentComment ? `${headline}\n\n${agentComment}` : headline;
+  const entries: Record<string, unknown>[] = [
+    { type: 'comment', user: 'Agent', comment: confirmComment, date: new Date().toISOString(), ...(sanitizedCompletion !== undefined ? { completion: sanitizedCompletion } : {}) },
+    { type: 'swimlane_change', swimlane: 'require-input', action: 'set', user: 'Agent', date: new Date().toISOString(), comment: confirmComment },
+  ];
+  const result = await updateTaskWithHistory(ticketId, {
+    entries,
+    updatedBy: 'Agent',
+    extraFields: { swimlane: 'require-input' },
+  });
+  if (!result) return null;
+
+  const sessions = getActiveSessionsForTask(ticketId);
+  for (const s of sessions) {
+    s.status = 'waiting-input';
+    s.pausedForInput = true;
+  }
+
+  broadcastEvent('taskUpdated', { id: ticketId });
+  generatePromptNotification(ticketId, task.title || ticketId, 'Require Input');
+  return textResult(
+    `${ticketId} stays in "${currentStatusLabel}" — a hard gate blocks a dispatched, unattended session from advancing it without a surfaced confirmation. ` +
+    `Swimlane set to 'require-input' with your summary attached.\nNext: STOP. Do not keep working this ticket meanwhile — the user resumes it when they confirm.`
+  );
 }
 
 /**
@@ -781,7 +873,7 @@ function splitSkillSections(body: string): Array<{ heading: string | null; text:
 function completeTicketId(value: string): string[] {
   const terminal = new Set(getTerminalStatuses());
   const needle = String(value ?? '').toLowerCase();
-  return Object.values(getWorkspace().tasks)
+  return Object.values(boundWorkspace().tasks)
     .filter((t) => !terminal.has(String(t.status ?? '')) && t.kind !== 'scratch')
     .filter(
       (t) =>
@@ -801,7 +893,7 @@ async function buildTicketPhasePrompt(
   ticketId: string,
 ): Promise<string> {
   const body = (await loadSkillModuleBody(module)) ?? skillModuleFallback(module);
-  const task = getWorkspace().tasks[ticketId];
+  const task = boundWorkspace().tasks[ticketId];
   const header = task ? `Ticket: ${task.id} — ${task.title} (${task.status})\n\n` : '';
   const directive = `${verb} \`${ticketId}\`. Call \`get_ticket('${ticketId}')\` first, then follow the ${module} workflow above.`;
   return `${header}${body}\n\n---\n\n${directive}`;
@@ -870,6 +962,7 @@ export function buildMcpServer(): McpServer {
         tags: z.array(z.string()).nullish(),
         parentId: z.string().nullish(),
         body: z.string().nullish().describe('Markdown body — may be truncated with a recoverable size hint when oversized'),
+        bodyVersion: z.string().optional().describe('FLUX-1550: opaque content-hash CAS token for the current body. Pass back as `baseBodyVersion` on update_ticket to detect a concurrent body edit.'),
         history: z.array(z.unknown()).optional().describe('Digested history (older entries collapsed to summaries)'),
         collapsedCount: z.number().optional(),
         olderHistoryEntries: z.number().optional(),
@@ -877,7 +970,7 @@ export function buildMcpServer(): McpServer {
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ ticketId, historyLimit, expand, fullHistory, fullBody }) => {
-      const task = getWorkspace().tasks[ticketId];
+      const task = boundWorkspace().tasks[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
       const { _path, ...output } = serializeTaskForAgent(task, historyLimit, { expand, fullHistory, fullBody });
       return structuredResult(output);
@@ -894,7 +987,7 @@ export function buildMcpServer(): McpServer {
     },
     { title: 'Get session log', readOnlyHint: true, openWorldHint: false },
     async ({ ticketId, sessionId, tail }) => {
-      const task = getWorkspace().tasks[ticketId];
+      const task = boundWorkspace().tasks[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
       const isAgentSessionEntry = (e: unknown): e is AgentSessionEntry =>
         !!e && typeof e === 'object' && (e as Record<string, unknown>).type === 'agent_session';
@@ -935,7 +1028,7 @@ export function buildMcpServer(): McpServer {
     },
     async ({ module, section }) => {
       const bound = getBoundConversation();
-      const callingTask = bound.id ? getWorkspace().tasks[bound.id] : undefined;
+      const callingTask = bound.id ? boundWorkspace().tasks[bound.id] : undefined;
       const callingSession = callingTask ? getCliSessionSummaryForTask(callingTask.id) : undefined;
       log.info(
         `read_skill: module=${module} section=${section ?? '(none)'} ticket=${bound.id ?? '(unbound)'} ` +
@@ -1004,7 +1097,7 @@ export function buildMcpServer(): McpServer {
     },
     async ({ status, assignee, tag, priority, search, active, limit, includeAll }) => {
       const { rows, note } = selectTicketsForList(
-        Object.values(getWorkspace().tasks),
+        Object.values(boundWorkspace().tasks),
         { status, assignee, tag, priority, search, active, limit, includeAll },
         getTerminalStatuses(),
       );
@@ -1061,13 +1154,13 @@ export function buildMcpServer(): McpServer {
     { title: 'Get project group', readOnlyHint: true, openWorldHint: false },
     async () => {
       const registeredPaths = (await getWorkspacesList()).map((w) => w.path);
-      const ctx = getGroupContext();
+      const ctx = boundWorkspace().groupContext;
       if (ctx) {
         const summary = summarizeGroup(ctx, registeredPaths);
         summary.membership = { role: 'parent', groupName: ctx.config.name, parentRoot: ctx.parentRoot };
         return jsonResult(summary);
       }
-      const binding = getMemberBinding();
+      const binding = boundWorkspace().memberBinding;
       if (binding) {
         const summary = summarizeGroup(null, registeredPaths);
         summary.docsLabel = groupDocsLabel(binding.parentGroup);
@@ -1102,11 +1195,11 @@ export function buildMcpServer(): McpServer {
       author: z.string().optional().describe('Author name (default: Agent)'),
     },
     async ({ title, parentId, status, priority, effort, assignee, tags, body, author }) => {
-      if (getWorkspace().isActivating) return errorResult('Workspace is activating, please retry', 'transient_retry');
+      if (boundWorkspace().isActivating) return errorResult('Workspace is activating, please retry', 'transient_retry');
 
       // Subtask path: resolve + validate the parent, create the child with skipBroadcast, then
       // TOCTOU-safe link it into the parent's subtasks array before emitting taskCreated.
-      const parent = parentId ? getWorkspace().tasks[parentId] : undefined;
+      const parent = parentId ? boundWorkspace().tasks[parentId] : undefined;
       if (parentId && !parent) return errorResult(`Parent ticket ${parentId} not found`, 'not_found');
 
       try {
@@ -1168,7 +1261,7 @@ export function buildMcpServer(): McpServer {
       body: z.string().optional().describe('Markdown body for the new ticket.'),
     },
     async ({ from, fromSeq, toSeq, title, priority, effort, tags, body }) => {
-      if (getWorkspace().isActivating) return errorResult('Workspace is activating, please retry', 'transient_retry');
+      if (boundWorkspace().isActivating) return errorResult('Workspace is activating, please retry', 'transient_retry');
       try {
         const result = await extractTicket({
           ...(from !== undefined ? { from } : {}),
@@ -1200,7 +1293,7 @@ export function buildMcpServer(): McpServer {
     },
     { title: 'Merge tickets', readOnlyHint: false, destructiveHint: true },
     async ({ into, from }) => {
-      if (getWorkspace().isActivating) return errorResult('Workspace is activating, please retry', 'transient_retry');
+      if (boundWorkspace().isActivating) return errorResult('Workspace is activating, please retry', 'transient_retry');
       try {
         const result = await mergeTickets({ into, from });
         return jsonResult(result);
@@ -1225,9 +1318,13 @@ export function buildMcpServer(): McpServer {
       // FLUX-1068: .nullish() — a string (re)parents this ticket, null detaches it. Omit to leave
       // the parent link unchanged. The parent's subtasks array is kept in sync both ways.
       parentId: z.string().nullish().describe('Parent ticket ID to (re)link under; null detaches. Self-parenting and cycles are rejected.'),
+      // FLUX-1550: opaque token from a prior get_ticket's `bodyVersion`. Only meaningful together
+      // with `body` — required to gate a body replacement against a lost-update race; omit and the
+      // write still applies (grandfathered), but can silently clobber a concurrent body edit.
+      baseBodyVersion: z.string().optional().describe('The `bodyVersion` from a prior get_ticket, required alongside `body` to detect a concurrent body edit. Omitting it still writes body (grandfathered) but risks clobbering a concurrent edit.'),
     },
-    async ({ ticketId, title, priority, effort, assignee, tags, body, implementationLink, parentId }) => {
-      const task = getWorkspace().tasks[ticketId];
+    async ({ ticketId, title, priority, effort, assignee, tags, body, implementationLink, parentId, baseBodyVersion }) => {
+      const task = boundWorkspace().tasks[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       // FLUX-1068: parentId (re)linking. A string sets/moves the parent; null detaches. Omitted →
@@ -1236,7 +1333,7 @@ export function buildMcpServer(): McpServer {
       const oldParentId = task.parentId || null;
       const newParentId = reparenting ? (parentId ? parentId : null) : oldParentId;
       if (reparenting && newParentId) {
-        if (!getWorkspace().tasks[newParentId]) return errorResult(`Parent ticket ${newParentId} not found`, 'not_found');
+        if (!boundWorkspace().tasks[newParentId]) return errorResult(`Parent ticket ${newParentId} not found`, 'not_found');
         const linkError = validateParentLink(ticketId, newParentId);
         if (linkError) return errorResult(linkError, 'validation_failed');
       }
@@ -1299,9 +1396,19 @@ export function buildMcpServer(): McpServer {
           ...(deleteFields.length > 0 ? { deleteFields } : {}),
           ...(title !== undefined ? { newTitle: title } : {}),
           ...(body !== undefined ? { newBody: body } : {}),
+          ...(body !== undefined && baseBodyVersion !== undefined ? { baseBodyVersion } : {}),
         });
         if (!result) return errorResult(`Failed to update ${ticketId}`);
       } catch (err: unknown) {
+        // FLUX-1550: a stale baseBodyVersion is a conflict the agent can self-recover from — tell
+        // it to re-read rather than surfacing a generic failure.
+        if (err instanceof StaleBodyError) {
+          return errorResult(
+            `${ticketId}'s body changed since you last read it. Call get_ticket again to see the current body, then re-apply your edit.`,
+            'invalid_state',
+            { currentBodyVersion: err.currentBodyVersion },
+          );
+        }
         return errorResult(`Failed to update ${ticketId}: ${errMessage(err)}`);
       }
 
@@ -1331,7 +1438,7 @@ export function buildMcpServer(): McpServer {
       noDiffExpected: z.boolean().optional().describe('Ready only — true when this ticket genuinely has no code diff. Lifts the commit-before-Ready refusal (still refused if the worktree has uncommitted changes). Not for skipping forgotten work.'),
     },
     async ({ ticketId, newStatus, comment, callerRole, reviewState, planReviewState, completion, noDiffExpected }) => {
-      const task = getWorkspace().tasks[ticketId];
+      const task = boundWorkspace().tasks[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
       // FLUX-922 review fix: capture the prior verdict before the update so the review notification
       // only fires on an actual change (a re-affirming change_status with the same reviewState must
@@ -1470,6 +1577,25 @@ export function buildMcpServer(): McpServer {
 
       if (commentGate.refuse && commentGate.gate === 'ready-comment') {
         return errorResult('Transitioning to Ready requires a completion comment.', 'validation_failed');
+      }
+
+      // FLUX-850: hard gate — a dispatched, unattended, skip-permission session cannot silently
+      // advance this ticket to Ready/Done. Runs AFTER the comment-required check above (so the
+      // agent's completion summary is captured either way) but BEFORE any Ready-only side effects
+      // below (PR creation, worktree reclaim) — the ticket stays at its current status, so none of
+      // that should fire yet. An ordinary interactive session (portal chat, a human-clicked phase
+      // launch) never sets `dispatched`, so this never intercepts those.
+      const dispatchedGateActive = hasDispatchedSkipPermissionSession(getActiveSessionsForTask(ticketId));
+      if (shouldGateDispatchedAdvance({ hasDispatchedSkipPermissionSession: dispatchedGateActive, currentStatus: task.status, newStatus, readyStatus })) {
+        const redirected = await redirectDispatchedAdvanceToRequireInput(
+          ticketId,
+          task,
+          task.status,
+          `Dispatched session wants to move ${ticketId} to "${newStatus}" — confirm to proceed.`,
+          comment,
+          sanitizedCompletion,
+        );
+        return redirected ?? errorResult(`Failed to update ${ticketId}`);
       }
 
       const entries: Record<string, unknown>[] = [];
@@ -1646,6 +1772,11 @@ export function buildMcpServer(): McpServer {
             entries: [{ type: 'activity', user: 'Agent', comment: `Reaped ${reaped.length} stale parked session${reaped.length > 1 ? 's' : ''} from an earlier phase on move to ${newStatus}.`, date: new Date().toISOString() }],
           });
         }
+        // FLUX-1479 (FLUX-1226 Phase E): the persistent per-ticket chat session (FLUX-602), if one
+        // is live, re-derives its phase->persona for the destination status so the SAME chat/history
+        // takes over the new phase's Mission block + skill fragment + (Claude) deny-list — no new
+        // stream. No-op when the ticket has no chat session or the derived phase didn't change.
+        handoffChatSessionPhase(ticketId, newStatus);
       }
 
       broadcastEvent('taskUpdated', { id: ticketId });
@@ -1704,7 +1835,7 @@ export function buildMcpServer(): McpServer {
       ticketId: z.string().describe('Ticket ID (must currently be in Grooming).'),
     },
     async ({ ticketId }) => {
-      const task = getWorkspace().tasks[ticketId];
+      const task = boundWorkspace().tasks[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
       // FLUX-1379: same deterministic lint the `change_status` guard runs, short-circuited here too —
       // a manual review pass on a mechanically-broken plan would just fail the same way an automatic
@@ -1736,7 +1867,7 @@ export function buildMcpServer(): McpServer {
     },
     { title: 'Archive / unarchive ticket', readOnlyHint: false, destructiveHint: true },
     async ({ ticketId, action, comment, toStatus }) => {
-      const task = getWorkspace().tasks[ticketId];
+      const task = boundWorkspace().tasks[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       const archiveStatus = getConfig().archiveStatus || 'Archived';
@@ -1809,7 +1940,7 @@ export function buildMcpServer(): McpServer {
       comment: z.string().optional().describe('set: required for commentRequired swimlanes (the question to ask). clear: optional comment explaining the resolution.'),
     },
     async ({ ticketId, action, swimlane, comment }) => {
-      const task = getWorkspace().tasks[ticketId];
+      const task = boundWorkspace().tasks[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       if (action === 'set') {
@@ -1896,7 +2027,7 @@ export function buildMcpServer(): McpServer {
       supersedes: z.array(z.string()).optional().describe('History entry id(s) this note supersedes. Superseded entries collapse to a one-line marker (recoverable via expand). Pinned/user-authored targets are advisory-only.'),
     },
     async ({ ticketId, type, message, user, summary, pin, supersedes }) => {
-      const task = getWorkspace().tasks[ticketId];
+      const task = boundWorkspace().tasks[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       const ts = new Date().toISOString();
@@ -1938,7 +2069,7 @@ export function buildMcpServer(): McpServer {
       note: z.string().optional().describe('Optional note about what changed in this revision or what to look at.'),
     },
     async ({ ticketId, html, title, note }) => {
-      const task = getWorkspace().tasks[ticketId];
+      const task = boundWorkspace().tasks[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
       if (!isSafeTicketId(ticketId)) return errorResult(`Invalid ticket id ${ticketId}`);
       if (!html || !html.trim()) return errorResult('html is required and must be a non-empty self-contained HTML document');
@@ -1986,7 +2117,7 @@ export function buildMcpServer(): McpServer {
     async ({ ticketId, implementationLink, completionComment, force, completion }) => {
       // FLUX-1147: best-effort, never blocks finish even on garbage input.
       const sanitizedCompletion = sanitizeCompletion(completion);
-      const task = getWorkspace().tasks[ticketId];
+      const task = boundWorkspace().tasks[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       // FLUX-1443: a Scratch ticket has no PR/implementation lifecycle to finish — completion must
@@ -2007,13 +2138,35 @@ export function buildMcpServer(): McpServer {
         );
       }
 
+      // FLUX-850: hard gate — a dispatched, unattended, skip-permission session cannot silently
+      // merge + Done this ticket. Mirrors the `change_status` gate above (same predicate, same
+      // Require-Input redirect) — runs BEFORE the shared-PR guard / merge-lock / actual merge below,
+      // so nothing merges before a human confirms. An ordinary interactive session never sets
+      // `dispatched`, so this never intercepts a human-driven finish.
+      if (shouldGateDispatchedAdvance({
+        hasDispatchedSkipPermissionSession: hasDispatchedSkipPermissionSession(getActiveSessionsForTask(ticketId)),
+        currentStatus: task.status,
+        newStatus: 'Done',
+        readyStatus,
+      })) {
+        const redirected = await redirectDispatchedAdvanceToRequireInput(
+          ticketId,
+          task,
+          task.status,
+          `Dispatched session wants to finish ${ticketId} (merge → Done) — confirm to proceed.`,
+          completionComment,
+          sanitizedCompletion,
+        );
+        return redirected ?? errorResult(`Failed to update ${ticketId}`);
+      }
+
       // Finish-on-shared-PR guard (FLUX-569, from the FLUX-556/PR#6 incident): finishing one
       // member of a SHARED branch merges the whole PR — advancing every bundled sibling to Done
       // as a one-way door, even ones that aren't finished. Refuse when the branch is shared by
       // non-Done sibling tickets, unless `force`. Exempt PR tickets (kind:'pr'): merging a PR
       // ticket to advance its members IS the sanctioned shared-merge surface.
       if (task.branch && task.kind !== 'pr' && !force) {
-        const nonDone = sharedNonDoneSiblings(Object.values(getWorkspace().tasks), task.branch, ticketId);
+        const nonDone = sharedNonDoneSiblings(Object.values(boundWorkspace().tasks), task.branch, ticketId);
         if (nonDone.length > 0) {
           return errorResult(
             `Cannot finish ${ticketId} — its branch \`${task.branch}\` is shared by ${nonDone.length} sibling ticket(s) that are NOT Done: ` +
@@ -2099,6 +2252,17 @@ export function buildMcpServer(): McpServer {
         // in finalLink) — there's no PR of its own to merge. Skip straight to the Done write-up;
         // the branch/worktree still get torn down by the post-merge cleanup below.
         if (!folded) {
+          // CI gate (FLUX-560): consumes GitHub's check-rollup verdict (or the configured
+          // checkCommand for repos with no GitHub checks) before merging — agnostic by
+          // construction, EH only ever sees pass/fail. Mirrors the FLUX-569 shared-PR guard:
+          // status stays unchanged on refusal, `force` (the same param as that guard) overrides.
+          const gateOutcome = await evaluateCiGate(task.branch, getConfig().ci ?? {}, { force: force === true });
+          if (gateOutcome.blocked) {
+            return errorResult(
+              `Cannot finish ${ticketId} — CI gate: ${gateOutcome.reason} Re-run finish with force:true to merge anyway.`,
+              'invalid_state'
+            );
+          }
           try {
             await mergePullRequest(task.branch);
             if (!finalLink || !finalLink.startsWith('http')) {
@@ -2207,7 +2371,7 @@ export function buildMcpServer(): McpServer {
       force: z.boolean().optional().describe('delete only — force delete even if unmerged (default: false). Invalid for other actions.'),
     },
     async ({ ticketId, action, baseBranch, worktree, force }) => {
-      const task = getWorkspace().tasks[ticketId];
+      const task = boundWorkspace().tasks[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       // `force` is only meaningful for delete — reject it on create/status so a misuse is loud.
@@ -2283,6 +2447,15 @@ export function buildMcpServer(): McpServer {
 
   const ENGINE_URL = process.env.EVENT_HORIZON_ENGINE_URL || 'http://localhost:3067';
 
+  /** Epic FLUX-1230: forward this MCP connection's workspace binding across the loopback REST
+   *  hop — the AsyncLocalStorage binding does not propagate through HTTP, so without this header
+   *  the engine would re-resolve the request to the most-recently-opened board instead of the
+   *  board this tool call is bound to. */
+  const boundWorkspaceHeader = (): Record<string, string> => {
+    const root = boundWorkspace().root;
+    return root ? { 'x-eh-workspace': root } : {};
+  };
+
   server.tool(
     'list_available_agents',
     'List available agent personas that can be delegated to. Returns id, label, description, role (lead/worker/flex), and phases for each.',
@@ -2295,7 +2468,7 @@ export function buildMcpServer(): McpServer {
         const url = phase
           ? `${ENGINE_URL}/api/orchestration/personas?phase=${encodeURIComponent(phase)}`
           : `${ENGINE_URL}/api/orchestration/personas`;
-        const res = await fetch(url);
+        const res = await fetch(url, { headers: boundWorkspaceHeader() });
         if (!res.ok) return errorResult('Failed to fetch agent roster', 'channel_unavailable');
         const data: unknown = await res.json();
         const personas = Array.isArray(data) ? data : (data as { personas?: unknown } | null)?.personas;
@@ -2345,7 +2518,7 @@ export function buildMcpServer(): McpServer {
           const framework = process.env.EVENT_HORIZON_FRAMEWORK || resolveDefaultFramework();
           const res = await fetch(`${ENGINE_URL}/api/tasks/${ticketId}/cli-session/delegate`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...boundWorkspaceHeader() },
             body: JSON.stringify({
               framework,
               personaId: d.personaId,
@@ -2382,30 +2555,35 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'start_session',
-    'Start an agent session on a ticket, return IMMEDIATELY (dispatch, don\'t do it yourself). phase:\'fast-path\' grooms+implements small tickets in one session. Full lore: read_skill(\'tools\', \'start_session\').',
+    'Start an agent session on a ticket, return IMMEDIATELY (dispatch, don\'t do it yourself). phase:\'fast-path\' grooms+implements small tickets in one session. phase:\'batch-grooming\' grooms up to 5 sibling tickets sharing one parent in one session. Full lore: read_skill(\'tools\', \'start_session\').',
     {
       ticketId: z.string().describe('Ticket ID to start the session on'),
-      phase: z.enum(['grooming', 'implementation', 'review', 'finalize', 'fast-path']).optional().describe('Work phase (omit to derive from ticket status). \'fast-path\' grooms+implements an XS/S ticket in one session, skipping the plan gate (refused for L/XL effort or tickets with subtasks).'),
+      phase: z.enum(['grooming', 'implementation', 'review', 'finalize', 'fast-path', 'batch-grooming']).optional().describe('Work phase (omit to derive from ticket status). \'fast-path\' grooms+implements an XS/S ticket in one session, skipping the plan gate (refused for L/XL effort or tickets with subtasks). \'batch-grooming\' grooms 1-5 sibling tickets (see batchTicketIds) sharing one parentId in one session.'),
+      batchTicketIds: z.array(z.string()).optional().describe('For phase:"batch-grooming" only: the sibling ticket ids to groom in this one session (must include ticketId, share one parentId, max 5). Ineligible members (L/XL effort, epic parents, not Grooming/Require Input) are excluded and named in the session summary rather than refused, unless every member is ineligible.'),
       personaId: z.string().optional().describe('Optional persona to lead the session (from list_available_agents). Default: the phase\'s solo lead.'),
       effort: z.string().optional().describe('Effort level: low, medium, high, xhigh.'),
-      worktree: z.boolean().optional().describe('Isolate the session in a dedicated git worktree (default true). A branch-bearing session is always worktree-isolated regardless of this flag. Ignored for phase:"grooming".'),
+      worktree: z.boolean().optional().describe('Isolate the session in a dedicated git worktree (default true). A branch-bearing session is always worktree-isolated regardless of this flag. Ignored for phase:"grooming"/"batch-grooming".'),
     },
-    async ({ ticketId, phase, personaId, effort, worktree }) => {
+    async ({ ticketId, phase, batchTicketIds, personaId, effort, worktree }) => {
       try {
         const framework = process.env.EVENT_HORIZON_FRAMEWORK || resolveDefaultFramework();
         // FLUX-845: isolate by default — the engine creates the branch+worktree before spawning.
+        // FLUX-850: `dispatched: true` marks this an unattended, no-human-present launch so
+        // change_status/finish_ticket hard-gate it from silently advancing the ticket past Ready.
         const body: Record<string, unknown> = {
           framework,
           skipPermissions: true,
           patternPosition: 'standalone',
           isolation: worktree === false ? 'branch' : 'worktree',
+          dispatched: true,
         };
         if (phase) body.phase = phase;
+        if (batchTicketIds && batchTicketIds.length > 0) body.batchTicketIds = batchTicketIds;
         if (personaId) body.personaId = personaId;
         if (effort) body.effortOverride = effort;
         const res = await fetch(`${ENGINE_URL}/api/tasks/${ticketId}/cli-session/start`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...boundWorkspaceHeader() },
           body: JSON.stringify(body),
         });
         if (!res.ok) {
@@ -2442,14 +2620,17 @@ export function buildMcpServer(): McpServer {
         // reconcile on every read measured 1.1s avg / 3.4s worst-case.
         await refreshWorktreePool();
         if (batchId) {
-          if (!getFurnaceBatch(batchId)) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
+          const found = getFurnaceBatch(batchId);
+          if (!found || !batchOwnedByBoundWorkspace(found)) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
           await reconcileBatchCached(batchId);
           const batch = getFurnaceBatch(batchId);
           if (!batch) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
           return jsonResult(batch);
         }
         await reconcileAllBatchesCached();
-        let batches = getFurnaceBatchesCache();
+        // FLUX-1554: scope the list to the bound board — the unfiltered global cache leaked every other
+        // open board's batches into any connection's list.
+        let batches = getFurnaceBatchesCacheForWorkspace(boundWorkspace());
         if (status) batches = batches.filter((b) => b.status === status);
         return jsonResult({ batches, slots: { used: globalSlotsInUse(), free: freeSlots(), max: FURNACE_SLOT_CAP } });
       } catch (err: unknown) {
@@ -2479,7 +2660,7 @@ export function buildMcpServer(): McpServer {
       try {
         await ensureFurnaceLoaded();
         const existing = getFurnaceBatch(batchId);
-        if (!existing) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
+        if (!existing || !batchOwnedByBoundWorkspace(existing)) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
         if (trigger) {
           const err = validateBatchTrigger(batchId, trigger as BatchTrigger, getFurnaceBatchesCache());
           if (err) return errorResult(err, 'validation_failed');
@@ -2539,11 +2720,11 @@ export function buildMcpServer(): McpServer {
               'validation_failed',
             );
           }
-          const anchor = getWorkspace().tasks[adoptBranchFrom] as { branch?: string } | undefined;
+          const anchor = boundWorkspace().tasks[adoptBranchFrom] as { branch?: string } | undefined;
           if (!anchor) return errorResult(`adoptBranchFrom ticket ${adoptBranchFrom} not found.`, 'not_found');
           const anchorBranch = anchor.branch;
           if (!anchorBranch) return errorResult(`adoptBranchFrom ticket ${adoptBranchFrom} has no branch to adopt.`, 'validation_failed');
-          const hasOpenPr = prTicketsOnBranch(Object.values(getWorkspace().tasks), anchorBranch).some((t) => t.prState === 'OPEN');
+          const hasOpenPr = prTicketsOnBranch(Object.values(boundWorkspace().tasks), anchorBranch).some((t) => t.prState === 'OPEN');
           if (!hasOpenPr) {
             return errorResult(
               `adoptBranchFrom ticket ${adoptBranchFrom}'s branch (${anchorBranch}) has no open PR to adopt — expected its PR to still be open.`,
@@ -2554,18 +2735,20 @@ export function buildMcpServer(): McpServer {
           adoptedBranch = anchorBranch;
         }
         await ensureFurnaceLoaded();
-        const candidates = Object.values(getWorkspace().tasks).map(toBuildCandidate);
+        const candidates = Object.values(boundWorkspace().tasks).map(toBuildCandidate);
         // FLUX-1235: flag candidates with a live interactive session so the drawer surfaces them before
         // ignite (the Furnace can take over an idle session but 409s on a live one and parks mid-burn).
         const liveSessionTicketIds = new Set(
           candidates.map((c) => c.id).filter((id) => getLiveStandaloneSessionForTask(id)),
         );
+        // FLUX-1554: the one-active-batch invariant is scoped to THIS board — see `resolveTickets`'
+        // identical note (routes/furnace.ts).
         const proposal = buildBatchTickets(candidates, {
           ...(tag !== undefined ? { tag } : {}),
           ...(tickets !== undefined ? { tickets } : {}),
           ...(statuses !== undefined ? { statuses } : {}),
           ...(limit !== undefined ? { limit } : {}),
-          activeBatches: getFurnaceBatchesCache(),
+          activeBatches: getFurnaceBatchesCacheForWorkspace(boundWorkspace()),
           liveSessionTicketIds,
         });
         if (proposal.tickets.length === 0) {
@@ -2575,6 +2758,9 @@ export function buildMcpServer(): McpServer {
             { excluded: proposal.excluded, notes: proposal.notes },
           );
         }
+        // FLUX-1513: tag the batch with the workspace this call is actually bound to (not the bare
+        // registry default) so the per-workspace Stoker fan-out can filter it correctly.
+        const buildWorkspaceRoot = boundWorkspace().root;
         const batch = await createFurnaceBatch({
           title: title ?? 'Backlog batch',
           tickets: proposal.tickets,
@@ -2583,6 +2769,7 @@ export function buildMcpServer(): McpServer {
           ...(burnRate !== undefined ? { burnRate } : {}),
           ...(spawnedFrom ? { spawnedFrom } : {}),
           createdBy: 'furnace_build',
+          ...(buildWorkspaceRoot ? { workspaceRoot: buildWorkspaceRoot } : {}),
         });
         const notes = [...proposal.notes];
         if (adoptedBranch) notes.push(`Adopted ${adoptBranchFrom}'s existing branch \`${adoptedBranch}\` — no new branch/PR was created.`);
@@ -2614,6 +2801,11 @@ export function buildMcpServer(): McpServer {
       if ((reason !== undefined || hard !== undefined) && action !== 'stop') {
         return errorResult(`reason/hard are only valid for action "stop" (got action "${action}").`, 'validation_failed');
       }
+      // FLUX-1554: ownership gate — a connection bound to one board must not ignite/stop/resume/discard
+      // another board's batch just by knowing its id.
+      await ensureFurnaceLoaded();
+      const owned = getFurnaceBatch(batchId);
+      if (!owned || !batchOwnedByBoundWorkspace(owned)) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
       if (action === 'ignite') {
         try {
           const r = await igniteBatch(batchId);
@@ -2692,6 +2884,11 @@ export function buildMcpServer(): McpServer {
       allowedStatuses: z.array(z.string()).optional().describe('action:"add" only: allowed board statuses (default ["Todo"]). Pass e.g. ["In Progress"] to add a mid-implementation follow-up ticket.'),
     },
     async ({ action, batchId, ticketId, allowedStatuses }) => {
+      // FLUX-1554: ownership gate — a connection bound to one board must not act on another board's
+      // batch just by knowing its id.
+      await ensureFurnaceLoaded();
+      const owned = getFurnaceBatch(batchId);
+      if (!owned || !batchOwnedByBoundWorkspace(owned)) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
       if (action === 'retry') {
         try {
           const r = await retryTicket(batchId, ticketId);
@@ -2739,8 +2936,9 @@ export function buildMcpServer(): McpServer {
           if (batch.tickets.some((t) => t.ticketId === ticketId)) {
             return errorResult(`${ticketId} is already in batch ${batchId}.`, 'invalid_state');
           }
-          const { rejected } = validateBatchTickets([ticketId], getWorkspace().tasks, {
-            activeBatches: getFurnaceBatchesCache(),
+          // FLUX-1554: the one-active-batch invariant is scoped to THIS board.
+          const { rejected } = validateBatchTickets([ticketId], boundWorkspace().tasks, {
+            activeBatches: getFurnaceBatchesCacheForWorkspace(boundWorkspace()),
             excludeBatchId: batchId,
             ...(allowedStatuses !== undefined ? { allowedStatuses } : {}),
           });
@@ -2750,7 +2948,7 @@ export function buildMcpServer(): McpServer {
             return errorResult(`Cannot add ${ticketId}: ${why}.`, 'validation_failed');
           }
           const maxOrder = batch.tickets.reduce((m, t) => Math.max(m, t.order), -1);
-          const entry = newBatchTicket(ticketId, maxOrder + 1, getWorkspace().tasks[ticketId]?.title);
+          const entry = newBatchTicket(ticketId, maxOrder + 1, boundWorkspace().tasks[ticketId]?.title);
           const updated = await mutateFurnaceBatch(batchId, (draft) => { draft.tickets.push(entry); });
           if (!updated) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
           return jsonResult({ added: true, batch: updated });
@@ -2793,7 +2991,7 @@ export function buildMcpServer(): McpServer {
     { title: 'Get board state', readOnlyHint: true, openWorldHint: false },
     async () => {
       try {
-        const res = await fetch(`${ENGINE_URL}/api/board/state`);
+        const res = await fetch(`${ENGINE_URL}/api/board/state`, { headers: boundWorkspaceHeader() });
         if (!res.ok) return errorResult(`Failed to get board state: ${res.statusText}`, 'channel_unavailable');
         return jsonResult(await res.json());
       } catch (err: unknown) {
@@ -2814,7 +3012,7 @@ export function buildMcpServer(): McpServer {
   //   board://config   (fixed)    → buildBoardConfigProjection() (== get_board_config)
   //   board://state    (fixed)    → GET /api/board/state         (== get_board_state)
   //   ticket://{id}    (template) → serializeTaskForAgent, _path stripped (== get_ticket)
-  //   docs://{+path}   (template) → getWorkspace().docs[normalizeDocPathInput(path)].body
+  //   docs://{+path}   (template) → boundWorkspace().docs[normalizeDocPathInput(path)].body
   //
   // {+path} (RFC 6570 reserved expansion) is REQUIRED for the docs template: a
   // plain {path} compiles to `([^/,]+)` and stops at the first '/', so a
@@ -2858,7 +3056,7 @@ export function buildMcpServer(): McpServer {
     async (uri) => {
       let res: Response;
       try {
-        res = await fetch(`${ENGINE_URL}/api/board/state`);
+        res = await fetch(`${ENGINE_URL}/api/board/state`, { headers: boundWorkspaceHeader() });
       } catch (err: unknown) {
         return failResource('channel_unavailable', `Failed to get board state: ${errMessage(err)}`);
       }
@@ -2873,7 +3071,7 @@ export function buildMcpServer(): McpServer {
   server.registerResource(
     'ticket',
     new ResourceTemplate('ticket://{id}', {
-      list: async () => ({ resources: listActiveTicketResources(getWorkspace().tasks, resourceTerminalStatuses()) }),
+      list: async () => ({ resources: listActiveTicketResources(boundWorkspace().tasks, resourceTerminalStatuses()) }),
     }),
     {
       title: 'Ticket',
@@ -2881,7 +3079,7 @@ export function buildMcpServer(): McpServer {
       mimeType: 'application/json',
     },
     async (uri, variables) => {
-      const resolved = resolveTicketResource(decodeResourceVar(variables.id), getWorkspace().tasks);
+      const resolved = resolveTicketResource(decodeResourceVar(variables.id), boundWorkspace().tasks);
       if (!resolved.ok) return failResource(resolved.code, resolved.message);
       const { _path, ...output } = serializeTaskForAgent(resolved.task as TaskRecord, undefined, {});
       return { contents: [{ uri: uri.toString(), mimeType: 'application/json', text: JSON.stringify(output) }] };
@@ -2893,7 +3091,7 @@ export function buildMcpServer(): McpServer {
   server.registerResource(
     'docs',
     new ResourceTemplate('docs://{+path}', {
-      list: async () => ({ resources: listDocResources(getWorkspace().docs) }),
+      list: async () => ({ resources: listDocResources(boundWorkspace().docs) }),
     }),
     {
       title: 'Project doc',
@@ -2901,7 +3099,7 @@ export function buildMcpServer(): McpServer {
       mimeType: 'text/markdown',
     },
     async (uri, variables) => {
-      const resolved = resolveDocResource(decodeResourceVar(variables.path), getWorkspace().docs);
+      const resolved = resolveDocResource(decodeResourceVar(variables.path), boundWorkspace().docs);
       if (!resolved.ok) return failResource(resolved.code, resolved.message);
       return { contents: [{ uri: uri.toString(), mimeType: 'text/markdown', text: resolved.body }] };
     },
@@ -2932,7 +3130,7 @@ export function buildMcpServer(): McpServer {
       try {
         const res = await fetch(`${ENGINE_URL}/api/board/board-rebase`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...boundWorkspaceHeader() },
           body: JSON.stringify({ items, conversationId: getBoundConversation().id }),
         });
         if (!res.ok) {
@@ -2959,7 +3157,7 @@ export function buildMcpServer(): McpServer {
       try {
         const res = await fetch(`${ENGINE_URL}/api/board/permission-request`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...boundWorkspaceHeader() },
           body: JSON.stringify({ tool_name, input, conversationId: getBoundConversation().id, conversationToken: getBoundConversation().token }),
         });
         if (!res.ok) return jsonResult({ behavior: 'deny', message: 'Approval channel error — denied.' });
@@ -3004,7 +3202,7 @@ export function buildMcpServer(): McpServer {
       try {
         const res = await fetch(`${ENGINE_URL}/api/board/ask-question`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...boundWorkspaceHeader() },
           body: JSON.stringify({ questions, conversationId: getBoundConversation().id, conversationToken: getBoundConversation().token }),
         });
         if (!res.ok) return errorResult('Ask-question channel error — no answer received. Proceed with your best judgment or ask again.', 'channel_unavailable');
@@ -3033,13 +3231,13 @@ export function buildMcpServer(): McpServer {
     },
     async ({ action, path: docPath, title, body, message }) => {
       if (action === 'list') {
-        const label = activeGroupDocsLabel();
-        const docs = Object.values(getWorkspace().docs)
+        const label = groupDocsLabel(boundGroupWriter());
+        const docs = Object.values(boundWorkspace().docs)
           .filter((d) => d.group === true)
           .sort((a, b) => a.path.localeCompare(b.path))
           .map((d) => ({ path: d.path, title: d.title, directory: d.directory }));
         if (docs.length === 0) {
-          const inGroup = getGroupContext() != null || getMemberBinding() != null;
+          const inGroup = boundGroupWriter() != null;
           return jsonResult({
             docs: [],
             message: inGroup
@@ -3052,7 +3250,7 @@ export function buildMcpServer(): McpServer {
 
       if (action === 'read') {
         if (!docPath) return errorResult('path is required for action "read".', 'validation_failed');
-        const doc = getWorkspace().docs[docPath];
+        const doc = boundWorkspace().docs[docPath];
         if (!doc || !doc.group) {
           return errorResult(`Group doc '${docPath}' not found. Use group_doc action:"list" to see available paths.`, 'not_found');
         }
@@ -3060,7 +3258,7 @@ export function buildMcpServer(): McpServer {
       }
 
       // submit / delete both need a group writer.
-      const writer = getGroupContext() ?? getMemberBinding()?.parentGroup ?? null;
+      const writer = boundGroupWriter();
       if (!writer) {
         return errorResult(
           'No group writer is available. This workspace is not a group parent and is not bound to one. Set up a multi-repo group first (see get_project_group).',
@@ -3251,6 +3449,65 @@ function extractBoundConversationFromRequest(req: IncomingMessage): BoundConvers
   return { id: id || null, token: token || null };
 }
 
+/**
+ * FLUX-1448 (epic FLUX-1230 S3): per-connection MCP workspace binding, parallel to
+ * `boundConversationALS` above. The shared HTTP mount means every tool handler below reads
+ * `boundWorkspace()` instead of the bare registry default so a session spawned against workspace
+ * A can never read/write workspace B's tickets even when both boards use the same `FLUX-*` ids —
+ * the actual cross-board id-collision fix this ticket exists for. Bound from the `x-eh-workspace`
+ * header (see `buildSpawnMcpConfigArgs`/`buildMcpServerEntry`), which carries the session's
+ * `workspaceRoot` (the board/registry root — NOT a worktree/execution path).
+ *
+ * `null` in the store means "this request carried no recognized workspace" (unrouted client, or a
+ * header naming a root nothing has `openWorkspace()`-d yet) — `boundWorkspace()` then falls back
+ * to `getWorkspace()`, the same "unrouted" behavior every call site had before this ticket. In
+ * today's single-workspace mode nothing calls `openWorkspace` yet, so the registry lookup always
+ * misses and every call resolves to `getWorkspace()`'s `defaultWorkspace` — byte-for-byte
+ * unchanged behavior until a later subtask actually opens multiple workspaces.
+ */
+/** Reads `x-eh-workspace` off the request and resolves it via {@link resolveWorkspaceFromRoot}
+ *  (S1 registry, then the legacy default/boot binding — the FLUX-1455 rule). Unset header
+ *  resolves to `null` — not an error, same "unrouted" handling
+ *  `extractBoundConversationFromRequest` gives an unbound conversation.
+ *
+ *  The default-root leg matters here just as much as on the HTTP middleware path: the boot
+ *  board is never a registry entry, so a session spawned on it sends its root back on every
+ *  MCP call but a registry-only lookup misses — and the old `getWorkspace()` fallback then
+ *  silently bound the session to whichever OTHER board the S10 switcher opened last (the
+ *  "my scratch chat thinks it's in a different project" failure). */
+function extractBoundWorkspaceFromRequest(req: IncomingMessage): Workspace | null {
+  const headerRoot = req.headers['x-eh-workspace'];
+  const root = Array.isArray(headerRoot) ? headerRoot[0] : headerRoot;
+  if (!root) return null;
+  return resolveWorkspaceFromRoot(root);
+}
+
+/** The workspace this MCP call should read/write: the request-bound one for this connection
+ *  (runWithWorkspace — getWorkspace() consults the binding), else the registry's active/default
+ *  workspace — the pre-S3 fallback every one of the sites below used to call directly. Kept as
+ *  a named alias so tool handlers read as explicitly bound. */
+function boundWorkspace(): Workspace {
+  return getWorkspace();
+}
+
+/**
+ * FLUX-1554: does `batch` belong to the bound connection's board? Before this, every Furnace MCP tool
+ * resolved a bare `batchId` against the process-global cache with no ownership check at all — a
+ * connection bound to board A could read or mutate board B's batch just by knowing its id. Gate every
+ * by-id Furnace tool through this before acting on it; a mismatch is reported identically to
+ * "not found" so a connection can't even probe for another board's batch ids.
+ */
+function batchOwnedByBoundWorkspace(batch: FurnaceBatch): boolean {
+  const ws = boundWorkspace();
+  return batchBelongsToWorkspaceRoot(batch, ws.root, getDefaultWorkspace().root);
+}
+
+/** FLUX-1558: the bound workspace's own group-writer context (parent's own, or a member's parent). */
+function boundGroupWriter(): GroupContext | null {
+  const ws = boundWorkspace();
+  return ws.groupContext ?? ws.memberBinding?.parentGroup ?? null;
+}
+
 export async function handleMcpHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const headerId = req.headers['mcp-session-id'];
   const sessionId = Array.isArray(headerId) ? headerId[0] : headerId;
@@ -3287,7 +3544,14 @@ export async function handleMcpHttpRequest(req: IncomingMessage, res: ServerResp
   // `initialize`) — the actual tool call that reads it happens on a later POST reusing this same
   // transport, keyed by Mcp-Session-Id.
   const bound = extractBoundConversationFromRequest(req);
-  await boundConversationALS.run(bound, () => transport!.handleRequest(req, res));
+  // FLUX-1448: same per-request extraction for the workspace binding, nested inside the
+  // conversation ALS so both are live for every tool handler invoked off this request.
+  // Epic FLUX-1230: routed through the shared runWithWorkspace seam (workspace-context.ts) so
+  // task-store default parameters (`ws = getWorkspace()`) and every other legacy call inside a
+  // tool handler resolve to this connection's board too — not just the sites that call
+  // boundWorkspace() explicitly.
+  const boundWs = extractBoundWorkspaceFromRequest(req);
+  await boundConversationALS.run(bound, () => runWithWorkspace(boundWs, () => transport!.handleRequest(req, res)));
 }
 
 // NOTE (FLUX-705): no self-start-on-direct-invocation block here. This module is now

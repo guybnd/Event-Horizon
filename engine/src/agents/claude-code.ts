@@ -1,4 +1,4 @@
-import { getWorkspace } from '../workspace-context.js';
+import { getWorkspace, resolveWorkspaceByRoot, runWithWorkspace } from '../workspace-context.js';
 import { log } from '../log.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as path from 'path';
@@ -23,10 +23,10 @@ import { signConversation } from '../session-binding.js';
 import { buildMcpServerEntry } from '../workflow-installer.js';
 import { ensureSharedServer, getSharedServerUrl, isSharedHttpPlatformProven } from '../shared-mcp-server.js';
 import { buildResumePreamble } from '../resume-preamble.js';
-import { disallowedEhToolsForPersona } from '../orchestration-personas.js';
+import { disallowedEhToolsForPersona, resolveSoloChatPersona } from '../orchestration-personas.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest, SendInputOptions } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, resolveEffectivePhase, buildPhaseHandoffNote } from './shared.js';
 import { BOARD_CONVERSATION_ID } from './board.js';
 
 /**
@@ -129,18 +129,18 @@ export async function ensureSharedServersForRoot(projectPath: string, phase?: st
  * defaults to) the `http` transport — a legacy stdio entry already gets correct per-session env
  * via ordinary child-process inheritance and needs no override here.
  */
-function eventHorizonSpawnOverride(conversationId?: string): Record<string, McpServerConfig> {
-  if (!conversationId) return {};
+function eventHorizonSpawnOverride(conversationId?: string, workspaceRoot?: string): Record<string, McpServerConfig> {
+  if (!conversationId && !workspaceRoot) return {};
   const base = getWorkspaceMcpServers()['event-horizon'];
   if (base && base.type !== 'http') return {}; // stdio (or another transport) — already routed via env inheritance
   // buildMcpServerEntry is the canonical {type, url, alwaysLoad} builder (also used by the
   // installer to write the static workspace .mcp.json this `base` comes from) — reuse it so the
   // URL/port stay correct even if `base` is stale or absent, and layer the header override on top.
-  return { 'event-horizon': { ...(base ?? {}), ...buildMcpServerEntry(conversationId) } };
+  return { 'event-horizon': { ...(base ?? {}), ...buildMcpServerEntry(conversationId, workspaceRoot) } };
 }
 
-function buildModuleMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string, conversationId?: string): string[] {
-  const filtered = { ...buildModuleServerMap(phase, tags, projectPath), ...eventHorizonSpawnOverride(conversationId) };
+function buildModuleMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string, conversationId?: string, workspaceRoot?: string): string[] {
+  const filtered = { ...buildModuleServerMap(phase, tags, projectPath), ...eventHorizonSpawnOverride(conversationId, workspaceRoot) };
   if (Object.keys(filtered).length === 0) return [];
   return ['--mcp-config', JSON.stringify({ mcpServers: filtered })];
 }
@@ -171,10 +171,10 @@ export function filterMcpServersByPhase(
   return out;
 }
 
-export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string, conversationId?: string): string[] {
+export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string, conversationId?: string, workspaceRoot?: string): string[] {
   const serverPhases = getConfig().mcpServerPhases as Record<string, string[]> | undefined;
   const hasProfiles = !!serverPhases && typeof serverPhases === 'object' && Object.keys(serverPhases).length > 0;
-  if (!hasProfiles) return buildModuleMcpConfigArgs(phase, tags, projectPath, conversationId);
+  if (!hasProfiles) return buildModuleMcpConfigArgs(phase, tags, projectPath, conversationId, workspaceRoot);
 
   const merged: Record<string, McpServerConfig> = { ...getWorkspaceMcpServers() };
   for (const [id, cfg] of Object.entries(buildModuleServerMap(phase, tags, projectPath))) {
@@ -188,20 +188,26 @@ export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], project
     // Fail open to merge mode rather than spawn an agent that can't manage the
     // ticket. (Review finding alongside FLUX-490.)
     console.warn('[mcp] strict profile would omit event-horizon — falling back to merge mode');
-    return buildModuleMcpConfigArgs(phase, tags, projectPath, conversationId);
+    return buildModuleMcpConfigArgs(phase, tags, projectPath, conversationId, workspaceRoot);
   }
   if (Object.keys(filtered).length === 0) return [];
   // FLUX-604: keep the agent's OWN ticket tools loaded directly — no tool-search
   // deferral loop (the orchestrator was re-searching get_ticket ~10x before calling
   // it). Requires Claude Code >= 2.1.121. FLUX-1213: also carry this session's bound
   // conversationId as HTTP headers so its HITL prompts route to its own ticket.
+  // FLUX-1448: and its workspaceRoot as x-eh-workspace, so the MCP per-connection binding
+  // resolves the same board as the rest of this session (see buildMcpServerEntry).
   if (filtered['event-horizon']) {
+    const headers: Record<string, string> = {};
+    if (conversationId) {
+      headers['x-eh-conversation-id'] = conversationId;
+      headers['x-eh-conversation-token'] = signConversation(conversationId);
+    }
+    if (workspaceRoot) headers['x-eh-workspace'] = workspaceRoot;
     filtered['event-horizon'] = {
       ...filtered['event-horizon'],
       alwaysLoad: true,
-      ...(conversationId && filtered['event-horizon'].type === 'http'
-        ? { headers: { 'x-eh-conversation-id': conversationId, 'x-eh-conversation-token': signConversation(conversationId) } }
-        : {}),
+      ...(Object.keys(headers).length && filtered['event-horizon'].type === 'http' ? { headers } : {}),
     };
   }
   return ['--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: filtered })];
@@ -296,8 +302,11 @@ const DISPATCH_LIFECYCLE_LABEL: Record<Exclude<DispatchLifecycle, 'working'>, st
  * dialogue, so the orchestrator's own working context is untouched). `lifecycle: 'working'` carries
  * an in-flight narration message; the other lifecycles are bracketing markers. Best-effort: a
  * transcript-append or broadcast hiccup must never disturb the session it is narrating.
+ *
+ * Exported (FLUX-1580 review follow-up) solely so the workspace-rebinding fix below is directly
+ * unit-testable — see claude-code-dispatch-tee-workspace.test.ts.
  */
-function teeDispatchActivityToBoard(
+export function teeDispatchActivityToBoard(
   session: CliSessionRecord,
   taskId: string,
   lifecycle: DispatchLifecycle,
@@ -306,24 +315,32 @@ function teeDispatchActivityToBoard(
   if (!isDispatchedSession(session, taskId)) return;
   const trimmed = text.trim();
   if (!trimmed) return;
-  try {
-    appendTranscriptEvent(BOARD_CONVERSATION_ID, {
-      type: 'dispatch-activity',
-      sourceTask: taskId,
-      phase: session.phase,
-      lifecycle,
-      // FLUX-869: carry the session start so the board chip can derive run duration client-side
-      // (live-ticking while `working`, final `ran Xm` on terminal rows) without event correlation.
-      startedAt: session.startedAt,
-      text: trimmed,
-      timestamp: new Date().toISOString(),
-    });
-    broadcastEvent('taskUpdated', { id: BOARD_CONVERSATION_ID });
-  } catch (err) {
-    // FLUX-862: best-effort (board narration must never break the dispatched session it's
-    // narrating), but a persistent failure here was previously completely invisible — log it.
-    log.debug(`[teeDispatchActivityToBoard] failed to tee ${lifecycle} for ${taskId}:`, err);
-  }
+  // FLUX-1580: every call site here fires from dispatched-session lifecycle handling — several of
+  // them from raw child-process 'exit'/timeout callbacks with no ambient request binding (the same
+  // class of gap board-core.ts's wireBoardProc exit handler already had to fix). Rebind explicitly
+  // to the DISPATCHED SESSION'S OWN workspace (already stamped on every CliSessionRecord at spawn,
+  // FLUX-1531) so this always tees onto that workspace's own `__board__.jsonl`, never whichever
+  // workspace happens to be ambiently active when the callback fires.
+  runWithWorkspace(resolveWorkspaceByRoot(session.workspaceRoot ?? ''), () => {
+    try {
+      appendTranscriptEvent(BOARD_CONVERSATION_ID, {
+        type: 'dispatch-activity',
+        sourceTask: taskId,
+        phase: session.phase,
+        lifecycle,
+        // FLUX-869: carry the session start so the board chip can derive run duration client-side
+        // (live-ticking while `working`, final `ran Xm` on terminal rows) without event correlation.
+        startedAt: session.startedAt,
+        text: trimmed,
+        timestamp: new Date().toISOString(),
+      });
+      broadcastEvent('taskUpdated', { id: BOARD_CONVERSATION_ID });
+    } catch (err) {
+      // FLUX-862: best-effort (board narration must never break the dispatched session it's
+      // narrating), but a persistent failure here was previously completely invisible — log it.
+      log.debug(`[teeDispatchActivityToBoard] failed to tee ${lifecycle} for ${taskId}:`, err);
+    }
+  });
 }
 
 /**
@@ -799,6 +816,7 @@ export { isChatEditGated };
 export function disallowedToolsArgs(
   session: {
     phase?: CliSessionRecord['phase'] | undefined;
+    handoffPhase?: CliSessionRecord['phase'] | undefined;
     personaId?: string | undefined;
     focusComment?: string | undefined;
     patternPosition?: CliSessionRecord['patternPosition'] | undefined;
@@ -817,9 +835,15 @@ export function disallowedToolsArgs(
   // lead/flex/unpersona'd sessions. Never scoped for `chat` sessions (interactive; savings
   // negligible, confusion high) — checked here rather than inside the phase-baseline computation
   // so a chat session with a stray personaId (ad-hoc launch) still gets the full toolset.
-  const ehDisallowed = session.phase === 'chat' ? undefined : disallowedEhToolsForPersona({
+  // FLUX-1479 (FLUX-1226 Phase E): a persistent chat session that received a phase HANDOFF
+  // (`session.handoffPhase` — see the mcp-server.ts change_status handler) recomputes this against
+  // the destination phase, not the literal `session.phase` (which stays 'chat' by design — FLUX-602
+  // relies on it to keep the persistent per-ticket chat alive across status moves). A session with
+  // no handoff behaves byte-identically to before.
+  const effectivePhase = session.handoffPhase ?? session.phase;
+  const ehDisallowed = effectivePhase === 'chat' ? undefined : disallowedEhToolsForPersona({
     personaId: session.personaId,
-    phase: session.phase,
+    phase: effectivePhase,
     patternPosition: session.patternPosition,
     enableTools: session.enableTools,
     focusComment: session.focusComment,
@@ -837,14 +861,16 @@ export function disallowedToolsArgs(
  * lead/flex/unpersona'd/chat sessions) but stores only the bare tool names, not the full CLI arg.
  */
 export function stampDisallowedEhTools(session: CliSessionRecord): void {
-  session.disallowedEhTools = session.phase === 'chat' ? undefined : disallowedEhToolsForPersona({
+  const effectivePhase = session.handoffPhase ?? session.phase;
+  session.disallowedEhTools = effectivePhase === 'chat' ? undefined : disallowedEhToolsForPersona({
     personaId: session.personaId,
-    phase: session.phase,
+    phase: effectivePhase,
     patternPosition: session.patternPosition,
     enableTools: session.enableTools,
     focusComment: session.focusComment,
   });
 }
+
 
 /** FLUX-1390: is the opt-in ScheduleWakeup-honoring path on? Default off (see CONFIG_DEFAULTS.agents). */
 export function honorScheduledWakeupsEnabled(): boolean {
@@ -1057,8 +1083,13 @@ async function finalizeTerminalSession(
   }
 
   if (finalStatus === 'completed') {
-    checkFrameworkHealth(session.framework).catch(() => {});
-    checkSkillStaleness(session.framework).catch(() => {});
+    // FLUX-1555 (finding F): this fires from the child process's 'exit' handler with no ambient
+    // request binding — rebind to the session's OWNING board so both the health/staleness
+    // inspection and the resulting notification land there, not on whatever board is active.
+    runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => {
+      checkFrameworkHealth(session.framework).catch(() => {});
+      checkSkillStaleness(session.framework).catch(() => {});
+    });
     // FLUX-1437: try the stale-wait catch-and-resume BEFORE flagging/parking — a dispatched
     // session that ended on a dead background-task wait promise isn't actually stuck on a human.
     // If it resumed, this turn is no longer terminal: skip flagIfParked and the delegation/fan-in
@@ -1069,7 +1100,10 @@ async function finalizeTerminalSession(
     // A 'completed' turn by definition armed no wakeup (tryEnterScheduledWake claimed those before
     // this helper ran), so a parked group lead's "I'll keep waiting" narration is an empty promise —
     // leadWaitOverride upgrades the flag text to name it.
-    await flagIfParked(session, id, leadWaitOverride(session));
+    // FLUX-1563: same unbound-exit-handler rebind as the health-check call above — flagIfParked
+    // resolves the ticket (and raises needsAction/notification) via getWorkspace(), which must be
+    // bound to the session's OWNING board, not whatever board is active.
+    await runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => flagIfParked(session, id, leadWaitOverride(session)));
   }
 
   // Notify delegation awaiters (supervisor pattern).
@@ -1107,14 +1141,25 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
     ? resolveModel(session.taskKey ?? 'implementation.lead', framework, getConfig())
     : null;
 
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { diffBlock: session.diffBlock, phase: session.phase, framework: 'claude', editsGated: isChatEditGated(session, task) || isScratchSession(task), patternPosition: session.patternPosition });
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { diffBlock: session.diffBlock, phase: resolveEffectivePhase(session), framework: 'claude', editsGated: isChatEditGated(session, task) || isScratchSession(task), patternPosition: session.patternPosition, batchTicketIds: session.batchTicketIds, batchExcluded: session.batchExcluded });
 
   // FLUX-579: ensure this session's per-worktree shared HTTP server(s) exist (keyed
   // by execution root) before building the MCP config that looks them up.
   const sessionTags = Array.isArray(task.tags) ? task.tags : undefined;
   if (framework === 'claude') await ensureSharedServersForRoot(executionRoot, session.phase, sessionTags);
 
-  const modelToUse = session.model || selectedModel;
+  // FLUX-1479 (FLUX-1226 Phase F): a resolved phase-default (or explicit) persona's own `model`
+  // wins over the task-tier policy (`selectedModel`) but loses to an explicit per-conversation
+  // override (`session.model` — the chat model picker, FLUX-604, or a delegate's already-resolved
+  // model, FLUX-482/931). Delegate/relay spawns are excluded: they resolve their model entirely
+  // through the `/delegate` route (routes/cli-session.ts) before this ever runs, and persona.model
+  // is scoped to solo/dispatched sessions only (see OrchestrationPersona.model's doc comment).
+  const isDelegateOrRelaySpawn = session.patternPosition === 'assistant' || session.patternPosition === 'step';
+  const personaModel = framework === 'claude' && !isDelegateOrRelaySpawn
+    ? resolveSoloChatPersona(resolveEffectivePhase(session), session.personaId, isScratchSession(task))?.model
+    : undefined;
+
+  const modelToUse = session.model || personaModel || selectedModel;
   // FLUX-1375: persist the resolved model onto the session — previously only a local var, so the
   // fallback cost estimator had no real model to key on (it was passed session.resumeSessionId, a
   // UUID, instead) and a resumed turn's `--model` arg silently fell back to the CLI's own default.
@@ -1137,7 +1182,7 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
     // Member worktree: add local .flux-group/ so the agent reads shared group docs (FLUX-422).
     ...buildGroupDocsScopeArg(workspaceRoot),
     // Inject enabled module MCP servers dynamically (phase+tag gated, skips errored probes).
-    ...(framework === 'claude' ? buildSpawnMcpConfigArgs(session.phase, sessionTags, executionRoot, id) : []),
+    ...(framework === 'claude' ? buildSpawnMcpConfigArgs(session.phase, sessionTags, executionRoot, id, workspaceRoot) : []),
   ];
 
   const effortCap = CLI_CAPABILITIES[framework].effort;
@@ -1254,7 +1299,11 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
     // S10 (epic FLUX-996): a spawn that never got going is otherwise invisible on the board — no
     // session ever ran to trip the parked-turn backstop. Raise it directly via the same
     // needsAction + notification plumbing so it surfaces even when nobody is watching this ticket.
-    if (isFirstOutcome) void raiseNeedsAction(id, `Failed to start agent: ${error.message}`);
+    // FLUX-1563: this fires from the child process's 'error' handler with no ambient request
+    // binding — rebind to the session's OWNING board (mirrors FLUX-1555's finalizeTerminalSession fix).
+    if (isFirstOutcome) {
+      runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => void raiseNeedsAction(id, `Failed to start agent: ${error.message}`));
+    }
 
     // FLUX-849: a spawn failure after the 'started' tee would otherwise leave the board chip
     // dangling — bracket it with a terminal 'failed' marker so the lifecycle is symmetric.
@@ -1337,8 +1386,11 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
       // S10 (epic FLUX-996): surface a crashed spawn (non-zero/signalled exit, not a user stop or
       // a healthy Require-Input pause) via the same needsAction + notification plumbing used
       // elsewhere — this session never reaches the parked-turn backstop (it never really started).
+      // FLUX-1563: unbound child-process 'exit' handler — rebind to the session's OWNING board.
       if (outcome === 'error') {
-        void raiseNeedsAction(id, `Agent process exited unexpectedly (${signal ? `signal ${signal}` : `exit code ${code}`}).`);
+        runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => {
+          void raiseNeedsAction(id, `Agent process exited unexpectedly (${signal ? `signal ${signal}` : `exit code ${code}`}).`);
+        });
       }
     }
     // Clear heartbeat timer
@@ -1512,11 +1564,19 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
 
   const task = getWorkspace().tasks[id] as ClaudeTask;
 
+  // FLUX-602: record the user's turn in the durable transcript (raw tier) FIRST, before the
+  // resume-preamble (git work) await below — previously that await ran before this append (several
+  // seconds under load), so a minimize->reopen (or any transcript fetch) in that window rendered no
+  // trace of the just-sent message (FLUX-1495). The image refs ride on the turn (FLUX-674) so a
+  // reload / cold resume re-presents them.
+  appendTranscriptEvent(id, { type: 'user', text: message, attachments, timestamp: inputAt });
+
   // FLUX-655: on a RESUMED turn, re-ground the agent in the moved tree. If the world actually
   // changed (branch fell behind, master rewrote files underneath us, sibling tickets merged), build
-  // a compact situational update to prepend to the prompt below. Computed BEFORE the user event is
-  // recorded so the `resume-preamble` transcript event is ordered ahead of the `user` event for this
-  // turn (FLUX-716 item 3). Fully best-effort: a null assemble (no delta / git hiccup) is a no-op.
+  // a compact situational update to prepend to the prompt below. The preamble note still RENDERS
+  // ahead of the user bubble above for the same turn (FLUX-716 item 3): projectTranscript reorders a
+  // same-timestamp note that lands right after its turn's user event, so storage order no longer has
+  // to match display order. Fully best-effort: a null assemble (no delta / git hiccup) is a no-op.
   let resumePreamble: string | null = null;
   if (session.resumeSessionId) {
     resumePreamble = await buildResumePreamble({
@@ -1529,10 +1589,6 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       appendTranscriptEvent(id, { type: 'resume-preamble', text: resumePreamble, timestamp: inputAt });
     }
   }
-
-  // FLUX-602: record the user's turn in the durable transcript (raw tier). The image refs ride
-  // on the turn (FLUX-674) so a reload / cold resume re-presents them.
-  appendTranscriptEvent(id, { type: 'user', text: message, attachments, timestamp: inputAt });
 
   // History comment shows the user's words plus a note of any attached files.
   const fileNote = attachments.length
@@ -1554,15 +1610,20 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   // the user's message — FLUX-716 item 3 orders it before the user event).
   // FLUX-926 / FLUX-1123: same "why is this blocked" note as the initial spawn, recomputed per
   // resumed turn — shared across adapters via prependEditGateNote (framework-aware wording).
+  // FLUX-1479 (FLUX-1226 Phase E): a pending phase handoff (mcp-server.ts's change_status handler)
+  // announces itself once, on the next resumed turn — see buildPhaseHandoffNote's own doc comment.
+  const handoffNote = buildPhaseHandoffNote(session, task, 'claude');
+  if (handoffNote) session.handoffPhaseAnnounced = true;
   const promptWithGateNote = prependEditGateNote(session, task, 'claude', safeMessage);
-  const promptForCli = resumePreamble ? `${resumePreamble}\n\n---\n\n${promptWithGateNote}` : promptWithGateNote;
+  const promptWithHandoffNote = handoffNote ? `${handoffNote}\n\n---\n\n${promptWithGateNote}` : promptWithGateNote;
+  const promptForCli = resumePreamble ? `${resumePreamble}\n\n---\n\n${promptWithHandoffNote}` : promptWithHandoffNote;
 
   // FLUX-579: ensure the per-worktree shared server exists for this resumed turn's
   // execution root before resolving the MCP config (engine may have restarted, or
   // this is the first turn in a freshly-created worktree).
   const resumeTags = Array.isArray(task?.tags) ? task.tags : undefined;
   await ensureSharedServersForRoot(executionRoot, session.phase, resumeTags);
-  const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, resumeTags, executionRoot, id);
+  const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, resumeTags, executionRoot, id, workspaceRoot);
   const meArgs = modelEffortArgs(session);
   stampDisallowedEhTools(session);
   // FLUX-691: `--include-partial-messages` → token-by-token live streaming on the resume/send path.
@@ -1650,7 +1711,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       appendErrorToSession(session, failureMessage);
       // S10 (epic FLUX-996): same needsAction + notification surfacing as the initial-spawn path.
       // Only raise when this handler is the first to observe the outcome (FLUX-1204).
-      if (isFirstOutcome) void raiseNeedsAction(id, failureMessage);
+      // FLUX-1563: unbound child-process 'error' handler — rebind to the session's OWNING board.
+      if (isFirstOutcome) {
+        runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => void raiseNeedsAction(id, failureMessage));
+      }
     }
     flushSessionOutput(session, true);
     // FLUX-849: a crashed resumed turn (reply spawn error) was previously invisible on the board —
@@ -1735,8 +1799,11 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       session.status = finalStatus;
       session.endedAt = new Date().toISOString();
       await finalizeTerminalSession(session, id, finalStatus, code, signal, workspaceRoot);
+      // FLUX-1563: unbound child-process 'exit' handler — rebind to the session's OWNING board.
       if (finalStatus === 'failed' && isFirstOutcome) {
-        void raiseNeedsAction(id, `${session.label} reply ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`);
+        runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => {
+          void raiseNeedsAction(id, `${session.label} reply ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`);
+        });
       }
       return;
     }
@@ -1757,8 +1824,12 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       // tryEnterScheduledWake), so only flag the wait-promise language for chat — a resumed
       // dispatched-phase session ending without a board action is already caught by flagIfParked's
       // HARD backstop regardless of what it said.
+      // FLUX-1563: unbound child-process 'exit' handler — rebind flagIfUnarmedWaitPromise/
+      // flagIfParked (both raise needsAction + a notification) to the session's OWNING board.
       if (session.phase === 'chat') {
-        await flagIfUnarmedWaitPromise(id, lastAssistantText(session.sessionHistoryEntry?.progress));
+        await runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () =>
+          flagIfUnarmedWaitPromise(id, lastAssistantText(session.sessionHistoryEntry?.progress)),
+        );
       }
       // FLUX-1437: same stale-wait catch-and-resume as finalizeTerminalSession — try it BEFORE
       // flagging/parking. No-ops instantly for chat (tryResumeStaleWait's isDispatchedSession gate),
@@ -1766,7 +1837,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       // Non-chat: a resumed group LEAD ending clean here also armed no wakeup (tryEnterScheduledWake
       // returned above), so its "I'll keep waiting" narration gets the same specific flag text.
       if (!(await tryResumeStaleWait(session, id, workspaceRoot))) {
-        await flagIfParked(session, id, leadWaitOverride(session));
+        await runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => flagIfParked(session, id, leadWaitOverride(session)));
       }
     }
     // FLUX-849: bracket the dispatched session's board narration on this resumed path.
@@ -1790,7 +1861,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       // S10 (epic FLUX-996): same needsAction + notification surfacing as the initial-spawn path.
       // Only raise when this handler is the first to observe the outcome (FLUX-1204) — a spurious
       // 'error' that already fired must not be double-counted by this non-zero/signalled 'exit'.
-      if (isFirstOutcome) void raiseNeedsAction(id, replyOutcome);
+      // FLUX-1563: unbound child-process 'exit' handler — rebind to the session's OWNING board.
+      if (isFirstOutcome) {
+        runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => void raiseNeedsAction(id, replyOutcome));
+      }
     }
     broadcastEvent('taskUpdated', { id });
   });

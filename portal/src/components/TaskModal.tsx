@@ -1,5 +1,7 @@
-import { memo, useDeferredValue } from 'react';
+import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { useMotionTokens } from '../motion/tokens';
+import { useAppSelector } from '../store/useAppSelector';
 import { OrchestrationLauncher } from './OrchestrationLauncher';
 import { ReadyForMergePrompt } from './task-modal/ReadyForMergePrompt';
 import { StartTaskPrompt } from './task-modal/StartTaskPrompt';
@@ -77,7 +79,7 @@ export const TaskModal = memo(function TaskModal() {
     readCommentIds, unreadCommentCount,
     isSwimlaneOnly, hasActiveSessionForPrompt, cliSessionActive,
     groomingBanner, requireInputBanner, readyForMergeBanner,
-    handleSave, handleDelete,
+    handleSave, saveField, handleDelete,
     sendCommentDirectly, sendReplyDirectly, submitRequireInputResponse,
     handleReturnToWork, openLauncher, handleReviewLaunch,
     sendFinishCommand, handleLaunchWithBranchCheck, handleStartPromptConfirm,
@@ -96,6 +98,59 @@ export const TaskModal = memo(function TaskModal() {
   // false from the first render and nothing previously deferred the content mount.
   const deferredModalTask = useDeferredValue(modalTask);
   const isContentPending = modalTask !== deferredModalTask;
+
+  const animationsEnabled = config?.animationsEnabled ?? true;
+  const tokens = useMotionTokens();
+  const Container = animationsEnabled ? motion.div : 'div';
+
+  // FLUX-1507: card→modal morph. `modalOriginRect` (AppContext, set by openTaskModal/
+  // openTaskFullView's `from` arg) is the clicked card's rect. `originForOpen` snapshots it
+  // ONLY on the closed→open transition — and self-clears a couple of frames later — so later
+  // full/popup toggles (a fresh AnimatePresence mount, same modal instance) don't replay the
+  // long-distance card morph; they get a plain fade instead. This is the FLIP `layoutId` from
+  // FLUX-629 would have needed a live card rect for, minus the per-render measurement cost: the
+  // target rect below is the view's known fixed geometry, not something we measure.
+  const modalOriginRect = useAppSelector((s) => s.modalOriginRect);
+  const [originForOpen, setOriginForOpen] = useState<typeof modalOriginRect>(null);
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    if (isModalOpen && !wasOpenRef.current) {
+      setOriginForOpen(modalOriginRect);
+    } else if (!isModalOpen) {
+      setOriginForOpen(null);
+    }
+    wasOpenRef.current = isModalOpen;
+  }, [isModalOpen, modalOriginRect]);
+  useEffect(() => {
+    if (!originForOpen) return;
+    const id = requestAnimationFrame(() => requestAnimationFrame(() => setOriginForOpen(null)));
+    return () => cancelAnimationFrame(id);
+  }, [originForOpen]);
+
+  const morphTransform = useMemo(() => {
+    if (tokens.instant || !originForOpen) return null;
+    // Known fixed geometry for each view (TaskModalFullView's `fixed inset-3`; TaskModalPopupView's
+    // Rnd `default`) — read once at mount, not measured every render.
+    const targetRect = isFullView
+      ? { left: 12, top: 12, width: window.innerWidth - 24, height: window.innerHeight - 24 }
+      : { left: window.innerWidth / 2 - 400, top: Math.max(30, window.innerHeight * 0.05), width: 800, height: window.innerHeight * 0.9 };
+    const dx = originForOpen.left + originForOpen.width / 2 - (targetRect.left + targetRect.width / 2);
+    const dy = originForOpen.top + originForOpen.height / 2 - (targetRect.top + targetRect.height / 2);
+    const scale = Math.max(0.1, Math.min(1, originForOpen.width / targetRect.width));
+    return { x: dx, y: dy, scale };
+  }, [originForOpen, isFullView, tokens.instant]);
+
+  const layoutProps = animationsEnabled ? {
+    initial: morphTransform ? { ...morphTransform, opacity: 0.4 } : { opacity: 0, scale: 0.98 },
+    animate: { x: 0, y: 0, scale: 1, opacity: 1, transition: tokens.spring },
+    exit: morphTransform ? { ...morphTransform, opacity: 0, transition: tokens.fade } : { opacity: 0, scale: 0.98, transition: tokens.fade },
+    style: { zIndex: 60 },
+  } : {};
+  const contentAnimation = animationsEnabled ? {
+    initial: { opacity: 0 },
+    animate: { opacity: 1, transition: { ...tokens.fade, delay: tokens.springSettleMs / 1000 * 0.4 } },
+    exit: { opacity: 0, transition: { duration: 0.05, delay: 0 } },
+  } : {};
 
   const activityFilterTabs = (
     <ActivityFilterTabs
@@ -150,29 +205,19 @@ export const TaskModal = memo(function TaskModal() {
     />
   ) : null;
 
-  const animationsEnabled = config?.animationsEnabled ?? true;
-  const speedMap = { fast: 0.2, normal: 0.4, slow: 0.7 };
-  const duration = speedMap[config?.animationSpeed || 'normal'];
-  const Container = animationsEnabled ? motion.div : 'div';
-  const layoutProps = animationsEnabled ? {
-    layoutId: `ticket-${modalTask?.id}`,
-    transition: { type: 'spring' as const, bounce: 0.15, duration: duration + 0.3 },
-    style: { zIndex: 60 }
-  } : {};
-  const contentAnimation = animationsEnabled ? {
-    initial: { opacity: 0 },
-    animate: { opacity: 1, transition: { duration: 0.2, delay: duration * 0.4 } },
-    exit: { opacity: 0, transition: { duration: 0.05, delay: 0 } },
-  } : {};
-
+  // FLUX-979: metadata dropdowns save instantly on change (via `saveField`) instead of joining
+  // the title/body dirty-then-Save flow — they never leave the ticket in an unclear "unsaved"
+  // state, and an agent's concurrent edit to an untouched field is never held stale or clobbered.
   const metadataPanelProps = {
-    status, setStatus: c.setStatus,
-    assignee, setAssignee: c.setAssignee,
-    priority, setPriority: c.setPriority,
-    effort, setEffort: c.setEffort,
-    effortLevel, setEffortLevel: c.setEffortLevel,
+    status, setStatus: (v: string) => void saveField('status', v),
+    assignee, setAssignee: (v: string) => void saveField('assignee', v),
+    priority, setPriority: (v: string) => void saveField('priority', v),
+    effort, setEffort: (v: string) => void saveField('effort', v),
+    effortLevel, setEffortLevel: (v: string) => void saveField('effortLevel', v),
+    // Free text: local live-typing update only, committed on blur (not per keystroke).
     implementationLink, setImplementationLink: c.setImplementationLink,
-    tags, setTags: c.setTags,
+    onImplementationLinkBlur: () => void saveField('implementationLink', implementationLink),
+    tags, setTags: (v: string[]) => void saveField('tags', v),
     allStatuses, allUsers, allTags,
     configTags: config?.tags ?? [],
     availablePriorities,
@@ -277,7 +322,7 @@ export const TaskModal = memo(function TaskModal() {
           animate={animationsEnabled ? { opacity: 1 } : undefined}
           exit={animationsEnabled ? { opacity: 0 } : undefined}
           transition={{ duration: 0.2 }}
-          className="pointer-events-auto fixed inset-0 z-[55] bg-black/40 backdrop-blur-sm"
+          className="pointer-events-auto fixed inset-0 z-[55] bg-black/55"
           onClick={c.handleCloseAttempt}
         />
       )}

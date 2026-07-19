@@ -14,7 +14,7 @@ Scope: Route the agent to the correct phase-specific skill based on ticket statu
 
 # Event Horizon Agent — Orchestrator
 
-Version: 2.14.0
+Version: 2.15.0
 
 ## Overview
 
@@ -276,6 +276,29 @@ Output tokens bill roughly 5x input, so an XS one-line fix paying full L-ticket 
 - The End-of-Turn Action Contract (a board action every turn)
 
 These four are marked here precisely because they are the ones a diet-minded agent could mistakenly shrink or skip — they scale in length like everything else above, but never in presence.
+
+## Communication Style — write for the reader (FLUX-1502)
+
+Every comment, question, summary, and handoff has exactly one audience — the user, or the next agent. Write for that reader, not as a work log: the point lands in the first line, and nothing needs re-reading. This section governs HOW to write; "Ceremony by effort" above governs HOW MUCH.
+
+**To the user** (`Require Input` / `ask_user_question` questions, Ready completion summaries, review verdicts, TL;DRs):
+- **Lead with the outcome or the question.** The first sentence answers "what happened" or "what do you need from me"; detail follows for those who read on.
+- **Plain language.** No internal codenames, persona names, or ticket-flow jargon without a one-phrase gloss. Say what changes for the user, not what you did procedurally.
+- **One decision per question**, 2–4 concrete options, always a recommended default and its consequence.
+- **Bold the 2–4 load-bearing phrases** (the TL;DR convention's rule, applied everywhere) so a skimmer catches the gist from the bold alone.
+- **Cut filler and hedging** — no "I have successfully…", no restating their question, no padding to look thorough. Short sentences.
+
+**To the next agent — the inter-agent protocol** (handoff comments, delegation `task` strings, worker findings, `summary` fields). This half is a fixed protocol, not a style: the reader is another agent with none of your context, and the optimum here is stable (structured artifacts beat conversational relay; strict JSON degrades reasoning-rich content — semi-structured markdown is the sweet spot):
+- **Self-contained.** Exact file paths, symbol names, commands, ticket/entry ids — no pronouns for code, never "see above" or "as discussed", no references to conversation the reader cannot see.
+- **Action first, evidence second.** State what the reader must do or decide in the first line; support it after.
+- **Carry the decision AND its rationale.** What was decided, why, and what was considered and rejected — a conclusion without its reasoning forces re-derivation and silently loses intent at every handoff.
+- **Dense facts, complete sentences.** No narrative of your process, no restating the ticket body, no telegraphic fragments that force the reader to re-derive your meaning.
+- **Keep the structured skeletons** — headers like **CONTEXT SCOUT** / **REVIEW SYNTHESIS**, severity tags, `reviewState`, the `completion` payload — they are machine-read and load-bearing at every length.
+- **Delegations state an explicit contract.** Every delegation `task` string names: the objective, the expected output format, the boundaries (what NOT to do — e.g. "do not change status"), and where to post the result. A vague delegation produces duplicated or divergent work.
+
+Either audience: length scales with substance, never with effort spent. A sentence that changes nothing for the reader gets deleted.
+
+Prompt injection of these rules is config-driven (`communicationStyle` in board Settings → Agents): the **user-facing style is selectable** (`user`: `concise` default / `detailed` / `custom` with your own text / `off`), while the **inter-agent protocol is a single fixed block** (`interAgent`: on by default, off only as a token-cost lever — it is deliberately not a style menu). The written conventions above still apply whenever this module is read, regardless of the switches.
 
 ## Critical Rules
 

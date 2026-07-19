@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Workflow, Check, GitCompare, Target, FlaskConical, Terminal } from 'lucide-react';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Workflow, Check, GitCompare, Target, FlaskConical, Terminal, Coins } from 'lucide-react';
 import { THEMES, type AppTheme, type AppView } from '../AppContext';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { NotificationPanel } from './NotificationPanel';
@@ -19,6 +19,7 @@ const NAV_TINTS: Record<AppView, string> = {
   backlog: '#0ea5e9',   // sky
   changes: '#14b8a6',   // teal
   epics: '#6366f1',     // indigo
+  'token-costs': '#d946ef', // fuchsia
   releases: '#f59e0b',  // amber
   docs: '#8b5cf6',      // violet
   workflows: '#ec4899', // pink
@@ -231,6 +232,7 @@ export function Header({ onToggleTerminal, terminalOpen }: { onToggleTerminal?: 
             <NavItem view={view} target="changes" icon={<GitCompare className="w-4 h-4" />} label="Changes" onClick={handleSetView} />
             <NavItem view={view} target="epics" icon={<Target className="w-4 h-4" />} label="Epics" onClick={handleSetView} />
             <NavItem view={view} target="releases" icon={<Tag className="w-4 h-4" />} label="Releases" onClick={handleSetView} />
+            <NavItem view={view} target="token-costs" icon={<Coins className="w-4 h-4" />} label="Token Costs" onClick={handleSetView} />
             <NavItem view={view} target="docs" icon={<FileText className="w-4 h-4" />} label="Docs" onClick={handleSetView} />
             <NavItem view={view} target="workflows" icon={<Workflow className="w-4 h-4" />} label="Workflows" onClick={handleSetView} />
             <NavItem view={view} target="settings" icon={<SettingsIcon className="w-4 h-4" />} label="Settings" onClick={handleSetView} />

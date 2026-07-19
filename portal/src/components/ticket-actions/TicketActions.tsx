@@ -8,6 +8,7 @@
 // one extra arm in the `ActionControl` switch below. Nothing is re-plumbed per surface.
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { motion } from 'framer-motion';
 import type { LucideIcon } from 'lucide-react';
 import { Bot, ChevronDown, ExternalLink, FileText, Layers, Loader2, Play, SendHorizontal, Sparkles, Undo2 } from 'lucide-react';
 import type { Task } from '../../types';
@@ -15,6 +16,7 @@ import type { TicketAction, TicketActionIcon, TicketActionSurface, LaunchTemplat
 import { useTicketActions, type UseTicketActions } from '../../hooks/useTicketActions';
 import { useEscapeKey } from '../../hooks/useEscapeKey';
 import { useConfig } from '../../store/useAppSelector';
+import { useMotionTokens } from '../../motion/tokens';
 import { resolveEffectiveAgent } from '../../utils';
 import { OrchestrationLauncher } from '../OrchestrationLauncher';
 import { StartTaskPrompt } from '../task-modal/StartTaskPrompt';
@@ -22,6 +24,10 @@ import { FinishMergeConfirm } from '../task-modal/FinishMergeConfirm';
 import { PromptModal } from '../task-modal/PromptModal';
 
 type Variant = TicketActionSurface;
+
+// FLUX-1505: shared tap-scale for registry action buttons — the FLUX-1507 press token drives the
+// duration/easing; the scale itself is fixed (matches the ticket's ~0.97 spec).
+const PRESS_TAP = { scale: 0.97 };
 
 const ICONS: Record<TicketActionIcon, LucideIcon> = {
   bot: Bot,
@@ -205,17 +211,20 @@ function SimpleControl({ action, ctl, variant }: { action: TicketAction; ctl: Us
       : danger
         ? 'inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-semibold text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50'
         : defaultClass(variant);
+  const tokens = useMotionTokens();
   return (
-    <button
+    <motion.button
       type="button"
       onClick={(e) => { e.stopPropagation(); void ctl.fire(action.key, action.run); }}
-      disabled={!!ctl.busyKey}
+      disabled={busy}
+      whileTap={tokens.instant ? undefined : PRESS_TAP}
+      transition={tokens.press}
       title={action.kind === 'agent' ? 'Starts a tokenized agent session' : 'Instant — no agent, no tokens'}
       className={tone}
     >
       {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : action.kind === 'agent' ? <Sparkles className="h-3 w-3" /> : Icon ? <Icon className="h-3 w-3" /> : null}
       {action.label}
-    </button>
+    </motion.button>
   );
 }
 
@@ -272,29 +281,34 @@ function LaunchControl({
         ? 'flex items-center border-l border-white/20 bg-primary px-1.5 py-1 text-white transition-colors hover:bg-primary/90 disabled:opacity-50'
         : 'eh-border flex items-center border bg-[var(--eh-input-bg)] px-1.5 py-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5';
 
+  const tokens = useMotionTokens();
   return (
     <div ref={ref} className="relative flex items-stretch overflow-visible rounded-md">
-      <button
+      <motion.button
         type="button"
         onClick={(e) => { e.stopPropagation(); void ctl.fire(action.key, action.run); }}
-        disabled={!!ctl.busyKey}
+        disabled={busy}
+        whileTap={tokens.instant ? undefined : PRESS_TAP}
+        transition={tokens.press}
         title={`${action.label} — runs the phase default`}
         className={`${primaryBtn} rounded-l-md`}
       >
         {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Icon className="h-3 w-3" />}
         {busy ? '…' : action.label}
-      </button>
-      <button
+      </motion.button>
+      <motion.button
         type="button"
         onClick={(e) => { e.stopPropagation(); toggle(); }}
-        disabled={!!ctl.busyKey}
+        disabled={busy}
+        whileTap={tokens.instant ? undefined : PRESS_TAP}
+        transition={tokens.press}
         aria-haspopup="menu"
         aria-expanded={open}
         title="Choose an agent or template"
         className={`${chevronBtn} rounded-r-md`}
       >
         <ChevronDown className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
+      </motion.button>
       {open && (
         <TemplateMenu
           templates={action.templates ?? []}
@@ -360,6 +374,7 @@ function PickerControl({
   const picker = action.picker;
   const busy = ctl.busyKey === action.key;
   const Icon = action.icon ? ICONS[action.icon] : Undo2;
+  const tokens = useMotionTokens();
   if (!picker) return null;
 
   const btnClass =
@@ -376,10 +391,18 @@ function PickerControl({
 
   return (
     <div ref={ref} className="relative flex items-stretch">
-      <button type="button" onClick={() => setOpen((o) => !o)} disabled={busy} title={picker.title} className={btnClass}>
+      <motion.button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        disabled={busy}
+        whileTap={tokens.instant ? undefined : PRESS_TAP}
+        transition={tokens.press}
+        title={picker.title}
+        className={btnClass}
+      >
         <Icon className="h-3 w-3" />
         {busy ? picker.busyLabel : action.label}
-      </button>
+      </motion.button>
       {open && (
         <div
           onClick={(e) => e.stopPropagation()}

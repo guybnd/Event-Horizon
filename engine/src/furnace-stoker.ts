@@ -23,18 +23,20 @@
 //   no verdict, but the last comment looks like a verdict (FLUX-1078) -> ONE corrective nudge, then park
 //   no verdict (no marker) / fail / waiting-input -> park (needs a human; stays In Progress + Require Input swimlane)
 
-import { getWorkspace } from './workspace-context.js';
+import { getWorkspace, getDefaultWorkspace, liveWorkspaces, runWithWorkspace, resolveWorkspaceByRoot, type Workspace } from './workspace-context.js';
 import { getEnginePort } from './packaged-mode.js';
 import { log } from './log.js';
 import { getConfig } from './config.js';
 import { updateTaskWithHistory } from './task-store.js';
 import { addNotification } from './notifications.js';
-import { cliSessionsById, getActiveSessionsForTask, getAllSessionsForTask, isResumable, stopAllSessionsForTask } from './session-store.js';
+import { cliSessionsById, getActiveSessionsForTaskInWorkspace, getAllSessionsForTask, isResumable, stopAllSessionsForTask } from './session-store.js';
 import type { CliSessionRecord, CliSessionStatus, TaskKey } from './agents/types.js';
 import {
   getFurnaceBatch,
   getFurnaceBatchesCache,
   getBurningBatches,
+  getFurnaceBatchesCacheForWorkspace,
+  getBurningBatchesForWorkspace,
   mutateFurnaceBatch,
   claimSlotsAndIgnite,
   ensureFurnaceLoaded,
@@ -70,7 +72,7 @@ import {
   DEFAULT_RATE_LIMIT_MAX_WAIT_MS,
 } from './models/furnace.js';
 import { DEFAULT_MAX_TASK_WORKTREES, listTaskWorktrees, ticketIdFromWorktreePath, isRegisteredWorktree, resolveTaskExecutionRoot } from './task-worktree.js';
-import { requireWorkspaceRoot } from './workspace.js';
+import { requireWorkspaceRoot, getWorkspaceRoot } from './workspace.js';
 import { postPrReview } from './branch-manager.js';
 import { reclaimReadyWorktrees, worktreeUnreclaimableReason, type UnreclaimableReason } from './pr-cleanup.js';
 import { runGit } from './git-exec.js';
@@ -136,8 +138,8 @@ export function furnaceFollowupFocus(batch: FurnaceBatch): string {
  * commit plus its own prior named findings, instead of implicitly re-reviewing the whole PR from
  * scratch. Returns '' on a ticket's FIRST review (no `lastReviewedCommit` yet) — nothing to scope.
  */
-export function deltaReviewFocus(ticketId: string): string {
-  const task = getWorkspace().tasks[ticketId] as { lastReviewedCommit?: string } | undefined;
+export function deltaReviewFocus(ticketId: string, ws: Workspace = getWorkspace()): string {
+  const task = ws.tasks[ticketId] as { lastReviewedCommit?: string } | undefined;
   const since = typeof task?.lastReviewedCommit === 'string' ? task.lastReviewedCommit : undefined;
   if (!since) return '';
   return ` This ticket was already reviewed once and sent back for changes (as of commit ${since.slice(0, 12)}). Re-read your own prior review comment for the named findings and verify each is actually fixed, then scan \`git diff ${since}..HEAD\` for anything else introduced in that delta. You do not need to re-review the whole PR from scratch — just the named findings plus this delta.`;
@@ -383,7 +385,8 @@ export function pickSessionForPhase<T extends { phase?: string }>(sessions: read
 }
 
 function activeSessionForPhase(ticketId: string, phase: FurnacePhase) {
-  return pickSessionForPhase(getActiveSessionsForTask(ticketId), phase);
+  // FLUX-1551: workspace-narrowed — a same-id ticket on a different board must never be adopted here.
+  return pickSessionForPhase(getActiveSessionsForTaskInWorkspace(ticketId, getWorkspaceRoot(), getDefaultWorkspace().root), phase);
 }
 
 const MAX_SPAWN_ATTEMPTS = 6;
@@ -451,7 +454,11 @@ export async function dispatchSession(
   // FLUX-1373: `taskKey` is an explicit task-tier policy override, forwarded verbatim as the
   // start route's `taskKey` body param. Needed by callers (the plan-gate review pass) whose
   // dispatched phase alone doesn't map to the right key — see gate-runner.ts's spawnGate.
-  opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean; taskKey?: TaskKey; enableTools?: string[] } = {},
+  // FLUX-1548: `workspaceRoot` names the board this dispatch belongs to — defaults to the ambient
+  // `getWorkspaceRoot()` (correct when the caller is ALS-bound, e.g. inside `runWithWorkspace`), but
+  // callers driving MULTIPLE workspaces from one background tick (Temper, the gate runner) pass it
+  // explicitly so the self-dispatch is never accidentally stamped with whichever board is "active".
+  opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean; taskKey?: TaskKey; enableTools?: string[]; workspaceRoot?: string | null } = {},
 ): Promise<DispatchOutcome> {
   // A sequential follower reuses the anchor's shared worktree (resolved server-side by the shared
   // branch), so it must NOT request isolation — that would check the same branch out twice.
@@ -464,15 +471,33 @@ export async function dispatchSession(
     // FLUX-1235: the Furnace is the authoritative driver — take over an IDLE (waiting-input) session
     // even if it is resumable (the grooming→implementation handoff). A LIVE session still 409s.
     supersedeParked: true,
+    // FLUX-850: deliberately NOT stamping `dispatched: true` here. That marker makes
+    // change_status/finish_ticket hard-gate a forward move into Ready/Done, which is exactly what a
+    // Furnace-run ticket needs to do at the end of its implementation phase (see
+    // .docs/skills/event-horizon-implementation.md step 9) and again after review approval — Furnace's
+    // whole model is "a batch burns unattended and leaves its PR open at Ready" (this file's header
+    // comment). Marking these sessions broke that: every implementation session got redirected to
+    // Require Input instead of reaching Ready, parking the ticket for a human on every single run.
+    // Furnace itself never calls `finish_ticket` (see this file's header comment — "NEVER finish_ticket")
+    // and never advances a ticket past Ready, so it isn't the silent-merge-to-Done surface the
+    // FLUX-840/841/844 incident targets; the gate's actual scope is `start_session` (mcp-server.ts) and
+    // the board-rebase `dispatch` verb (board-rebase.ts), which still mark `dispatched: true`.
   };
   if (opts.personaId) body.personaId = opts.personaId;
   if (opts.focusComment) body.focusComment = opts.focusComment;
   if (opts.taskKey) body.taskKey = opts.taskKey;
   if (opts.enableTools && opts.enableTools.length > 0) body.enableTools = opts.enableTools;
+  const workspaceRoot = opts.workspaceRoot ?? getWorkspaceRoot();
   try {
     const res = await fetch(`${engineBase()}/api/tasks/${encodeURIComponent(ticketId)}/cli-session/start`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        // FLUX-1548: without this, the receiving route's `attachWorkspace` middleware falls back to
+        // whichever board is currently "active" — silently misrouting this dispatch when a second
+        // board is open and this ticket doesn't belong to it.
+        ...(workspaceRoot ? { 'X-EH-Workspace': workspaceRoot } : {}),
+      },
       body: JSON.stringify(body),
     });
     if (!res.ok) {
@@ -531,7 +556,7 @@ const FURNACE_RESUMABLE_STATUSES: ReadonlySet<CliSessionStatus> = new Set(['wait
  * worktree registered, healing a reclaimed-but-live-branch worktree by recreating it once). Returns null
  * when no session qualifies — the caller falls back to a cold spawn.
  */
-async function findResumeCandidate(ticketId: string, phase: FurnacePhase | 'grooming'): Promise<ResumeCandidate | null> {
+async function findResumeCandidate(ticketId: string, phase: FurnacePhase | 'grooming', ws: Workspace = getWorkspace()): Promise<ResumeCandidate | null> {
   const sessions = getAllSessionsForTask(ticketId);
   let candidate: CliSessionRecord | undefined;
   for (let i = sessions.length - 1; i >= 0; i--) {
@@ -576,7 +601,7 @@ async function findResumeCandidate(ticketId: string, phase: FurnacePhase | 'groo
   // committed, FLUX-730) before giving up. Branchless dispatches never claim a worktree, so they skip
   // this check entirely.
   let worktreeRecreated = false;
-  const task = getWorkspace().tasks[ticketId];
+  const task = ws.tasks[ticketId];
   if (task?.branch && candidate.executionRoot) {
     const workspaceRoot = requireWorkspaceRoot();
     if (candidate.executionRoot !== workspaceRoot) {
@@ -596,12 +621,16 @@ async function findResumeCandidate(ticketId: string, phase: FurnacePhase | 'groo
   return { session: candidate, worktreeRecreated };
 }
 
-/** POST a resumed turn to the existing session — mirrors `dispatchSession`'s self-fetch pattern. */
-async function postResumeInput(ticketId: string, sessionId: string, message: string): Promise<DispatchOutcome> {
+/** POST a resumed turn to the existing session — mirrors `dispatchSession`'s self-fetch pattern.
+ *  FLUX-1548: `workspaceRoot` mirrors `dispatchSession`'s opt — same X-EH-Workspace routing need. */
+async function postResumeInput(ticketId: string, sessionId: string, message: string, workspaceRoot?: string | null): Promise<DispatchOutcome> {
   try {
     const res = await fetch(`${engineBase()}/api/tasks/${encodeURIComponent(ticketId)}/cli-session/input`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...((workspaceRoot ?? getWorkspaceRoot()) ? { 'X-EH-Workspace': (workspaceRoot ?? getWorkspaceRoot())! } : {}),
+      },
       body: JSON.stringify({ message, user: 'Furnace', sessionId }),
     });
     if (!res.ok) {
@@ -628,7 +657,7 @@ export interface ResumeDispatchOutcome extends DispatchOutcome {
 export async function resumeOrDispatchSession(
   ticketId: string,
   phase: FurnacePhase | 'grooming',
-  opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean; resumeMessage: string; enableTools?: string[] },
+  opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean; resumeMessage: string; enableTools?: string[]; workspaceRoot?: string | null },
 ): Promise<ResumeDispatchOutcome> {
   const candidate = await findResumeCandidate(ticketId, phase);
   if (candidate) {
@@ -641,9 +670,9 @@ export async function resumeOrDispatchSession(
     const message = candidate.worktreeRecreated
       ? `${opts.resumeMessage}\n\n⚠️ Your worktree was reclaimed and has been recreated from the branch tip — any uncommitted scratch state is gone. Re-verify the current file state before editing.`
       : opts.resumeMessage;
-    let outcome = await postResumeInput(ticketId, candidate.session.id, message);
+    let outcome = await postResumeInput(ticketId, candidate.session.id, message, opts.workspaceRoot);
     // Resume POST failed — retry once (transient EBUSY/network) before giving up on resume entirely.
-    if (!outcome.sid) outcome = await postResumeInput(ticketId, candidate.session.id, message);
+    if (!outcome.sid) outcome = await postResumeInput(ticketId, candidate.session.id, message, opts.workspaceRoot);
     if (outcome.sid) {
       candidate.session.resumeTurnCount = (candidate.session.resumeTurnCount ?? 0) + 1;
       return { ...outcome, resumed: true };
@@ -658,11 +687,11 @@ export async function resumeOrDispatchSession(
  * Clear a stale review verdict before dispatching a fresh review (it persists across re-impl by design).
  * FLUX-1071: exported for the Temper reconciler (temper.ts), which dispatches its own review passes.
  */
-export async function clearReviewState(ticketId: string): Promise<void> {
-  const t = getWorkspace().tasks[ticketId];
+export async function clearReviewState(ticketId: string, ws: Workspace = getWorkspace()): Promise<void> {
+  const t = ws.tasks[ticketId];
   if (t && t.reviewState != null) {
     try {
-      await updateTaskWithHistory(ticketId, { extraFields: { reviewState: null }, updatedBy: 'Furnace' });
+      await updateTaskWithHistory(ticketId, { extraFields: { reviewState: null }, updatedBy: 'Furnace' }, ws);
     } catch (e: unknown) {
       log.warn(`[furnace] clear reviewState on ${ticketId} failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -811,7 +840,8 @@ export function isDispatching(ticketId: string): boolean {
 const suspectedHumanTakeover = new Set<string>();
 
 function detectHumanTakeover(ticket: BatchTicket): boolean {
-  return isHumanTakeover(getActiveSessionsForTask(ticket.ticketId), ticket, dispatching.has(ticket.ticketId));
+  // FLUX-1551: workspace-narrowed — see activeSessionForPhase.
+  return isHumanTakeover(getActiveSessionsForTaskInWorkspace(ticket.ticketId, getWorkspaceRoot(), getDefaultWorkspace().root), ticket, dispatching.has(ticket.ticketId));
 }
 
 /**
@@ -842,15 +872,15 @@ export function clearTakeoverTracking(ticketId: string): void {
 }
 
 /** Clear the Furnace-raised `require-input` swimlane on a ticket (best-effort; no-op if not set). */
-async function clearFurnaceFlag(ticketId: string, note?: string): Promise<void> {
-  const t = getWorkspace().tasks[ticketId];
+async function clearFurnaceFlag(ticketId: string, note?: string, ws: Workspace = getWorkspace()): Promise<void> {
+  const t = ws.tasks[ticketId];
   if (!t || t.swimlane !== 'require-input') return;
   try {
     await updateTaskWithHistory(ticketId, {
       extraFields: { swimlane: null },
       ...(note ? { entries: [{ type: 'comment', user: 'Furnace', comment: note, date: nowIso() }] } : {}),
       updatedBy: 'Furnace',
-    });
+    }, ws);
   } catch (e: unknown) {
     log.warn(`[furnace] clear flag on ${ticketId} failed: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -905,7 +935,7 @@ export function decideReconcile(
   return null;
 }
 
-export async function reconcileBatch(batchId: string): Promise<void> {
+export async function reconcileBatch(batchId: string, ws: Workspace = getWorkspace()): Promise<void> {
   const batch = getFurnaceBatch(batchId);
   if (!batch || batch.status === 'draft') return;
 
@@ -913,7 +943,7 @@ export async function reconcileBatch(batchId: string): Promise<void> {
   for (const ticket of batch.tickets) {
     // Leave tickets the Stoker is actively driving to reconcileTicket (which mirrors the review verdict).
     if (isActiveTicketState(ticket.state)) continue;
-    const task = getWorkspace().tasks[ticket.ticketId];
+    const task = ws.tasks[ticket.ticketId];
     const prUrl = extractPrUrl(task);
     const change = decideReconcile(ticket, {
       takenOver: debouncedTakeover(ticket.ticketId, detectHumanTakeover(ticket)),
@@ -955,7 +985,7 @@ export async function reconcileBatch(batchId: string): Promise<void> {
     // of `parked`/`failed` and into `prsOpened`, or a merged one moves from `prsOpened` into `merged`.
     if (isBatchTerminal(b.status)) b.report = assembleBurnReport(b, nowIso());
   });
-  for (const ticketId of flaggedForDrop) await clearFurnaceFlag(ticketId);
+  for (const ticketId of flaggedForDrop) await clearFurnaceFlag(ticketId, undefined, ws);
 }
 
 // ── Read-path reconcile gating (FLUX-1145) ──────────────────────────────────────
@@ -992,13 +1022,23 @@ async function gatedReconcile(key: string, run: () => Promise<void>): Promise<vo
 
 /** TTL-gated `reconcileBatch(batchId)` for read paths (GET /:id, furnace_get with a batchId). */
 export async function reconcileBatchCached(batchId: string): Promise<void> {
-  return gatedReconcile(batchId, () => reconcileBatch(batchId));
+  return gatedReconcile(batchId, () => {
+    // FLUX-1554: bind to the batch's OWN board — this fires from a GET (routes/furnace.ts,
+    // mcp-server.ts furnace_get) bound to whichever board the caller is connected to, which is not
+    // necessarily the batch's own board. Unbound, `reconcileBatch`'s `ws.tasks[...]` lookups (and any
+    // board write it makes) would read/write the CALLER's board instead of the batch's.
+    const batch = getFurnaceBatch(batchId);
+    return runWithWorkspace(resolveWorkspaceByRoot(batch?.workspaceRoot ?? ''), () => reconcileBatch(batchId));
+  });
 }
 
 /** TTL-gated "reconcile every batch" for read paths (GET /, furnace_get without a batchId). */
 export async function reconcileAllBatchesCached(): Promise<void> {
   return gatedReconcile('*', async () => {
-    for (const b of getFurnaceBatchesCache()) await reconcileBatch(b.id);
+    // FLUX-1554: bind each batch to its OWN board — see reconcileBatchCached's identical note.
+    for (const b of getFurnaceBatchesCache()) {
+      await runWithWorkspace(resolveWorkspaceByRoot(b.workspaceRoot ?? ''), () => reconcileBatch(b.id));
+    }
   });
 }
 
@@ -1020,19 +1060,19 @@ export function evictReconcileReadCache(batchId: string): void {
  * anchor's isolated spawn CREATES the branch + the one shared worktree, and each follower's spawn
  * resolves the SAME worktree by branch — one branch, one worktree slot, one PR. Idempotent + best-effort.
  */
-async function ensureBatchBranchAssigned(batchId: string): Promise<void> {
+async function ensureBatchBranchAssigned(batchId: string, ws: Workspace = getWorkspace()): Promise<void> {
   const batch = getFurnaceBatch(batchId);
   if (!batch || batch.kind !== 'sequential') return;
   const branch = batch.branch;
   for (const member of batch.tickets) {
-    const t = getWorkspace().tasks[member.ticketId];
+    const t = ws.tasks[member.ticketId];
     if (!t || t.branch === branch) continue;
     if (t.branch && t.branch !== branch) {
       log.warn(`[furnace] ${member.ticketId} already on branch ${t.branch}; not reassigning to batch branch ${branch}`);
       continue;
     }
     try {
-      await updateTaskWithHistory(member.ticketId, { extraFields: { branch }, updatedBy: 'Furnace' });
+      await updateTaskWithHistory(member.ticketId, { extraFields: { branch }, updatedBy: 'Furnace' }, ws);
       t.branch = branch;
     } catch (e: unknown) {
       log.warn(`[furnace] assign batch branch ${branch} to ${member.ticketId} failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1294,7 +1334,7 @@ export function upsertBatchPr(batch: FurnaceBatch, pr: { url?: string; branch: s
 }
 
 /** Execute a ticket action (spawn / park / mark). Mutations go through the store's per-batch lock. */
-async function advanceTicket(batchId: string, ticketId: string, action: TicketAction): Promise<void> {
+async function advanceTicket(batchId: string, ticketId: string, action: TicketAction, ws: Workspace = getWorkspace()): Promise<void> {
   switch (action.type) {
     case 'wait':
       return;
@@ -1303,7 +1343,7 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
       const batch = getFurnaceBatch(batchId);
       if (!batch) return;
       await advanceState(batchId, ticketId, 'reviewing');
-      await clearReviewState(ticketId);
+      await clearReviewState(ticketId, ws);
       // FLUX-1078: a fresh review pass gets a fresh nudge budget.
       await mutateFurnaceBatch(batchId, (b) => {
         const t = findTicket(b, ticketId);
@@ -1368,7 +1408,7 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
           delete t.currentSessionId;
           delete t.currentPhase;
           clearCooldownState(t); // FLUX-1063
-          const prBranch = b.kind === 'sequential' ? b.branch : (getWorkspace().tasks[ticketId]?.branch || b.branch);
+          const prBranch = b.kind === 'sequential' ? b.branch : (ws.tasks[ticketId]?.branch || b.branch);
           upsertBatchPr(b, { ...(action.prUrl ? { url: action.prUrl } : {}), branch: prBranch, ticketId, reviewState: 'approved' });
         }
         b.consecutiveFailures = 0; // a success breaks the failure streak (circuit breaker)
@@ -1518,7 +1558,7 @@ async function noteCooldownOnBoard(ticketId: string, nextRetryAt: string, batch:
 }
 
 /** Observe one active ticket's session and advance it. Re-reads the ticket fresh from the store. */
-async function reconcileTicket(batchId: string, ticketId: string): Promise<void> {
+async function reconcileTicket(batchId: string, ticketId: string, ws: Workspace = getWorkspace()): Promise<void> {
   const batch0 = getFurnaceBatch(batchId);
   const ticket = batch0 ? findTicket(batch0, ticketId) : undefined;
   if (!ticket || !isActiveTicketState(ticket.state)) return;
@@ -1539,7 +1579,7 @@ async function reconcileTicket(batchId: string, ticketId: string): Promise<void>
     });
   }
 
-  const task = getWorkspace().tasks[ticketId];
+  const task = ws.tasks[ticketId];
   const batch = getFurnaceBatch(batchId);
   if (!batch) return;
   const prUrl = extractPrUrl(task);
@@ -1561,8 +1601,8 @@ async function reconcileTicket(batchId: string, ticketId: string): Promise<void>
   });
   // FLUX-1033: mirror the reviewer's verdict onto the real GitHub PR (before advanceTicket transitions
   // the ticket out of `reviewing`, so it fires exactly once per verdict). Best-effort.
-  await mirrorReviewVerdictToPr(batch, action, ticketId, ticket, task?.reviewState ?? null, prUrl);
-  await advanceTicket(batchId, ticketId, action);
+  await mirrorReviewVerdictToPr(batch, action, ticketId, ticket, task?.reviewState ?? null, prUrl, ws);
+  await advanceTicket(batchId, ticketId, action, ws);
 }
 
 /**
@@ -1626,6 +1666,7 @@ export async function mirrorReviewVerdictToPr(
   ticket: BatchTicket,
   reviewState: 'approved' | 'changes-requested' | null,
   prUrl: string | undefined,
+  ws: Workspace = getWorkspace(),
 ): Promise<void> {
   if (!prUrl) return;
   const pick = pickPrReview(batch, ticket, action, reviewState);
@@ -1635,7 +1676,7 @@ export async function mirrorReviewVerdictToPr(
   // Reflect the verdict on the batch's PR list (changes-requested here; approved is set in the pr-open path).
   if (verdict === 'changes-requested') {
     await mutateFurnaceBatch(batch.id, (b) => {
-      const prBranch = b.kind === 'sequential' ? b.branch : (getWorkspace().tasks[ticketId]?.branch || b.branch);
+      const prBranch = b.kind === 'sequential' ? b.branch : (ws.tasks[ticketId]?.branch || b.branch);
       upsertBatchPr(b, { url: prUrl, branch: prBranch, ticketId, reviewState: 'changes_requested' });
     });
   }
@@ -1846,8 +1887,10 @@ async function feedCoal(batchId: string): Promise<void> {
 // state. Coalesce: concurrent callers share one in-flight call, and a call landing within the TTL of the
 // last completed one is skipped outright (the observed pool is still fresh).
 const WORKTREE_POOL_TTL_MS = 1_500;
-let worktreePoolInFlight: Promise<void> | null = null;
-let worktreePoolRefreshedAt = 0;
+// FLUX-1551: keyed PER WORKSPACE ROOT — the TTL/single-flight coalescing must not let one board's
+// in-flight (or freshly-completed) scan suppress another board's needed scan.
+const worktreePoolInFlightByRoot = new Map<string, Promise<void>>();
+const worktreePoolRefreshedAtByRoot = new Map<string, number>();
 
 /**
  * Observe the ACTUAL live task-worktree pool and feed the count to the slot accounting, so the gauge and
@@ -1874,29 +1917,33 @@ let worktreePoolRefreshedAt = 0;
  * observed after our own reclaim, since it can only have started once the prior read (which we both
  * awaited) resolved.
  */
-export async function refreshWorktreePool(opts: { force?: boolean } = {}): Promise<void> {
-  if (worktreePoolInFlight && !opts.force) return worktreePoolInFlight;
-  if (!opts.force && Date.now() - worktreePoolRefreshedAt < WORKTREE_POOL_TTL_MS) return;
-  if (opts.force && worktreePoolInFlight) {
-    const priorInFlight = worktreePoolInFlight;
+export async function refreshWorktreePool(opts: { force?: boolean; root?: string | null } = {}): Promise<void> {
+  const root = opts.root ?? requireWorkspaceRoot();
+  const key = root ?? '';
+  const currentInFlight = worktreePoolInFlightByRoot.get(key);
+  if (currentInFlight && !opts.force) return currentInFlight;
+  if (!opts.force && Date.now() - (worktreePoolRefreshedAtByRoot.get(key) ?? 0) < WORKTREE_POOL_TTL_MS) return;
+  if (opts.force && currentInFlight) {
+    const priorInFlight = currentInFlight;
     await priorInFlight.catch(() => {});
-    if (worktreePoolInFlight && worktreePoolInFlight !== priorInFlight) return worktreePoolInFlight;
+    const maybeNewer = worktreePoolInFlightByRoot.get(key);
+    if (maybeNewer && maybeNewer !== priorInFlight) return maybeNewer;
   }
-  worktreePoolInFlight = (async () => {
+  const promise: Promise<void> = (async () => {
     try {
-      const root = requireWorkspaceRoot();
       const worktrees = await listTaskWorktrees(root);
       // FLUX-1067 (M3): feed the OWNING ticket id of each worktree (recovered from its path), not just a
       // count, so the slot accounting can distinguish a Furnace-backed worktree from an independent one.
-      setObservedWorktrees(worktrees.map((w) => ticketIdFromWorktreePath(root, w.path)));
+      setObservedWorktrees(root, worktrees.map((w) => ticketIdFromWorktreePath(root, w.path)));
     } catch {
       /* best-effort — keep the last observed pool */
     } finally {
-      worktreePoolRefreshedAt = Date.now();
-      worktreePoolInFlight = null;
+      worktreePoolRefreshedAtByRoot.set(key, Date.now());
+      worktreePoolInFlightByRoot.delete(key);
     }
   })();
-  return worktreePoolInFlight;
+  worktreePoolInFlightByRoot.set(key, promise);
+  return promise;
 }
 
 /**
@@ -1907,8 +1954,8 @@ export async function refreshWorktreePool(opts: { force?: boolean } = {}): Promi
  * slot count before the pool has been observed even once) while still treating every later call as
  * stale-while-revalidate (fire the refresh in the background, answer from the cache immediately).
  */
-export function hasScannedWorktreePool(): boolean {
-  return worktreePoolRefreshedAt > 0;
+export function hasScannedWorktreePool(root: string | null = requireWorkspaceRoot()): boolean {
+  return (worktreePoolRefreshedAtByRoot.get(root ?? '') ?? 0) > 0;
 }
 
 /** A ticket currently holding a worktree slot, with why — see {@link describeSlotHolders}. */
@@ -2028,7 +2075,7 @@ export async function checkFurnaceSlotHealth(): Promise<void> {
 const ticking = new Set<string>();
 
 /** Advance one batch by a single tick: watchdog, breaker, reconcile in-flight, feed coal, finalize. */
-export async function stokerTick(batchId: string): Promise<void> {
+export async function stokerTick(batchId: string, ws: Workspace = getWorkspace()): Promise<void> {
   if (ticking.has(batchId)) return; // never overlap ticks for the same batch
   ticking.add(batchId);
   try {
@@ -2038,7 +2085,7 @@ export async function stokerTick(batchId: string): Promise<void> {
 
     // A0. Reconcile against ground truth FIRST (FLUX-1066): reflect any ticket completed/taken over
     // outside the Furnace before the Stoker acts on a stale view.
-    await reconcileBatch(batchId);
+    await reconcileBatch(batchId, ws);
     batch = getFurnaceBatch(batchId);
     if (!batch || batch.status !== 'burning') return;
 
@@ -2057,7 +2104,7 @@ export async function stokerTick(batchId: string): Promise<void> {
     batch = getFurnaceBatch(batchId);
     if (!batch) return;
     const activeIds = batch.tickets.filter((t) => isActiveTicketState(t.state)).map((t) => t.ticketId);
-    for (const ticketId of activeIds) await reconcileTicket(batchId, ticketId);
+    for (const ticketId of activeIds) await reconcileTicket(batchId, ticketId, ws);
 
     // C2. FLUX-1063: advance rate-limit cooldowns — fire due retries / fail out at the ceiling. Gated
     // on !stopRequested (like feedCoal below): a retry would spawn a FRESH session and re-activate the
@@ -2092,17 +2139,52 @@ export async function stokerTick(batchId: string): Promise<void> {
   }
 }
 
-/** Tick every burning batch, then evaluate triggers for draft batches. */
-async function driveBurningBatches(): Promise<void> {
-  // FLUX-1067: observe the real worktree pool once per cycle so the slot gauge + ignite clamp are current.
-  await refreshWorktreePool();
-  for (const batch of getBurningBatches()) {
-    await stokerTick(batch.id);
+/** Tick every burning batch belonging to `ws`, then reconcile its terminal batches the same way. */
+async function driveBurningBatches(ws: Workspace = getWorkspace()): Promise<void> {
+  // FLUX-1554: load THIS board's own furnace-batches dir before reading it — the store's per-root
+  // `loaded` tracking (furnace-store.ts) means a board whose sidecars nothing has read yet (no REST/MCP
+  // request has hit it) would otherwise see an empty cache on every stoke tick forever.
+  await ensureFurnaceLoaded();
+  for (const batch of getBurningBatchesForWorkspace(ws)) {
+    await stokerTick(batch.id, ws);
   }
   // FLUX-1066: reconcile TERMINAL batches too (the Stoker doesn't tick them) so a parked/done batch whose
   // ticket a human resumed and completed — or is driving — reflects that instead of staying stuck.
-  for (const batch of getFurnaceBatchesCache()) {
-    if (isBatchTerminal(batch.status)) await reconcileBatch(batch.id);
+  for (const batch of getFurnaceBatchesCacheForWorkspace(ws)) {
+    if (isBatchTerminal(batch.status)) await reconcileBatch(batch.id, ws);
+  }
+}
+
+/**
+ * FLUX-1452: one stoke-interval tick, fanned out across every live workspace. `refreshWorktreePool`
+ * / `checkTriggers` / `checkFurnaceSlotHealth` observe engine-global state — the worktree pool and
+ * the slot gauge are a single budget shared across all boards (an S1/S4 design point this subtask
+ * inherits, not one it changes; see FLUX-1452's ticket history) — so they stay OUTSIDE the
+ * per-workspace loop and run once per tick, exactly as before S1's registry existed.
+ *
+ * FLUX-1513: `driveBurningBatches(ws)` below now reads `getBurningBatchesForWorkspace(ws)` /
+ * `getFurnaceBatchesCacheForWorkspace(ws)` (furnace-store.ts) instead of the raw global cache, so each
+ * pass only ticks/reconciles the batches actually tagged with `ws`'s root (`FurnaceBatch.workspaceRoot`,
+ * stamped at `createFurnaceBatch` time) — closing the KNOWN GAP FLUX-1452 documented here, where every
+ * live workspace's pass redundantly revisited the same global batch list. Untagged legacy batches fall
+ * back to the default workspace (`batchBelongsToWorkspaceRoot`), so with exactly one live workspace —
+ * still today's most common configuration — this loop runs exactly as it did before.
+ */
+async function driveStokeTick(): Promise<void> {
+  // FLUX-1067 / FLUX-1551: observe each LIVE board's own worktree pool once per cycle so the slot gauge
+  // + ignite clamp are current — a single call outside this loop (the pre-FLUX-1551 shape) only ever
+  // scanned whichever board `requireWorkspaceRoot()` resolved to, so every other board's batch decisions
+  // read a stale/foreign census.
+  for (const ws of liveWorkspaces()) {
+    await refreshWorktreePool({ root: ws.root });
+  }
+  // FLUX-1548: bind each pass to its own workspace — `driveBurningBatches` already threads `ws`
+  // explicitly into every batch-store read, but `feedCoal`/`dispatchSession`'s self-fetch further down
+  // this chain have no `ws` parameter at all and resolve the ambient `getWorkspaceRoot()` instead, so
+  // without this ALS binding every dispatch from a non-default board's batch would stamp the wrong (or
+  // no) `X-EH-Workspace` header and land on whichever board happens to be "active".
+  for (const ws of liveWorkspaces()) {
+    await runWithWorkspace(ws, () => driveBurningBatches(ws));
   }
   await checkTriggers();
   // FLUX-1217: run last, after batch state has settled for this cycle — checks the freshest "is anything
@@ -2119,7 +2201,7 @@ async function driveBurningBatches(): Promise<void> {
  *   type 'pr'    — a PR anywhere in the Furnace matching `ref` is marked `merged`.
  * Merge state is set out-of-band (portal "Merge" action / external), so this reads persisted `prs`.
  */
-export function isTriggerSatisfied(batch: FurnaceBatch): boolean {
+export function isTriggerSatisfied(batch: FurnaceBatch, ws: Workspace = getWorkspace()): boolean {
   const trig = batch.trigger;
   if (!trig) return false;
   if (trig.type === 'batch') {
@@ -2127,9 +2209,10 @@ export function isTriggerSatisfied(batch: FurnaceBatch): boolean {
     if (!ref || !isBatchTerminal(ref.status)) return false;
     return ref.prs.every((p) => p.reviewState === 'merged');
   }
-  // type 'pr' — match by url or #number across all batches.
+  // type 'pr' — match by url or #number, scoped to `batch`'s own board (FLUX-1554): a bare cross-board
+  // scan could match a PR that only exists on a DIFFERENT board's batch and auto-ignite the wrong one.
   const needle = trig.ref.trim();
-  for (const b of getFurnaceBatchesCache()) {
+  for (const b of getFurnaceBatchesCacheForWorkspace(ws)) {
     for (const p of b.prs) {
       const matches = p.url === needle || (p.number !== undefined && `#${p.number}` === needle) || (p.number !== undefined && String(p.number) === needle);
       if (matches && p.reviewState === 'merged') return true;
@@ -2145,13 +2228,22 @@ export async function checkTriggers(): Promise<void> {
   if (checkingTriggers) return;
   checkingTriggers = true;
   try {
-    for (const batch of getFurnaceBatchesCache()) {
-      if (batch.status !== 'draft' || !batch.trigger) continue;
-      if (batch.tickets.length === 0) continue;
-      if (!isTriggerSatisfied(batch)) continue;
-      if (freeSlots() < 1) continue; // no worktree slot — try again next tick
-      const r = await igniteBatch(batch.id);
-      if (r.ok) log.info(`[furnace] batch ${batch.id} auto-ignited — trigger ${batch.trigger.type}:${batch.trigger.ref} satisfied.`);
+    // FLUX-1554: iterate a workspace-scoped view and bind each board's pass — the pre-1554 shape read
+    // the raw global cache unbound, so an auto-ignite for a non-default board's batch claimed worktree
+    // slots / wrote board history against whichever board happened to be ambiently active instead of
+    // the trigger's own board.
+    for (const ws of liveWorkspaces()) {
+      await runWithWorkspace(ws, async () => {
+        await ensureFurnaceLoaded();
+        for (const batch of getFurnaceBatchesCacheForWorkspace(ws)) {
+          if (batch.status !== 'draft' || !batch.trigger) continue;
+          if (batch.tickets.length === 0) continue;
+          if (!isTriggerSatisfied(batch, ws)) continue;
+          if (freeSlots() < 1) continue; // no worktree slot — try again next tick
+          const r = await igniteBatch(batch.id);
+          if (r.ok) log.info(`[furnace] batch ${batch.id} auto-ignited — trigger ${batch.trigger.type}:${batch.trigger.ref} satisfied.`);
+        }
+      });
     }
   } catch (e: unknown) {
     log.warn(`[furnace] trigger check failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -2165,7 +2257,7 @@ let stokerTimer: ReturnType<typeof setInterval> | null = null;
 /** Start the background stoke loop (idempotent). Ticks every burning batch each interval. */
 export function startStoker(): void {
   if (stokerTimer) return;
-  stokerTimer = setInterval(() => { void driveBurningBatches(); }, STOKE_INTERVAL_MS);
+  stokerTimer = setInterval(() => { void driveStokeTick(); }, STOKE_INTERVAL_MS);
   stokerTimer.unref?.();
   log.info('[furnace] stoker loop started.');
 }
@@ -2212,22 +2304,27 @@ export async function igniteBatch(id: string): Promise<BatchControlResult> {
   if (isBatchTerminal(batch.status)) return { ok: false, error: `batch is ${batch.status} — create a new batch` };
   if (batch.tickets.length === 0) return { ok: false, error: 'batch is empty — add tickets first' };
 
-  const root = requireWorkspaceRoot();
-  // FLUX-1157: reclaim every worktree that's genuinely safe to release (Ready/terminal ticket, no live
-  // session, clean tree) BEFORE recounting. FLUX-1090 discounted a terminal-batch ticket's worktree from
-  // the gauge on the assumption it was reclaimed — it wasn't (takeover semantics never delete it), which
-  // let the gauge report a free slot the physical cap (createTaskWorktree) didn't actually have. Actually
-  // reclaiming it here means the slot is REALLY free, not just uncounted.
-  await reclaimReadyWorktrees(root).catch(() => [] as string[]);
-  // FLUX-1067: reconcile the slot count against the real worktree pool BEFORE the atomic claim, so we
-  // never over-spawn past worktrees that are live for reasons the Furnace isn't tracking. `force` because
-  // the reclaim above may have just shrunk the physical pool the last refresh cached.
-  await refreshWorktreePool({ force: true });
-  const claim = await claimSlotsAndIgnite(id, nowIso(), FURNACE_SLOT_CAP);
-  if (!claim.ok) return claimFailureResult(claim, root);
-  void stokerTick(id); // don't wait for the next interval
-  log.info(`[furnace] batch ${id} ignited (${batch.tickets.length} ticket(s), ${batch.kind}, burn rate ${claim.batch?.burnRate}).`);
-  return { ok: true, batch: claim.batch ?? null };
+  // FLUX-1554: bind to the batch's OWN board, not whichever board the caller (a REST/MCP request, or
+  // the unbound trigger-check loop) happens to be ambiently bound to — every `requireWorkspaceRoot()`/
+  // board write below then resolves correctly regardless of caller context.
+  return runWithWorkspace(resolveWorkspaceByRoot(batch.workspaceRoot ?? ''), async () => {
+    const root = requireWorkspaceRoot();
+    // FLUX-1157: reclaim every worktree that's genuinely safe to release (Ready/terminal ticket, no live
+    // session, clean tree) BEFORE recounting. FLUX-1090 discounted a terminal-batch ticket's worktree from
+    // the gauge on the assumption it was reclaimed — it wasn't (takeover semantics never delete it), which
+    // let the gauge report a free slot the physical cap (createTaskWorktree) didn't actually have. Actually
+    // reclaiming it here means the slot is REALLY free, not just uncounted.
+    await reclaimReadyWorktrees(root).catch(() => [] as string[]);
+    // FLUX-1067: reconcile the slot count against the real worktree pool BEFORE the atomic claim, so we
+    // never over-spawn past worktrees that are live for reasons the Furnace isn't tracking. `force` because
+    // the reclaim above may have just shrunk the physical pool the last refresh cached.
+    await refreshWorktreePool({ force: true, root });
+    const claim = await claimSlotsAndIgnite(id, nowIso(), FURNACE_SLOT_CAP);
+    if (!claim.ok) return claimFailureResult(claim, root);
+    void stokerTick(id); // don't wait for the next interval
+    log.info(`[furnace] batch ${id} ignited (${batch.tickets.length} ticket(s), ${batch.kind}, burn rate ${claim.batch?.burnRate}).`);
+    return { ok: true, batch: claim.batch ?? null };
+  });
 }
 
 /**
@@ -2239,14 +2336,17 @@ export async function stopBatch(id: string, reason = 'manual stop', opts: { hard
   const batch = getFurnaceBatch(id);
   if (!batch) return { ok: false, error: 'Furnace batch not found' };
   if (isBatchTerminal(batch.status)) return { ok: true, batch };
-  if (opts.hard || batch.status !== 'burning') {
-    await haltBatch(id, reason);
-    return { ok: true, batch: getFurnaceBatch(id) ?? null };
-  }
-  const updated = await mutateFurnaceBatch(id, (b) => { b.stopRequested = true; if (!b.stopReason) b.stopReason = reason; });
-  void stokerTick(id); // kick a drain tick so it starts finalizing promptly
-  log.info(`[furnace] batch ${id} stop requested (graceful drain): ${reason}`);
-  return { ok: true, batch: updated };
+  // FLUX-1554: bind to the batch's OWN board — see igniteBatch's identical note.
+  return runWithWorkspace(resolveWorkspaceByRoot(batch.workspaceRoot ?? ''), async () => {
+    if (opts.hard || batch.status !== 'burning') {
+      await haltBatch(id, reason);
+      return { ok: true, batch: getFurnaceBatch(id) ?? null };
+    }
+    const updated = await mutateFurnaceBatch(id, (b) => { b.stopRequested = true; if (!b.stopReason) b.stopReason = reason; });
+    void stokerTick(id); // kick a drain tick so it starts finalizing promptly
+    log.info(`[furnace] batch ${id} stop requested (graceful drain): ${reason}`);
+    return { ok: true, batch: updated };
+  });
 }
 
 // ── Manual recovery actions (FLUX-1066 §4 — the escape hatch) ─────────────────────
@@ -2287,31 +2387,35 @@ export async function retryTicket(batchId: string, ticketId: string, opts: { for
   const reject = retryRejectionReason(t, !!opts.force);
   if (reject) return { ok: false, error: reject };
 
-  await clearFurnaceFlag(ticketId, `Furnace retrying ${ticketId} — flag cleared, fresh attempt budget.`);
-  const updated = await mutateFurnaceBatch(batchId, (b) => {
-    const x = findTicket(b, ticketId);
-    if (!x) return;
-    x.state = 'queued';
-    x.attempts = 0;
-    x.owner = 'furnace';
-    delete x.exhaustionAttempts;
-    delete x.spawnFailures;
-    delete x.failureClass;
-    delete x.flagDismissed;
-    delete x.note;
-    delete x.endedAt;
-    delete x.currentSessionId;
-    delete x.currentPhase;
-    delete x.prUrl;
-    // FLUX-1250: drop a stale `waitingForSlot` from before this ticket left `queued` (e.g. a human
-    // takeover while it was blocked on the pool) — otherwise it re-enters the queue already "seen" and
-    // `feedCoal` won't re-announce a fresh block until it has been fed once.
-    delete x.waitingForSlot;
-    clearCooldownState(x);
+  // FLUX-1554: bind to the batch's OWN board — see igniteBatch's identical note. `clearFurnaceFlag`
+  // writes to the board via `updateTaskWithHistory`'s ambient default, so it must resolve here too.
+  return runWithWorkspace(resolveWorkspaceByRoot(batch.workspaceRoot ?? ''), async () => {
+    await clearFurnaceFlag(ticketId, `Furnace retrying ${ticketId} — flag cleared, fresh attempt budget.`);
+    const updated = await mutateFurnaceBatch(batchId, (b) => {
+      const x = findTicket(b, ticketId);
+      if (!x) return;
+      x.state = 'queued';
+      x.attempts = 0;
+      x.owner = 'furnace';
+      delete x.exhaustionAttempts;
+      delete x.spawnFailures;
+      delete x.failureClass;
+      delete x.flagDismissed;
+      delete x.note;
+      delete x.endedAt;
+      delete x.currentSessionId;
+      delete x.currentPhase;
+      delete x.prUrl;
+      // FLUX-1250: drop a stale `waitingForSlot` from before this ticket left `queued` (e.g. a human
+      // takeover while it was blocked on the pool) — otherwise it re-enters the queue already "seen" and
+      // `feedCoal` won't re-announce a fresh block until it has been fed once.
+      delete x.waitingForSlot;
+      clearCooldownState(x);
+    });
+    if (batch.status === 'burning') void stokerTick(batchId);
+    log.info(`[furnace] ${ticketId} retried — reset to queued (fresh attempt budget).`);
+    return { ok: true, batch: updated };
   });
-  if (batch.status === 'burning') void stokerTick(batchId);
-  log.info(`[furnace] ${ticketId} retried — reset to queued (fresh attempt budget).`);
-  return { ok: true, batch: updated };
 }
 
 /**
@@ -2328,30 +2432,33 @@ export async function resumeBatch(id: string): Promise<BatchControlResult> {
   if (batch.status === 'burning') return { ok: true, batch }; // idempotent
   if (batch.status === 'draft') return { ok: false, error: 'batch is a draft — ignite it instead' };
 
-  await mutateFurnaceBatch(id, (b) => {
-    b.consecutiveFailures = 0;
-    delete b.stopRequested;
-    delete b.stopReason;
-    delete b.report;
-    delete b.completedAt;
-    for (const t of b.tickets) {
-      // FLUX-1256: also drop a stale `waitingForSlot` from before the halt/stop skipped this ticket —
-      // otherwise it re-enters `queued` already "seen" and `feedCoal` won't re-announce a fresh block
-      // (silently suppressed by the leftover dedup flag) until it has been fed once.
-      if (t.state === 'skipped') { t.state = 'queued'; t.owner = 'furnace'; delete t.note; delete t.endedAt; delete t.failureClass; delete t.waitingForSlot; }
-    }
-  });
+  // FLUX-1554: bind to the batch's OWN board — see igniteBatch's identical note.
+  return runWithWorkspace(resolveWorkspaceByRoot(batch.workspaceRoot ?? ''), async () => {
+    await mutateFurnaceBatch(id, (b) => {
+      b.consecutiveFailures = 0;
+      delete b.stopRequested;
+      delete b.stopReason;
+      delete b.report;
+      delete b.completedAt;
+      for (const t of b.tickets) {
+        // FLUX-1256: also drop a stale `waitingForSlot` from before the halt/stop skipped this ticket —
+        // otherwise it re-enters `queued` already "seen" and `feedCoal` won't re-announce a fresh block
+        // (silently suppressed by the leftover dedup flag) until it has been fed once.
+        if (t.state === 'skipped') { t.state = 'queued'; t.owner = 'furnace'; delete t.note; delete t.endedAt; delete t.failureClass; delete t.waitingForSlot; }
+      }
+    });
 
-  // FLUX-1157: same reclaim-before-recount as igniteBatch — a resumed batch claims a slot exactly like a
-  // fresh ignite, so it must not be refused by a stale, actually-reclaimable worktree either.
-  const root = requireWorkspaceRoot();
-  await reclaimReadyWorktrees(root).catch(() => [] as string[]);
-  await refreshWorktreePool({ force: true });
-  const claim = await claimSlotsAndIgnite(id, nowIso(), FURNACE_SLOT_CAP);
-  if (!claim.ok) return claimFailureResult(claim, root);
-  void stokerTick(id);
-  log.info(`[furnace] batch ${id} resumed — breaker reset, ${claim.batch?.status}.`);
-  return { ok: true, batch: claim.batch ?? null };
+    // FLUX-1157: same reclaim-before-recount as igniteBatch — a resumed batch claims a slot exactly like a
+    // fresh ignite, so it must not be refused by a stale, actually-reclaimable worktree either.
+    const root = requireWorkspaceRoot();
+    await reclaimReadyWorktrees(root).catch(() => [] as string[]);
+    await refreshWorktreePool({ force: true, root });
+    const claim = await claimSlotsAndIgnite(id, nowIso(), FURNACE_SLOT_CAP);
+    if (!claim.ok) return claimFailureResult(claim, root);
+    void stokerTick(id);
+    log.info(`[furnace] batch ${id} resumed — breaker reset, ${claim.batch?.status}.`);
+    return { ok: true, batch: claim.batch ?? null };
+  });
 }
 
 /**
@@ -2365,13 +2472,16 @@ export async function dismissTicketFlag(batchId: string, ticketId: string): Prom
   if (!batch) return { ok: false, error: 'Furnace batch not found' };
   const t = findTicket(batch, ticketId);
   if (!t) return { ok: false, error: 'Ticket not in batch' };
-  await clearFurnaceFlag(ticketId, `Furnace flag on ${ticketId} dismissed — a human has it.`);
-  const updated = await mutateFurnaceBatch(batchId, (b) => {
-    const x = findTicket(b, ticketId);
-    if (x) x.flagDismissed = true;
+  // FLUX-1554: bind to the batch's OWN board — see igniteBatch's identical note.
+  return runWithWorkspace(resolveWorkspaceByRoot(batch.workspaceRoot ?? ''), async () => {
+    await clearFurnaceFlag(ticketId, `Furnace flag on ${ticketId} dismissed — a human has it.`);
+    const updated = await mutateFurnaceBatch(batchId, (b) => {
+      const x = findTicket(b, ticketId);
+      if (x) x.flagDismissed = true;
+    });
+    log.info(`[furnace] ${ticketId} flag dismissed (no re-queue).`);
+    return { ok: true, batch: updated };
   });
-  log.info(`[furnace] ${ticketId} flag dismissed (no re-queue).`);
-  return { ok: true, batch: updated };
 }
 
 /**
@@ -2385,18 +2495,21 @@ export async function takeoverTicket(batchId: string, ticketId: string): Promise
   if (!batch) return { ok: false, error: 'Furnace batch not found' };
   const t = findTicket(batch, ticketId);
   if (!t) return { ok: false, error: 'Ticket not in batch' };
-  try { stopAllSessionsForTask(ticketId, 'human takeover — Furnace yielding'); } catch { /* best effort */ }
-  const updated = await mutateFurnaceBatch(batchId, (b) => {
-    const x = findTicket(b, ticketId);
-    if (!x) return;
-    settleAsHumanOwned(x);
+  // FLUX-1554: bind to the batch's OWN board — see igniteBatch's identical note.
+  return runWithWorkspace(resolveWorkspaceByRoot(batch.workspaceRoot ?? ''), async () => {
+    try { stopAllSessionsForTask(ticketId, 'human takeover — Furnace yielding'); } catch { /* best effort */ }
+    const updated = await mutateFurnaceBatch(batchId, (b) => {
+      const x = findTicket(b, ticketId);
+      if (!x) return;
+      settleAsHumanOwned(x);
+    });
+    // B1: clear the Furnace-raised `require-input` flag on takeover — the "Take over" button is shown on
+    // parked/failed rows where `parkTicketOnBoard` raised it, so without this the taken-over ticket keeps an
+    // undismissable flag whose only escape was handing it back to the Furnace (the exact dead-end this fixes).
+    await clearFurnaceFlag(ticketId, `Furnace flag on ${ticketId} cleared — you have taken this over.`);
+    log.info(`[furnace] ${ticketId} taken over by a human — Furnace yielded.`);
+    return { ok: true, batch: updated };
   });
-  // B1: clear the Furnace-raised `require-input` flag on takeover — the "Take over" button is shown on
-  // parked/failed rows where `parkTicketOnBoard` raised it, so without this the taken-over ticket keeps an
-  // undismissable flag whose only escape was handing it back to the Furnace (the exact dead-end this fixes).
-  await clearFurnaceFlag(ticketId, `Furnace flag on ${ticketId} cleared — you have taken this over.`);
-  log.info(`[furnace] ${ticketId} taken over by a human — Furnace yielded.`);
-  return { ok: true, batch: updated };
 }
 
 /**
@@ -2411,14 +2524,18 @@ export async function handBackTicket(batchId: string, ticketId: string): Promise
   const t = findTicket(batch, ticketId);
   if (!t) return { ok: false, error: 'Ticket not in batch' };
   if (!isHumanOwned(t)) return { ok: false, error: 'ticket is not owned by a human' };
-  // FLUX-1090: stop any still-live session for the ticket FIRST (mirrors takeoverTicket's own use of this
-  // in the opposite direction) — this is what makes a hand-back robust on a ticket stuck in an active
-  // state (a zombie auto-takeover from before the race fix, or a human who left a session running):
-  // there's no live session left to reject on afterward.
-  try { stopAllSessionsForTask(ticketId, 'furnace hand-back — reclaiming from the human'); } catch { /* best effort */ }
-  // force: an explicit hand-back may re-burn even a `pr-open` ticket (the human is deliberately returning it
-  // to the Furnace), bypassing retryTicket's pr-open guard (M2) AND its active-state guard (FLUX-1090).
-  return retryTicket(batchId, ticketId, { force: true });
+  // FLUX-1554: bind to the batch's OWN board — see igniteBatch's identical note (retryTicket below binds
+  // again on its own, which is a harmless no-op re-entry into the same ws).
+  return runWithWorkspace(resolveWorkspaceByRoot(batch.workspaceRoot ?? ''), async () => {
+    // FLUX-1090: stop any still-live session for the ticket FIRST (mirrors takeoverTicket's own use of this
+    // in the opposite direction) — this is what makes a hand-back robust on a ticket stuck in an active
+    // state (a zombie auto-takeover from before the race fix, or a human who left a session running):
+    // there's no live session left to reject on afterward.
+    try { stopAllSessionsForTask(ticketId, 'furnace hand-back — reclaiming from the human'); } catch { /* best effort */ }
+    // force: an explicit hand-back may re-burn even a `pr-open` ticket (the human is deliberately returning it
+    // to the Furnace), bypassing retryTicket's pr-open guard (M2) AND its active-state guard (FLUX-1090).
+    return retryTicket(batchId, ticketId, { force: true });
+  });
 }
 
 // Re-exports for callers migrating off the old run helpers.

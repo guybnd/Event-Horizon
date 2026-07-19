@@ -13,6 +13,7 @@ import { buildBoardDigest } from '../board-digest.js';
 import { buildResumePreamble } from '../resume-preamble.js';
 import { buildBoardReprime } from '../board-reprime.js';
 import { getWorkspaceRoot } from '../workspace.js';
+import { resolveWorkspaceByRoot, runWithWorkspace } from '../workspace-context.js';
 import type { CliSessionRecord, SendInputOptions } from './types.js';
 import { checkBinaryInstalled, appendSessionOutput, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction } from './shared.js';
 import { BOARD_CONVERSATION_ID, type BoardAdapter, type BoardSpec } from './board.js';
@@ -62,9 +63,17 @@ export function buildBoardPrompt(firstMessage: string, priorContext?: string, id
 // `proc` here is the AWAITED spawn result (a plain ChildProcess), not `ReturnType<typeof spec.spawn>`
 // itself — that type is now `ChildProcess | Promise<ChildProcess>` since FLUX-1003 made the
 // Claude/Gemini BoardSpec.spawn implementations async (they resolve a cached binary path first).
-function wireBoardProc(spec: BoardSpec, proc: ReturnType<typeof spawn>, session: CliSessionRecord, onExitStatus: () => void) {
+function wireBoardProc(spec: BoardSpec, proc: ReturnType<typeof spawn>, session: CliSessionRecord, prompt: string, onExitStatus: () => void) {
   session.proc = proc as ChildProcessWithoutNullStreams;
   session.pid = proc.pid;
+  // FLUX-1496: deliver the prompt over stdin instead of argv — mirrors the FLUX-1444 per-ticket
+  // fix (claude-code.ts:1191-1193), centralized here since all three board specs share this spawn
+  // wiring. Attach the stdin error listener before writing — an EPIPE (child exited before the
+  // write lands) must not crash the parent. Every board spec's buildArgs must keep argv prompt-free
+  // (bare/empty `-p`) — writing here unconditionally would double-deliver otherwise.
+  proc.stdin!.on('error', () => {});
+  proc.stdin!.write(prompt);
+  proc.stdin!.end();
   const commitPending = spec.attachStdout(proc, session, session.taskId);
   proc.stderr!.on('data', (chunk) => appendSessionOutput(session, chunk, 'stderr', false));
   proc.on('error', (error) => {
@@ -102,7 +111,11 @@ function wireBoardProc(spec: BoardSpec, proc: ReturnType<typeof spawn>, session:
       // FLUX-810: a clean board turn === the orchestrator (or FLUX-1209: Furnace-chat persona)
       // answered the user. This is the only self-noise-free hook (stopped/non-zero/crashed turns
       // are handled above), so emit the "replied" notification-bar entry here and nowhere else.
-      generateOrchestratorReplyNotification(session.taskId, session.label);
+      // FLUX-1555 (review follow-up): this fires from the raw child-process 'exit' handler with no
+      // ambient request binding — rebind to the session's OWNING board so the notification lands
+      // there, not on whatever board happens to be active when the child exits.
+      runWithWorkspace(resolveWorkspaceByRoot(session.workspaceRoot ?? ''), () =>
+        generateOrchestratorReplyNotification(session.taskId, session.label));
     }
     broadcastEvent('taskUpdated', { id: session.taskId });
   });
@@ -125,7 +138,12 @@ async function startBoardSession(spec: BoardSpec, session: CliSessionRecord, fir
   // tail of the prior dialogue, plus the working-tree situational update. Computed BEFORE this
   // turn's `user` event is appended (below) so the just-sent message can't leak into the
   // "prior" digest. A fresh / post-reset board (FLUX-659) yields null → no re-prime block.
-  const reprime = isBoard ? await buildBoardReprime() : null;
+  // FLUX-1580: explicitly rebound to THIS session's own workspace via runWithWorkspace — this
+  // call sits inside the same live-request continuation as the route handler today, so it is
+  // likely already ambient-correct, but binding it explicitly (mirroring the exit-handler
+  // pattern in wireBoardProc below) removes any doubt that a cold-resume for a non-active
+  // workspace's board could re-prime from the wrong workspace's `__board__.jsonl`.
+  const reprime = isBoard ? await runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => buildBoardReprime()) : null;
   let resumePreamble: string | null = null;
   if (reprime) {
     // sinceIso from the last prior transcript turn's ts — the in-memory lastOutputAt is gone
@@ -162,7 +180,7 @@ async function startBoardSession(spec: BoardSpec, session: CliSessionRecord, fir
   // Persistent conversation: a finished turn stays RESUMABLE (waiting-input), never
   // terminal. If it ended 'completed', the next message would spawn a fresh session
   // with no memory of this one (it wouldn't know about a ticket it just created).
-  wireBoardProc(spec, proc, session, () => { session.status = 'waiting-input'; });
+  wireBoardProc(spec, proc, session, prompt, () => { session.status = 'waiting-input'; });
 }
 
 async function sendBoardInput(spec: BoardSpec, session: CliSessionRecord, message: string, workspaceRoot: string, opts?: SendInputOptions) {
@@ -184,10 +202,15 @@ async function sendBoardInput(spec: BoardSpec, session: CliSessionRecord, messag
   // agent can Read; keep the metadata on the transcript turn so the bubble re-renders.
   const attachments = opts?.attachments ?? [];
   const attachmentAbsPaths = resolveAttachmentAbsPaths(attachments);
+  // FLUX-1495: append the user's turn FIRST, before the resume-preamble (git work) await below —
+  // previously the append at the end of this block ran only after that await resolved (several
+  // seconds under load), so a minimize->reopen (or any transcript fetch) in that window rendered
+  // no trace of the just-sent message. The preamble note still RENDERS ahead of this bubble for the
+  // same turn (FLUX-716 item 3): projectTranscript reorders a same-timestamp note that lands right
+  // after its turn's user event, so storage order no longer has to match display order.
+  appendTranscriptEvent(session.taskId, { type: 'user', text: message, attachments, timestamp: inputAt });
   // FLUX-655: on a RESUMED board turn, build the situational update (ticket-movement only at board
-  // scope). Computed BEFORE the user event is recorded so the `resume-preamble` transcript event is
-  // ordered ahead of the `user` event for this turn (FLUX-716 item 3). Best-effort: a null assemble
-  // (no delta / git hiccup) is a no-op.
+  // scope). Best-effort: a null assemble (no delta / git hiccup) is a no-op.
   let resumePreamble: string | null = null;
   if (session.resumeSessionId) {
     resumePreamble = await buildResumePreamble({
@@ -198,7 +221,6 @@ async function sendBoardInput(spec: BoardSpec, session: CliSessionRecord, messag
       appendTranscriptEvent(session.taskId, { type: 'resume-preamble', text: resumePreamble, timestamp: inputAt });
     }
   }
-  appendTranscriptEvent(session.taskId, { type: 'user', text: message, attachments, timestamp: inputAt });
   // Effective prompt to the CLI = the user's text + a Read-the-image instruction (FLUX-676).
   const safeMessage = `${message.replace(/\0/g, '')}${attachmentReadInstruction(attachmentAbsPaths)}`;
   // Prepend the fresh triage digest to the prompt sent to the CLI — NOT to the transcript above,
@@ -214,7 +236,7 @@ async function sendBoardInput(spec: BoardSpec, session: CliSessionRecord, messag
   const args = await spec.buildArgs({ session, prompt: promptForCli, workspaceRoot, executionRoot: session.executionRoot ?? workspaceRoot, isResume: true });
   session.args = args;
   const proc = await spec.spawn(args, session.executionRoot ?? workspaceRoot, session.taskId);
-  wireBoardProc(spec, proc, session, () => { session.status = 'waiting-input'; });
+  wireBoardProc(spec, proc, session, promptForCli, () => { session.status = 'waiting-input'; });
 }
 
 export function makeBoardAdapter(spec: BoardSpec): BoardAdapter {

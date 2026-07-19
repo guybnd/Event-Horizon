@@ -1,11 +1,12 @@
 import { log } from './log.js';
 import path from 'path';
+import { existsSync } from 'fs';
 import { execFile, type ExecFileException } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs/promises';
 import chokidar from 'chokidar';
 import matter from 'gray-matter';
-import { isOrphanMode, getFluxStoreDir } from './workspace.js';
+import { getWorkspace, type Workspace } from './workspace-context.js';
 import { getConfig } from './config.js';
 import {
   buildGitSyncEnv,
@@ -66,9 +67,6 @@ function isNonFastForwardRejection(message: string): boolean {
     || msg.includes('behind its remote counterpart') || msg.includes('updates were rejected');
 }
 
-let watcher: ReturnType<typeof chokidar.watch> | null = null;
-let scheduler: ReturnType<typeof createScheduler> | null = null;
-
 // FLUX-1426/1428: the sync protocol version this engine build implements. Bumped only when a
 // sync-protocol change ships — never auto-incremented at runtime (this literal is the deliberate
 // bump). Compared against the `sync-protocol` marker file committed at the flux-data store root
@@ -106,10 +104,6 @@ export type SyncStatus =
   // upgraded. Clears automatically once a tick observes `marker <= SUPPORTED_SYNC_PROTOCOL`.
   | { state: 'protocol-mismatch'; required: number; supported: number };
 
-let currentStatus: SyncStatus = { state: 'idle' };
-const statusListeners: Array<(status: SyncStatus) => void> = [];
-let pendingConflicts: ConflictInfo[] | null = null;
-
 // FLUX-1079/FLUX-1088: a standing error notification (sync conflict, or FLUX-895 auth
 // failure) is only ever (re)created when its `generate*Notification` call actually runs —
 // some in-memory fast paths (e.g. `pendingConflicts && pendingConflicts.length > 0` below) and
@@ -123,220 +117,786 @@ let pendingConflicts: ConflictInfo[] | null = null;
 // already no-ops into a refresh when the standing entry is still active (not dismissed), so
 // it's safe to call unconditionally once the interval elapses.
 const RESURFACE_INTERVAL_MS = 4 * 60 * 60_000; // 4 hours
-let lastConflictNotifyAt = 0;
-let lastAuthNotifyAt = 0;
-let resurfaceTimer: ReturnType<typeof setInterval> | null = null;
 
-function notifyConflict(count: number): void {
-  generateSyncConflictNotification(count);
-  lastConflictNotifyAt = Date.now();
-}
+/**
+ * FLUX-1453 (epic FLUX-1230 S8): everything that used to be a module-level singleton here —
+ * one watcher, one scheduler, one status/conflict/mutex/notify-throttle set — is now instance
+ * state owned by a single `Workspace` (via `ws.syncWorker`), so N concurrent orphan-mode
+ * boards each get their own watcher/scheduler/mutex/status instead of stomping one shared set.
+ * `storeDir`/orphan-mode are resolved from the bound `ws.root` (never the global
+ * `getFluxStoreDir()`/`isOrphanMode()` from workspace.ts), so this class has no dependency on
+ * which workspace happens to be "active" elsewhere in the engine.
+ *
+ * Exported free functions below (`getSyncStatus`, `triggerSync`, `startSyncWatcher`, …) are thin
+ * shims delegating to `workerFor(getWorkspace())` — every production importer and test keeps
+ * calling them with the exact same signatures; in today's single-workspace mode `getWorkspace()`
+ * always resolves to the same `Workspace`, so behavior is byte-for-byte unchanged.
+ */
+export class SyncWorker {
+  private ws: Workspace;
 
-function notifyAuthFailure(): void {
-  generateSyncAuthNotification();
-  lastAuthNotifyAt = Date.now();
-}
+  private watcher: ReturnType<typeof chokidar.watch> | null = null;
+  private scheduler: ReturnType<typeof createScheduler> | null = null;
+  private currentStatus: SyncStatus = { state: 'idle' };
+  private statusListeners: Array<(status: SyncStatus) => void> = [];
+  private pendingConflicts: ConflictInfo[] | null = null;
+  // FLUX-989: single in-process mutex shared by runSync() and resolveConflicts(). Both
+  // touch the same .flux-store worktree; without it, resolveConflicts() writing the
+  // resolved .md files re-triggers the chokidar watcher and can schedule a concurrent
+  // runSync() tick — two git processes then race on one worktree (index.lock collisions,
+  // or one side blocked on the network while the other proceeds). Acquire before touching
+  // the worktree, release in a finally. runSync() no-ops when it's held; resolveConflicts()
+  // (user-initiated) rejects with a clear "retry in a moment" so the caller isn't dropped
+  // silently.
+  private syncInFlight = false;
+  private lastConflictNotifyAt = 0;
+  private lastAuthNotifyAt = 0;
+  private resurfaceTimer: ReturnType<typeof setInterval> | null = null;
+  // FLUX-1428: see the call site in runSync's CAS loop — test-only, no-op unless a test sets it.
+  private _testOnAfterResetHook: (() => Promise<void>) | null = null;
 
-// Exported so it can be driven directly in tests (and by the periodic timer in
-// startSyncWatcher) without waiting out RESURFACE_INTERVAL_MS in real time.
-export function maybeResurfaceConflictNotification(nowMs: number = Date.now()): void {
-  if (currentStatus.state !== 'conflict' || !pendingConflicts || pendingConflicts.length === 0) return;
-  if (nowMs - lastConflictNotifyAt < RESURFACE_INTERVAL_MS) return;
-  notifyConflict(pendingConflicts.length);
-}
-
-// Mirrors maybeResurfaceConflictNotification above for the FLUX-895 auth notification (FLUX-1088).
-export function maybeResurfaceAuthNotification(nowMs: number = Date.now()): void {
-  if (currentStatus.state !== 'error' || currentStatus.errorType !== 'auth') return;
-  if (nowMs - lastAuthNotifyAt < RESURFACE_INTERVAL_MS) return;
-  notifyAuthFailure();
-}
-
-// FLUX-989: single in-process mutex shared by runSync() and resolveConflicts(). Both
-// touch the same .flux-store worktree; without it, resolveConflicts() writing the
-// resolved .md files re-triggers the chokidar watcher and can schedule a concurrent
-// runSync() tick — two git processes then race on one worktree (index.lock collisions,
-// or one side blocked on the network while the other proceeds). Acquire before touching
-// the worktree, release in a finally. runSync() no-ops when it's held; resolveConflicts()
-// (user-initiated) rejects with a clear "retry in a moment" so the caller isn't dropped
-// silently.
-let syncInFlight = false;
-
-function updateStatus(status: SyncStatus): void {
-  currentStatus = status;
-  statusListeners.forEach((listener, index) => {
-    try {
-      listener(status);
-    } catch (err) {
-      console.error(`[sync-watcher] Error in status listener ${index}:`, err);
-      // Remove failed listener to prevent future errors
-      const idx = statusListeners.indexOf(listener);
-      if (idx !== -1) statusListeners.splice(idx, 1);
-    }
-  });
-}
-
-// A sync completed — mark synced and clear any standing auth re-login notice so
-// the indicator/notification recover on their own (FLUX-895 acceptance).
-function markSynced(): void {
-  updateStatus({ state: 'synced', lastSyncTime: new Date().toISOString() });
-  clearSyncAuthNotification();
-  clearSyncConflictNotification();
-}
-
-// Report a git failure: classify it, and for an `auth` failure attach the
-// remediation payload, raise the persistent re-auth notification, drop the cached
-// gh-auth result (so a fresh `gh auth login` is re-detected next cycle), and back
-// the retry off so we stop hammering every 30s (FLUX-895). `onFail` re-arms the
-// retry timer with the supplied delay (default cadence when omitted).
-function reportSyncFailure(errorMsg: string, onFail?: (retryDelayMs?: number) => void): void {
-  const errorType = classifyGitError(errorMsg);
-  if (errorType === 'auth') {
-    invalidateGhAuthCache();
-    updateStatus({ state: 'error', error: errorMsg, errorType, remediation: SYNC_AUTH_REMEDIATION });
-    notifyAuthFailure();
-    onFail?.(AUTH_RETRY_DELAY_MS);
-    return;
+  constructor(ws: Workspace) {
+    this.ws = ws;
   }
-  updateStatus({ state: 'error', error: errorMsg, errorType });
-  onFail?.();
+
+  /** Resolves `.flux-store` off THIS worker's bound workspace root — never the global active one. */
+  private resolveStoreDir(): string {
+    const root = this.ws.root;
+    if (!root) {
+      throw new Error('No workspace root is bound to this sync worker — cannot resolve .flux-store.');
+    }
+    return path.join(root, '.flux-store');
+  }
+
+  /** Per-instance orphan-mode probe, mirroring workspace.ts's isOrphanMode() but scoped to `this.ws`. */
+  private isOrphan(): boolean {
+    return this.ws.root != null && existsSync(path.join(this.ws.root, '.flux-store'));
+  }
+
+  private notifyConflict(count: number): void {
+    // FLUX-1555: pass `this.ws` explicitly — several call sites below (the resurface timer,
+    // reportSyncFailure) fire from a bare `setInterval`/`setTimeout` with no ambient request
+    // binding, so the notification generators' default `getWorkspace()` would otherwise resolve to
+    // whatever board is currently ACTIVE rather than the board this worker is bound to.
+    generateSyncConflictNotification(count, this.ws);
+    this.lastConflictNotifyAt = Date.now();
+  }
+
+  private notifyAuthFailure(): void {
+    generateSyncAuthNotification(this.ws);
+    this.lastAuthNotifyAt = Date.now();
+  }
+
+  // Exported (via the module-level shim) so it can be driven directly in tests (and by the
+  // periodic timer armed in start()) without waiting out RESURFACE_INTERVAL_MS in real time.
+  maybeResurfaceConflictNotification(nowMs: number = Date.now()): void {
+    if (this.currentStatus.state !== 'conflict' || !this.pendingConflicts || this.pendingConflicts.length === 0) return;
+    if (nowMs - this.lastConflictNotifyAt < RESURFACE_INTERVAL_MS) return;
+    this.notifyConflict(this.pendingConflicts.length);
+  }
+
+  // Mirrors maybeResurfaceConflictNotification above for the FLUX-895 auth notification (FLUX-1088).
+  maybeResurfaceAuthNotification(nowMs: number = Date.now()): void {
+    if (this.currentStatus.state !== 'error' || this.currentStatus.errorType !== 'auth') return;
+    if (nowMs - this.lastAuthNotifyAt < RESURFACE_INTERVAL_MS) return;
+    this.notifyAuthFailure();
+  }
+
+  private updateStatus(status: SyncStatus): void {
+    this.currentStatus = status;
+    this.statusListeners.forEach((listener, index) => {
+      try {
+        listener(status);
+      } catch (err) {
+        console.error(`[sync-watcher] Error in status listener ${index}:`, err);
+        // Remove failed listener to prevent future errors
+        const idx = this.statusListeners.indexOf(listener);
+        if (idx !== -1) this.statusListeners.splice(idx, 1);
+      }
+    });
+  }
+
+  // A sync completed — mark synced and clear any standing auth re-login notice so
+  // the indicator/notification recover on their own (FLUX-895 acceptance).
+  private markSynced(): void {
+    this.updateStatus({ state: 'synced', lastSyncTime: new Date().toISOString() });
+    clearSyncAuthNotification(this.ws);
+    clearSyncConflictNotification(this.ws);
+  }
+
+  // Report a git failure: classify it, and for an `auth` failure attach the
+  // remediation payload, raise the persistent re-auth notification, drop the cached
+  // gh-auth result (so a fresh `gh auth login` is re-detected next cycle), and back
+  // the retry off so we stop hammering every 30s (FLUX-895). `onFail` re-arms the
+  // retry timer with the supplied delay (default cadence when omitted).
+  private reportSyncFailure(errorMsg: string, onFail?: (retryDelayMs?: number) => void): void {
+    const errorType = classifyGitError(errorMsg);
+    if (errorType === 'auth') {
+      invalidateGhAuthCache();
+      this.updateStatus({ state: 'error', error: errorMsg, errorType, remediation: SYNC_AUTH_REMEDIATION });
+      this.notifyAuthFailure();
+      onFail?.(AUTH_RETRY_DELAY_MS);
+      return;
+    }
+    this.updateStatus({ state: 'error', error: errorMsg, errorType });
+    onFail?.();
+  }
+
+  getSyncStatus(): SyncStatus {
+    return this.currentStatus;
+  }
+
+  // FLUX-1076: true while flux-data sync is genuinely wedged — a conflict awaiting resolution,
+  // or a hard sync error (push/fetch/auth failure). The PR-scanner (pr-tickets.ts) checks this
+  // before creating a brand-new PR ticket: while sync can't reach the remote, tasksCache may be
+  // missing a ticket that already exists there, and materializing a fresh skeleton for it is
+  // exactly how the prior incident's wedge perpetuated itself (every stub creation is a fresh
+  // add/add conflict on the next successful pull). Existing-ticket updates aren't gated by this —
+  // only net-new creation needs to wait for sync to be healthy again.
+  isSyncUnhealthy(): boolean {
+    return this.currentStatus.state === 'conflict' || this.currentStatus.state === 'error' || this.currentStatus.state === 'diverged'
+      || this.currentStatus.state === 'protocol-mismatch';
+  }
+
+  // FLUX-1232: called by storage-sync.ts's background startup pull when `git pull --ff-only`
+  // fails for a reason other than network/auth — the only remaining reason that fails is a true
+  // divergence (neither side is an ancestor of the other). Doesn't touch pendingConflicts/error
+  // state if one is already showing — a real conflict or error is more actionable/urgent than an
+  // early divergence heads-up, and the periodic sync (triggerSync(), run right after this during
+  // workspace activation) will re-derive the real status moments later regardless.
+  reportDivergedStatus(ahead: number, behind: number): void {
+    if (this.currentStatus.state === 'conflict' || this.currentStatus.state === 'error') return;
+    this.updateStatus({ state: 'diverged', ahead, behind });
+  }
+
+  // FLUX-1232: called after forceResetToRemote() completes — the worktree now exactly matches
+  // origin/flux-data, so any stale conflict/diverged/error state must not keep showing.
+  clearSyncStateAfterForceReset(): void {
+    this.pendingConflicts = null;
+    this.markSynced();
+  }
+
+  // FLUX-1232: acquire the same in-flight mutex runSync()/resolveConflicts() use, so
+  // forceResetToRemote() can't race a background sync on the same worktree (FLUX-989). Throws the
+  // same "retry in a moment" error resolveConflicts() does when the lock is already held.
+  async withSyncLock<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.syncInFlight) {
+      throw new Error('A sync is currently in progress; please retry in a moment.');
+    }
+    this.syncInFlight = true;
+    try {
+      return await fn();
+    } finally {
+      this.syncInFlight = false;
+    }
+  }
+
+  // FLUX-989: `pendingConflicts` is trusted as ground truth once set, but the worktree can
+  // be fixed out-of-band (manually, or by a prior partially-succeeded resolution) — the
+  // banner then keeps showing a conflict that no longer exists until the engine restarts.
+  // Re-derive the conflict from the live worktree before serving `state: 'conflict'`: if
+  // there is no unmerged state anymore, drop it; if it's still unmerged, refresh the list
+  // from disk. No-op unless we currently claim a conflict, so the common path stays cheap.
+  // Skips while a sync/resolution holds the lock (the in-flight op owns the truth).
+  async revalidateConflictState(): Promise<SyncStatus> {
+    if (this.currentStatus.state !== 'conflict' || !this.isOrphan() || this.syncInFlight) return this.currentStatus;
+    const storeDir = this.resolveStoreDir();
+    try {
+      if (!(await hasUnmergedState(storeDir))) {
+        // Worktree is clean — the conflict was resolved out-of-band. Stop showing it; the
+        // next watcher tick / manual retry re-derives real sync state from here.
+        this.pendingConflicts = null;
+        this.updateStatus({ state: 'idle' });
+        clearSyncConflictNotification(this.ws);
+        log.info('[sync-watcher] Stale conflict cleared — worktree no longer has unmerged state.');
+      } else {
+        // Still genuinely conflicted — refresh the surfaced list from the live worktree.
+        const conflicts = await detectMergeConflicts(storeDir);
+        if (conflicts.length > 0) {
+          this.pendingConflicts = conflicts;
+          this.updateStatus({ state: 'conflict', conflicts });
+        }
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.info(`[sync-watcher] conflict re-validation failed: ${message}`);
+    }
+    return this.currentStatus;
+  }
+
+  onSyncStatusChange(listener: (status: SyncStatus) => void): () => void {
+    this.statusListeners.push(listener);
+    // Return unsubscribe function
+    return () => {
+      const idx = this.statusListeners.indexOf(listener);
+      if (idx !== -1) this.statusListeners.splice(idx, 1);
+    };
+  }
+
+  // Test-only: reset this worker's state between vitest cases. Not used in production.
+  _resetSyncStateForTests(): void {
+    this.pendingConflicts = null;
+    this.currentStatus = { state: 'idle' };
+    this.syncInFlight = false;
+    this.lastConflictNotifyAt = 0;
+    this.lastAuthNotifyAt = 0;
+    this._testOnAfterResetHook = null;
+  }
+
+  _setPostResetHookForTests(fn: (() => Promise<void>) | null): void {
+    this._testOnAfterResetHook = fn;
+  }
+
+  // Test-only: drive the module straight into the FLUX-895 auth-failure state (the same
+  // `updateStatus`/notify sequence `reportSyncFailure` runs on a real classified-`auth` git
+  // error), without needing a real git remote that produces a classifiable auth failure —
+  // that would be network-dependent and platform-fragile (Windows/Linux emit different
+  // credential-helper error text) for what maybeResurfaceAuthNotification tests need to
+  // exercise: the dismissed-notification resurface logic, not git error classification.
+  _simulateAuthFailureForTests(): void {
+    this.updateStatus({ state: 'error', error: 'test auth failure', errorType: 'auth', remediation: SYNC_AUTH_REMEDIATION });
+    this.notifyAuthFailure();
+  }
+
+  triggerSync(): void {
+    if (!this.isOrphan()) return;
+    // A manual sync (the "Retry" action / clicking the indicator) re-detects gh auth
+    // immediately rather than waiting out the cache, so a just-completed `gh auth
+    // login` takes effect on this attempt (FLUX-895).
+    invalidateGhAuthCache();
+    const storeDir = this.resolveStoreDir();
+    void this.runSync(storeDir, (delayMs?: number) => this.scheduler?.scheduleRetry(delayMs));
+  }
+
+  triggerTestError(): void {
+    this.updateStatus({
+      state: 'error',
+      error: 'This is a test error for UI development. The actual sync error was: "Command failed: git -C <workspace>/.flux-store commit -m flux: sync\\nfatal: Unable to create index.lock: File exists.\\n\\nAnother git process seems to be running in this repository, or the lock file may be stale."',
+      errorType: 'unknown'
+    });
+    log.info('[sync-watcher] Test error triggered for UI testing');
+  }
+
+  private reportProtocolMismatch(required: number): void {
+    this.updateStatus({ state: 'protocol-mismatch', required, supported: SUPPORTED_SYNC_PROTOCOL });
+    console.warn(`[sync-watcher] flux-data store requires sync-protocol ${required}, this engine supports ${SUPPORTED_SYNC_PROTOCOL} — sync is read-only until the engine is upgraded.`);
+  }
+
+  async resolveConflicts(
+    resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'use-local' | 'rename-local' | 'manual'; newContent?: string }>
+  ): Promise<void> {
+    if (!this.pendingConflicts || this.pendingConflicts.length === 0) {
+      throw new Error('No conflicts to resolve');
+    }
+
+    // FLUX-989: refuse to run while a background sync holds the worktree — racing git
+    // processes on one worktree corrupt the merge. Reject clearly so the HTTP caller can
+    // surface a real "retry in a moment" state instead of hanging behind the other side.
+    if (this.syncInFlight) {
+      throw new Error('A sync is currently in progress; please retry in a moment.');
+    }
+
+    const storeDir = this.resolveStoreDir();
+
+    // FLUX-1426: same read-only fence as runSync() — never commit/push a conflict resolution
+    // into a store that requires a newer protocol than this engine supports.
+    const headMarker = await readSyncProtocolMarker(storeDir, 'HEAD');
+    if (headMarker > SUPPORTED_SYNC_PROTOCOL) {
+      this.reportProtocolMismatch(headMarker);
+      throw new Error(`This flux-data store requires sync protocol ${headMarker}; this engine only supports ${SUPPORTED_SYNC_PROTOCOL}. Upgrade the engine to resolve conflicts.`);
+    }
+
+    this.syncInFlight = true;
+    try {
+      await this.applyConflictResolutions(resolutions, storeDir);
+    } finally {
+      this.syncInFlight = false;
+    }
+  }
+
+  // The worktree-mutating body of resolveConflicts, run under the syncInFlight lock so a
+  // chokidar-scheduled runSync() tick fired by our own .md writes no-ops instead of racing.
+  private async applyConflictResolutions(
+    resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'use-local' | 'rename-local' | 'manual'; newContent?: string }>,
+    storeDir: string
+  ): Promise<void> {
+    for (const resolution of resolutions) {
+      const conflict = this.pendingConflicts!.find(c => c.ticketId === resolution.ticketId)!;
+      const filePath = path.join(storeDir, `${resolution.ticketId}.md`);
+
+      switch (resolution.strategy) {
+        case 'use-remote':
+          await fs.writeFile(filePath, conflict.remoteContent, 'utf-8');
+          log.info(`[sync-watcher] Resolved ${resolution.ticketId}: used remote version`);
+          break;
+
+        case 'use-local':
+          await fs.writeFile(filePath, conflict.localContent, 'utf-8');
+          log.info(`[sync-watcher] Resolved ${resolution.ticketId}: used local version`);
+          break;
+
+        case 'rename-local': {
+          const projectKey = resolution.ticketId.split('-')[0]!;
+          const newId = await allocateNewTicketId(storeDir, projectKey);
+          await fs.writeFile(filePath, conflict.remoteContent, 'utf-8');
+          const parsed = matter(conflict.localContent);
+          parsed.data.id = newId;
+          const renamedContent = matter.stringify(parsed.content, parsed.data);
+          await fs.writeFile(path.join(storeDir, `${newId}.md`), renamedContent, 'utf-8');
+          log.info(`[sync-watcher] Resolved ${resolution.ticketId}: renamed local to ${newId}, accepted remote`);
+          break;
+        }
+
+        case 'manual':
+          await fs.writeFile(filePath, resolution.newContent!, 'utf-8');
+          log.info(`[sync-watcher] Resolved ${resolution.ticketId}: used manual merge`);
+          break;
+      }
+    }
+
+    // Stage resolved files and commit the merge
+    this.pendingConflicts = null;
+    this.updateStatus({ state: 'syncing' });
+    clearSyncConflictNotification(this.ws);
+
+    try {
+      let addAttempts = 0;
+      while (addAttempts < 3) {
+        try {
+          await execFileAsync('git', ['-C', storeDir, 'add', '-A']);
+          break;
+        } catch (addErr: unknown) {
+          const msg = addErr instanceof Error ? addErr.message : String(addErr);
+          if (msg.includes('index.lock') && addAttempts < 2) {
+            log.info(`[sync-watcher] Git lock detected on add, retrying in 1s (attempt ${addAttempts + 1}/3)...`);
+            await new Promise(r => setTimeout(r, 1000));
+            addAttempts++;
+          } else {
+            throw addErr;
+          }
+        }
+      }
+
+      await execFileAsync('git', ['-C', storeDir, 'commit', '-m', 'flux: sync (resolved conflicts)']);
+      log.info('[sync-watcher] Committed merge with resolved conflicts');
+    } catch (err: unknown) {
+      // FLUX-994: this used to fall through uncaught — status stayed stranded at 'syncing'
+      // (set just above) until the next scheduled watcher tick happened to overwrite it,
+      // whether or not an HTTP caller was still around to see the rejection (e.g. raced away
+      // by the resolve-conflicts route's timeout). Report it the same way the push failure
+      // below already does, then rethrow so a still-listening caller sees the real failure.
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.reportSyncFailure(errorMsg);
+      throw err;
+    }
+
+    try {
+      await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
+      this.markSynced();
+      log.info('[sync-watcher] Pushed resolved conflicts to remote');
+    } catch (pushErr: unknown) {
+      const errorMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+      this.reportSyncFailure(errorMsg);
+    }
+  }
+
+  async runSync(storeDir: string, onFail?: (retryDelayMs?: number) => void): Promise<void> {
+    // FLUX-989: a resolveConflicts() (or another sync tick) is already touching the
+    // worktree. Proceeding now would race two git processes on one worktree. No-op — the
+    // debounced scheduler / retry timer will re-run us after the lock frees.
+    if (this.syncInFlight) {
+      log.info('[sync-watcher] sync already in flight — skipping this tick');
+      return;
+    }
+
+    // A conflict is already awaiting user resolution (in-memory fast path). Touching
+    // the repo now would let Step 1's `git add -A`/commit bake the conflict markers
+    // sitting in the worktree into a commit and corrupt the ticket YAML (FLUX-703).
+    // The marker write also fires the chokidar watcher, so without this the parked
+    // conflict self-triggers the very tick that commits it.
+    if (this.pendingConflicts && this.pendingConflicts.length > 0) {
+      this.updateStatus({ state: 'conflict', conflicts: this.pendingConflicts });
+      return;
+    }
+
+    // FLUX-1426: the store already carries a protocol marker this engine can't handle (e.g. a
+    // prior tick fetched and fast-forwarded it in, or another engine instance bumped it) — fence
+    // out before touching the worktree at all, including the local add/commit in Step 1 below.
+    const headMarker = await readSyncProtocolMarker(storeDir, 'HEAD');
+    if (headMarker > SUPPORTED_SYNC_PROTOCOL) {
+      this.reportProtocolMismatch(headMarker);
+      return;
+    }
+
+    this.syncInFlight = true;
+    this.updateStatus({ state: 'syncing' });
+
+    try {
+      // Guard (FLUX-703): never `git add -A`/commit on top of an in-progress or
+      // half-finished merge. A prior tick — or a crash/restart mid-merge — can leave
+      // conflict markers + MERGE_HEAD in the worktree; staging and committing them is
+      // exactly what corrupted FLUX-694. Re-surface the conflict instead of committing.
+      if (await hasUnmergedState(storeDir)) {
+        let conflicts = await detectMergeConflicts(storeDir);
+        if (conflicts.length > 0) {
+          // FLUX-1076: most ticket-file conflicts are a pure append-only history race — try
+          // resolving those automatically before asking a human.
+          conflicts = await autoResolveHistoryConflicts(storeDir, conflicts);
+        }
+        if (conflicts.length > 0) {
+          this.pendingConflicts = conflicts;
+          this.updateStatus({ state: 'conflict', conflicts });
+          // FLUX-1076: persist a Notification (not just the SSE status) so the wedge isn't
+          // silent — the earlier incident had this state sit unnoticed for 315+ commits.
+          this.notifyConflict(conflicts.length);
+          console.warn(`[sync-watcher] Unresolved merge state on entry (${conflicts.length} ticket conflict(s)) — awaiting resolution, not committing.`);
+          return;
+        }
+        if (!(await hasUnresolvedConflictedPaths(storeDir))) {
+          // FLUX-1076: every unmerged path was a ticket conflict and it auto-resolved (or there
+          // was nothing to resolve in the first place) — fall through to Step 1 below, which
+          // commits what's now staged and completes the in-progress merge, instead of the
+          // merge --abort path below meant for a merge with no resolvable ticket conflicts.
+          log.info('[sync-watcher] Conflicts auto-resolved via append-only history union — continuing sync.');
+        } else {
+          // Merge in progress but nothing we can surface as a ticket-level conflict —
+          // abort it to recover a clean local tree, then sync normally.
+          console.warn('[sync-watcher] In-progress merge with no resolvable ticket conflicts — aborting merge to recover a clean tree.');
+          await execFileAsync('git', ['-C', storeDir, 'merge', '--abort']).catch(() => {});
+
+          // FLUX-706: if unmerged paths PERSIST after the abort (e.g. unmerged index entries with
+          // no MERGE_HEAD — only reachable via manual external git surgery inside .flux-store), do
+          // NOT fall through to Step 1's `git add -A`, which would stage conflict-marked content.
+          // Hard-stop and surface an error instead of risking baking markers into a ticket. Fail
+          // CLOSED: if the probe itself can't be read, treat the tree as still-unmerged. (The error
+          // re-surfaces on each retry tick until a human cleans the worktree — that recurrence is
+          // intentional, not a spin: each tick terminates and the retry timer is debounced.)
+          let unmergedOut = '';
+          try {
+            ({ stdout: unmergedOut } = await execFileAsync('git', ['-C', storeDir, 'diff', '--name-only', '--diff-filter=U']));
+          } catch {
+            unmergedOut = 'probe-failed';
+          }
+          if (unmergedOut.trim()) {
+            console.error('[sync-watcher] Unmerged paths persist after `merge --abort` — refusing to `git add -A`. Resolve the .flux-store worktree manually.');
+            this.updateStatus({ state: 'error', error: 'Unmerged paths persist in .flux-store after merge --abort; refusing to commit to avoid baking conflict markers into a ticket.', errorType: 'unknown' });
+            onFail?.();
+            return;
+          }
+        }
+      }
+
+      // Step 1: commit any pending local changes first
+      let addAttempts = 0;
+      while (addAttempts < 3) {
+        try {
+          await execFileAsync('git', ['-C', storeDir, 'add', '-A']);
+          break;
+        } catch (addErr: unknown) {
+          const msg = addErr instanceof Error ? addErr.message : String(addErr);
+          if (msg.includes('index.lock') && addAttempts < 2) {
+            log.info(`[sync-watcher] Git lock detected on add, retrying in 1s (attempt ${addAttempts + 1}/3)...`);
+            await new Promise(r => setTimeout(r, 1000));
+            addAttempts++;
+          } else {
+            throw addErr;
+          }
+        }
+      }
+
+      const { stdout: porcelain } = await execFileAsync('git', ['-C', storeDir, 'status', '--porcelain']);
+      if (porcelain.trim()) {
+        let commitAttempts = 0;
+        while (commitAttempts < 3) {
+          try {
+            await execFileAsync('git', ['-C', storeDir, 'commit', '-m', 'flux: sync']);
+            log.info('[sync-watcher] Committed local changes');
+            break;
+          } catch (commitErr: unknown) {
+            const msg = commitErr instanceof Error ? commitErr.message : String(commitErr);
+            if (msg.includes('index.lock') && commitAttempts < 2) {
+              log.info(`[sync-watcher] Git lock detected on commit, retrying in 1s (attempt ${commitAttempts + 1}/3)...`);
+              await new Promise(r => setTimeout(r, 1000));
+              commitAttempts++;
+            } else {
+              throw commitErr;
+            }
+          }
+        }
+      }
+
+      // Step 2: fetch remote
+      try {
+        await execFileAsync('git', ['-C', storeDir, 'fetch', 'origin', 'flux-data']);
+      } catch (fetchErr: unknown) {
+        const errorMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+        log.info(`[sync-watcher] fetch failed (${classifyGitError(errorMsg)}): ${errorMsg}`);
+        // Push what we have locally, remote will catch up later
+        try {
+          await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
+          this.markSynced();
+        } catch (pushErr: unknown) {
+          // Both fetch and push failed. Prefer the auth-classified message so a
+          // credential failure surfaces the actionable re-auth state (FLUX-895).
+          const pushMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+          this.reportSyncFailure(classifyGitError(pushMsg) === 'auth' ? pushMsg : errorMsg, onFail);
+        }
+        return;
+      }
+
+      // FLUX-1426: re-check against what we just fetched — fetch only updates the remote-tracking
+      // ref, so a marker bump on origin isn't visible in the Step-1 HEAD check above until it's
+      // merged in. Catch it here, before Step 3's merge/ff-only would pull an incompatible
+      // protocol into the worktree or Step 4 pushes on top of it.
+      const remoteMarker = await readSyncProtocolMarker(storeDir, 'origin/flux-data');
+      if (remoteMarker > SUPPORTED_SYNC_PROTOCOL) {
+        this.reportProtocolMismatch(remoteMarker);
+        return;
+      }
+
+      // Step 3+4 (FLUX-1428): push-as-CAS + journal replay. This REPLACES the old fetch-merge-push
+      // flow — runSync never invokes `git merge` on origin/flux-data anymore. The remote is the
+      // serialization point: push directly (git itself rejects a non-fast-forward push, which is
+      // exactly a compare-and-swap). A clean push means nobody raced us. A rejected push means the
+      // remote moved since Step 2's fetch — instead of textually merging file content, drop our
+      // local commit entirely (`reset --hard` onto the new remote head) and replay this engine's own
+      // not-yet-pushed mutations through the real handler (task-store's updateTaskWithHistory), so a
+      // duplicate business event (e.g. "advance to Done because PR merged") converges to a no-op
+      // instead of colliding as text. The old merge/conflict machinery below (resolveConflicts,
+      // mergePrTicketConflict, etc.) intentionally stays in this file, unreachable from this path —
+      // removed in a follow-up ticket once this is proven (see FLUX-1428's "delete nothing yet").
+      for (let attempt = 1; attempt <= CAS_MAX_ATTEMPTS; attempt++) {
+        // Snapshot the journal for THIS attempt before pushing — these are the ops the current local
+        // HEAD carries that aren't confirmed on the remote yet. Re-read fresh each attempt (not
+        // hoisted above the loop) so an entry appended mid-retry by a concurrent request is captured
+        // by the attempt that actually pushes it, rather than silently skipped.
+        const journalBatch = await readJournalEntries(storeDir);
+
+        try {
+          await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
+          log.info(`[sync-watcher] Pushed flux-data to remote (CAS, attempt ${attempt})`);
+          this.markSynced();
+          await dropFlushedJournalEntries(storeDir, journalBatch.length);
+          return;
+        } catch (pushErr: unknown) {
+          const errorMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+
+          if (!isNonFastForwardRejection(errorMsg)) {
+            // Not a lost race (network/auth/unknown) — nothing to reset/replay, surface normally.
+            log.info(`[sync-watcher] push failed (${classifyGitError(errorMsg)}): ${errorMsg}`);
+            this.reportSyncFailure(errorMsg, onFail);
+            return;
+          }
+
+          if (attempt >= CAS_MAX_ATTEMPTS) {
+            console.error(`[sync-watcher] CAS push rejected ${CAS_MAX_ATTEMPTS} times in a row (remote kept moving) — giving up this tick.`);
+            this.reportSyncFailure(`Sync could not converge after ${CAS_MAX_ATTEMPTS} attempts — the remote kept moving. It will retry automatically.`, onFail);
+            return;
+          }
+
+          log.info(`[sync-watcher] Push rejected (remote moved) — resetting to origin/flux-data and replaying ${journalBatch.length} local op(s) (attempt ${attempt}/${CAS_MAX_ATTEMPTS})`);
+
+          const { stdout: preResetHead } = await execFileAsync('git', ['-C', storeDir, 'rev-parse', 'HEAD']);
+          await execFileAsync('git', ['-C', storeDir, 'fetch', 'origin', 'flux-data']);
+
+          // FLUX-1426: re-check the freshly-fetched marker before adopting it as our new base — a
+          // losing race against an engine that ALSO bumped the protocol must fence out read-only,
+          // not reset onto (and start replaying against) a head we don't know how to interpret.
+          const postFetchMarker = await readSyncProtocolMarker(storeDir, 'origin/flux-data');
+          if (postFetchMarker > SUPPORTED_SYNC_PROTOCOL) {
+            this.reportProtocolMismatch(postFetchMarker);
+            return;
+          }
+
+          await execFileAsync('git', ['-C', storeDir, 'reset', '--hard', 'origin/flux-data']);
+
+          // FLUX-1428 test-only hook: fires once per reset, before replay — lets a test deterministically
+          // keep the remote moving (e.g. push another commit) to exercise CAS_MAX_ATTEMPTS exhaustion
+          // without racing real concurrent processes against wall-clock timing. No-op in production.
+          if (this._testOnAfterResetHook) await this._testOnAfterResetHook();
+
+          // FLUX-1428: nothing journaled this attempt means nothing needs replaying — a raw local
+          // file edit made outside updateTaskWithHistory (not a tracked intent) is, by design, simply
+          // superseded by the remote's version on a lost race. Skip the cache reload + replay
+          // machinery entirely in that case: it exists to give replay accurate state, and there's
+          // nothing to replay. (This also means resetting to the remote head never requires a
+          // replay handler to have been registered unless there's actually journaled work.)
+          if (journalBatch.length > 0) {
+            // Refresh the in-memory cache for exactly what the reset rewrote, BEFORE replay — replay
+            // must see the winning side's fresh state, not a stale in-memory copy of what our now-
+            // discarded local commit thought the ticket looked like.
+            const { stdout: diffOut } = await execFileAsync('git', ['-C', storeDir, 'diff', '--name-only', preResetHead.trim(), 'origin/flux-data']).catch(() => ({ stdout: '' }));
+            const changedPaths = diffOut.split('\n').map((l) => l.trim()).filter(Boolean);
+            await reloadCacheAfterReset(storeDir, changedPaths);
+
+            for (const entry of journalBatch) {
+              try {
+                await replayJournalEntry(entry);
+              } catch (replayErr: unknown) {
+                const replayMsg = replayErr instanceof Error ? replayErr.message : String(replayErr);
+                console.error(`[sync-watcher] Replay failed for ${entry.taskId} (op ${entry.opId}): ${replayMsg}`);
+              }
+            }
+          }
+
+          // Fold the replayed mutations into a fresh local commit and loop back to push again.
+          await execFileAsync('git', ['-C', storeDir, 'add', '-A']);
+          const { stdout: porcelainAfterReplay } = await execFileAsync('git', ['-C', storeDir, 'status', '--porcelain']);
+          if (porcelainAfterReplay.trim()) {
+            await execFileAsync('git', ['-C', storeDir, 'commit', '-m', `flux: sync (replay ${journalBatch.length} op(s))`]);
+          }
+          // loop continues → retry push against the new base
+        }
+      }
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[sync-watcher] sync failed: ${errorMsg}`);
+      this.reportSyncFailure(errorMsg, onFail);
+    } finally {
+      this.syncInFlight = false;
+    }
+  }
+
+  /**
+   * Starts (or restarts) this worker for `ws` — self-stops first for restart-idempotency, mirroring
+   * the old module-level `startSyncWatcher`'s `stopSyncWatcher()` self-call. No-ops (leaving
+   * everything stopped) when `ws` isn't in orphan mode. `ws` is re-bound here (not just read at
+   * construction) so a workspace re-activating with a new root picks it up.
+   */
+  start(ws: Workspace): void {
+    this.ws = ws;
+    this.stop();
+    if (!this.isOrphan()) return;
+
+    const storeDir = this.resolveStoreDir();
+
+    this.scheduler = createScheduler(
+      () => getConfig().syncSettings?.debounceMs ?? 30000,
+      () => getConfig().syncSettings?.maxWaitMs ?? 300000,
+      () => { void this.runSync(storeDir, (delayMs?: number) => this.scheduler?.scheduleRetry(delayMs)); }
+    );
+
+    this.watcher = chokidar.watch(storeDir, {
+      ignored: (filePath: string) => {
+        const base = path.basename(filePath);
+        // FLUX-855: open-prompts.json (HITL store) is gitignored (STORE_LOCAL_IGNORES) and rewritten on
+        // every prompt park/settle; watching it just wakes the sync cycle for a file that is never
+        // committed. Exclude it so the HITL hot path doesn't churn the flux-data sync watcher.
+        // FLUX-894: session-binding-secret is a gitignored local-only credential; never sync it.
+        return base.endsWith('.tmp') || base.startsWith('.git') || base === '.git' || base === 'open-prompts.json' || base === 'session-binding-secret';
+      },
+      ignoreInitial: true,
+      persistent: true,
+    });
+
+    this.watcher.on('add', () => this.scheduler!.schedule());
+    this.watcher.on('change', () => this.scheduler!.schedule());
+    this.watcher.on('unlink', () => this.scheduler!.schedule());
+    // FLUX-784: swallow recoverable watcher errors (inotify limits, transient locks) — an
+    // unhandled 'error' would rethrow and the uncaughtException handler exits the engine.
+    this.watcher.on('error', (err) => console.error('[sync-watcher] file-sync paused:', err));
+
+    const debounceMs = getConfig().syncSettings?.debounceMs ?? 30000;
+    const maxWaitMs = getConfig().syncSettings?.maxWaitMs ?? 300000;
+    log.info(`[sync-watcher] Watching .flux-store/ for changes (${debounceMs / 1000}s debounce, ${maxWaitMs / 1000}s max-wait)`);
+
+    // FLUX-1079/FLUX-1088: independent of file-change/retry-timer activity — a dismissed-but-
+    // unresolved conflict or auth failure needs re-surfacing even when nothing else is nudging
+    // runSync().
+    this.resurfaceTimer = setInterval(() => {
+      this.maybeResurfaceConflictNotification();
+      this.maybeResurfaceAuthNotification();
+    }, RESURFACE_INTERVAL_MS);
+    this.resurfaceTimer.unref?.();
+  }
+
+  /** Explicit stop: clears the watcher/scheduler/resurface timer. Leaves status/conflicts as-is. */
+  stop(): void {
+    if (this.scheduler) { this.scheduler.reset(); this.scheduler = null; }
+    if (this.watcher) { void this.watcher.close(); this.watcher = null; }
+    if (this.resurfaceTimer) { clearInterval(this.resurfaceTimer); this.resurfaceTimer = null; }
+  }
+}
+
+/** Lazily constructs (once) and returns the SyncWorker bound to `ws` — defaults to the active workspace. */
+function workerFor(ws: Workspace = getWorkspace()): SyncWorker {
+  return (ws.syncWorker ??= new SyncWorker(ws));
 }
 
 export function getSyncStatus(): SyncStatus {
-  return currentStatus;
+  return workerFor().getSyncStatus();
 }
 
-// FLUX-1076: true while flux-data sync is genuinely wedged — a conflict awaiting resolution,
-// or a hard sync error (push/fetch/auth failure). The PR-scanner (pr-tickets.ts) checks this
-// before creating a brand-new PR ticket: while sync can't reach the remote, tasksCache may be
-// missing a ticket that already exists there, and materializing a fresh skeleton for it is
-// exactly how the prior incident's wedge perpetuated itself (every stub creation is a fresh
-// add/add conflict on the next successful pull). Existing-ticket updates aren't gated by this —
-// only net-new creation needs to wait for sync to be healthy again.
 export function isSyncUnhealthy(): boolean {
-  return currentStatus.state === 'conflict' || currentStatus.state === 'error' || currentStatus.state === 'diverged'
-    || currentStatus.state === 'protocol-mismatch';
+  return workerFor().isSyncUnhealthy();
 }
 
-// FLUX-1232: called by storage-sync.ts's background startup pull when `git pull --ff-only`
-// fails for a reason other than network/auth — the only remaining reason that fails is a true
-// divergence (neither side is an ancestor of the other). Doesn't touch pendingConflicts/error
-// state if one is already showing — a real conflict or error is more actionable/urgent than an
-// early divergence heads-up, and the periodic sync (triggerSync(), run right after this during
-// workspace activation) will re-derive the real status moments later regardless.
 export function reportDivergedStatus(ahead: number, behind: number): void {
-  if (currentStatus.state === 'conflict' || currentStatus.state === 'error') return;
-  updateStatus({ state: 'diverged', ahead, behind });
+  workerFor().reportDivergedStatus(ahead, behind);
 }
 
-// FLUX-1232: called after forceResetToRemote() completes — the worktree now exactly matches
-// origin/flux-data, so any stale conflict/diverged/error state must not keep showing.
 export function clearSyncStateAfterForceReset(): void {
-  pendingConflicts = null;
-  markSynced();
+  workerFor().clearSyncStateAfterForceReset();
 }
 
-// FLUX-1232: acquire the same in-flight mutex runSync()/resolveConflicts() use, so
-// forceResetToRemote() can't race a background sync on the same worktree (FLUX-989). Throws the
-// same "retry in a moment" error resolveConflicts() does when the lock is already held.
-export async function withSyncLock<T>(fn: () => Promise<T>): Promise<T> {
-  if (syncInFlight) {
-    throw new Error('A sync is currently in progress; please retry in a moment.');
-  }
-  syncInFlight = true;
-  try {
-    return await fn();
-  } finally {
-    syncInFlight = false;
-  }
+export function withSyncLock<T>(fn: () => Promise<T>): Promise<T> {
+  return workerFor().withSyncLock(fn);
 }
 
-// FLUX-989: `pendingConflicts` is trusted as ground truth once set, but the worktree can
-// be fixed out-of-band (manually, or by a prior partially-succeeded resolution) — the
-// banner then keeps showing a conflict that no longer exists until the engine restarts.
-// Re-derive the conflict from the live worktree before serving `state: 'conflict'`: if
-// there is no unmerged state anymore, drop it; if it's still unmerged, refresh the list
-// from disk. No-op unless we currently claim a conflict, so the common path stays cheap.
-// Skips while a sync/resolution holds the lock (the in-flight op owns the truth).
-export async function revalidateConflictState(): Promise<SyncStatus> {
-  if (currentStatus.state !== 'conflict' || !isOrphanMode() || syncInFlight) return currentStatus;
-  const storeDir = getFluxStoreDir();
-  try {
-    if (!(await hasUnmergedState(storeDir))) {
-      // Worktree is clean — the conflict was resolved out-of-band. Stop showing it; the
-      // next watcher tick / manual retry re-derives real sync state from here.
-      pendingConflicts = null;
-      updateStatus({ state: 'idle' });
-      clearSyncConflictNotification();
-      log.info('[sync-watcher] Stale conflict cleared — worktree no longer has unmerged state.');
-    } else {
-      // Still genuinely conflicted — refresh the surfaced list from the live worktree.
-      const conflicts = await detectMergeConflicts(storeDir);
-      if (conflicts.length > 0) {
-        pendingConflicts = conflicts;
-        updateStatus({ state: 'conflict', conflicts });
-      }
-    }
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    log.info(`[sync-watcher] conflict re-validation failed: ${message}`);
-  }
-  return currentStatus;
+export function revalidateConflictState(): Promise<SyncStatus> {
+  return workerFor().revalidateConflictState();
 }
 
 export function onSyncStatusChange(listener: (status: SyncStatus) => void): () => void {
-  statusListeners.push(listener);
-  // Return unsubscribe function
-  return () => {
-    const idx = statusListeners.indexOf(listener);
-    if (idx !== -1) statusListeners.splice(idx, 1);
-  };
+  return workerFor().onSyncStatusChange(listener);
+}
+
+export function maybeResurfaceConflictNotification(nowMs: number = Date.now()): void {
+  workerFor().maybeResurfaceConflictNotification(nowMs);
+}
+
+export function maybeResurfaceAuthNotification(nowMs: number = Date.now()): void {
+  workerFor().maybeResurfaceAuthNotification(nowMs);
 }
 
 // Test-only: reset module-global sync state between vitest cases. Not used in production.
 export function _resetSyncStateForTests(): void {
-  pendingConflicts = null;
-  currentStatus = { state: 'idle' };
-  syncInFlight = false;
-  lastConflictNotifyAt = 0;
-  lastAuthNotifyAt = 0;
-  _testOnAfterResetHook = null;
+  workerFor()._resetSyncStateForTests();
 }
 
-// FLUX-1428: see the call site in runSync's CAS loop — test-only, no-op unless a test sets it.
-let _testOnAfterResetHook: (() => Promise<void>) | null = null;
 export function _setPostResetHookForTests(fn: (() => Promise<void>) | null): void {
-  _testOnAfterResetHook = fn;
+  workerFor()._setPostResetHookForTests(fn);
 }
 
-// Test-only: drive the module straight into the FLUX-895 auth-failure state (the same
-// `updateStatus`/notify sequence `reportSyncFailure` runs on a real classified-`auth` git
-// error), without needing a real git remote that produces a classifiable auth failure —
-// that would be network-dependent and platform-fragile (Windows/Linux emit different
-// credential-helper error text) for what maybeResurfaceAuthNotification tests need to
-// exercise: the dismissed-notification resurface logic, not git error classification.
 export function _simulateAuthFailureForTests(): void {
-  updateStatus({ state: 'error', error: 'test auth failure', errorType: 'auth', remediation: SYNC_AUTH_REMEDIATION });
-  notifyAuthFailure();
+  workerFor()._simulateAuthFailureForTests();
 }
 
 export function triggerSync(): void {
-  if (!isOrphanMode()) return;
-  // A manual sync (the "Retry" action / clicking the indicator) re-detects gh auth
-  // immediately rather than waiting out the cache, so a just-completed `gh auth
-  // login` takes effect on this attempt (FLUX-895).
-  invalidateGhAuthCache();
-  const storeDir = getFluxStoreDir();
-  void runSync(storeDir, (delayMs?: number) => scheduler?.scheduleRetry(delayMs));
+  workerFor().triggerSync();
 }
 
 export function triggerTestError(): void {
-  updateStatus({
-    state: 'error',
-    error: 'This is a test error for UI development. The actual sync error was: "Command failed: git -C <workspace>/.flux-store commit -m flux: sync\\nfatal: Unable to create index.lock: File exists.\\n\\nAnother git process seems to be running in this repository, or the lock file may be stale."',
-    errorType: 'unknown'
-  });
-  log.info('[sync-watcher] Test error triggered for UI testing');
+  workerFor().triggerTestError();
+}
+
+export function resolveConflicts(
+  resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'use-local' | 'rename-local' | 'manual'; newContent?: string }>
+): Promise<void> {
+  return workerFor().resolveConflicts(resolutions);
+}
+
+export function runSync(storeDir: string, onFail?: (retryDelayMs?: number) => void): Promise<void> {
+  return workerFor().runSync(storeDir, onFail);
+}
+
+export function startSyncWatcher(): void {
+  const ws = getWorkspace();
+  workerFor(ws).start(ws);
+}
+
+export function stopSyncWatcher(): void {
+  workerFor().stop();
 }
 
 export async function allocateNewTicketId(storeDir: string, projectKey: string): Promise<string> {
@@ -584,124 +1144,6 @@ async function autoResolveHistoryConflicts(storeDir: string, conflicts: Conflict
   return remaining;
 }
 
-export async function resolveConflicts(
-  resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'use-local' | 'rename-local' | 'manual'; newContent?: string }>
-): Promise<void> {
-  if (!pendingConflicts || pendingConflicts.length === 0) {
-    throw new Error('No conflicts to resolve');
-  }
-
-  // FLUX-989: refuse to run while a background sync holds the worktree — racing git
-  // processes on one worktree corrupt the merge. Reject clearly so the HTTP caller can
-  // surface a real "retry in a moment" state instead of hanging behind the other side.
-  if (syncInFlight) {
-    throw new Error('A sync is currently in progress; please retry in a moment.');
-  }
-
-  const storeDir = getFluxStoreDir();
-
-  // FLUX-1426: same read-only fence as runSync() — never commit/push a conflict resolution
-  // into a store that requires a newer protocol than this engine supports.
-  const headMarker = await readSyncProtocolMarker(storeDir, 'HEAD');
-  if (headMarker > SUPPORTED_SYNC_PROTOCOL) {
-    reportProtocolMismatch(headMarker);
-    throw new Error(`This flux-data store requires sync protocol ${headMarker}; this engine only supports ${SUPPORTED_SYNC_PROTOCOL}. Upgrade the engine to resolve conflicts.`);
-  }
-
-  syncInFlight = true;
-  try {
-    await applyConflictResolutions(resolutions, storeDir);
-  } finally {
-    syncInFlight = false;
-  }
-}
-
-// The worktree-mutating body of resolveConflicts, run under the syncInFlight lock so a
-// chokidar-scheduled runSync() tick fired by our own .md writes no-ops instead of racing.
-async function applyConflictResolutions(
-  resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'use-local' | 'rename-local' | 'manual'; newContent?: string }>,
-  storeDir: string
-): Promise<void> {
-  for (const resolution of resolutions) {
-    const conflict = pendingConflicts!.find(c => c.ticketId === resolution.ticketId)!;
-    const filePath = path.join(storeDir, `${resolution.ticketId}.md`);
-
-    switch (resolution.strategy) {
-      case 'use-remote':
-        await fs.writeFile(filePath, conflict.remoteContent, 'utf-8');
-        log.info(`[sync-watcher] Resolved ${resolution.ticketId}: used remote version`);
-        break;
-
-      case 'use-local':
-        await fs.writeFile(filePath, conflict.localContent, 'utf-8');
-        log.info(`[sync-watcher] Resolved ${resolution.ticketId}: used local version`);
-        break;
-
-      case 'rename-local': {
-        const projectKey = resolution.ticketId.split('-')[0]!;
-        const newId = await allocateNewTicketId(storeDir, projectKey);
-        await fs.writeFile(filePath, conflict.remoteContent, 'utf-8');
-        const parsed = matter(conflict.localContent);
-        parsed.data.id = newId;
-        const renamedContent = matter.stringify(parsed.content, parsed.data);
-        await fs.writeFile(path.join(storeDir, `${newId}.md`), renamedContent, 'utf-8');
-        log.info(`[sync-watcher] Resolved ${resolution.ticketId}: renamed local to ${newId}, accepted remote`);
-        break;
-      }
-
-      case 'manual':
-        await fs.writeFile(filePath, resolution.newContent!, 'utf-8');
-        log.info(`[sync-watcher] Resolved ${resolution.ticketId}: used manual merge`);
-        break;
-    }
-  }
-
-  // Stage resolved files and commit the merge
-  pendingConflicts = null;
-  updateStatus({ state: 'syncing' });
-  clearSyncConflictNotification();
-
-  try {
-    let addAttempts = 0;
-    while (addAttempts < 3) {
-      try {
-        await execFileAsync('git', ['-C', storeDir, 'add', '-A']);
-        break;
-      } catch (addErr: unknown) {
-        const msg = addErr instanceof Error ? addErr.message : String(addErr);
-        if (msg.includes('index.lock') && addAttempts < 2) {
-          log.info(`[sync-watcher] Git lock detected on add, retrying in 1s (attempt ${addAttempts + 1}/3)...`);
-          await new Promise(r => setTimeout(r, 1000));
-          addAttempts++;
-        } else {
-          throw addErr;
-        }
-      }
-    }
-
-    await execFileAsync('git', ['-C', storeDir, 'commit', '-m', 'flux: sync (resolved conflicts)']);
-    log.info('[sync-watcher] Committed merge with resolved conflicts');
-  } catch (err: unknown) {
-    // FLUX-994: this used to fall through uncaught — status stayed stranded at 'syncing'
-    // (set just above) until the next scheduled watcher tick happened to overwrite it,
-    // whether or not an HTTP caller was still around to see the rejection (e.g. raced away
-    // by the resolve-conflicts route's timeout). Report it the same way the push failure
-    // below already does, then rethrow so a still-listening caller sees the real failure.
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    reportSyncFailure(errorMsg);
-    throw err;
-  }
-
-  try {
-    await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
-    markSynced();
-    log.info('[sync-watcher] Pushed resolved conflicts to remote');
-  } catch (pushErr: unknown) {
-    const errorMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
-    reportSyncFailure(errorMsg);
-  }
-}
-
 // True if the worktree has an in-progress merge (MERGE_HEAD) or any unmerged
 // (conflicted) paths. Used to refuse `git add -A`/commit while a merge is
 // unresolved, so conflict markers can never be committed into a ticket (FLUX-703).
@@ -749,268 +1191,6 @@ async function readSyncProtocolMarker(storeDir: string, ref: string): Promise<nu
   }
 }
 
-function reportProtocolMismatch(required: number): void {
-  updateStatus({ state: 'protocol-mismatch', required, supported: SUPPORTED_SYNC_PROTOCOL });
-  console.warn(`[sync-watcher] flux-data store requires sync-protocol ${required}, this engine supports ${SUPPORTED_SYNC_PROTOCOL} — sync is read-only until the engine is upgraded.`);
-}
-
-export async function runSync(storeDir: string, onFail?: (retryDelayMs?: number) => void): Promise<void> {
-  // FLUX-989: a resolveConflicts() (or another sync tick) is already touching the
-  // worktree. Proceeding now would race two git processes on one worktree. No-op — the
-  // debounced scheduler / retry timer will re-run us after the lock frees.
-  if (syncInFlight) {
-    log.info('[sync-watcher] sync already in flight — skipping this tick');
-    return;
-  }
-
-  // A conflict is already awaiting user resolution (in-memory fast path). Touching
-  // the repo now would let Step 1's `git add -A`/commit bake the conflict markers
-  // sitting in the worktree into a commit and corrupt the ticket YAML (FLUX-703).
-  // The marker write also fires the chokidar watcher, so without this the parked
-  // conflict self-triggers the very tick that commits it.
-  if (pendingConflicts && pendingConflicts.length > 0) {
-    updateStatus({ state: 'conflict', conflicts: pendingConflicts });
-    return;
-  }
-
-  // FLUX-1426: the store already carries a protocol marker this engine can't handle (e.g. a
-  // prior tick fetched and fast-forwarded it in, or another engine instance bumped it) — fence
-  // out before touching the worktree at all, including the local add/commit in Step 1 below.
-  const headMarker = await readSyncProtocolMarker(storeDir, 'HEAD');
-  if (headMarker > SUPPORTED_SYNC_PROTOCOL) {
-    reportProtocolMismatch(headMarker);
-    return;
-  }
-
-  syncInFlight = true;
-  updateStatus({ state: 'syncing' });
-
-  try {
-    // Guard (FLUX-703): never `git add -A`/commit on top of an in-progress or
-    // half-finished merge. A prior tick — or a crash/restart mid-merge — can leave
-    // conflict markers + MERGE_HEAD in the worktree; staging and committing them is
-    // exactly what corrupted FLUX-694. Re-surface the conflict instead of committing.
-    if (await hasUnmergedState(storeDir)) {
-      let conflicts = await detectMergeConflicts(storeDir);
-      if (conflicts.length > 0) {
-        // FLUX-1076: most ticket-file conflicts are a pure append-only history race — try
-        // resolving those automatically before asking a human.
-        conflicts = await autoResolveHistoryConflicts(storeDir, conflicts);
-      }
-      if (conflicts.length > 0) {
-        pendingConflicts = conflicts;
-        updateStatus({ state: 'conflict', conflicts });
-        // FLUX-1076: persist a Notification (not just the SSE status) so the wedge isn't
-        // silent — the earlier incident had this state sit unnoticed for 315+ commits.
-        notifyConflict(conflicts.length);
-        console.warn(`[sync-watcher] Unresolved merge state on entry (${conflicts.length} ticket conflict(s)) — awaiting resolution, not committing.`);
-        return;
-      }
-      if (!(await hasUnresolvedConflictedPaths(storeDir))) {
-        // FLUX-1076: every unmerged path was a ticket conflict and it auto-resolved (or there
-        // was nothing to resolve in the first place) — fall through to Step 1 below, which
-        // commits what's now staged and completes the in-progress merge, instead of the
-        // merge --abort path below meant for a merge with no resolvable ticket conflicts.
-        log.info('[sync-watcher] Conflicts auto-resolved via append-only history union — continuing sync.');
-      } else {
-        // Merge in progress but nothing we can surface as a ticket-level conflict —
-        // abort it to recover a clean local tree, then sync normally.
-        console.warn('[sync-watcher] In-progress merge with no resolvable ticket conflicts — aborting merge to recover a clean tree.');
-        await execFileAsync('git', ['-C', storeDir, 'merge', '--abort']).catch(() => {});
-
-        // FLUX-706: if unmerged paths PERSIST after the abort (e.g. unmerged index entries with
-        // no MERGE_HEAD — only reachable via manual external git surgery inside .flux-store), do
-        // NOT fall through to Step 1's `git add -A`, which would stage conflict-marked content.
-        // Hard-stop and surface an error instead of risking baking markers into a ticket. Fail
-        // CLOSED: if the probe itself can't be read, treat the tree as still-unmerged. (The error
-        // re-surfaces on each retry tick until a human cleans the worktree — that recurrence is
-        // intentional, not a spin: each tick terminates and the retry timer is debounced.)
-        let unmergedOut = '';
-        try {
-          ({ stdout: unmergedOut } = await execFileAsync('git', ['-C', storeDir, 'diff', '--name-only', '--diff-filter=U']));
-        } catch {
-          unmergedOut = 'probe-failed';
-        }
-        if (unmergedOut.trim()) {
-          console.error('[sync-watcher] Unmerged paths persist after `merge --abort` — refusing to `git add -A`. Resolve the .flux-store worktree manually.');
-          updateStatus({ state: 'error', error: 'Unmerged paths persist in .flux-store after merge --abort; refusing to commit to avoid baking conflict markers into a ticket.', errorType: 'unknown' });
-          onFail?.();
-          return;
-        }
-      }
-    }
-
-    // Step 1: commit any pending local changes first
-    let addAttempts = 0;
-    while (addAttempts < 3) {
-      try {
-        await execFileAsync('git', ['-C', storeDir, 'add', '-A']);
-        break;
-      } catch (addErr: unknown) {
-        const msg = addErr instanceof Error ? addErr.message : String(addErr);
-        if (msg.includes('index.lock') && addAttempts < 2) {
-          log.info(`[sync-watcher] Git lock detected on add, retrying in 1s (attempt ${addAttempts + 1}/3)...`);
-          await new Promise(r => setTimeout(r, 1000));
-          addAttempts++;
-        } else {
-          throw addErr;
-        }
-      }
-    }
-
-    const { stdout: porcelain } = await execFileAsync('git', ['-C', storeDir, 'status', '--porcelain']);
-    if (porcelain.trim()) {
-      let commitAttempts = 0;
-      while (commitAttempts < 3) {
-        try {
-          await execFileAsync('git', ['-C', storeDir, 'commit', '-m', 'flux: sync']);
-          log.info('[sync-watcher] Committed local changes');
-          break;
-        } catch (commitErr: unknown) {
-          const msg = commitErr instanceof Error ? commitErr.message : String(commitErr);
-          if (msg.includes('index.lock') && commitAttempts < 2) {
-            log.info(`[sync-watcher] Git lock detected on commit, retrying in 1s (attempt ${commitAttempts + 1}/3)...`);
-            await new Promise(r => setTimeout(r, 1000));
-            commitAttempts++;
-          } else {
-            throw commitErr;
-          }
-        }
-      }
-    }
-
-    // Step 2: fetch remote
-    try {
-      await execFileAsync('git', ['-C', storeDir, 'fetch', 'origin', 'flux-data']);
-    } catch (fetchErr: unknown) {
-      const errorMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
-      log.info(`[sync-watcher] fetch failed (${classifyGitError(errorMsg)}): ${errorMsg}`);
-      // Push what we have locally, remote will catch up later
-      try {
-        await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
-        markSynced();
-      } catch (pushErr: unknown) {
-        // Both fetch and push failed. Prefer the auth-classified message so a
-        // credential failure surfaces the actionable re-auth state (FLUX-895).
-        const pushMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
-        reportSyncFailure(classifyGitError(pushMsg) === 'auth' ? pushMsg : errorMsg, onFail);
-      }
-      return;
-    }
-
-    // FLUX-1426: re-check against what we just fetched — fetch only updates the remote-tracking
-    // ref, so a marker bump on origin isn't visible in the Step-1 HEAD check above until it's
-    // merged in. Catch it here, before Step 3's merge/ff-only would pull an incompatible
-    // protocol into the worktree or Step 4 pushes on top of it.
-    const remoteMarker = await readSyncProtocolMarker(storeDir, 'origin/flux-data');
-    if (remoteMarker > SUPPORTED_SYNC_PROTOCOL) {
-      reportProtocolMismatch(remoteMarker);
-      return;
-    }
-
-    // Step 3+4 (FLUX-1428): push-as-CAS + journal replay. This REPLACES the old fetch-merge-push
-    // flow — runSync never invokes `git merge` on origin/flux-data anymore. The remote is the
-    // serialization point: push directly (git itself rejects a non-fast-forward push, which is
-    // exactly a compare-and-swap). A clean push means nobody raced us. A rejected push means the
-    // remote moved since Step 2's fetch — instead of textually merging file content, drop our
-    // local commit entirely (`reset --hard` onto the new remote head) and replay this engine's own
-    // not-yet-pushed mutations through the real handler (task-store's updateTaskWithHistory), so a
-    // duplicate business event (e.g. "advance to Done because PR merged") converges to a no-op
-    // instead of colliding as text. The old merge/conflict machinery below (resolveConflicts,
-    // mergePrTicketConflict, etc.) intentionally stays in this file, unreachable from this path —
-    // removed in a follow-up ticket once this is proven (see FLUX-1428's "delete nothing yet").
-    for (let attempt = 1; attempt <= CAS_MAX_ATTEMPTS; attempt++) {
-      // Snapshot the journal for THIS attempt before pushing — these are the ops the current local
-      // HEAD carries that aren't confirmed on the remote yet. Re-read fresh each attempt (not
-      // hoisted above the loop) so an entry appended mid-retry by a concurrent request is captured
-      // by the attempt that actually pushes it, rather than silently skipped.
-      const journalBatch = await readJournalEntries(storeDir);
-
-      try {
-        await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
-        log.info(`[sync-watcher] Pushed flux-data to remote (CAS, attempt ${attempt})`);
-        markSynced();
-        await dropFlushedJournalEntries(storeDir, journalBatch.length);
-        return;
-      } catch (pushErr: unknown) {
-        const errorMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
-
-        if (!isNonFastForwardRejection(errorMsg)) {
-          // Not a lost race (network/auth/unknown) — nothing to reset/replay, surface normally.
-          log.info(`[sync-watcher] push failed (${classifyGitError(errorMsg)}): ${errorMsg}`);
-          reportSyncFailure(errorMsg, onFail);
-          return;
-        }
-
-        if (attempt >= CAS_MAX_ATTEMPTS) {
-          console.error(`[sync-watcher] CAS push rejected ${CAS_MAX_ATTEMPTS} times in a row (remote kept moving) — giving up this tick.`);
-          reportSyncFailure(`Sync could not converge after ${CAS_MAX_ATTEMPTS} attempts — the remote kept moving. It will retry automatically.`, onFail);
-          return;
-        }
-
-        log.info(`[sync-watcher] Push rejected (remote moved) — resetting to origin/flux-data and replaying ${journalBatch.length} local op(s) (attempt ${attempt}/${CAS_MAX_ATTEMPTS})`);
-
-        const { stdout: preResetHead } = await execFileAsync('git', ['-C', storeDir, 'rev-parse', 'HEAD']);
-        await execFileAsync('git', ['-C', storeDir, 'fetch', 'origin', 'flux-data']);
-
-        // FLUX-1426: re-check the freshly-fetched marker before adopting it as our new base — a
-        // losing race against an engine that ALSO bumped the protocol must fence out read-only,
-        // not reset onto (and start replaying against) a head we don't know how to interpret.
-        const postFetchMarker = await readSyncProtocolMarker(storeDir, 'origin/flux-data');
-        if (postFetchMarker > SUPPORTED_SYNC_PROTOCOL) {
-          reportProtocolMismatch(postFetchMarker);
-          return;
-        }
-
-        await execFileAsync('git', ['-C', storeDir, 'reset', '--hard', 'origin/flux-data']);
-
-        // FLUX-1428 test-only hook: fires once per reset, before replay — lets a test deterministically
-        // keep the remote moving (e.g. push another commit) to exercise CAS_MAX_ATTEMPTS exhaustion
-        // without racing real concurrent processes against wall-clock timing. No-op in production.
-        if (_testOnAfterResetHook) await _testOnAfterResetHook();
-
-        // FLUX-1428: nothing journaled this attempt means nothing needs replaying — a raw local
-        // file edit made outside updateTaskWithHistory (not a tracked intent) is, by design, simply
-        // superseded by the remote's version on a lost race. Skip the cache reload + replay
-        // machinery entirely in that case: it exists to give replay accurate state, and there's
-        // nothing to replay. (This also means resetting to the remote head never requires a
-        // replay handler to have been registered unless there's actually journaled work.)
-        if (journalBatch.length > 0) {
-          // Refresh the in-memory cache for exactly what the reset rewrote, BEFORE replay — replay
-          // must see the winning side's fresh state, not a stale in-memory copy of what our now-
-          // discarded local commit thought the ticket looked like.
-          const { stdout: diffOut } = await execFileAsync('git', ['-C', storeDir, 'diff', '--name-only', preResetHead.trim(), 'origin/flux-data']).catch(() => ({ stdout: '' }));
-          const changedPaths = diffOut.split('\n').map((l) => l.trim()).filter(Boolean);
-          await reloadCacheAfterReset(storeDir, changedPaths);
-
-          for (const entry of journalBatch) {
-            try {
-              await replayJournalEntry(entry);
-            } catch (replayErr: unknown) {
-              const replayMsg = replayErr instanceof Error ? replayErr.message : String(replayErr);
-              console.error(`[sync-watcher] Replay failed for ${entry.taskId} (op ${entry.opId}): ${replayMsg}`);
-            }
-          }
-        }
-
-        // Fold the replayed mutations into a fresh local commit and loop back to push again.
-        await execFileAsync('git', ['-C', storeDir, 'add', '-A']);
-        const { stdout: porcelainAfterReplay } = await execFileAsync('git', ['-C', storeDir, 'status', '--porcelain']);
-        if (porcelainAfterReplay.trim()) {
-          await execFileAsync('git', ['-C', storeDir, 'commit', '-m', `flux: sync (replay ${journalBatch.length} op(s))`]);
-        }
-        // loop continues → retry push against the new base
-      }
-    }
-  } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    console.error(`[sync-watcher] sync failed: ${errorMsg}`);
-    reportSyncFailure(errorMsg, onFail);
-  } finally {
-    syncInFlight = false;
-  }
-}
-
 export function createScheduler(
   getDebounceMs: () => number,
   getMaxWaitMs: () => number,
@@ -1052,56 +1232,4 @@ export function createScheduler(
   }
 
   return { schedule, reset, scheduleRetry };
-}
-
-export function startSyncWatcher(): void {
-  stopSyncWatcher();
-  if (!isOrphanMode()) return;
-
-  const storeDir = getFluxStoreDir();
-
-  scheduler = createScheduler(
-    () => getConfig().syncSettings?.debounceMs ?? 30000,
-    () => getConfig().syncSettings?.maxWaitMs ?? 300000,
-    () => { void runSync(storeDir, (delayMs?: number) => scheduler?.scheduleRetry(delayMs)); }
-  );
-
-  watcher = chokidar.watch(storeDir, {
-    ignored: (filePath: string) => {
-      const base = path.basename(filePath);
-      // FLUX-855: open-prompts.json (HITL store) is gitignored (STORE_LOCAL_IGNORES) and rewritten on
-      // every prompt park/settle; watching it just wakes the sync cycle for a file that is never
-      // committed. Exclude it so the HITL hot path doesn't churn the flux-data sync watcher.
-      // FLUX-894: session-binding-secret is a gitignored local-only credential; never sync it.
-      return base.endsWith('.tmp') || base.startsWith('.git') || base === '.git' || base === 'open-prompts.json' || base === 'session-binding-secret';
-    },
-    ignoreInitial: true,
-    persistent: true,
-  });
-
-  watcher.on('add', () => scheduler!.schedule());
-  watcher.on('change', () => scheduler!.schedule());
-  watcher.on('unlink', () => scheduler!.schedule());
-  // FLUX-784: swallow recoverable watcher errors (inotify limits, transient locks) — an
-  // unhandled 'error' would rethrow and the uncaughtException handler exits the engine.
-  watcher.on('error', (err) => console.error('[sync-watcher] file-sync paused:', err));
-
-  const debounceMs = getConfig().syncSettings?.debounceMs ?? 30000;
-  const maxWaitMs = getConfig().syncSettings?.maxWaitMs ?? 300000;
-  log.info(`[sync-watcher] Watching .flux-store/ for changes (${debounceMs / 1000}s debounce, ${maxWaitMs / 1000}s max-wait)`);
-
-  // FLUX-1079/FLUX-1088: independent of file-change/retry-timer activity — a dismissed-but-
-  // unresolved conflict or auth failure needs re-surfacing even when nothing else is nudging
-  // runSync().
-  resurfaceTimer = setInterval(() => {
-    maybeResurfaceConflictNotification();
-    maybeResurfaceAuthNotification();
-  }, RESURFACE_INTERVAL_MS);
-  resurfaceTimer.unref?.();
-}
-
-export function stopSyncWatcher(): void {
-  if (scheduler) { scheduler.reset(); scheduler = null; }
-  if (watcher) { void watcher.close(); watcher = null; }
-  if (resurfaceTimer) { clearInterval(resurfaceTimer); resurfaceTimer = null; }
 }

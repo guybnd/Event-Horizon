@@ -5,7 +5,7 @@ import path from 'path';
 import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { excludeLocalConfigFromSync, ensureUnionMergeAttributes, ensureSyncProtocolMarker, migrateToOrphan } from './storage-sync.js';
+import { excludeLocalConfigFromSync, ensureUnionMergeAttributes, ensureSyncProtocolMarker, migrateToOrphan, ensureNonOrphanLocalGitignore } from './storage-sync.js';
 import { SUPPORTED_SYNC_PROTOCOL } from './sync-watcher.js';
 
 const execFileAsync = promisify(execFile);
@@ -102,6 +102,94 @@ describe('storage-sync — local config exclusion (FLUX-532)', () => {
     const gi = await fs.readFile(path.join(storeDir, '.gitignore'), 'utf8');
     expect(gi).toContain('config.json');
     expect(await trackedFiles(storeDir)).not.toContain('config.json');
+  });
+
+  it('untracks an already-committed boot-index.json and keeps the file on disk (FLUX-1547)', async () => {
+    // Simulate an engine that already committed the per-machine boot-index cache to flux-data.
+    await fs.writeFile(path.join(storeDir, 'boot-index.json'), '{"version":1,"entries":{}}', 'utf8');
+    await fs.writeFile(path.join(storeDir, 'FLUX-1.md'), '# ticket\n', 'utf8');
+    await git(storeDir, ['add', '-A']);
+    await git(storeDir, ['commit', '-m', 'init store (with boot-index tracked)']);
+    expect(await trackedFiles(storeDir)).toContain('boot-index.json');
+
+    await excludeLocalConfigFromSync(storeDir);
+
+    const tracked = await trackedFiles(storeDir);
+    expect(tracked).not.toContain('boot-index.json');
+    expect(tracked).toContain('FLUX-1.md'); // ticket data still synced
+    expect(existsSync(path.join(storeDir, 'boot-index.json'))).toBe(true);
+    const gi = await fs.readFile(path.join(storeDir, '.gitignore'), 'utf8');
+    expect(gi).toContain('boot-index.json');
+  });
+
+  // FLUX-1550: stashPriorBody (task-store.ts) writes a per-ticket <id>.body-history.json
+  // recovery sidecar next to the ticket .md — it must stay local-only, never committed/synced
+  // through flux-data, just like config.json / sync-journal.jsonl.
+  it('keeps a ticket body-history stash out of a subsequent `git add -A` sync commit', async () => {
+    await fs.writeFile(path.join(storeDir, 'FLUX-1.md'), '# t\n', 'utf8');
+    await git(storeDir, ['add', 'FLUX-1.md']);
+    await git(storeDir, ['commit', '-m', 'tickets only']);
+    await excludeLocalConfigFromSync(storeDir);
+
+    await fs.writeFile(path.join(storeDir, 'FLUX-1.body-history.json'), '[]', 'utf8');
+    await git(storeDir, ['add', '-A']);
+    const { stdout: status } = await git(storeDir, ['status', '--porcelain']);
+    expect(status).not.toContain('body-history.json');
+    expect(await trackedFiles(storeDir)).not.toContain('FLUX-1.body-history.json');
+
+    const gi = await fs.readFile(path.join(storeDir, '.gitignore'), 'utf8');
+    expect(gi).toContain('*.body-history.json');
+  });
+});
+
+describe('storage-sync — non-orphan .flux/.gitignore seeding (FLUX-1559)', () => {
+  let repo: string;
+  let fluxDir: string;
+
+  beforeEach(async () => {
+    repo = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-nonorphan-'));
+    fluxDir = path.join(repo, '.flux');
+    await fs.mkdir(fluxDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(repo, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('seeds .flux/.gitignore with the per-machine local-file entries', async () => {
+    await ensureNonOrphanLocalGitignore(fluxDir);
+
+    const gi = await fs.readFile(path.join(fluxDir, '.gitignore'), 'utf8');
+    expect(gi).toContain('config.json');
+    expect(gi).toContain('read-state.json');
+    expect(gi).toContain('boot-index.json');
+    expect(gi).toContain('sync-journal.jsonl');
+    expect(gi).toContain('*.body-history.json');
+  });
+
+  it('is idempotent — a second run does not duplicate entries', async () => {
+    await ensureNonOrphanLocalGitignore(fluxDir);
+    await ensureNonOrphanLocalGitignore(fluxDir);
+
+    const gi = await fs.readFile(path.join(fluxDir, '.gitignore'), 'utf8');
+    const occurrences = gi.split('\n').filter((l) => l.trim() === 'config.json').length;
+    expect(occurrences).toBe(1);
+  });
+
+  it('preserves pre-existing .flux/.gitignore content', async () => {
+    await fs.writeFile(path.join(fluxDir, '.gitignore'), '*.tmp\n', 'utf8');
+
+    await ensureNonOrphanLocalGitignore(fluxDir);
+
+    const gi = await fs.readFile(path.join(fluxDir, '.gitignore'), 'utf8');
+    expect(gi).toContain('*.tmp');
+    expect(gi).toContain('config.json');
+  });
+
+  it('is a no-op when .flux/ does not exist yet', async () => {
+    const missingDir = path.join(repo, 'does-not-exist');
+    await expect(ensureNonOrphanLocalGitignore(missingDir)).resolves.toBeUndefined();
+    expect(existsSync(path.join(missingDir, '.gitignore'))).toBe(false);
   });
 });
 

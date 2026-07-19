@@ -1,7 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
-import { checkBinaryInstalled, resolveClaudeExePath, isDefinitiveNotInstalled, surfaceResumeFailure, isChatEditGated, isScratchSession, chatEditGateNote, prependEditGateNote, resolveModel } from './shared.js';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { checkBinaryInstalled, resolveClaudeExePath, isDefinitiveNotInstalled, surfaceResumeFailure, isChatEditGated, isScratchSession, chatEditGateNote, prependEditGateNote, resolveModel, derivePhaseFromStatus, resolveEffectivePhase, buildPhaseHandoffNote, handoffChatSessionPhase } from './shared.js';
 import type { CliSessionRecord } from './types.js';
 import { INTEGRATION_TIER_DEFAULTS, MODEL_POLICY_PRESETS } from '../config.js';
+import { cliSessionsById, cliSessionsByTaskId, registerSession } from '../session-store.js';
 
 // ─── Mocks for the surfaceResumeFailure tests below (FLUX-1120) ───────────────
 // surfaceResumeFailure persists through task-store/parked-ticket — mocked here so it
@@ -314,5 +315,154 @@ describe('resolveModel (FLUX-1373)', () => {
 
   it('falls back sanely when config pieces are entirely missing (undefined config)', () => {
     expect(resolveModel('finalize', 'claude', undefined)).toBe(INTEGRATION_TIER_DEFAULTS.claudeCode[MODEL_POLICY_PRESETS.balanced.finalize]);
+  });
+});
+
+// FLUX-1479 (FLUX-1226 Phase E): status -> phase derivation, extracted from what used to be
+// duplicated inline in copilot.ts/gemini.ts, and now also driving the chat phase-handoff.
+describe('derivePhaseFromStatus (FLUX-1479)', () => {
+  const groomingStatuses = ['Require Input', 'Grooming'];
+
+  it('maps grooming statuses to "grooming"', () => {
+    expect(derivePhaseFromStatus('Grooming', groomingStatuses, 'Ready')).toBe('grooming');
+    expect(derivePhaseFromStatus('Require Input', groomingStatuses, 'Ready')).toBe('grooming');
+  });
+
+  it('maps Todo/In Progress to "implementation"', () => {
+    expect(derivePhaseFromStatus('Todo', groomingStatuses, 'Ready')).toBe('implementation');
+    expect(derivePhaseFromStatus('In Progress', groomingStatuses, 'Ready')).toBe('implementation');
+  });
+
+  it('maps the configured ready-for-merge status to "review"', () => {
+    expect(derivePhaseFromStatus('Ready', groomingStatuses, 'Ready')).toBe('review');
+    expect(derivePhaseFromStatus('Staging', groomingStatuses, 'Staging')).toBe('review');
+  });
+
+  it('returns undefined for statuses with no phase mapping (Done, Archived, undefined)', () => {
+    expect(derivePhaseFromStatus('Done', groomingStatuses, 'Ready')).toBeUndefined();
+    expect(derivePhaseFromStatus('Archived', groomingStatuses, 'Ready')).toBeUndefined();
+    expect(derivePhaseFromStatus(undefined, groomingStatuses, 'Ready')).toBeUndefined();
+  });
+});
+
+describe('resolveEffectivePhase (FLUX-1479)', () => {
+  it('returns handoffPhase when set, overriding phase', () => {
+    expect(resolveEffectivePhase({ phase: 'chat', handoffPhase: 'grooming' })).toBe('grooming');
+  });
+
+  it('falls back to phase when handoffPhase is unset', () => {
+    expect(resolveEffectivePhase({ phase: 'chat', handoffPhase: undefined })).toBe('chat');
+    expect(resolveEffectivePhase({ phase: 'implementation' })).toBe('implementation');
+  });
+
+  it('returns undefined when neither is set', () => {
+    expect(resolveEffectivePhase({})).toBeUndefined();
+  });
+});
+
+describe('buildPhaseHandoffNote (FLUX-1479 / FLUX-1226 Phase E)', () => {
+  const task = { id: 'FLUX-9002', kind: undefined as string | undefined, tags: [] as string[] };
+
+  it('returns "" when there is no pending handoff', () => {
+    expect(buildPhaseHandoffNote({ handoffPhase: undefined }, task, 'claude')).toBe('');
+  });
+
+  it('returns "" when the handoff was already announced', () => {
+    expect(buildPhaseHandoffNote({ handoffPhase: 'grooming', handoffPhaseAnnounced: true }, task, 'claude')).toBe('');
+  });
+
+  it('renders the destination phase\'s persona Mission block, headed by a PHASE HANDOFF banner, when pending', () => {
+    const note = buildPhaseHandoffNote({ handoffPhase: 'grooming', handoffPhaseAnnounced: false }, task, 'claude');
+    expect(note).toContain('PHASE HANDOFF');
+    expect(note).toContain('"grooming"');
+    // GROOMING_PHASE_PERSONA's Mission block text should be present (not the plain chat text).
+    expect(note.toLowerCase()).toContain('groom');
+  });
+
+  it('picks up the scratch-specific module fragment when the handed-off session belongs to a scratch ticket moving into a real phase', () => {
+    const scratchTask = { id: 'FLUX-9003', kind: 'scratch', tags: [] as string[] };
+    const note = buildPhaseHandoffNote({ handoffPhase: 'chat', handoffPhaseAnnounced: false }, scratchTask, 'claude');
+    // Handed off to 'chat' + scratch resolves the Scratchpad persona + its scratch module fragment.
+    expect(note).toContain('Scratchpad session');
+    expect(note).toContain('Scratchpad Mode');
+  });
+});
+
+// FLUX-1479 (FLUX-1226 Phase E): the mcp-server.ts `change_status` handler's hook — applies a
+// phase handoff to a ticket's persistent chat session on a status transition. Framework-agnostic
+// (no claude-code.ts import — see the function's own doc comment on the adapter-boundary rationale).
+describe('handoffChatSessionPhase (FLUX-1479 / FLUX-1226 Phase E)', () => {
+  afterEach(() => {
+    cliSessionsById.clear();
+    cliSessionsByTaskId.clear();
+  });
+
+  function registerChatSession(taskId: string, overrides: Partial<CliSessionRecord> = {}): CliSessionRecord {
+    const session = {
+      id: `sess-${taskId}`,
+      taskId,
+      framework: 'claude',
+      status: 'completed',
+      command: 'claude',
+      args: [],
+      startedAt: new Date().toISOString(),
+      label: 'Claude Code',
+      outputBuffer: '',
+      liveOutputBuffer: '',
+      pendingAssistantText: '',
+      cumulativeOutput: '',
+      skipPermissions: true,
+      requestedStop: false,
+      writeQueue: Promise.resolve(),
+      inputTokens: 0,
+      outputTokens: 0,
+      costUSD: 0,
+      phase: 'chat' as const,
+      ...overrides,
+    } as CliSessionRecord;
+    cliSessionsById.set(session.id, session);
+    registerSession(taskId, session.id);
+    return session;
+  }
+
+  it('is a no-op when the ticket has no chat session', () => {
+    expect(() => handoffChatSessionPhase('FLUX-NONE', 'Grooming')).not.toThrow();
+  });
+
+  it('stamps handoffPhase from a status transition and resets the announcement flag', () => {
+    const session = registerChatSession('FLUX-1', { handoffPhaseAnnounced: true });
+    handoffChatSessionPhase('FLUX-1', 'Grooming');
+    expect(session.handoffPhase).toBe('grooming');
+    expect(session.handoffPhaseAnnounced).toBe(false);
+  });
+
+  it('maps Todo/In Progress to "implementation" and the ready status to "review"', () => {
+    const s1 = registerChatSession('FLUX-2');
+    handoffChatSessionPhase('FLUX-2', 'Todo');
+    expect(s1.handoffPhase).toBe('implementation');
+
+    const s2 = registerChatSession('FLUX-3');
+    handoffChatSessionPhase('FLUX-3', 'Ready');
+    expect(s2.handoffPhase).toBe('review');
+  });
+
+  it('clears handoffPhase back to undefined on a move to a status with no phase mapping (e.g. Done)', () => {
+    const session = registerChatSession('FLUX-4', { handoffPhase: 'review', handoffPhaseAnnounced: true });
+    handoffChatSessionPhase('FLUX-4', 'Done');
+    expect(session.handoffPhase).toBeUndefined();
+    expect(session.handoffPhaseAnnounced).toBe(false);
+  });
+
+  it('is a no-op (does not re-arm the announcement) when the derived phase is unchanged', () => {
+    const session = registerChatSession('FLUX-5', { handoffPhase: 'grooming', handoffPhaseAnnounced: true });
+    handoffChatSessionPhase('FLUX-5', 'Require Input');
+    expect(session.handoffPhase).toBe('grooming');
+    expect(session.handoffPhaseAnnounced).toBe(true);
+  });
+
+  it('works the same for a non-Claude chat session (framework-agnostic)', () => {
+    const session = registerChatSession('FLUX-6', { framework: 'copilot' });
+    handoffChatSessionPhase('FLUX-6', 'Grooming');
+    expect(session.handoffPhase).toBe('grooming');
   });
 });

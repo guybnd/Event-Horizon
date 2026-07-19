@@ -1,4 +1,5 @@
 import { requireWorkspaceRoot } from './workspace.js';
+import { findWorktreeForBranch } from './task-worktree.js';
 // FLUX-998 (epic FLUX-996): every git/gh call in this file used to be a bare execFileAsync —
 // no timeout, no non-interactive env — so a slow/unreachable remote or a stalled gh credential
 // prompt hung branch create/push/PR-raise/merge forever (the spawn/Ready/finish paths). Route
@@ -6,6 +7,14 @@ import { requireWorkspaceRoot } from './workspace.js';
 // buildGitSyncEnv's non-interactive+gh-authed env, and tree-kill on timeout/abort.
 import { runGit, runGh } from './git-exec.js';
 import { log } from './log.js';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+// FLUX-560: generic (non-git/gh) command runner for the user-supplied `checkCommand` policy —
+// deliberately NOT routed through git-exec.ts's runGit/runGh (that module is git/gh-only; the
+// check-git-exec.mjs guard would reject a bare 'git'/'gh' spawn here, but this spawns the user's
+// own configured command instead).
+const execAsync = promisify(exec);
 
 // FLUX-1276: every wrapper below resolves cwd via requireWorkspaceRoot() (not the raw nullable
 // `workspaceRoot!`) so an unbound workspace throws the FLUX-705 actionable error instead of
@@ -477,6 +486,119 @@ export async function getOpenPullRequestsWithBase(branch: string): Promise<OpenP
   } catch {
     return []; // no gh / unauthed / network hiccup — best-effort, never blocks cleanup
   }
+}
+
+/**
+ * Board config shape for CI gating (FLUX-560). `gate: 'off'` preserves pre-FLUX-560 behavior
+ * (merge unconditionally); `'block'` (the default) refuses on a failing/pending verdict;
+ * `'warn'` never refuses but still surfaces the reason to the caller. `checkCommand` is the
+ * bring-your-own-command primitive for repos with no GitHub checks (mirrors the multi-repo
+ * group's per-member `testCommand`, group.ts) — unset means no gate for such repos.
+ */
+export interface CiGatePolicyConfig {
+  gate?: 'off' | 'warn' | 'block';
+  allowPending?: boolean;
+  checkCommand?: string;
+}
+
+/** Result of {@link evaluateCiGate} — `blocked` is what the caller actually acts on. */
+export interface CiGateOutcome {
+  blocked: boolean;
+  /** Present whenever a failing/pending/non-zero condition was found, even if not blocking (force/warn). */
+  reason?: string;
+  checks?: { total: number; passed: number; failed: number; pending: number };
+  source?: 'github' | 'checkCommand';
+}
+
+/**
+ * FLUX-560: run the user's `checkCommand` (board config `ci.checkCommand`) for repos with no
+ * GitHub check rollup. EH never interprets the command's contents — only its exit code — so
+ * this stays stack-agnostic by construction, same as the group's per-member `testCommand`.
+ * Not routed through git-exec.ts (that module is git/gh-only); a generous timeout since a
+ * caller-supplied command may run a full test suite.
+ *
+ * FLUX-1564: `cwd` defaults to the main checkout only when the caller doesn't supply one —
+ * `evaluateCiGate` always passes the PR branch's worktree so the command observes the branch's
+ * own tree, not whatever the main checkout happens to have checked out (usually the default
+ * branch, per EH's worktree-per-branch model).
+ */
+const CHECK_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
+
+export async function runConfiguredCheckCommand(command: string, cwd?: string): Promise<{ ok: boolean; detail?: string }> {
+  const resolvedCwd = cwd ?? requireWorkspaceRoot();
+  try {
+    await execAsync(command, { cwd: resolvedCwd, timeout: CHECK_COMMAND_TIMEOUT_MS, windowsHide: true, maxBuffer: 10 * 1024 * 1024 });
+    return { ok: true };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    const detail = message.split('\n')[0]?.slice(0, 300);
+    return { ok: false, ...(detail ? { detail } : {}) };
+  }
+}
+
+/**
+ * FLUX-1564: cwd for `checkCommand` — the PR branch's live worktree when one exists (the
+ * worktree is still around at finish/merge time; it's torn down AFTER the merge), falling back
+ * to the main checkout only when no worktree holds the branch (e.g. a branchless ticket, or one
+ * finished outside the normal worktree flow).
+ */
+async function resolveCheckCommandCwd(branch: string): Promise<string> {
+  const workspaceRoot = requireWorkspaceRoot();
+  const worktree = await findWorktreeForBranch(workspaceRoot, branch).catch(() => null);
+  return worktree ?? workspaceRoot;
+}
+
+/**
+ * FLUX-560: the agnostic CI gate — consumes GitHub's check-rollup verdict (already read by
+ * {@link getPullRequestStatus}) or, when the repo has no GitHub checks, the optional
+ * `checkCommand`. Never runs the user's stack itself; EH only ever sees a verdict.
+ *
+ * `checks.total === 0` (no GitHub CI) falls through to `checkCommand` rather than gating —
+ * a repo with neither never gets an invented blocker, which is what keeps this non-breaking
+ * for local-first / no-CI users.
+ */
+export async function evaluateCiGate(
+  branch: string,
+  policy: CiGatePolicyConfig,
+  opts: {
+    force?: boolean;
+    getStatus?: (branch: string) => Promise<PrStatus | null>;
+    runCheckCommand?: (command: string, cwd?: string) => Promise<{ ok: boolean; detail?: string }>;
+    resolveCheckCommandCwd?: (branch: string) => Promise<string>;
+  } = {},
+): Promise<CiGateOutcome> {
+  const gate = policy.gate ?? 'block';
+  if (gate === 'off') return { blocked: false };
+
+  const getStatus = opts.getStatus ?? getPullRequestStatus;
+  const pr = await getStatus(branch).catch(() => null);
+  const checks = pr?.checks;
+
+  let reason: string | undefined;
+  let source: CiGateOutcome['source'];
+
+  if (checks && checks.total > 0) {
+    source = 'github';
+    if (checks.failed > 0) {
+      reason = `${checks.failed} check(s) failing on \`${branch}\` (${checks.passed} passed, ${checks.pending} pending).`;
+    } else if (checks.pending > 0 && !policy.allowPending) {
+      reason = `${checks.pending} check(s) still running on \`${branch}\` — wait for them to finish, or set allowPending.`;
+    }
+  } else if (policy.checkCommand) {
+    source = 'checkCommand';
+    const runCheckCommand = opts.runCheckCommand ?? runConfiguredCheckCommand;
+    const resolveCwd = opts.resolveCheckCommandCwd ?? resolveCheckCommandCwd;
+    const cwd = await resolveCwd(branch);
+    const result = await runCheckCommand(policy.checkCommand, cwd);
+    if (!result.ok) {
+      reason = `checkCommand \`${policy.checkCommand}\` failed${result.detail ? `: ${result.detail}` : ''}.`;
+    }
+  }
+
+  const withChecks = { ...(checks ? { checks } : {}), ...(source ? { source } : {}) };
+  if (!reason) return { blocked: false, ...withChecks };
+  if (opts.force || gate === 'warn') return { blocked: false, reason, ...withChecks };
+  return { blocked: true, reason, ...withChecks };
 }
 
 /** How {@link finish_ticket} should obtain a mergeable PR for a branch (FLUX-741). */

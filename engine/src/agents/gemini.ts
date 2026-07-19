@@ -1,4 +1,4 @@
-import { getWorkspace } from '../workspace-context.js';
+import { getWorkspace, resolveWorkspaceByRoot, runWithWorkspace } from '../workspace-context.js';
 import { log } from '../log.js';
 import { spawn, exec, type ChildProcessWithoutNullStreams } from 'child_process';
 import { promisify } from 'util';
@@ -18,7 +18,7 @@ import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { appendTranscriptLine } from '../transcript.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, buildPhaseHandoffNote } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   Bash: 'Running command',
@@ -564,7 +564,7 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
 
   // FLUX-1123: Gemini has no --disallowed-tools equivalent (see FILE_MUTATION_TOOLS's comment in
   // claude-code.ts), so this can only be an advisory note in the prompt, not a real block.
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'gemini', editsGated: isChatEditGated(session, task) || isScratchSession(task) });
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'gemini', editsGated: isChatEditGated(session, task) || isScratchSession(task), batchTicketIds: session.batchTicketIds, batchExcluded: session.batchExcluded });
 
   const geminiArgs = [
     ...(selectedModel ? ['--model', selectedModel] : []),
@@ -802,10 +802,16 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
     }
 
     if (finalStatus === 'completed') {
-      checkFrameworkHealth(session.framework).catch(() => {});
-      checkSkillStaleness(session.framework).catch(() => {});
+      // FLUX-1555 (finding F): fires from the child process's 'exit' handler with no ambient
+      // request binding — rebind to the session's OWNING board.
+      runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => {
+        checkFrameworkHealth(session.framework).catch(() => {});
+        checkSkillStaleness(session.framework).catch(() => {});
+      });
       // FLUX-651: flag if the agent left the ticket parked in a working status without acting.
-      await flagIfParked(session, id);
+      // FLUX-1563: flagIfParked raises needsAction + a notification via getWorkspace() — bind it to
+      // the session's OWNING board too, same rationale as the health-check wrap above.
+      await runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => flagIfParked(session, id));
     }
 
     // Notify delegation awaiters (supervisor pattern).
@@ -887,9 +893,15 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   const safeMessage = message.replace(/\0/g, '');
+  const handoffTask = getWorkspace().tasks[id] as GeminiTask;
   // FLUX-926 / FLUX-1123: same advisory "why is this blocked" note as the initial spawn,
   // recomputed per resumed turn (Gemini has no real block — see the editsGated comment above).
-  const promptForCli = prependEditGateNote(session, getWorkspace().tasks[id] as GeminiTask, 'gemini', safeMessage);
+  const gatedMessage = prependEditGateNote(session, handoffTask, 'gemini', safeMessage);
+  // FLUX-1479 (FLUX-1226 Phase E): a pending phase handoff (mcp-server.ts's change_status handler)
+  // announces itself once, on the next resumed turn — see buildPhaseHandoffNote's own doc comment.
+  const handoffNote = buildPhaseHandoffNote(session, handoffTask, 'gemini');
+  if (handoffNote) session.handoffPhaseAnnounced = true;
+  const promptForCli = handoffNote ? `${handoffNote}\n\n---\n\n${gatedMessage}` : gatedMessage;
   const geminiScopeArgs = buildGeminiScopeArgs(workspaceRoot);
   // FLUX-1444: `-p` takes an empty placeholder here too — promptForCli is written to stdin after
   // spawn, below. See the initial-spawn geminiArgs comment for why this merges cleanly.
@@ -961,7 +973,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       await updateTaskWithHistory(id, { updatedBy: 'Agent', entries: [], tokenMetadata: resumeTokenUpdate });
     }
     // FLUX-651: resumed turn ended — flag if the agent parked without acting. Skip a stopped turn.
-    if (!session.pausedForInput && !session.requestedStop) await flagIfParked(session, id);
+    // FLUX-1563: unbound child-process 'exit' handler — rebind to the session's OWNING board.
+    if (!session.pausedForInput && !session.requestedStop) {
+      await runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => flagIfParked(session, id));
+    }
     broadcastEvent('taskUpdated', { id });
   });
 }

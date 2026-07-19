@@ -3,12 +3,13 @@
 // Create/read/mutate/delete Furnace batches. Mounted at `/api/furnace` behind `requireWorkspace`
 // (see index.ts). Ignition / stop semantics (slot guard, Stoker kick) live in `furnace-stoker.ts`.
 
-import { getWorkspace } from '../workspace-context.js';
+import { getWorkspace, getDefaultWorkspace, resolveWorkspaceByRoot, runWithWorkspace } from '../workspace-context.js';
 import express from 'express';
 import { log } from '../log.js';
 import {
   ensureFurnaceLoaded,
   getFurnaceBatchesCache,
+  getFurnaceBatchesCacheForWorkspace,
   getFurnaceBatch,
   createFurnaceBatch,
   updateFurnaceBatch,
@@ -23,9 +24,11 @@ import {
   isBatchActive,
   isTerminalTicketState,
   validateBatchTrigger,
+  batchBelongsToWorkspaceRoot,
   type BatchTicket,
   type BatchKind,
   type BatchTrigger,
+  type FurnaceBatch,
 } from '../models/furnace.js';
 import {
   igniteBatch,
@@ -52,6 +55,20 @@ function controlErrorStatus(error: string | undefined): number {
   if (error === 'Furnace batch not found' || error === 'Ticket not in batch') return 404;
   return 409;
 }
+
+/**
+ * FLUX-1567: does `batch` belong to THIS request's bound board? Mirrors `mcp-server.ts`'s
+ * `batchOwnedByBoundWorkspace` — before this, the by-id REST routes resolved a bare `:id` against the
+ * process-wide shared batch cache with no ownership check, so a request bound to board A could read or
+ * mutate board B's batch just by knowing its id (the stoke loop keeps every live board's batches loaded
+ * in that cache). Gate every by-id route through this and answer 404 on a mismatch — identical to
+ * not-found, so a caller can't probe for another board's batch ids.
+ */
+function batchOwnedByBoundWorkspace(batch: FurnaceBatch): boolean {
+  return batchBelongsToWorkspaceRoot(batch, getWorkspace().root, getDefaultWorkspace().root);
+}
+
+const NOT_FOUND = { error: 'Furnace batch not found' };
 
 /**
  * Fire a background refresh without the caller awaiting it (FLUX-1185) — `run` is already TTL-gated
@@ -117,8 +134,10 @@ export function resolveTickets(
     const currentIds = new Set(opts.currentTicketIds ?? []);
     const newIds = fullTickets.filter((t) => !currentIds.has(t.ticketId)).map((t) => t.ticketId);
     if (!newIds.length) return { tickets: fullTickets };
+    // FLUX-1554: the one-active-batch invariant is scoped to THIS board — a same-id ticket queued in a
+    // DIFFERENT board's batch must not falsely block (or be silently conflated with) this board's.
     const { rejected } = validateBatchTickets(newIds, getWorkspace().tasks, {
-      activeBatches: getFurnaceBatchesCache(),
+      activeBatches: getFurnaceBatchesCacheForWorkspace(getWorkspace()),
       ...(opts.excludeBatchId ? { excludeBatchId: opts.excludeBatchId } : {}),
     });
     if (rejected.length) return { rejected };
@@ -137,8 +156,9 @@ export function resolveTickets(
       : undefined;
   if (!rawIds) return {};
   const ids = rawIds.filter((t): t is string => typeof t === 'string');
+  // FLUX-1554: same board-scoping as above.
   const { ok, rejected } = validateBatchTickets(ids, getWorkspace().tasks, {
-    activeBatches: getFurnaceBatchesCache(),
+    activeBatches: getFurnaceBatchesCacheForWorkspace(getWorkspace()),
     ...(opts.excludeBatchId ? { excludeBatchId: opts.excludeBatchId } : {}),
   });
   if (rejected.length) return { rejected };
@@ -183,7 +203,9 @@ router.get('/', async (req, res) => {
     // `refreshWorktreePoolMaybeBlocking`.
     await refreshWorktreePoolMaybeBlocking();
     backgroundRefresh('batch reconcile', () => reconcileAllBatchesCached());
-    let batches = getFurnaceBatchesCache();
+    // FLUX-1554: scope the list to THIS request's bound board — the unfiltered global cache leaked
+    // every other open board's batches into any board's list.
+    let batches = getFurnaceBatchesCacheForWorkspace(getWorkspace());
     const status = typeof req.query.status === 'string' ? req.query.status : undefined;
     if (status) batches = batches.filter((b) => b.status === status);
     res.json(batches);
@@ -209,12 +231,13 @@ router.get('/slots', async (_req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     await ensureFurnaceLoaded();
-    if (!getFurnaceBatch(req.params.id)) return res.status(404).json({ error: 'Furnace batch not found' });
+    const found = getFurnaceBatch(req.params.id);
+    if (!found || !batchOwnedByBoundWorkspace(found)) return res.status(404).json(NOT_FOUND);
     // FLUX-1066/1185: observe ground truth in the background (TTL-gated) rather than blocking on it —
     // same SWR reasoning as GET / above.
     backgroundRefresh('batch reconcile', () => reconcileBatchCached(req.params.id));
     const batch = getFurnaceBatch(req.params.id);
-    if (!batch) return res.status(404).json({ error: 'Furnace batch not found' });
+    if (!batch) return res.status(404).json(NOT_FOUND);
     res.json(batch);
   } catch {
     res.status(500).json({ error: 'Failed to load furnace batch' });
@@ -230,6 +253,10 @@ router.post('/', async (req, res) => {
     if (resolved.rejected) return rejectTickets(res, resolved.rejected);
     const tickets = resolved.tickets;
     const trigger = coerceTrigger(req.body?.trigger) ?? undefined;
+    // FLUX-1513: tag the batch with the workspace this route is bound to, matching this file's existing
+    // `getWorkspace()` convention (see the ticket-lookup calls below) — so the per-workspace Stoker
+    // fan-out can filter it correctly.
+    const workspaceRoot = getWorkspace().root;
     const batch = await createFurnaceBatch({
       title,
       ...(kind ? { kind } : {}),
@@ -237,6 +264,7 @@ router.post('/', async (req, res) => {
       ...(Number.isFinite(req.body?.burnRate) ? { burnRate: req.body.burnRate } : {}),
       ...(trigger ? { trigger } : {}),
       ...(typeof req.body?.createdBy === 'string' ? { createdBy: req.body.createdBy } : {}),
+      ...(workspaceRoot ? { workspaceRoot } : {}),
     });
     res.status(201).json(batch);
   } catch {
@@ -248,7 +276,7 @@ router.put('/:id', async (req, res) => {
   try {
     await ensureFurnaceLoaded();
     const existing = getFurnaceBatch(req.params.id);
-    if (!existing) return res.status(404).json({ error: 'Furnace batch not found' });
+    if (!existing || !batchOwnedByBoundWorkspace(existing)) return res.status(404).json(NOT_FOUND);
     const resolved = resolveTickets(req.body, {
       excludeBatchId: req.params.id,
       currentTicketIds: existing.tickets.map((t) => t.ticketId),
@@ -282,6 +310,9 @@ router.put('/:id', async (req, res) => {
 // pool is full.
 router.post('/:id/ignite', async (req, res) => {
   try {
+    await ensureFurnaceLoaded();
+    const owned = getFurnaceBatch(req.params.id);
+    if (!owned || !batchOwnedByBoundWorkspace(owned)) return res.status(404).json(NOT_FOUND);
     const r = await igniteBatch(req.params.id);
     if (!r.ok) {
       if (r.error === 'Furnace batch not found') return res.status(404).json({ error: r.error });
@@ -297,6 +328,9 @@ router.post('/:id/ignite', async (req, res) => {
 // Stop a batch. Graceful drain by default; `?hard=true` (or JSON body { hard:true }) is an immediate cutoff.
 router.post('/:id/stop', async (req, res) => {
   try {
+    await ensureFurnaceLoaded();
+    const owned = getFurnaceBatch(req.params.id);
+    if (!owned || !batchOwnedByBoundWorkspace(owned)) return res.status(404).json(NOT_FOUND);
     const reason = typeof req.body?.reason === 'string' ? req.body.reason : 'manual stop';
     const hard = req.body?.hard === true || req.query.hard === 'true';
     const r = await stopBatch(req.params.id, reason, hard ? { hard: true } : {});
@@ -313,6 +347,9 @@ router.post('/:id/stop', async (req, res) => {
 // tickets, claim a slot. 409 `no_slots` when the worktree pool is full.
 router.post('/:id/resume', async (req, res) => {
   try {
+    await ensureFurnaceLoaded();
+    const owned = getFurnaceBatch(req.params.id);
+    if (!owned || !batchOwnedByBoundWorkspace(owned)) return res.status(404).json(NOT_FOUND);
     const r = await resumeBatch(req.params.id);
     if (!r.ok) {
       if (r.error === 'no_slots') return res.status(409).json({ error: 'no_slots', used: r.used, max: r.max, holders: r.holders });
@@ -327,6 +364,9 @@ router.post('/:id/resume', async (req, res) => {
 // Retry a single parked/failed ticket → reset to queued with a fresh attempt budget.
 router.post('/:id/tickets/:ticketId/retry', async (req, res) => {
   try {
+    await ensureFurnaceLoaded();
+    const owned = getFurnaceBatch(req.params.id);
+    if (!owned || !batchOwnedByBoundWorkspace(owned)) return res.status(404).json(NOT_FOUND);
     const r = await retryTicket(req.params.id, req.params.ticketId);
     if (!r.ok) return res.status(controlErrorStatus(r.error)).json({ error: r.error });
     res.json(r.batch);
@@ -338,6 +378,9 @@ router.post('/:id/tickets/:ticketId/retry', async (req, res) => {
 // Dismiss the Furnace-raised flag on a ticket without re-queuing ("I've got this"). Works on a done batch.
 router.post('/:id/tickets/:ticketId/dismiss', async (req, res) => {
   try {
+    await ensureFurnaceLoaded();
+    const owned = getFurnaceBatch(req.params.id);
+    if (!owned || !batchOwnedByBoundWorkspace(owned)) return res.status(404).json(NOT_FOUND);
     const r = await dismissTicketFlag(req.params.id, req.params.ticketId);
     if (!r.ok) return res.status(controlErrorStatus(r.error)).json({ error: r.error });
     res.json(r.batch);
@@ -349,6 +392,9 @@ router.post('/:id/tickets/:ticketId/dismiss', async (req, res) => {
 // Take over a ticket (owner → human): the Furnace yields — stops its session, never reclaims the worktree.
 router.post('/:id/tickets/:ticketId/takeover', async (req, res) => {
   try {
+    await ensureFurnaceLoaded();
+    const owned = getFurnaceBatch(req.params.id);
+    if (!owned || !batchOwnedByBoundWorkspace(owned)) return res.status(404).json(NOT_FOUND);
     const r = await takeoverTicket(req.params.id, req.params.ticketId);
     if (!r.ok) return res.status(controlErrorStatus(r.error)).json({ error: r.error });
     res.json(r.batch);
@@ -360,6 +406,9 @@ router.post('/:id/tickets/:ticketId/takeover', async (req, res) => {
 // Hand a taken-over ticket back to the Furnace (owner → furnace): re-queue with a fresh attempt budget.
 router.post('/:id/tickets/:ticketId/handback', async (req, res) => {
   try {
+    await ensureFurnaceLoaded();
+    const owned = getFurnaceBatch(req.params.id);
+    if (!owned || !batchOwnedByBoundWorkspace(owned)) return res.status(404).json(NOT_FOUND);
     const r = await handBackTicket(req.params.id, req.params.ticketId);
     if (!r.ok) return res.status(controlErrorStatus(r.error)).json({ error: r.error });
     res.json(r.batch);
@@ -375,7 +424,7 @@ router.post('/:id/merge', async (req, res) => {
   try {
     await ensureFurnaceLoaded();
     const batch = getFurnaceBatch(req.params.id);
-    if (!batch) return res.status(404).json({ error: 'Furnace batch not found' });
+    if (!batch || !batchOwnedByBoundWorkspace(batch)) return res.status(404).json(NOT_FOUND);
     const prBranch = typeof req.body?.prBranch === 'string' ? req.body.prBranch : undefined;
     const targets = batch.prs.filter((p) => (prBranch ? p.branch === prBranch : p.reviewState === 'approved'));
     if (targets.length === 0) {
@@ -383,10 +432,15 @@ router.post('/:id/merge', async (req, res) => {
     }
     const merged: string[] = [];
     const failed: Array<{ branch: string; error: string }> = [];
-    for (const pr of targets) {
-      try { await mergePullRequest(pr.branch); merged.push(pr.branch); }
-      catch (e) { failed.push({ branch: pr.branch, error: (e as Error)?.message || 'merge failed' }); }
-    }
+    // FLUX-1554: `gh` runs in `requireWorkspaceRoot()`'s cwd (branch-manager.ts) — bind to the BATCH's
+    // own board so a merge always runs against the repo that actually holds the PR, not whichever board
+    // this request happens to be bound to.
+    await runWithWorkspace(resolveWorkspaceByRoot(batch.workspaceRoot ?? ''), async () => {
+      for (const pr of targets) {
+        try { await mergePullRequest(pr.branch); merged.push(pr.branch); }
+        catch (e) { failed.push({ branch: pr.branch, error: (e as Error)?.message || 'merge failed' }); }
+      }
+    });
     const updated = await mutateFurnaceBatch(req.params.id, (draft) => {
       for (const p of draft.prs) if (merged.includes(p.branch)) p.reviewState = 'merged';
     });
@@ -405,7 +459,7 @@ router.post('/:id/ticket', async (req, res) => {
     if (!ticketId) return res.status(400).json({ error: 'ticketId is required' });
 
     const batch = getFurnaceBatch(req.params.id);
-    if (!batch) return res.status(404).json({ error: 'Furnace batch not found' });
+    if (!batch || !batchOwnedByBoundWorkspace(batch)) return res.status(404).json(NOT_FOUND);
     // FLUX-1066: a `parked` (halted) batch is RESUMABLE, so allow queuing more work onto it before a
     // resume; only a cleanly-`done` batch is closed (make a new batch instead).
     if (batch.status === 'done') {
@@ -414,8 +468,9 @@ router.post('/:id/ticket', async (req, res) => {
     if (batch.tickets.some((t) => t.ticketId === ticketId)) {
       return res.status(409).json({ error: `${ticketId} is already in this batch.` });
     }
+    // FLUX-1554: same board-scoping as resolveTickets above.
     const { rejected } = validateBatchTickets([ticketId], getWorkspace().tasks, {
-      activeBatches: getFurnaceBatchesCache(),
+      activeBatches: getFurnaceBatchesCacheForWorkspace(getWorkspace()),
       excludeBatchId: batch.id,
     });
     if (rejected.length) {
@@ -442,7 +497,7 @@ router.delete('/:id/ticket/:ticketId', async (req, res) => {
   try {
     await ensureFurnaceLoaded();
     const batch = getFurnaceBatch(req.params.id);
-    if (!batch) return res.status(404).json({ error: 'Furnace batch not found' });
+    if (!batch || !batchOwnedByBoundWorkspace(batch)) return res.status(404).json(NOT_FOUND);
     const t = batch.tickets.find((x) => x.ticketId === req.params.ticketId);
     if (!t) return res.status(404).json({ error: 'Ticket not in batch' });
     if (isBatchActive(batch.status) && !isTerminalTicketState(t.state) && t.state !== 'queued') {
@@ -469,7 +524,7 @@ router.delete('/:id', async (req, res) => {
   try {
     await ensureFurnaceLoaded();
     const batch = getFurnaceBatch(req.params.id);
-    if (!batch) return res.status(404).json({ error: 'Furnace batch not found' });
+    if (!batch || !batchOwnedByBoundWorkspace(batch)) return res.status(404).json(NOT_FOUND);
     if (isBatchActive(batch.status)) {
       return res.status(409).json({ error: 'Cannot delete a batch that is burning — stop it first.' });
     }

@@ -1,4 +1,4 @@
-import { getWorkspace } from '../workspace-context.js';
+import { getWorkspace, resolveWorkspaceByRoot, runWithWorkspace } from '../workspace-context.js';
 import { log } from '../log.js';
 import { spawn, execSync } from 'child_process';
 import * as path from 'path';
@@ -18,7 +18,7 @@ import { appendTranscriptLine } from '../transcript.js';
 import { buildMcpServerEntry } from '../workflow-installer.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, type CliTask } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, buildPhaseHandoffNote, type CliTask } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   powershell: 'Running command',
@@ -410,8 +410,8 @@ export function spawnCopilot(id: string, args: string[], cwdRoot: string) {
 // the injected entry (same shared-HTTP-mount problem/fix as claude-code.ts's
 // eventHorizonSpawnOverride) so this session's HITL prompts route to its own ticket instead of the
 // `__board__` catch-all.
-export function buildAdditionalMcpConfigArgs(conversationId?: string): string[] {
-  return ['--additional-mcp-config', JSON.stringify({ mcpServers: { 'event-horizon': buildMcpServerEntry(conversationId) } })];
+export function buildAdditionalMcpConfigArgs(conversationId?: string, workspaceRoot?: string): string[] {
+  return ['--additional-mcp-config', JSON.stringify({ mcpServers: { 'event-horizon': buildMcpServerEntry(conversationId, workspaceRoot) } })];
 }
 
 export async function startCliSession(session: CliSessionRecord, task: CliTask, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
@@ -457,7 +457,7 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
 
   // FLUX-1123: Copilot has no --disallowed-tools equivalent (see FILE_MUTATION_TOOLS's comment in
   // claude-code.ts), so this can only be an advisory note in the prompt, not a real block.
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'copilot', editsGated: isChatEditGated(session, task) || isScratchSession(task) });
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'copilot', editsGated: isChatEditGated(session, task) || isScratchSession(task), batchTicketIds: session.batchTicketIds, batchExcluded: session.batchExcluded });
 
   const copilotArgs = [
     ...(selectedModel ? ['--model', selectedModel] : []),
@@ -469,7 +469,7 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
     '--output-format', 'json',
     ...(session.skipPermissions ? ['--yolo'] : ['--allow-all-tools']),
     // FLUX-984: explicit MCP config injection — workspace .mcp.json is never auto-loaded in -p mode.
-    ...buildAdditionalMcpConfigArgs(id),
+    ...buildAdditionalMcpConfigArgs(id, workspaceRoot),
     // Multi-repo group: put every checked-out member repo in scope (no-op single-repo).
     ...buildMemberScopeArgs(),
     // Member worktree: add local .flux-group/ so the agent reads shared group docs (FLUX-422).
@@ -701,10 +701,16 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
     }
 
     if (finalStatus === 'completed') {
-      checkFrameworkHealth(session.framework).catch(() => {});
-      checkSkillStaleness(session.framework).catch(() => {});
+      // FLUX-1555 (finding F): fires from the child process's 'exit' handler with no ambient
+      // request binding — rebind to the session's OWNING board.
+      runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => {
+        checkFrameworkHealth(session.framework).catch(() => {});
+        checkSkillStaleness(session.framework).catch(() => {});
+      });
       // FLUX-651: flag if the agent left the ticket parked in a working status without acting.
-      await flagIfParked(session, id);
+      // FLUX-1563: flagIfParked raises needsAction + a notification via getWorkspace() — bind it to
+      // the session's OWNING board too, same rationale as the health-check wrap above.
+      await runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => flagIfParked(session, id));
     }
 
     // FLUX-985: settle any delegation awaiting this session (supervisor/delegate pattern). copilot.ts
@@ -788,14 +794,20 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   const safeMessage = message.replace(/\0/g, '');
+  const handoffTask = getWorkspace().tasks[id] as CliTask;
   // FLUX-926 / FLUX-1123: same advisory "why is this blocked" note as the initial spawn,
   // recomputed per resumed turn (Copilot has no real block — see the editsGated comment above).
-  const promptForCli = prependEditGateNote(session, getWorkspace().tasks[id] as CliTask, 'copilot', safeMessage);
+  const gatedMessage = prependEditGateNote(session, handoffTask, 'copilot', safeMessage);
+  // FLUX-1479 (FLUX-1226 Phase E): a pending phase handoff (mcp-server.ts's change_status handler)
+  // announces itself once, on the next resumed turn — see buildPhaseHandoffNote's own doc comment.
+  const handoffNote = buildPhaseHandoffNote(session, handoffTask, 'copilot');
+  if (handoffNote) session.handoffPhaseAnnounced = true;
+  const promptForCli = handoffNote ? `${handoffNote}\n\n---\n\n${gatedMessage}` : gatedMessage;
   // FLUX-984: explicit MCP config injection on the resume path too — the gap applies to every spawn.
   // FLUX-1444: `-p` is a bare flag here too — promptForCli is written to stdin after spawn, below.
   const resumeArgs = session.resumeSessionId
-    ? ['-p', '--resume', session.resumeSessionId, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id)]
-    : ['-p', '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id)];
+    ? ['-p', '--resume', session.resumeSessionId, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id, workspaceRoot)]
+    : ['-p', '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id, workspaceRoot)];
 
   log.info(`[${id}] Reply spawn, resume=${session.resumeSessionId || 'none'}`);
   const replyProc = spawnCopilot(id, resumeArgs, executionRoot);
@@ -863,7 +875,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       await updateTaskWithHistory(id, { updatedBy: 'Agent', entries: [], tokenMetadata: resumeTokenUpdate });
     }
     // FLUX-651: resumed turn ended — flag if the agent parked without acting. Skip a stopped turn.
-    if (!session.pausedForInput && !session.requestedStop) await flagIfParked(session, id);
+    // FLUX-1563: unbound child-process 'exit' handler — rebind to the session's OWNING board.
+    if (!session.pausedForInput && !session.requestedStop) {
+      await runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => flagIfParked(session, id));
+    }
     broadcastEvent('taskUpdated', { id });
   });
 }

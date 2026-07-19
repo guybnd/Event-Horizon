@@ -167,3 +167,20 @@ function defaultListWin32Processes(): Promise<Array<{ pid: number; ppid: number 
 export function defaultKillWin32Pid(pid: number): void {
   execFile('taskkill', ['/F', '/T', '/PID', String(pid)], { windowsHide: true }, () => {});
 }
+
+/**
+ * True if `pid` currently identifies a live process, cross-platform (FLUX-1572). `process.kill`
+ * with signal `0` sends no signal — Node maps it to a liveness probe on both POSIX (`kill(pid, 0)`)
+ * and Windows (`OpenProcess`/`GetExitCodeProcess` under the hood) — so this needs no platform
+ * branch. ESRCH/"no such process" -> dead; anything else thrown (e.g. EPERM — pid exists but this
+ * user can't signal it) is treated as alive, since the process plainly still occupies that pid.
+ */
+export function isPidAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: unknown) {
+    return (err as NodeJS.ErrnoException)?.code !== 'ESRCH';
+  }
+}

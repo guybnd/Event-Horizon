@@ -65,6 +65,9 @@ const PHASE_HEADINGS: Record<LaunchPhase, string> = {
   // FLUX-1380: fast-path launches directly (no template picker) — this heading is unused in v1
   // but kept for PHASE_HEADINGS' exhaustiveness over LaunchPhase.
   'fast-path': 'Fast-path (groom + implement)',
+  // FLUX-1383: batch-grooming likewise launches directly (no template picker) — unused in v1, kept
+  // for exhaustiveness.
+  'batch-grooming': 'Batch grooming (groom several tickets)',
 };
 
 /** Map a stored workflow execution pattern onto a launcher orchestration mode. */
@@ -154,9 +157,10 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   const showBranchSection = ticket?.status === 'Todo' && !ticket?.branch;
 
   // FLUX-1380: 'fast-path' is solo-session only (design decision 7) and never opens this
-  // multi-persona launcher — it dispatches directly (see dispatchFastPath). Narrow to the
-  // workflow-template phase set for the two template lookups below.
-  const workflowPhase = phase !== 'fast-path' ? phase : undefined;
+  // multi-persona launcher — it dispatches directly (see dispatchFastPath). FLUX-1383:
+  // 'batch-grooming' is the same (see dispatchBatchGrooming). Narrow to the workflow-template
+  // phase set for the two template lookups below.
+  const workflowPhase = phase !== 'fast-path' && phase !== 'batch-grooming' ? phase : undefined;
 
   // The interactive template/mode/persona controls are only revealed once personas + templates
   // have loaded and the default template has been resolved/applied — otherwise the form would

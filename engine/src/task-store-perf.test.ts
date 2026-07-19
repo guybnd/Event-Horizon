@@ -78,18 +78,22 @@ describe('task-store perf instrumentation (FLUX-1132)', () => {
     expect(snapshot().histograms['store.fullRescan']?.count).toBe(1);
   });
 
-  it('yields to the event loop every 50 files during a large rescan (FLUX-1188)', async () => {
+  it('completes a large rescan and loads every file (FLUX-1188)', async () => {
+    // FLUX-1547: the serial loop + explicit `RESCAN_YIELD_EVERY` / `await new Promise(setImmediate)`
+    // yield this test used to assert on is gone — initDir now runs a bounded-concurrency pool
+    // (engine/src/concurrency.ts), and overlapping I/O across in-flight files gives the event loop
+    // natural turns instead of needing an explicit periodic yield. Coverage for that overlap
+    // property (and for order-independent final store state) lives in
+    // task-store-parallel-scan.test.ts; this test just guards that the rescan still completes and
+    // loads every file.
     const fileCount = 125;
     for (let i = 0; i < fileCount; i++) {
       const id = `FLUX-${1000 + i}`;
       await fs.writeFile(path.join(fluxDir, `${id}.md`), matter.stringify('body', { id, title: id, status: 'Todo' }));
     }
-    const setImmediateSpy = vi.spyOn(globalThis, 'setImmediate');
 
     await initDir();
 
-    // 125 files at 50-per-batch yields after file 50 and file 100 — two yields, not zero.
-    expect(setImmediateSpy).toHaveBeenCalledTimes(2);
     expect(Object.keys(getWorkspace().tasks).length).toBe(fileCount);
   });
 });

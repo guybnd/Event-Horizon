@@ -37,4 +37,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setUnsavedGuard(isDirty) {
     ipcRenderer.send('eh:set-unsaved-guard', !!isDirty);
   },
+  /**
+   * Tell main how many agent sessions are currently running, so it can guard window-close / quit
+   * with a native confirm when closing would kill them (FLUX-1541).
+   */
+  setRunningGuard(count) {
+    ipcRenderer.send('eh:set-running-guard', Number(count) || 0);
+  },
 });

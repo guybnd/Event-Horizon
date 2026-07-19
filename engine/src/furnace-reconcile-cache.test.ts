@@ -2,10 +2,11 @@
 //
 // GET /api/furnace and furnace_get used to run reconcileBatch for EVERY batch on EVERY read — the portal
 // polls the route every ~3s (FurnaceDrawer.tsx POLL_MS), measured at 1.1s avg / 3.4s worst-case in
-// production. `reconcileBatch` calls `getActiveSessionsForTask` once per non-active ticket it visits on
-// EVERY pass, whether or not anything actually changed (FLUX-1066), so mocking that import gives an
-// observable count of how many real reconcile passes ran — this proves the TTL/single-flight gate without
-// needing to spy on `reconcileBatch` itself (a same-module internal call `vi.mock` can't intercept).
+// production. `reconcileBatch` calls `getActiveSessionsForTaskInWorkspace` (FLUX-1551: workspace-narrowed,
+// was `getActiveSessionsForTask`) once per non-active ticket it visits on EVERY pass, whether or not
+// anything actually changed (FLUX-1066), so mocking that import gives an observable count of how many real
+// reconcile passes ran — this proves the TTL/single-flight gate without needing to spy on `reconcileBatch`
+// itself (a same-module internal call `vi.mock` can't intercept).
 
 import { getWorkspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -14,10 +15,14 @@ import path from 'path';
 import os from 'os';
 import { setWorkspaceRoot } from './workspace.js';
 
-const getActiveSessionsForTask = vi.fn((_ticketId: string) => []);
+const getActiveSessionsForTask = vi.fn((_ticketId: string, _root?: string | null, _defaultRoot?: string | null) => []);
 vi.mock('./session-store.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./session-store.js')>();
-  return { ...actual, getActiveSessionsForTask: (ticketId: string) => getActiveSessionsForTask(ticketId) };
+  return {
+    ...actual,
+    getActiveSessionsForTaskInWorkspace: (ticketId: string, root: string | null, defaultRoot: string | null) =>
+      getActiveSessionsForTask(ticketId, root, defaultRoot),
+  };
 });
 
 import { createFurnaceBatch, mutateFurnaceBatch, __resetFurnaceStoreForTests } from './furnace-store.js';

@@ -1,8 +1,8 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { updateTask } from '../api';
-import { Loader2, Plus } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
 import { getRequireInputStatus, isPromptableStatus } from '../workflow';
@@ -12,6 +12,19 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { TaskMarkdown } from './TaskMarkdown';
 import type { Task, TaskLiveEvent } from '../types';
 import { ParseErrorButton } from './ParseErrorButton';
+import { SkeletonCard } from './ui/Skeleton';
+
+// FLUX-1506: cold-load placeholder — ghost list rows matching BacklogRow's `p-3 rounded-lg border`
+// shape, in place of the old centered spinner.
+function BacklogListSkeleton() {
+  return (
+    <div className="flex flex-col gap-2 p-3" aria-busy="true" aria-label="Loading backlog">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <SkeletonCard key={i} className="w-full" />
+      ))}
+    </div>
+  );
+}
 
 function BacklogRow({
   task,
@@ -126,7 +139,7 @@ function BacklogRow({
   );
 }
 
-export function BacklogScreen() {
+export function BacklogScreen({ active = true }: { active?: boolean }) {
   const { openTaskModal, triggerRefresh } = useAppActions();
   const config = useAppSelector((s) => s.config);
   const currentUser = useAppSelector((s) => s.currentUser);
@@ -148,22 +161,37 @@ export function BacklogScreen() {
   const [descriptionNotice, setDescriptionNotice] = useState<{ tone: 'error' | 'success'; message: string } | null>(null);
   const [isSavingDescription, setIsSavingDescription] = useState(false);
 
-  const tasks = liveTasks.filter((task) => task.status && (task.status === 'Backlog' || task.status.toLowerCase() === 'backlog'));
+  // FLUX-1542: gate the O(n) filter/sort behind `active` — recompute only while this view is
+  // visible, but stay mounted (FLUX-1524) and keep returning the last computed value while hidden
+  // so the ~3s tasks-poll re-key doesn't fan out into invisible work.
+  const tasksRef = useRef<Task[]>([]);
+  const tasks = useMemo(() => {
+    if (!active) return tasksRef.current;
+    const next = liveTasks.filter((task) => task.status && (task.status === 'Backlog' || task.status.toLowerCase() === 'backlog'));
+    tasksRef.current = next;
+    return next;
+  }, [liveTasks, active]);
 
   const selectedTask = tasks.find(t => t.id === selectedTaskId);
   const allStatuses = config ? [...config.columns.map(c => c.name), ...config.hiddenStatuses.map(c => c.name)] : [];
-  const visibleTasks = config ? filterAndSortTasks(tasks, config, {
-    searchQuery,
-    sortOption,
-    filterAssignee,
-    filterPriority,
-    filterTag,
-    filterUnreadOnly,
-    filterWorktree,
-    worktreeBranches,
-    readComments,
-    requireInputStatus: getRequireInputStatus(config),
-  }) : tasks;
+  const visibleTasksRef = useRef<Task[]>([]);
+  const visibleTasks = useMemo(() => {
+    if (!active) return visibleTasksRef.current;
+    const next = config ? filterAndSortTasks(tasks, config, {
+      searchQuery,
+      sortOption,
+      filterAssignee,
+      filterPriority,
+      filterTag,
+      filterUnreadOnly,
+      filterWorktree,
+      worktreeBranches,
+      readComments,
+      requireInputStatus: getRequireInputStatus(config),
+    }) : tasks;
+    visibleTasksRef.current = next;
+    return next;
+  }, [active, tasks, config, searchQuery, sortOption, filterAssignee, filterPriority, filterTag, filterUnreadOnly, filterWorktree, worktreeBranches, readComments]);
   const selectedVisibleTask = visibleTasks.find(t => t.id === selectedTaskId) || null;
   const isDescriptionDirty = normalizeTaskMarkdownBody(descriptionDraft) !== normalizeTaskMarkdownBody(selectedVisibleTask?.body || '');
 
@@ -173,11 +201,7 @@ export function BacklogScreen() {
   }, [selectedVisibleTask?.id, selectedVisibleTask?.body]);
 
   if ((tasksLoading && liveTasks.length === 0) || !config) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-      </div>
-    );
+    return <BacklogListSkeleton />;
   }
 
   const handleStatusChange = async (newStatus: string) => {

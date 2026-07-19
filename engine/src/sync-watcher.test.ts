@@ -4,10 +4,52 @@ import path from 'path';
 import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { createScheduler, runSync, getSyncStatus, _resetSyncStateForTests, mergeAppendOnlyHistory, mergePrTicketConflict, isSyncUnhealthy, maybeResurfaceConflictNotification, maybeResurfaceAuthNotification, _simulateAuthFailureForTests, resolveConflicts, revalidateConflictState, SUPPORTED_SYNC_PROTOCOL, _setPostResetHookForTests } from './sync-watcher.js';
+import { createScheduler, runSync, getSyncStatus, _resetSyncStateForTests, mergeAppendOnlyHistory, mergePrTicketConflict, isSyncUnhealthy, maybeResurfaceConflictNotification, maybeResurfaceAuthNotification, _simulateAuthFailureForTests, resolveConflicts, revalidateConflictState, SUPPORTED_SYNC_PROTOCOL, _setPostResetHookForTests, SyncWorker } from './sync-watcher.js';
 import { getNotifications, dismissNotification, clearNotifications } from './notifications.js';
 import { setWorkspaceRoot, getWorkspaceRoot } from './workspace.js';
+import { Workspace } from './workspace-context.js';
 import { appendJournalEntry, readJournalEntries, setJournalReplayHandler, setJournalCacheReloadHandler } from './sync-journal.js';
+
+describe('SyncWorker — per-workspace isolation (FLUX-1453)', () => {
+  it('two workers keep independent status, conflicts, and listeners', () => {
+    const workerA = new SyncWorker(new Workspace());
+    const workerB = new SyncWorker(new Workspace());
+
+    workerA.reportDivergedStatus(3, 1);
+    expect(workerA.getSyncStatus()).toEqual({ state: 'diverged', ahead: 3, behind: 1 });
+    // B never saw A's mutation — still its own independent default.
+    expect(workerB.getSyncStatus()).toEqual({ state: 'idle' });
+
+    const listenerA = vi.fn();
+    workerA.onSyncStatusChange(listenerA);
+    workerB.reportDivergedStatus(5, 0);
+    expect(listenerA).not.toHaveBeenCalled();
+
+    workerA.reportDivergedStatus(1, 1);
+    expect(listenerA).toHaveBeenCalledTimes(1);
+    expect(workerB.getSyncStatus()).toEqual({ state: 'diverged', ahead: 5, behind: 0 });
+  });
+
+  it('start()/stop() tears down the watcher, scheduler, and resurface timer — no leaked handles', async () => {
+    const ws = new Workspace();
+    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-syncworker-'));
+    await fs.mkdir(path.join(tmpRoot, '.flux-store'));
+    ws.root = tmpRoot;
+    const worker = new SyncWorker(ws);
+
+    const clearIntervalSpy = vi.spyOn(global, 'clearInterval');
+    try {
+      worker.start(ws);
+      worker.stop();
+      expect(clearIntervalSpy).toHaveBeenCalled();
+      // Idempotent: stopping an already-stopped worker is a safe no-op.
+      expect(() => worker.stop()).not.toThrow();
+    } finally {
+      clearIntervalSpy.mockRestore();
+      await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+});
 
 const execFileAsync = promisify(execFile);
 const git = (cwd: string, args: string[]) => execFileAsync('git', args, { cwd, windowsHide: true });

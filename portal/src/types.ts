@@ -198,6 +198,10 @@ export interface Task {
   tags?: string[];
   title?: string;
   body?: string;
+  /** FLUX-1550: opaque content-hash CAS token for `body`, served on the DETAIL payload
+   *  (serializeTaskForApi). Echo back as `baseBodyVersion` on a body-changing `updateTask` call so
+   *  the engine can detect a concurrent body edit instead of silently clobbering it. */
+  bodyVersion?: string;
   /** Full history — present on the DETAIL payload (serializeTaskForApi); absent on the LIST
    *  payload, which carries `historyDigest` instead (FLUX-725). */
   history?: HistoryEntry[];
@@ -309,7 +313,10 @@ export interface CliSessionSummary {
    *  `LaunchPhase`). Lets the dock tab's leading glyph prefer the ACTIVE session's identity over
    *  the ticket's board status — e.g. a plan-review-gate pass on a Grooming ticket shows the
    *  review Eye while it runs. 'chat' = the persistent per-ticket conversation (no phase glyph). */
-  phase?: 'grooming' | 'implementation' | 'review' | 'finalize' | 'fast-path' | 'chat';
+  phase?: 'grooming' | 'implementation' | 'review' | 'finalize' | 'fast-path' | 'batch-grooming' | 'chat';
+  /** FLUX-1383: for phase:'batch-grooming' — the sibling ticket ids this session grooms in one
+   *  sitting (mirrors the engine's `CliSessionSummary.batchTicketIds`). */
+  batchTicketIds?: string[];
   pattern?: ExecutionPattern;
   patternPosition?: PatternPosition;
   groupId?: string;
@@ -329,7 +336,9 @@ export interface CliSessionSummary {
 }
 
 export interface TaskLiveEvent {
-  kind: 'created' | 'moved' | 'updated';
+  /** FLUX-1505: 'rollback' marks an optimistic button-action that the server rejected — the card
+   *  plays a brief shake instead of the success pulse/jump the other kinds get. */
+  kind: 'created' | 'moved' | 'updated' | 'rollback';
   sequence: number;
   at: number;
   fromStatus?: string;
@@ -448,6 +457,14 @@ export interface Config {
   boardCardOpenMode?: BoardCardOpenMode;
   /** Default state of the per-launch "dedicated worktree" choice (FLUX-521). */
   worktreeByDefault?: boolean;
+  /** FLUX-1502: communication-style prompt injection, two axes. `user` selects the style for
+   *  user-facing writing (default 'concise'; 'custom' uses `customText`); `interAgent` toggles
+   *  the fixed inter-agent protocol block (default true — protocol, not taste). */
+  communicationStyle?: {
+    user?: 'concise' | 'detailed' | 'custom' | 'off';
+    customText?: string;
+    interAgent?: boolean;
+  };
   requireInputStatus?: string;
   readyForMergeStatus?: string;
   archiveStatus?: string;
@@ -543,6 +560,8 @@ export interface Config {
   furnaceSettings?: {
     rateLimitRetryIntervalMs: number;
     rateLimitMaxWaitMs: number;
+    /** FLUX-1431: default per-session watchdog for new batches (overridable per-batch). */
+    sessionTimeoutMs?: number;
     /** FLUX-1175: the Smelter persona's authority mode — 'drafting' (manual, default: every
      *  real burn-lifecycle action needs confirmation) vs 'operator' (autonomous full authority
      *  once asked to manage a burn). */

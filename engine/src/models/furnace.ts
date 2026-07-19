@@ -284,6 +284,15 @@ export interface FurnaceBatch {
    * behaves differently because of it — the portal renders it as a "spun off from" subtitle.
    */
   spawnedFrom?: { batchId: string; ticketId: string };
+  /**
+   * FLUX-1513 (epic FLUX-1230 S7 follow-up): the root of the workspace this batch was built in,
+   * stamped at `createFurnaceBatch` time. Lets the per-workspace Stoker fan-out (`driveStokeTick` in
+   * furnace-stoker.ts) filter the engine-global batch cache down to the batches that actually belong
+   * to the workspace it is currently iterating — see `batchBelongsToWorkspaceRoot`. Undefined on a
+   * batch created before this field existed; such a legacy batch resolves to the default workspace
+   * (back-compat — see that helper).
+   */
+  workspaceRoot?: string;
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
@@ -300,8 +309,8 @@ export const DEFAULT_RATE_LIMIT_RETRY_INTERVAL_MS = 20 * 60 * 1000;
 /** FLUX-1063: how long a ticket may stay in rate-limit cooldown before failing outright — 5 hours. */
 export const DEFAULT_RATE_LIMIT_MAX_WAIT_MS = 5 * 60 * 60 * 1000;
 
-/** Per-session watchdog default (45 min) — generous headroom over a normal burn, safety net for a hang. */
-export const DEFAULT_SESSION_TIMEOUT_MS = 45 * 60 * 1000;
+/** Per-session watchdog default (90 min) — generous headroom over a normal burn, safety net for a hang. */
+export const DEFAULT_SESSION_TIMEOUT_MS = 90 * 60 * 1000;
 
 /** Circuit breaker default — 3 consecutive parks/failures assume a broken environment. */
 export const DEFAULT_MAX_CONSECUTIVE_FAILURES = 3;
@@ -376,6 +385,7 @@ export function newFurnaceBatch(input: {
   icon?: string;
   createdBy?: string;
   spawnedFrom?: { batchId: string; ticketId: string };
+  workspaceRoot?: string;
 }): FurnaceBatch {
   const kind: BatchKind = input.kind ?? 'parallel';
   const requestedRate = input.burnRate ?? 1;
@@ -405,6 +415,7 @@ export function newFurnaceBatch(input: {
   if (input.icon !== undefined) batch.icon = input.icon;
   if (input.createdBy !== undefined) batch.createdBy = input.createdBy;
   if (input.spawnedFrom !== undefined) batch.spawnedFrom = input.spawnedFrom;
+  if (input.workspaceRoot !== undefined) batch.workspaceRoot = input.workspaceRoot;
   return batch;
 }
 
@@ -413,6 +424,23 @@ export function clampBurnRate(rate: number | undefined): number {
   const r = Math.floor(rate ?? 1);
   if (!Number.isFinite(r) || r < 1) return 1;
   return Math.min(r, MAX_BURN_RATE);
+}
+
+/**
+ * FLUX-1513: does `batch` belong to the workspace rooted at `workspaceRoot`? A batch tagged with its
+ * own `workspaceRoot` (every batch created after this ticket) matches by that value alone. An untagged
+ * legacy batch (created before this field existed) has nothing to match against, so it falls back to
+ * `defaultWorkspaceRoot` — the process's single/default workspace — which is what every batch
+ * effectively belonged to before this ticket. Pure root comparison (no `Workspace` import here — this
+ * file stays I/O-free); callers resolve both roots via workspace-context.ts (`ws.root` /
+ * `getDefaultWorkspace().root`).
+ */
+export function batchBelongsToWorkspaceRoot(
+  batch: FurnaceBatch,
+  workspaceRoot: string | null,
+  defaultWorkspaceRoot: string | null,
+): boolean {
+  return (batch.workspaceRoot ?? defaultWorkspaceRoot) === workspaceRoot;
 }
 
 // ── Pure ticket-state helpers ──────────────────────────────────────────────────

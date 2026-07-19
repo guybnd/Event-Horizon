@@ -53,6 +53,7 @@ interface CliSessionStartRequestBody {
   phase: string;
   focusComment?: string;
   enableTools?: string[];
+  dispatched?: boolean;
 }
 
 describe('Furnace integration (FLUX-1057)', () => {
@@ -964,6 +965,47 @@ describe('Furnace integration (FLUX-1057)', () => {
       const body = reviewStartBodyFor('FR-4');
       expect(body.phase).toBe('review');
       expect(body.focusComment).toBe(SOLE_REVIEWER_FOCUS + furnaceFollowupFocus(batch));
+    });
+  });
+
+  // FLUX-850 (review follow-up): a prior revision of the dispatched-session hard gate stamped EVERY
+  // Furnace phase dispatch with `dispatched: true`, which made `change_status`/`finish_ticket`
+  // (mcp-server.ts) redirect the implementation session's own `change_status('Ready')` call into
+  // Require Input — so Furnace's reconcile loop (`decideEntry`) saw `sessionStatus === 'waiting-input'`
+  // and parked EVERY implementation ticket instead of moving it on to review. Furnace never calls
+  // `finish_ticket` and never advances a ticket past Ready itself (this file's header comment: "NEVER
+  // finish_ticket"), so it was never the silent-merge-to-Done surface FLUX-850 targets — only
+  // `start_session` (mcp-server.ts) and the board-rebase `dispatch` verb (board-rebase.ts) should mark
+  // sessions `dispatched`. This guards the regression at its actual source: the outgoing spawn request
+  // Furnace's `dispatchSession` builds.
+  describe('FLUX-850 — Furnace dispatch never marks a session `dispatched` (would hard-gate its own Ready move)', () => {
+    function startBodyFor(ticketId: string): CliSessionStartRequestBody {
+      const call = fetchMock.mock.calls.find((c) => String(c[0]).includes(`/${ticketId}/cli-session/start`));
+      expect(call, `expected a /cli-session/start dispatch for ${ticketId}`).toBeTruthy();
+      return JSON.parse(call![1].body);
+    }
+
+    it('implementation dispatch omits `dispatched` from the /cli-session/start body', async () => {
+      const batch = await createFurnaceBatch({ title: 'impl dispatch', kind: 'parallel', tickets: [newBatchTicket('FD-1', 0)] });
+      await mutateFurnaceBatch(batch.id, (b) => { b.status = 'burning'; });
+
+      await stokerTick(batch.id);
+
+      const body = startBodyFor('FD-1');
+      expect(body.phase).toBe('implementation');
+      expect(body.dispatched).not.toBe(true);
+    });
+
+    it('review dispatch also omits `dispatched` from the /cli-session/start body', async () => {
+      const batch = await createFurnaceBatch({ title: 'review dispatch no-mark', kind: 'parallel', tickets: [newBatchTicket('FD-2', 0)] });
+      await mutateFurnaceBatch(batch.id, (b) => { b.status = 'burning'; b.tickets[0]!.state = 'reviewing'; });
+      getWorkspace().tasks['FD-2'] = { id: 'FD-2', status: 'In Progress' };
+
+      await stokerTick(batch.id);
+
+      const body = startBodyFor('FD-2');
+      expect(body.phase).toBe('review');
+      expect(body.dispatched).not.toBe(true);
     });
   });
 

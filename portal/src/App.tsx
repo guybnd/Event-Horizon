@@ -1,10 +1,13 @@
-import { useState, useCallback, useEffect, lazy, Suspense } from 'react';
+import { useState, useCallback, useEffect, useMemo, lazy, Suspense } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { AppProvider } from './AppContext';
 import { useAppSelector } from './store/useAppSelector';
+import { useMotionTokens } from './motion/tokens';
 import { Header } from './components/Header';
 import { Board } from './components/Board';
 import { BacklogScreen } from './components/BacklogScreen';
 import { ChangesScreen } from './components/changes/ChangesScreen';
+import { KeepAliveView } from './components/KeepAliveView';
 import { DocsScreen } from './components/DocsScreen';
 import { TaskModal } from './components/TaskModal';
 import { ChatDock } from './components/ChatDock';
@@ -15,6 +18,7 @@ import { ToastProvider } from './hooks/useNotify';
 import { Settings } from './components/Settings';
 import { ReleasesScreen } from './components/ReleasesScreen';
 import { EpicsScreen } from './components/EpicsScreen';
+import { TokenCostsScreen } from './components/TokenCostsScreen';
 import { WorkflowBuilder } from './components/WorkflowBuilder';
 import { WorkspaceSelector } from './components/WorkspaceSelector';
 import { OnboardingWizard } from './components/OnboardingWizard';
@@ -79,6 +83,29 @@ function AppContent() {
     if (view === 'board') setHasVisitedBoard(true);
   }, [view]);
 
+  // FLUX-1507: view crossfade. `boardBoxHidden` lags `view` by one fade duration so Board's own
+  // exit fade (in Board.tsx, driven by `active`) has time to actually play before the wrapper
+  // drops to `display:none` — flipping it in the same tick as `view` (the old behavior) would cut
+  // the fade off on frame one. Entering the board is instant (no lag needed either direction —
+  // `display:none → contents` and the fade-in both start the same tick).
+  const tokens = useMotionTokens();
+  const [boardBoxHidden, setBoardBoxHidden] = useState(() => view !== 'board');
+  useEffect(() => {
+    if (view === 'board') { setBoardBoxHidden(false); return; }
+    const delayMs = tokens.instant ? 0 : (tokens.fade.duration ?? 0) * 1000 + 30;
+    const t = setTimeout(() => setBoardBoxHidden(true), delayMs);
+    return () => clearTimeout(t);
+  }, [view, tokens.instant, tokens.fade.duration]);
+
+  const crossfadeVariants = useMemo(() => {
+    const offset = tokens.crossfadeDirection === 'down' ? -tokens.crossfadeDriftPx : tokens.crossfadeDriftPx;
+    return {
+      initial: { opacity: 0, y: offset },
+      animate: { opacity: 1, y: 0 },
+      exit: { opacity: 0, y: -offset },
+    };
+  }, [tokens.crossfadeDirection, tokens.crossfadeDriftPx]);
+
   const handleBootComplete = useCallback(() => setBootComplete(true), []);
 
   if (isConnected && !bootComplete) {
@@ -110,22 +137,61 @@ function AppContent() {
       <div className="relative flex min-h-0 flex-1 flex-col">
         <main className="flex-1 overflow-y-auto px-8 pt-2.5 pb-5">
           {hasVisitedBoard && (
-            <div style={{ display: view === 'board' ? 'contents' : 'none' }}>
-              <Board furnaceOpen={furnaceOpen} onCloseFurnace={handleCloseFurnace} />
+            <div style={{ display: (view === 'board' || !boardBoxHidden) ? 'contents' : 'none' }}>
+              <Board furnaceOpen={furnaceOpen} onCloseFurnace={handleCloseFurnace} active={view === 'board'} />
             </div>
           )}
-          {view === 'backlog' && <BacklogScreen />}
-          {view === 'changes' && <ChangesScreen />}
-          {view === 'docs' && <DocsScreen />}
-          {view === 'settings' && <Settings />}
-          {view === 'releases' && <ReleasesScreen />}
-          {view === 'epics' && <EpicsScreen />}
-          {view === 'workflows' && <WorkflowBuilder />}
-          {import.meta.env.DEV && view === 'dev-onboarding' && OnboardingStudioScreen && (
-            <Suspense fallback={null}>
-              <OnboardingStudioScreen />
-            </Suspense>
-          )}
+          {/* FLUX-1524: kept alive like Board (not unmounted via AnimatePresence below) so scroll
+              position, selection, and local filters survive a switch away and back. */}
+          <KeepAliveView active={view === 'backlog'}>
+            <BacklogScreen active={view === 'backlog'} />
+          </KeepAliveView>
+          <KeepAliveView active={view === 'changes'}>
+            <ChangesScreen active={view === 'changes'} />
+          </KeepAliveView>
+          {/* FLUX-1507: crossfade the remaining views. Default (non-"wait") AnimatePresence mode —
+              outgoing and incoming views briefly overlap in normal flow instead of serializing
+              exit-then-enter, so a rapid switch never shows a blank gap (at the cost of a brief
+              double-height layout window during the ~220ms transition). */}
+          <AnimatePresence initial={false}>
+            {view === 'docs' && (
+              <motion.div key="docs" className="h-full min-h-0" variants={crossfadeVariants} initial="initial" animate="animate" exit="exit" transition={tokens.fade}>
+                <DocsScreen />
+              </motion.div>
+            )}
+            {view === 'settings' && (
+              <motion.div key="settings" className="h-full min-h-0" variants={crossfadeVariants} initial="initial" animate="animate" exit="exit" transition={tokens.fade}>
+                <Settings />
+              </motion.div>
+            )}
+            {view === 'releases' && (
+              <motion.div key="releases" className="h-full min-h-0" variants={crossfadeVariants} initial="initial" animate="animate" exit="exit" transition={tokens.fade}>
+                <ReleasesScreen />
+              </motion.div>
+            )}
+            {view === 'epics' && (
+              <motion.div key="epics" className="h-full min-h-0" variants={crossfadeVariants} initial="initial" animate="animate" exit="exit" transition={tokens.fade}>
+                <EpicsScreen />
+              </motion.div>
+            )}
+            {view === 'token-costs' && (
+              <motion.div key="token-costs" className="h-full min-h-0" variants={crossfadeVariants} initial="initial" animate="animate" exit="exit" transition={tokens.fade}>
+                <TokenCostsScreen />
+              </motion.div>
+            )}
+            {view === 'workflows' && (
+              <motion.div key="workflows" className="h-full min-h-0" variants={crossfadeVariants} initial="initial" animate="animate" exit="exit" transition={tokens.fade}>
+                <WorkflowBuilder />
+              </motion.div>
+            )}
+            {import.meta.env.DEV && view === 'dev-onboarding' && OnboardingStudioScreen && (
+              <motion.div key="dev-onboarding" className="h-full min-h-0" variants={crossfadeVariants} initial="initial" animate="animate" exit="exit" transition={tokens.fade}>
+                <Suspense fallback={null}>
+                  <OnboardingStudioScreen />
+                </Suspense>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </main>
         <TaskModal />
         <ChatDock onToggleFurnace={handleToggleFurnace} furnaceOpen={furnaceOpen} furnaceBurning={furnaceBurning} furnaceBurningCount={furnaceBurningCount} />

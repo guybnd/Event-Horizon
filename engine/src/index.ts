@@ -18,7 +18,7 @@ if (process.argv.includes('--mcp')) {
   process.exit(1);
 }
 
-import { getWorkspace } from './workspace-context.js';
+import { getWorkspace, getDefaultWorkspace, liveWorkspaces, runWithWorkspace } from './workspace-context.js';
 import { log, configureFileSink } from './log.js';
 import express from 'express';
 import cors from 'cors';
@@ -29,7 +29,7 @@ import path from 'path';
 import os from 'os';
 
 import { fileURLToPath } from 'url';
-import { requireWorkspace, attachWorkspace, loopbackOnly, originGuard, isLoopbackHostname } from './middleware.js';
+import { requireWorkspace, attachWorkspace, workspaceScope, loopbackOnly, originGuard, isLoopbackHostname } from './middleware.js';
 import { requestTiming } from './perf/request-timing.js';
 import { startEventLoopMonitor, stopEventLoopMonitor } from './perf/event-loop-monitor.js';
 import { startGitTiming } from './perf/git-timing.js';
@@ -44,7 +44,7 @@ import { activateWorkspace } from './task-store.js';
 // lazy `seaRequire('mcp-server.js')` loaded a SECOND, never-activated task-store, so MCP
 // writes threw "Received null" and MCP reads were blind to tickets REST had written.
 import { handleMcpHttpRequest } from './mcp-server.js';
-import { stopAllCliSessions, setAutoRestartCallback, getAllActiveSessions, getActiveSessionsForTask, syncActiveSessionStubs } from './session-store.js';
+import { stopAllCliSessions, setAutoRestartCallback, getAllActiveSessions, getActiveSessionsForTaskInWorkspace, syncActiveSessionStubs } from './session-store.js';
 import { requestApproval, resolveApproval, listPendingApprovals } from './permission-prompts.js';
 import { requestAnswer, resolveAnswer, listPendingQuestions } from './ask-questions.js';
 import { isSafeStreamId } from './transcript.js';
@@ -156,6 +156,10 @@ app.use(requestTiming);
 // FLUX-343: expose the active workspace as req.workspace — the seam the parallel-workspaces
 // epic (FLUX-1230) later swaps for a per-request registry lookup.
 app.use(attachWorkspace);
+// Epic FLUX-1230: bind the whole request to req.workspace (AsyncLocalStorage) so legacy
+// getWorkspace()/getWorkspaceRoot()/getActiveFluxDir() call sites downstream resolve to the
+// board this request targets — not whichever board the S10 switcher opened last.
+app.use(workspaceScope);
 
 // FLUX-1130: samples event-loop delay in the background so a synchronous stall anywhere in
 // the process (blocking git spawn, giant JSON serialize, sync fs rescan, ...) surfaces in
@@ -295,7 +299,9 @@ app.get('/api/board/triage-signals', requireWorkspace, async (_req, res) => {
 // sentinel, whose session is registered under that taskId); null/no-match → undefined.
 function resumePointerFor(conversationId: string | null): string | undefined {
   if (!conversationId) return undefined;
-  for (const session of getActiveSessionsForTask(conversationId)) {
+  // FLUX-1551: workspace-narrowed — a same-id ticket on a different board must never donate its
+  // resume pointer to this request's board.
+  for (const session of getActiveSessionsForTaskInWorkspace(conversationId, getWorkspaceRoot(), getDefaultWorkspace().root)) {
     if (session.resumeSessionId) return session.resumeSessionId;
   }
   return undefined;
@@ -381,7 +387,8 @@ app.post('/api/board/ask-question', requireWorkspace, async (req, res) => {
   // question route (lever A) already owns that turn's safety net. conversationId is the ticket id
   // for per-ticket sessions; a no-match (board / unrouted) simply marks nothing.
   if (conversationId) {
-    for (const session of getActiveSessionsForTask(conversationId)) session.askedThisTurn = true;
+    // FLUX-1551: workspace-narrowed — must not mark a same-id ticket's session on a different board.
+    for (const session of getActiveSessionsForTaskInWorkspace(conversationId, getWorkspaceRoot(), getDefaultWorkspace().root)) session.askedThisTurn = true;
   }
   const result = await requestAnswer(questions, conversationId, resumePointerFor(conversationId));
   res.json(result);
@@ -710,36 +717,51 @@ async function startServer() {
     let prReconcileInFlight = false;
     const runPrReconcileTick = () => {
       if (prReconcileInFlight) return;
-      const workspaceRoot = getWorkspaceRoot();
-      if (workspaceRoot) {
-        prReconcileInFlight = true;
-        Promise.all([
-          // FLUX-1060: refresh the on-disk active-session stubs (write current running/waiting-input
-          // task sessions, prune ended ones) so the reclaim guard survives an engine restart. Runs
-          // alongside the reclaim below — reclaim reads the in-memory map, this just keeps the disk
-          // mirror ≤ one tick stale for the NEXT restart.
-          syncActiveSessionStubs(),
-          // FLUX-1031: proactively free task-worktree slots held by tickets resting at Ready
-          // (or terminal) with no live session, so the board-wide pool doesn't exhaust while
-          // PRs await review. Independent of gh — reclamation is a local git/worktree op — so
-          // it runs even when GitHub CLI is unconfigured.
-          reclaimReadyWorktrees(workspaceRoot),
-          // The remaining reconcilers depend on gh; skip them when it's unavailable.
-          ...(ghAuthAvailable
-            ? [
-                reconcilePullRequests(workspaceRoot),
-                // FLUX-566: maintain the engine-managed PR-<n> tickets (the PR-as-first-class entity).
-                syncPrTickets(workspaceRoot),
-                // FLUX-599: backstop — reclaim merged branches whose merge-time delete was missed.
-                pruneMergedBranches(workspaceRoot),
-                // FLUX-1326: retry branches cleanupMergedBranch kept alive under its dependent-PR
-                // guard (FLUX-1270) — reconcilePullRequests's non-terminal grouping never revisits
-                // them on its own once their tickets reach Done.
-                recheckDependentBranches(workspaceRoot),
-              ]
-            : []),
-        ]).catch(() => {}).finally(() => { prReconcileInFlight = false; });
-      }
+      // FLUX-1452: iterate every LIVE workspace (the S1 registry, unioned with the single default
+      // workspace so an unrouted/not-yet-opened deployment still reconciles — see
+      // `liveWorkspaces()`) instead of the one active `getWorkspaceRoot()`, so a second open board's
+      // PRs/worktrees/branches get reconciled too. With exactly one live workspace (today's only
+      // reachable configuration) this is a single-element loop — byte-for-byte the prior behavior.
+      const workspaces = liveWorkspaces().filter((ws) => ws.root !== null);
+      if (workspaces.length === 0) return;
+      const defaultWorkspaceRoot = getDefaultWorkspace().root;
+      prReconcileInFlight = true;
+      Promise.all([
+        ...workspaces.flatMap((ws) => {
+          const workspaceRoot = ws.root as string;
+          return [
+            // FLUX-1556: refresh the on-disk active-session stubs (write current running/waiting-
+            // input task sessions belonging to THIS board, prune ended ones) so the reclaim guard
+            // survives an engine restart. Bound via `runWithWorkspace` so `sessionStubsDir()`
+            // resolves to `ws`'s own store — previously this ran once, unbound, outside this loop,
+            // so every board's sessions got written into whichever board happened to be ambiently
+            // active, and a restart with a different board active saw an empty stub dir and freed
+            // that board's live worktrees (the FLUX-1556 data-loss bug). Runs alongside the reclaim
+            // below — reclaim reads the in-memory map, this just keeps the disk mirror ≤ one tick
+            // stale for the NEXT restart.
+            runWithWorkspace(ws, () => syncActiveSessionStubs(workspaceRoot, defaultWorkspaceRoot)),
+            // FLUX-1031: proactively free task-worktree slots held by tickets resting at Ready
+            // (or terminal) with no live session, so the board-wide pool doesn't exhaust while
+            // PRs await review. Independent of gh — reclamation is a local git/worktree op — so
+            // it runs even when GitHub CLI is unconfigured.
+            reclaimReadyWorktrees(workspaceRoot, ws),
+            // The remaining reconcilers depend on gh; skip them when it's unavailable.
+            ...(ghAuthAvailable
+              ? [
+                  reconcilePullRequests(workspaceRoot, ws),
+                  // FLUX-566: maintain the engine-managed PR-<n> tickets (the PR-as-first-class entity).
+                  syncPrTickets(workspaceRoot, ws),
+                  // FLUX-599: backstop — reclaim merged branches whose merge-time delete was missed.
+                  pruneMergedBranches(workspaceRoot, ws),
+                  // FLUX-1326: retry branches cleanupMergedBranch kept alive under its dependent-PR
+                  // guard (FLUX-1270) — reconcilePullRequests's non-terminal grouping never revisits
+                  // them on its own once their tickets reach Done.
+                  recheckDependentBranches(workspaceRoot, ws),
+                ]
+              : []),
+          ];
+        }),
+      ]).catch(() => {}).finally(() => { prReconcileInFlight = false; });
     };
 
     // FLUX-1318: fire a leading-edge reconcile as soon as ghAuthAvailable resolves, instead of

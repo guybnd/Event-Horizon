@@ -12,12 +12,15 @@ import { makeBoardAdapter } from './board-core.js';
 export const geminiBoardSpec: BoardSpec = {
   framework: 'gemini',
   binary: 'gemini',
-  buildArgs({ session, prompt, isResume }) {
+  buildArgs({ session, isResume }) {
     const resumeArgs = isResume && session.resumeSessionId ? ['--resume', session.resumeSessionId] : [];
+    // FLUX-1496: gemini's `-p` requires a value and merges it with stdin — pass an empty
+    // placeholder so the effective prompt is exactly the stdin content, written by wireBoardProc
+    // after spawn (board-core.ts). Mirrors the FLUX-1444 per-ticket fix (gemini.ts:572-574).
     return [
       // Gemini's per-ticket adapter only sets --model on a fresh turn, never on resume — mirror that.
       ...(!isResume && session.model ? ['--model', session.model] : []),
-      '-p', prompt,
+      '-p', '',
       ...resumeArgs,
       '--output-format', 'stream-json',
       '--screen-reader',

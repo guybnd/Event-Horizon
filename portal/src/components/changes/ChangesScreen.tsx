@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   GitCompare, RefreshCw, FolderGit2, GitBranch, History, AlertTriangle,
-  ChevronDown, ChevronRight, Loader2, Undo2,
+  ChevronDown, ChevronRight, Undo2,
 } from 'lucide-react';
 import {
   fetchDiffOverview, fetchDiffFile, fetchTaskDiff, discardFiles,
@@ -10,6 +10,7 @@ import {
 import { useAppActions, useAppSelector } from '../../store/useAppSelector';
 import { getTaskActivityTimestamp } from '../../taskSearch';
 import { DiffLines } from '../DiffLines';
+import { SkeletonLines } from '../ui/Skeleton';
 import { ConfirmDiscardDialog } from '../ConfirmDiscardDialog';
 import type { Task } from '../../types';
 
@@ -65,7 +66,7 @@ const STATUS_BADGE: Record<FileStatus, { letter: string; cls: string; title: str
   untracked: { letter: 'U', cls: 'text-gray-400', title: 'untracked (new, unstaged)' },
 };
 
-export function ChangesScreen() {
+export function ChangesScreen({ active = true }: { active?: boolean } = {}) {
   const { setChangesFocus } = useAppActions();
   const tasks = useAppSelector(s => s.tasks);
   const changesFocus = useAppSelector(s => s.changesFocus);
@@ -104,21 +105,35 @@ export function ChangesScreen() {
     }
   }, []);
 
+  // FLUX-1524: this screen is now kept mounted across view switches (App.tsx's `KeepAliveView`)
+  // instead of unmounting, so without gating on `active` this poll would keep hitting the network
+  // every POLL_MS forever in the background, even while the user is on another view. Pausing while
+  // inactive and firing an immediate `load()` on return keeps the same "fresh on entry" behavior
+  // without a background poll loop that never stops.
   useEffect(() => {
+    if (!active) return undefined;
     void load();
     const id = window.setInterval(() => void load(), POLL_MS);
     return () => window.clearInterval(id);
-  }, [load]);
+  }, [load, active]);
 
   // Map worktree branch → owning ticket (for status + labels).
+  // FLUX-1542: gated on `active` — while this view is hidden, the ~3s tasks-poll still re-keys
+  // `tasks`' array identity, which would otherwise re-run this + `sections` on every tick even
+  // though nothing is rendered. Return the last computed value instead of recomputing.
+  const taskByBranchRef = useRef<Map<string, Task>>(new Map());
   const taskByBranch = useMemo(() => {
+    if (!active) return taskByBranchRef.current;
     const m = new Map<string, Task>();
     for (const t of tasks) if (t.branch) m.set(t.branch, t);
+    taskByBranchRef.current = m;
     return m;
-  }, [tasks]);
+  }, [tasks, active]);
 
   // Build a unified section list: live worktree/main groups + recent Done tickets.
+  const sectionsRef = useRef<Section[]>([]);
   const sections = useMemo<Section[]>(() => {
+    if (!active) return sectionsRef.current;
     const out: Section[] = [];
     const liveBranches = new Set<string>();
     for (const g of overview?.groups ?? []) {
@@ -180,8 +195,9 @@ export function ChangesScreen() {
         source: { kind: 'done', ticketId: t.id },
       });
     }
+    sectionsRef.current = out;
     return out;
-  }, [overview, tasks, taskByBranch, changesFocus, focus]);
+  }, [active, overview, tasks, taskByBranch, changesFocus, focus]);
 
   // Consume a board click-through focus once the matching section actually exists
   // (a poll could remove it before this runs — don't strand focus on a dead key).
@@ -525,7 +541,7 @@ export function ChangesScreen() {
               <div className="flex-1 overflow-auto px-4 py-3">
                 {fileError && <p className="text-xs text-red-500">{fileError}</p>}
                 {!fileError && fileDiff === null && (
-                  <p className="flex items-center gap-2 text-xs text-gray-400"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading diff…</p>
+                  <SkeletonLines count={8} />
                 )}
                 {!fileError && fileDiff !== null && <DiffLines content={fileDiff} />}
               </div>

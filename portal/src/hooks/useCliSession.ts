@@ -12,6 +12,9 @@ interface UseCliSessionOptions {
   onSessionChange?: () => void;
 }
 
+/** FLUX-1506: how long a failed ghost session's inline error stays visible before dissolving. */
+const GHOST_DISSOLVE_MS = 2200;
+
 export function useCliSession({ isModalOpen, taskId, liveOutputRef, onSessionChange }: UseCliSessionOptions) {
   const config = useAppSelector(s => s.config);
   const currentUser = useAppSelector(s => s.currentUser);
@@ -77,6 +80,22 @@ export function useCliSession({ isModalOpen, taskId, liveOutputRef, onSessionCha
     if (!taskId) return;
     setCliSessionBusy(true);
     setCliSessionError('');
+    // FLUX-1506: ghost session — render a "Starting…" pill in the panel the instant the button is
+    // clicked (LaunchAgentSplitButton's own `busy` spinner covers the button; this covers the panel's
+    // status pill / stop button so the whole panel reads as launching, not just the button). Real
+    // data replaces it on success; on failure it flips to the 'failed' status the panel already knows
+    // how to render, then dissolves back to empty a beat later.
+    const ghostId = `ghost-${taskId}-${Date.now()}`;
+    setCliSession({
+      id: ghostId,
+      taskId,
+      framework: selectedCliFramework,
+      status: 'pending',
+      command: '',
+      args: [],
+      startedAt: new Date().toISOString(),
+      label: 'Agent',
+    });
     try {
       const session = await runAgentAction({
         taskId,
@@ -90,6 +109,10 @@ export function useCliSession({ isModalOpen, taskId, liveOutputRef, onSessionCha
       onSessionChange?.();
     } catch (error: unknown) {
       setCliSessionError(error instanceof Error ? error.message : 'Failed to start CLI session.');
+      setCliSession((current) => current?.id === ghostId ? { ...current, status: 'failed' } : current);
+      window.setTimeout(() => {
+        setCliSession((current) => current?.id === ghostId ? null : current);
+      }, GHOST_DISSOLVE_MS);
     } finally {
       setCliSessionBusy(false);
     }

@@ -13,7 +13,7 @@ Scope: Write code, validate logic, format commits, and close tickets during the 
 
 # Event Horizon Agent — Implementation Skill
 
-Version: 2.16.0
+Version: 2.17.0
 
 ## When This Skill Applies
 
@@ -135,6 +135,7 @@ Use MCP tools for all ticket interactions. Use Read for source code only.
 
 - Keep comments factual and short. Completion comments: behavior, key files, validation, commit hash.
 - Prefer comments that help the next agent continue without re-discovery.
+- **Write for the reader (FLUX-1502):** completion summaries and `Require Input` questions lead with the outcome/question in plain language, bolding the load-bearing phrases; handoffs to the next agent are self-contained facts — exact paths/symbols/commands/ids, action first, never "see above". No filler, no hedging. Full rules: `read_skill('orchestrator', 'Communication Style')`.
 - **Substantial comments: add a faithful `summary`.** When an `add_note` comment/activity carries a long or verbose note, pass a `summary` — capture the decision, the why, and anything a future agent must act on. As concise as it can be WITHOUT losing substance; length scales with importance — do **not** force one line. Skip it for short, already-dense notes. Once the note ages past the recent window the agent digest shows the summary in place of the full text (the full text stays fetchable via `get_ticket` with `expand: ["<id>"]`). A too-short summary makes the next agent expand everything — err toward robust.
 - **Pin critical entries:** set `pin: true` on review handoffs and key decisions so they are NEVER collapsed in the digest.
 - **Supersede dead decisions:** when a note reverses or replaces an earlier decision in *this* ticket (e.g. "abandoned approach A, going with B"), pass `supersedes: ["<id>"]` on `add_note` pointing at the now-dead entry — don't just append and leave the stale one to confuse the next session. The superseded entry then collapses to a one-line marker in the agent digest (still recoverable via `expand`), so a later agent reads the *live* decision, not the abandoned plan. Do **NOT** supersede a still-valid entry; superseding a `pin: true` or user-authored entry is **advisory-only** — the engine keeps it full (it will not bury human intent on an agent's say-so).

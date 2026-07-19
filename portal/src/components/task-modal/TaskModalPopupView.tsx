@@ -21,6 +21,7 @@ import { HistoryList } from './HistoryList';
 import { PrPanel } from './PrPanel';
 import { RetryBanner } from './RetryBanner';
 import { ChatPane } from './ChatPane';
+import { SkeletonLines } from '../ui/Skeleton';
 import type { Task } from '../../types';
 import type { TaskModalController } from '../../hooks/useTaskModalController';
 
@@ -190,14 +191,10 @@ export function TaskModalPopupView({
 
         {/* FLUX-1200: skeleton for the same two cases TaskModalFullView gates on (see
             `showContentSkeleton` above) — the content column below is `display:none`d rather
-            than unmounted, matching the FullView pattern. */}
+            than unmounted, matching the FullView pattern. FLUX-1506: extracted onto the shared
+            `SkeletonLines` primitive. */}
         {showContentSkeleton && (
-          <div className="flex min-h-0 flex-1 flex-col gap-4 p-4 animate-pulse">
-            <div className="h-4 w-1/3 rounded bg-gray-200 dark:bg-white/10" />
-            <div className="h-4 w-2/3 rounded bg-gray-200 dark:bg-white/10" />
-            <div className="h-4 w-1/2 rounded bg-gray-200 dark:bg-white/10" />
-            <div className="h-4 w-3/4 rounded bg-gray-200 dark:bg-white/10" />
-          </div>
+          <SkeletonLines count={4} className="min-h-0 flex-1 p-4" />
         )}
 
         <div

@@ -20,6 +20,7 @@ import { existsSync } from 'fs';
 import path from 'path';
 import { randomUUID } from 'node:crypto';
 import { getActiveFluxDir } from './workspace.js';
+import { getWorkspace, getDefaultWorkspace, resolveWorkspaceByRoot, runWithWorkspace, type Workspace } from './workspace-context.js';
 import { atomicWriteFile } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { getConfig } from './config.js';
@@ -38,21 +39,37 @@ import {
   computeSlotsInUse,
   batchBranchName,
   isBatchTerminal,
+  batchBelongsToWorkspaceRoot,
   BATCH_ICON_PALETTE,
   MAX_BURN_RATE,
 } from './models/furnace.js';
 
 // In-memory cache shared across REST routes, MCP tools, and the Stoker (all one process — FLUX-705).
+// FLUX-1554: batch ids are process-wide-unique UUIDs (`randomUUID()` in `createFurnaceBatch`), so one
+// flat id-keyed cache is safe to share across every board — no root-scoping needed for lookups. The
+// split-brain bug was `loaded` being a SINGLE global flag: `ensureFurnaceLoaded()` only ever loaded
+// whichever board's directory was ambiently active at the FIRST touch, so a second board's sidecars
+// were never read into the cache at all (and a batch mutated while a different board was active wrote
+// its `persist()` to THAT board's dir instead of its own — see `persist()` below). Track "have we
+// loaded this root's directory" PER ROOT instead, so each live board's furnace-batches dir gets merged
+// into the shared cache on its own first touch.
 let cache: Record<string, FurnaceBatch> = {};
-let loaded = false;
+const loadedRoots = new Set<string>();
 let iconCursor = 0;
 
-export function getFurnaceDir(): string {
-  return path.join(getActiveFluxDir(), 'furnace-batches');
+/** Resolve `root`'s own furnace-batches dir — NOT `getActiveFluxDir()` (which resolves whatever board
+ *  is ambiently active) — so a per-board load/persist always lands in the RIGHT board's dir regardless
+ *  of what else is active when it runs (FLUX-1554, same fix shape as hitl-prompts.ts's `fluxDirForRoot`,
+ *  FLUX-1555). Omitting `root` preserves the old ambient behavior byte-for-byte: `resolveWorkspaceByRoot`
+ *  misses for an unregistered root (the common single-board case) and `runWithWorkspace(null, …)` then
+ *  falls through to `getWorkspace()`'s own active/default resolution, which in single-board mode IS the
+ *  ambient root already captured by the default parameter. */
+export function getFurnaceDir(root: string | null = getWorkspace().root): string {
+  return path.join(runWithWorkspace(resolveWorkspaceByRoot(root ?? ''), () => getActiveFluxDir()), 'furnace-batches');
 }
 
-function batchPath(id: string): string {
-  return path.join(getFurnaceDir(), `${id}.json`);
+function batchPath(id: string, root: string | null): string {
+  return path.join(getFurnaceDir(root), `${id}.json`);
 }
 
 // ── Per-batch serialization ────────────────────────────────────────────────────
@@ -73,10 +90,15 @@ function looksLikeBatch(v: unknown): v is FurnaceBatch {
   return !!b && typeof b.id === 'string' && Array.isArray(b.tickets) && typeof b.kind === 'string';
 }
 
-/** Load all batches from disk into the cache (idempotent-ish; overwrites cache). */
-export async function loadFurnaceBatches(): Promise<FurnaceBatch[]> {
-  const dir = getFurnaceDir();
-  const next: Record<string, FurnaceBatch> = {};
+/**
+ * Load `root`'s batches from disk, MERGING them into the shared cache (FLUX-1554) — replacing the
+ * whole cache here (the pre-1554 shape) would drop every other already-loaded board's entries the
+ * instant a second board's directory was read. Marks `root` loaded even on an empty/missing dir so a
+ * board with zero batches doesn't get rescanned on every call.
+ */
+export async function loadFurnaceBatches(root: string | null = getWorkspace().root): Promise<FurnaceBatch[]> {
+  const dir = getFurnaceDir(root);
+  const loadedHere: FurnaceBatch[] = [];
   if (existsSync(dir)) {
     let files: string[];
     try { files = await fs.readdir(dir); } catch { files = []; }
@@ -85,18 +107,17 @@ export async function loadFurnaceBatches(): Promise<FurnaceBatch[]> {
       try {
         const raw = await fs.readFile(path.join(dir, file), 'utf-8');
         const parsed = JSON.parse(raw);
-        if (looksLikeBatch(parsed)) next[parsed.id] = parsed;
+        if (looksLikeBatch(parsed)) { cache[parsed.id] = parsed; loadedHere.push(parsed); }
       } catch { /* skip a malformed sidecar rather than crash the load */ }
     }
   }
-  cache = next;
-  loaded = true;
-  return Object.values(cache);
+  loadedRoots.add(rootKey(root));
+  return loadedHere;
 }
 
-/** Load once if we haven't yet (call before first read in a request path). */
-export async function ensureFurnaceLoaded(): Promise<void> {
-  if (!loaded) await loadFurnaceBatches();
+/** Load `root`'s batches into the cache if we haven't yet (call before first read in a request path). */
+export async function ensureFurnaceLoaded(root: string | null = getWorkspace().root): Promise<void> {
+  if (!loadedRoots.has(rootKey(root))) await loadFurnaceBatches(root);
 }
 
 export function getFurnaceBatchesCache(): FurnaceBatch[] {
@@ -112,9 +133,31 @@ export function getBurningBatches(): FurnaceBatch[] {
   return Object.values(cache).filter((b) => b.status === 'burning');
 }
 
+/**
+ * FLUX-1513: batches (any status) belonging to `ws` — tagged batches by their own `workspaceRoot`,
+ * untagged legacy batches by falling back to the default workspace. See `batchBelongsToWorkspaceRoot`.
+ */
+export function getFurnaceBatchesCacheForWorkspace(ws: Workspace): FurnaceBatch[] {
+  const defaultRoot = getDefaultWorkspace().root;
+  return getFurnaceBatchesCache().filter((b) => batchBelongsToWorkspaceRoot(b, ws.root, defaultRoot));
+}
+
+/** FLUX-1513: `getBurningBatches()` narrowed to the batches belonging to `ws`. */
+export function getBurningBatchesForWorkspace(ws: Workspace): FurnaceBatch[] {
+  const defaultRoot = getDefaultWorkspace().root;
+  return getBurningBatches().filter((b) => batchBelongsToWorkspaceRoot(b, ws.root, defaultRoot));
+}
+
 // ── Worktree-slot accounting (global, across all burning batches) ────────────────
 
 export const FURNACE_SLOT_CAP = MAX_BURN_RATE;
+
+/** FLUX-1551: normalize a workspace root to a stable Map key — `Workspace.root` can be `null`
+ *  (unbound state), so every per-root accessor below funnels through this rather than keying
+ *  on `null` directly (which would collide across genuinely-unbound workspaces). */
+function rootKey(root: string | null): string {
+  return root ?? '';
+}
 
 /**
  * FLUX-1067: the count of ACTUAL live task worktrees, observed from the git worktree pool
@@ -123,9 +166,12 @@ export const FURNACE_SLOT_CAP = MAX_BURN_RATE;
  * so a worktree that is live for a reason the Furnace isn't tracking — a manually resumed/driven session,
  * a taken-over parked ticket — is still counted. Without this the gauge could read `0/4 used` while a
  * real worktree ran, and igniting would over-spawn past the real pool. Defaults to 0 until first refresh.
+ *
+ * FLUX-1551: keyed PER WORKSPACE ROOT — one board's `refreshWorktreePool()` scan must not overwrite
+ * (or be read as) another board's observed pool. `globalSlotsInUse` still sums every root's pool into
+ * the ONE shared cap (see below) — this is a census-correctness fix, not a budget-policy change.
  */
-let observedWorktreeCount = 0;
-let observedWorktreeTicketIds = new Set<string>();
+const observedWorktreesByRoot = new Map<string, { count: number; ticketIds: Set<string> }>();
 
 /**
  * FLUX-1067: record the live task-worktree pool observed from disk — by IDENTITY, not just a count (M3).
@@ -134,16 +180,18 @@ let observedWorktreeTicketIds = new Set<string>();
  * Furnace-backed worktree apart from an independent one, so a freshly-claimed reservation whose worktree
  * isn't on disk yet is ADDED to the observed pool rather than masked by a `max()`.
  */
-export function setObservedWorktrees(ticketIds: readonly (string | null)[]): void {
-  observedWorktreeCount = ticketIds.length;
-  observedWorktreeTicketIds = new Set(ticketIds.filter((id): id is string => !!id));
+export function setObservedWorktrees(root: string | null, ticketIds: readonly (string | null)[]): void {
+  observedWorktreesByRoot.set(rootKey(root), {
+    count: ticketIds.length,
+    ticketIds: new Set(ticketIds.filter((id): id is string => !!id)),
+  });
 }
 
 /**
- * Worktree slots currently in use (FLUX-1067, revised for M3). Sums the INDEPENDENT observed worktrees
- * (live for a reason the Furnace isn't tracking — a manually resumed/taken-over ticket) with the Furnace's
- * own reservations, counting a reservation once whether or not its worktree is on disk yet. See
- * {@link computeSlotsInUse} for why the old `max(reservations, observed)` could undercount.
+ * Worktree slots currently in use (FLUX-1067, revised for M3, re-derived per-root for FLUX-1551). Sums the
+ * INDEPENDENT observed worktrees (live for a reason the Furnace isn't tracking — a manually resumed/taken-over
+ * ticket) with the Furnace's own reservations, counting a reservation once whether or not its worktree is
+ * on disk yet. See {@link computeSlotsInUse} for why the old `max(reservations, observed)` could undercount.
  *
  * FLUX-1157: counts EVERY observed worktree — no batch-state exclusion. FLUX-1090 used to drop an observed
  * worktree belonging to a ticket in a terminal (done/parked) batch on the assumption that batch finalizing
@@ -153,27 +201,54 @@ export function setObservedWorktrees(ticketIds: readonly (string | null)[]): voi
  * ignite kept admitting batches into guaranteed spawn failures. The real fix is to actually reclaim what's
  * reclaimable before counting (see `igniteBatch`/`resumeBatch` in furnace-stoker.ts, which run
  * `reclaimReadyWorktrees` first), so what's left on disk here is the physical truth.
+ *
+ * FLUX-1551: computed PER ROOT then summed, rather than one flat `computeSlotsInUse` call over every
+ * reservation/observation regardless of board. Two boards can share a bare ticket id (`FLUX-` prefix on
+ * both), so comparing a reserved id against an observed id across DIFFERENT roots' pools would falsely
+ * dedup (or fail to dedup) them by identity. Per-root computation keeps the identity match scoped to a
+ * single board while the SUM across roots still counts against the one shared `FURNACE_SLOT_CAP` — a
+ * per-machine budget (see FLUX-1452's `driveStokeTick` comment in furnace-stoker.ts), not a per-board one.
  */
 export function globalSlotsInUse(): number {
   const batches = Object.values(cache);
-  const reserved = new Set([...batches.flatMap((b) => furnaceReservedTicketIds(b)), ...temperReservedTicketIds]);
-  return computeSlotsInUse([...reserved], { count: observedWorktreeCount, ticketIds: [...observedWorktreeTicketIds] });
+  const defaultRoot = getDefaultWorkspace().root;
+  const reservedByRoot = new Map<string, Set<string>>();
+  const addReserved = (root: string | null, ids: readonly string[]): void => {
+    if (!ids.length) return;
+    const key = rootKey(root);
+    let set = reservedByRoot.get(key);
+    if (!set) { set = new Set(); reservedByRoot.set(key, set); }
+    for (const id of ids) set.add(id);
+  };
+  for (const b of batches) addReserved(b.workspaceRoot ?? defaultRoot, furnaceReservedTicketIds(b));
+  for (const [key, ids] of temperReservedByRoot) addReserved(key, [...ids]);
+
+  const allRootKeys = new Set([...reservedByRoot.keys(), ...observedWorktreesByRoot.keys()]);
+  let total = 0;
+  for (const key of allRootKeys) {
+    const reserved = [...(reservedByRoot.get(key) ?? [])];
+    const pool = observedWorktreesByRoot.get(key);
+    total += computeSlotsInUse(reserved, { count: pool?.count ?? 0, ticketIds: pool ? [...pool.ticketIds] : [] });
+  }
+  return total;
 }
 
-/** Free worktree slots right now (cap − in-use), floored at 0. */
+/** Free worktree slots right now (cap − in-use), floored at 0. Still ONE shared budget across every board. */
 export function freeSlots(cap: number = FURNACE_SLOT_CAP): number {
   return Math.max(0, cap - globalSlotsInUse());
 }
 
 /**
- * FLUX-1244: does this ticket ALREADY hold an observed worktree on disk? A re-spawn on such a ticket
- * (Temper re-implement/re-review, a resumed session) reuses that worktree via the shared branch — it
- * claims NO new slot — so a slot-availability gate must exempt it, otherwise the ticket's own worktree
+ * FLUX-1244: does this ticket ALREADY hold an observed worktree on disk, on `root`? A re-spawn on such a
+ * ticket (Temper re-implement/re-review, a resumed session) reuses that worktree via the shared branch —
+ * it claims NO new slot — so a slot-availability gate must exempt it, otherwise the ticket's own worktree
  * counts against it and a full pool self-stalls its in-flight loop. Reads the identity set maintained by
- * {@link setObservedWorktrees} (FLUX-1067); pair it with a `refreshWorktreePool()` when freshness matters.
+ * {@link setObservedWorktrees} (FLUX-1067) for `root`'s pool specifically (FLUX-1551) — a same-id ticket
+ * on a DIFFERENT board's pool must never satisfy this check. Pair with a `refreshWorktreePool()` when
+ * freshness matters.
  */
-export function ticketHasObservedWorktree(ticketId: string): boolean {
-  return observedWorktreeTicketIds.has(ticketId);
+export function ticketHasObservedWorktree(root: string | null, ticketId: string): boolean {
+  return observedWorktreesByRoot.get(rootKey(root))?.ticketIds.has(ticketId) ?? false;
 }
 
 /**
@@ -188,29 +263,50 @@ export function ticketHasObservedWorktree(ticketId: string): boolean {
  * failure (no worktree was actually claimed) or once Temper stops driving the ticket; while the reservation
  * and an observed worktree overlap for the same id, the identity-based dedup in `computeSlotsInUse` counts
  * it once.
+ *
+ * FLUX-1551: keyed PER ROOT (`Map<root, Set<ticketId>>`) — two boards sharing a bare ticket id must reserve
+ * (and release) independently; the earlier flat `Set<ticketId>` let one board's `setTemperReserved(id, false)`
+ * silently clear the OTHER board's reservation for the same id.
  */
-const temperReservedTicketIds = new Set<string>();
+const temperReservedByRoot = new Map<string, Set<string>>();
 
-export function setTemperReserved(ticketId: string, reserved: boolean): void {
-  if (reserved) temperReservedTicketIds.add(ticketId);
-  else temperReservedTicketIds.delete(ticketId);
+export function setTemperReserved(root: string | null, ticketId: string, reserved: boolean): void {
+  const key = rootKey(root);
+  if (reserved) {
+    let set = temperReservedByRoot.get(key);
+    if (!set) { set = new Set(); temperReservedByRoot.set(key, set); }
+    set.add(ticketId);
+  } else {
+    const set = temperReservedByRoot.get(key);
+    if (set) {
+      set.delete(ticketId);
+      if (set.size === 0) temperReservedByRoot.delete(key);
+    }
+  }
 }
 
-export function isTemperReserved(ticketId: string): boolean {
-  return temperReservedTicketIds.has(ticketId);
+export function isTemperReserved(root: string | null, ticketId: string): boolean {
+  return temperReservedByRoot.get(rootKey(root))?.has(ticketId) ?? false;
 }
 
-/** FLUX-1257: snapshot of every ticket Temper currently holds a slot reservation for — see {@link setTemperReserved}. */
+/** FLUX-1257: snapshot of every ticket Temper currently holds a slot reservation for, across ALL boards —
+ *  see {@link setTemperReserved}. Diagnostic/naming use only (`describeSlotHolders`, `checkFurnaceSlotHealth`);
+ *  a same ticket id reserved on two different roots collapses to one entry when de-duped by a caller. */
 export function getTemperReservedTicketIds(): string[] {
-  return [...temperReservedTicketIds];
+  return [...temperReservedByRoot.values()].flatMap((set) => [...set]);
 }
 
 // ── Persist / mutate ───────────────────────────────────────────────────────────
 
+/** Always writes to the batch's OWN root — never the ambiently-active board's dir (FLUX-1554's
+ *  split-brain fix) — so a batch created on board B and mutated while board A is active still lands
+ *  its sidecar under B's `furnace-batches/`. Untagged legacy batches fall back to the default
+ *  workspace, mirroring `batchBelongsToWorkspaceRoot`'s own fallback (models/furnace.ts). */
 async function persist(batch: FurnaceBatch): Promise<void> {
-  const dir = getFurnaceDir();
+  const root = batch.workspaceRoot ?? getDefaultWorkspace().root;
+  const dir = getFurnaceDir(root);
   if (!existsSync(dir)) await fs.mkdir(dir, { recursive: true });
-  await atomicWriteFile(batchPath(batch.id), JSON.stringify(batch, null, 2));
+  await atomicWriteFile(batchPath(batch.id, root), JSON.stringify(batch, null, 2));
 }
 
 function emit(event: 'furnace-updated' | 'furnace-deleted', data: unknown): void {
@@ -240,6 +336,8 @@ export interface CreateBatchInput {
   icon?: string;
   createdBy?: string;
   spawnedFrom?: { batchId: string; ticketId: string };
+  /** FLUX-1513: owning-workspace root, stamped by the caller from its bound workspace. */
+  workspaceRoot?: string;
 }
 
 export async function createFurnaceBatch(input: CreateBatchInput): Promise<FurnaceBatch> {
@@ -250,6 +348,7 @@ export async function createFurnaceBatch(input: CreateBatchInput): Promise<Furna
   const fs = getConfig().furnaceSettings || {};
   const rateLimitRetryIntervalMs = input.rateLimitRetryIntervalMs ?? fs.rateLimitRetryIntervalMs;
   const rateLimitMaxWaitMs = input.rateLimitMaxWaitMs ?? fs.rateLimitMaxWaitMs;
+  const sessionTimeoutMs = input.sessionTimeoutMs ?? fs.sessionTimeoutMs;
   const batch = newFurnaceBatch({
     id,
     now: new Date().toISOString(),
@@ -265,10 +364,11 @@ export async function createFurnaceBatch(input: CreateBatchInput): Promise<Furna
     ...(rateLimitMaxWaitMs !== undefined ? { rateLimitMaxWaitMs } : {}),
     ...(input.reviewDepth ? { reviewDepth: input.reviewDepth } : {}),
     ...(input.reviewPersonaId ? { reviewPersonaId: input.reviewPersonaId } : {}),
-    ...(input.sessionTimeoutMs !== undefined ? { sessionTimeoutMs: input.sessionTimeoutMs } : {}),
+    ...(sessionTimeoutMs !== undefined ? { sessionTimeoutMs } : {}),
     ...(input.trigger ? { trigger: input.trigger } : {}),
     ...(input.createdBy !== undefined ? { createdBy: input.createdBy } : {}),
     ...(input.spawnedFrom ? { spawnedFrom: input.spawnedFrom } : {}),
+    ...(input.workspaceRoot !== undefined ? { workspaceRoot: input.workspaceRoot } : {}),
   });
   cache[id] = batch;
   await persist(batch);
@@ -405,9 +505,11 @@ export async function claimSlotsAndIgnite(
 
 export async function deleteFurnaceBatch(id: string): Promise<boolean> {
   return withFurnaceLock(id, async () => {
-    if (!cache[id]) return false;
+    const existing = cache[id];
+    if (!existing) return false;
     delete cache[id];
-    const p = batchPath(id);
+    const root = existing.workspaceRoot ?? getDefaultWorkspace().root;
+    const p = batchPath(id, root);
     if (existsSync(p)) await fs.unlink(p).catch(() => {});
     emit('furnace-deleted', { id });
     return true;
@@ -417,11 +519,10 @@ export async function deleteFurnaceBatch(id: string): Promise<boolean> {
 // Test-only: reset the module cache between test cases (no on-disk effect).
 export function __resetFurnaceStoreForTests(): void {
   cache = {};
-  loaded = false;
+  loadedRoots.clear();
   iconCursor = 0;
-  observedWorktreeCount = 0;
-  observedWorktreeTicketIds = new Set<string>();
-  temperReservedTicketIds.clear();
+  observedWorktreesByRoot.clear();
+  temperReservedByRoot.clear();
   chains.clear();
 }
 

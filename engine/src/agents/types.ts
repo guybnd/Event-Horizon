@@ -34,7 +34,7 @@ export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'schedu
 export type CliFramework = 'claude' | 'copilot' | 'gemini';
 export type ExecutionPattern = 'relay' | 'scatter-gather' | 'supervisor';
 export type PatternPosition = 'lead' | 'assistant' | 'combiner' | 'step' | 'standalone';
-export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize' | 'chat' | 'fast-path';
+export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize' | 'chat' | 'fast-path' | 'batch-grooming';
 
 // FLUX-1373: the three model tiers a board's per-CLI `integrations.<cli>.tiers` config resolves —
 // replaces the old binary ModelTier ('cheap'|'strong'). A CLI-agnostic "how much do I want to spend
@@ -188,6 +188,9 @@ export interface CliSessionSummary {
   cacheCreationTokens?: number;
   role?: string;
   phase?: LaunchPhase;
+  /** FLUX-1383: for phase:'batch-grooming', the eligible member ticket ids this session grooms in
+   *  one sitting (the anchor `taskId` is always included). Absent/empty for every other phase. */
+  batchTicketIds?: string[];
   /** FLUX-1373: the task-tier policy key this session resolves its model through — stamped once at
    *  creation (see deriveTaskKey, routes/cli-session.ts). */
   taskKey?: TaskKey;
@@ -220,6 +223,11 @@ export interface CliSessionSummary {
    *  missing a tool its mission needs) is a one-glance diagnosis instead of a re-derivation.
    *  Portal-visible, read-only. Empty/absent means unscoped (lead/flex/no-persona/chat). */
   disallowedEhTools?: string[] | undefined;
+  /** FLUX-1531: the workspace root this session was spawned under (multi-board, epic FLUX-1230
+   *  S13) — stamped once at creation from `getWorkspaceRoot()`, mirroring `FurnaceBatch.workspaceRoot`
+   *  (FLUX-1513). Absent on legacy/rehydrated sessions, which fall back to the default workspace —
+   *  see `sessionBelongsToWorkspaceRoot` (session-store.ts). */
+  workspaceRoot?: string;
 }
 
 export interface CliSessionRecord extends CliSessionSummary {
@@ -245,6 +253,11 @@ export interface CliSessionRecord extends CliSessionSummary {
   outputData?: string;
   /** Pre-computed diff block injected into the initial prompt (scatter-gather reviews). */
   diffBlock?: string;
+  /** FLUX-1383: for phase:'batch-grooming', the members the route excluded from `batchTicketIds`
+   *  (ineligible effort/epic-parent/status) + why — folded into the initial mission text's
+   *  "excluded and named" note. Internal (not part of CliSessionSummary — never exposed to the
+   *  client); a one-time launch computation, not re-derived on resume. */
+  batchExcluded?: { id: string; reason: string }[];
   /** FLUX-1385: the launched persona id, if any — feeds disallowedEhToolsForPersona so a
    *  worker-role delegate's `event-horizon` MCP toolset is scoped down at spawn. Internal
    *  (not part of CliSessionSummary — never exposed to the client). */
@@ -257,8 +270,37 @@ export interface CliSessionRecord extends CliSessionSummary {
    *  on resume so a resumed session's toolset always matches its current mission. Internal, same
    *  as personaId/focusComment above. */
   enableTools?: string[] | undefined;
+  /** FLUX-850: true when this session was launched by an unattended, no-human-present dispatch
+   *  path — the MCP `start_session` tool, a board-rebase `dispatch` verb, or Furnace's
+   *  `dispatchSession` — as opposed to a human clicking Start/Send in the portal. Portal launches
+   *  (chat send, the phase-launch buttons) route through the identical `/cli-session/start`
+   *  request and can carry the same `phase`/`skipPermissions` values, so neither is a reliable
+   *  "was a human present" signal on its own — this field is the explicit one each dispatch path
+   *  stamps itself. Consumed by `change_status`/`finish_ticket` (mcp-server.ts) to hard-gate a
+   *  dispatched+skip-permission session from silently advancing a ticket past Ready. Internal
+   *  (not part of CliSessionSummary — never exposed to the client), same as personaId/focusComment. */
+  dispatched?: boolean;
   /** Set when the session paused itself via change_status('Require Input'). */
   pausedForInput?: boolean;
+  /**
+   * FLUX-1479 (FLUX-1226 Phase E): the destination phase of a phase->persona HANDOFF applied to a
+   * persistent per-ticket chat session (`phase === 'chat'`, FLUX-602) on a ticket status
+   * transition — e.g. a Scratch chat promoted then moved Grooming -> Todo. Deliberately a
+   * SEPARATE field from `phase` (never overwritten): `phase` staying `'chat'` is what
+   * `reapStaleParkedSessions`/session-store rely on to keep this the SAME persistent conversation
+   * across status moves (session-store.ts's FLUX-602 comment) — mutating it directly would make
+   * the session look like a stale dispatched session and eligible for reaping. Consumers that want
+   * the session's CURRENT logical phase (persona/prompt resolution in buildInitialPrompt's callers,
+   * deny-list recompute in disallowedToolsArgs/stampDisallowedEhTools) read `handoffPhase ?? phase`;
+   * consumers about the session's LIFECYCLE model (ScheduleWakeup eligibility, reaping) keep
+   * reading raw `phase` unchanged. Cleared back to `undefined` when a transition derives no phase
+   * for the new status (falls back to the plain chat persona). Internal — not part of
+   * CliSessionSummary, never exposed to the client. */
+  handoffPhase?: LaunchPhase | undefined;
+  /** FLUX-1479: whether `handoffPhase`'s one-time announcement note (`buildPhaseHandoffNote`) has
+   *  already been delivered into the conversation. Reset to `false` whenever `handoffPhase` changes
+   *  to a new value; consumed (set `true`) by the adapter that actually sends the note. */
+  handoffPhaseAnnounced?: boolean | undefined;
   /**
    * The agent EXECUTION root this session spawned in (its worktree, or the engine
    * root) — FLUX-519. Captured at start so a later reply (sendInput) resumes in the

@@ -1,19 +1,32 @@
 import fs from 'fs/promises';
 import express from 'express';
 import { getWorkspacesList, getWorkspaceRoot } from '../workspace.js';
+import { getWorkspace, type Workspace } from '../workspace-context.js';
 import { planGroupSetup, applyGroupSetup, ensureGroupRegistered, type GroupSetupInput } from '../group-setup.js';
 import { scanFolderForRepos, discoverFromRegistry, createDedicatedParent, type CreateParentInput, type CreateParentMember } from '../group-discovery.js';
 import { syncGroup } from '../group-sync.js';
 import { submitGroupEdit, type GroupEditFile } from '../group-edit.js';
 import { planDocsPromotion, applyDocsPromotion, applyMemberDocsPromotion, type PromotionSelection } from '../group-promote.js';
-import { summarizeGroup, getGroupContext, getMemberBinding, groupDocsLabel, activateGroup, getGroupConfigFile, validateGroupConfig, type GroupContext, type GroupMember } from '../group.js';
+import { summarizeGroup, groupDocsLabel, activateGroup, getGroupConfigFile, validateGroupConfig, type GroupContext, type GroupMember } from '../group.js';
 
 const router = express.Router();
 
+/**
+ * FLUX-1565: the workspace this request is bound to — mirrors `routes/docs.ts`'s
+ * `reqWorkspace` (kept local; this file isn't part of the `routes/tasks/*` split
+ * either). Reading group state off this `Workspace` instead of the `getGroupContext()`/
+ * `getMemberBinding()` singletons is what actually fixes the cross-board leak: those
+ * singletons hold whichever workspace activated last, not the one this request targets.
+ */
+function reqWorkspace(req: express.Request): Workspace {
+  return req.workspace ?? getWorkspace();
+}
+
 /** Current group status (mirrors the get_project_group MCP tool). */
-router.get('/', async (_req, res) => {
+router.get('/', async (req, res) => {
   const registeredPaths = (await getWorkspacesList()).map((w) => w.path);
-  const ctx = getGroupContext();
+  const ws = reqWorkspace(req);
+  const ctx = ws.groupContext;
   if (ctx) {
     // Parent workspace: full summary plus a parent membership marker.
     const summary = summarizeGroup(ctx, registeredPaths);
@@ -23,7 +36,7 @@ router.get('/', async (_req, res) => {
   // Member workspace (Case 1): no parent context, but a reverse-lookup binding.
   // Keep `configured: false` (parent-only operations stay parent-only) and just
   // surface that this repo belongs to a group so the UI can show it (FLUX-412).
-  const binding = getMemberBinding();
+  const binding = ws.memberBinding;
   if (binding) {
     const summary = summarizeGroup(null, registeredPaths);
     summary.docsLabel = groupDocsLabel(binding.parentGroup);
@@ -104,16 +117,17 @@ router.post('/apply', async (req, res) => {
  * explicit consent (the detect-on-activation prompt drives this). Resolves the
  * group from the active parent context or a bound member's parent.
  *
- * Limitation: a member can only reach `getMemberBinding()` once the parent is
+ * Limitation: a member can only reach its `ws.memberBinding` once the parent is
  * ALREADY registered (the binding is discovered by reverse-lookup over the
  * registry). So from a member workspace this can backfill missing *sibling*
  * members but never an unregistered parent — an orphaned parent self-heals only
- * when the parent workspace itself is activated (`getGroupContext()`), or via
- * the folder-scan wizard (FLUX-407).
+ * when the parent workspace itself is activated (populating `ws.groupContext`),
+ * or via the folder-scan wizard (FLUX-407).
  */
-router.post('/ensure-registered', async (_req, res) => {
+router.post('/ensure-registered', async (req, res) => {
   if (!getWorkspaceRoot()) return res.status(400).json({ error: 'No workspace active' });
-  const group = getGroupContext() ?? getMemberBinding()?.parentGroup;
+  const ws = reqWorkspace(req);
+  const group = ws.groupContext ?? ws.memberBinding?.parentGroup;
   if (!group) {
     return res.status(400).json({ error: 'No multi-repo group is configured for this workspace.' });
   }
@@ -205,9 +219,9 @@ router.post('/create-parent', async (req, res) => {
 });
 
 
-router.post('/sync', async (_req, res) => {
+router.post('/sync', async (req, res) => {
   if (!getWorkspaceRoot()) return res.status(400).json({ error: 'No workspace active' });
-  const group = getGroupContext();
+  const group = reqWorkspace(req).groupContext;
   if (!group) return res.status(400).json({ error: 'No multi-repo group is configured' });
   try {
     const result = await syncGroup(group);
@@ -242,7 +256,8 @@ function parseEdits(body: unknown): GroupEditFile[] | { error: string } {
 router.post('/submit-edit', async (req, res) => {
   if (!getWorkspaceRoot()) return res.status(400).json({ error: 'No workspace active' });
   // The parent edits its own group; a bound member (Case 1) routes through the parent's context.
-  const group = getGroupContext() ?? getMemberBinding()?.parentGroup;
+  const ws = reqWorkspace(req);
+  const group = ws.groupContext ?? ws.memberBinding?.parentGroup;
   if (!group) {
     return res.status(400).json({ error: "These docs are owned by a multi-repo group. Open the group's parent workspace to edit them." });
   }
@@ -270,23 +285,24 @@ type PromotionOrigin =
   | { kind: 'parent'; group: GroupContext }
   | { kind: 'member'; memberRoot: string; parentGroup: GroupContext };
 
-function resolvePromotionOrigin(res: express.Response): PromotionOrigin | null {
+function resolvePromotionOrigin(req: express.Request, res: express.Response): PromotionOrigin | null {
   const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) {
     res.status(400).json({ error: 'No workspace active' });
     return null;
   }
-  const group = getGroupContext();
+  const ws = reqWorkspace(req);
+  const group = ws.groupContext;
   if (group) return { kind: 'parent', group };
-  const binding = getMemberBinding();
+  const binding = ws.memberBinding;
   if (binding) return { kind: 'member', memberRoot: workspaceRoot, parentGroup: binding.parentGroup };
   res.status(400).json({ error: 'Doc promotion needs a group — open a group parent or a bound member workspace.' });
   return null;
 }
 
 /** Dry-run: walk the local `.docs/` and propose a store target per file. No mutation. */
-router.post('/promote-docs/plan', async (_req, res) => {
-  const origin = resolvePromotionOrigin(res);
+router.post('/promote-docs/plan', async (req, res) => {
+  const origin = resolvePromotionOrigin(req, res);
   if (!origin) return;
   try {
     const plan = await planDocsPromotion(getWorkspaceRoot()!);
@@ -322,7 +338,7 @@ function parseSelections(body: unknown): PromotionSelection[] | { error: string 
  * the parent (`applyMemberDocsPromotion`).
  */
 router.post('/promote-docs/apply', async (req, res) => {
-  const origin = resolvePromotionOrigin(res);
+  const origin = resolvePromotionOrigin(req, res);
   if (!origin) return;
   const selections = parseSelections(req.body);
   if ('error' in selections) return res.status(400).json({ error: selections.error });
@@ -345,7 +361,8 @@ router.post('/promote-docs/apply', async (req, res) => {
 router.patch('/docs-label', async (req, res) => {
   const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
-  const ctx = getGroupContext();
+  const ws = reqWorkspace(req);
+  const ctx = ws.groupContext;
   if (!ctx) return res.status(400).json({ error: 'No group configured — only the parent workspace can update the docs label.' });
   const { label } = req.body ?? {};
   if (typeof label !== 'string' || !label.trim()) {
@@ -358,7 +375,11 @@ router.patch('/docs-label', async (req, res) => {
   const configPath = getGroupConfigFile(workspaceRoot);
   const updated = { ...ctx.config, docsLabel: trimmed };
   await fs.writeFile(configPath, JSON.stringify(updated, null, 2) + '\n', 'utf-8');
-  await activateGroup(workspaceRoot);
+  // FLUX-1565: `activateGroup` still refreshes the `getGroupContext()` singleton (other
+  // not-yet-migrated consumers still read it), but this route now resolves the docs label
+  // from `ws.groupContext` — assign the reload's result there too, or the bound workspace's
+  // own field goes stale even though the singleton reflects the new label.
+  ws.groupContext = await activateGroup(workspaceRoot);
   res.json({ ok: true, docsLabel: trimmed });
 });
 

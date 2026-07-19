@@ -1,4 +1,4 @@
-import { getWorkspace } from './workspace-context.js';
+import { getWorkspace, type Workspace } from './workspace-context.js';
 import { log } from './log.js';
 import { findWorktreeForBranch, removeTaskWorktree, detachTaskWorktree, stashDirtyTree, unlinkWorktreeDependencies, reclaimWorktrees } from './task-worktree.js';
 import { getDefaultBranch, deleteTicketBranch, getPullRequestStatus, getTicketBranchStatus, getOpenPullRequestsWithBase } from './branch-manager.js';
@@ -109,10 +109,14 @@ export type UnreclaimableReason = 'unknown-ticket' | 'live-session' | 'recent-ac
  * below — pass `false` for the under-pressure cap backstop (ticket-isolation.ts), which must
  * still reclaim instantly when a spawn is genuinely blocked on the concurrency cap.
  */
-export function worktreeUnreclaimableReason(ticketId: string, opts: { honorReadyGrace?: boolean } = {}): UnreclaimableReason | null {
-  const t = (getWorkspace().tasks as Record<string, CachedTicket>)[ticketId];
+export function worktreeUnreclaimableReason(
+  ticketId: string,
+  opts: { honorReadyGrace?: boolean } = {},
+  ws: Workspace = getWorkspace(),
+): UnreclaimableReason | null {
+  const t = (ws.tasks as Record<string, CachedTicket>)[ticketId];
   if (!t) return 'unknown-ticket';
-  if (hasLiveSessionOnBranch(t.branch, ticketId)) return 'live-session'; // never yank live work
+  if (hasLiveSessionOnBranch(t.branch, ticketId, ws)) return 'live-session'; // never yank live work
   // FLUX-1060: within the post-restart grace window, also protect a worktree whose ticket shows
   // very recent session activity. After an engine restart the in-memory session map is empty and
   // rehydrated from persisted stubs (session-store) — but a session that entered `waiting-input`
@@ -137,8 +141,12 @@ export function worktreeUnreclaimableReason(ticketId: string, opts: { honorReady
 }
 
 /** Whether a ticket's task worktree can be reclaimed right now — see {@link worktreeUnreclaimableReason}. */
-export function isWorktreeReclaimable(ticketId: string, opts: { honorReadyGrace?: boolean } = {}): boolean {
-  return worktreeUnreclaimableReason(ticketId, opts) === null;
+export function isWorktreeReclaimable(
+  ticketId: string,
+  opts: { honorReadyGrace?: boolean } = {},
+  ws: Workspace = getWorkspace(),
+): boolean {
+  return worktreeUnreclaimableReason(ticketId, opts, ws) === null;
 }
 
 /**
@@ -147,8 +155,8 @@ export function isWorktreeReclaimable(ticketId: string, opts: { honorReadyGrace?
  * detached (nobody is coming back to finish it) rather than skipped (e.g. a ticket resting at
  * Ready, where a dirty tree may still be actively reviewed/amended).
  */
-export function isTicketTerminal(ticketId: string): boolean {
-  const t = (getWorkspace().tasks as Record<string, CachedTicket>)[ticketId];
+export function isTicketTerminal(ticketId: string, ws: Workspace = getWorkspace()): boolean {
+  const t = (ws.tasks as Record<string, CachedTicket>)[ticketId];
   return !!t && TERMINAL_TICKET_STATUSES.has(t.status);
 }
 
@@ -165,11 +173,15 @@ export function isTicketTerminal(ticketId: string): boolean {
  * `'status'` — the live-session/recent-activity refusals above still apply unconditionally, so this
  * can never yank a worktree out from under work in flight.
  */
-export async function isWorktreeReclaimableForSweep(ticketId: string, opts: { honorReadyGrace?: boolean } = {}): Promise<boolean | string> {
-  const reason = worktreeUnreclaimableReason(ticketId, opts);
+export async function isWorktreeReclaimableForSweep(
+  ticketId: string,
+  opts: { honorReadyGrace?: boolean } = {},
+  ws: Workspace = getWorkspace(),
+): Promise<boolean | string> {
+  const reason = worktreeUnreclaimableReason(ticketId, opts, ws);
   if (reason === null) return 'ready-or-terminal-status';
   if (reason !== 'status') return false;
-  const t = (getWorkspace().tasks as Record<string, CachedTicket>)[ticketId];
+  const t = (ws.tasks as Record<string, CachedTicket>)[ticketId];
   if (!t?.branch) return false;
   // FLUX-1305: never widen past a worktree that was JUST created — give it a chance to pick up a
   // session or a commit before the zero-commit backstop below treats it as abandoned. Without this,
@@ -243,10 +255,10 @@ function hasRecentSessionActivity(t: CachedTicket, now: number = Date.now(), gra
  * the worktree's branch (the review-bug-fix ride-along) can't be reclaimed out from under.
  * Falls back to the owning-ticket-only check when the ticket carries no branch.
  */
-function hasLiveSessionOnBranch(branch: string | undefined, ownerId: string): boolean {
+function hasLiveSessionOnBranch(branch: string | undefined, ownerId: string, ws: Workspace): boolean {
   if (getActiveSessionsForTask(ownerId).length > 0) return true;
   if (!branch) return false;
-  for (const t of Object.values(getWorkspace().tasks) as CachedTicket[]) {
+  for (const t of Object.values(ws.tasks) as CachedTicket[]) {
     if (t.id === ownerId || t.branch !== branch) continue;
     if (getActiveSessionsForTask(t.id).length > 0) return true;
   }
@@ -265,13 +277,16 @@ function hasLiveSessionOnBranch(branch: string | undefined, ownerId: string): bo
  * without a per-adapter exit hook. `reclaimWorktrees` never discards real work. Returns the
  * reclaimed ticket ids. Best-effort; never throws.
  */
-export async function reclaimReadyWorktrees(workspaceRoot: string): Promise<string[]> {
+export async function reclaimReadyWorktrees(
+  workspaceRoot: string,
+  ws: Workspace = getWorkspace(),
+): Promise<string[]> {
   // FLUX-1305: capture the rule string `isWorktreeReclaimableForSweep` resolved for each ticket so
   // a reclaimed worktree's disappearance is explained on the ticket itself, not just silently
   // logged engine-side (reclaimWorktrees logs the same rule to stderr).
   const rules = new Map<string, string>();
   const predicate = async (ticketId: string): Promise<boolean | string> => {
-    const rule = await isWorktreeReclaimableForSweep(ticketId);
+    const rule = await isWorktreeReclaimableForSweep(ticketId, {}, ws);
     if (rule) rules.set(ticketId, typeof rule === 'string' ? rule : 'reclaimable');
     return rule;
   };
@@ -281,7 +296,7 @@ export async function reclaimReadyWorktrees(workspaceRoot: string): Promise<stri
   // stay quiet until the slot either clears (pruned below) or its failure kind changes.
   const stillStuck = new Set<string>();
   const reclaimed = await reclaimWorktrees(workspaceRoot, predicate, {
-    isTerminal: isTicketTerminal,
+    isTerminal: (ticketId) => isTicketTerminal(ticketId, ws),
     // FLUX-1405: a stuck worktree that fails to detach/remove must not just log a `console.warn`
     // and vanish from view — raise a board-visible notification so it gets cleaned up by hand.
     onStuck: (ticketId, worktreePath, _error, kind) => {
@@ -440,8 +455,13 @@ export async function syncDefaultBranch(workspaceRoot: string): Promise<boolean>
  * Idempotent: safe to call repeatedly (reconcile poller) — already-Done tickets aren't
  * re-advanced, an already-removed worktree / deleted branch are no-ops.
  */
-export async function cleanupMergedBranch(workspaceRoot: string, branch: string, opts: { auto?: boolean } = {}): Promise<CleanupResult> {
-  const branchTickets = (Object.values(getWorkspace().tasks) as CachedTicket[]).filter((t) => t.branch === branch);
+export async function cleanupMergedBranch(
+  workspaceRoot: string,
+  branch: string,
+  opts: { auto?: boolean } = {},
+  ws: Workspace = getWorkspace(),
+): Promise<CleanupResult> {
+  const branchTickets = (Object.values(ws.tasks) as CachedTicket[]).filter((t) => t.branch === branch);
 
   // FLUX-1433: snapshot BEFORE step 1 advances anyone which branch tickets are non-Done AND
   // carry a live (pending/running/waiting-input/scheduled) session. A shared batch branch can
@@ -483,7 +503,7 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
         // tick) already makes it safe to simply re-derive on the next poll if a write is lost to a
         // sync race — gh's MERGED state doesn't change, so the next tick reaches the same verdict.
         derived: true,
-      });
+      }, ws);
       broadcastEvent('taskUpdated', { id: t.id });
       advanced.push(t.id);
     } catch (err) {
@@ -594,7 +614,7 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
   const dependentPrs = await getOpenPullRequestsWithBase(branch).catch(() => []);
   if (dependentPrs.length) {
     const dependentBranches = new Set(dependentPrs.map((p) => p.headRefName).filter(Boolean));
-    const dependentTickets = (Object.values(getWorkspace().tasks) as CachedTicket[]).filter((t) => t.branch && dependentBranches.has(t.branch));
+    const dependentTickets = (Object.values(ws.tasks) as CachedTicket[]).filter((t) => t.branch && dependentBranches.has(t.branch));
     for (const t of dependentTickets) {
       if (t.swimlane === 'merge-conflict') continue; // already flagged
       const pr = dependentPrs.find((p) => p.headRefName === t.branch);
@@ -612,7 +632,7 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
             date: new Date().toISOString(),
           }],
           extraFields: { swimlane: 'merge-conflict' },
-        });
+        }, ws);
         broadcastEvent('taskUpdated', { id: t.id });
       } catch (err) {
         console.error(`[pr-cleanup] Failed to flag ${t.id} as depending on merged branch ${branch}:`, (err as Error)?.message);
@@ -629,7 +649,7 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
     for (const t of branchTickets) {
       if (t.branchDeletePending) continue; // already marked
       try {
-        await updateTaskWithHistory(t.id, { updatedBy: 'Agent', extraFields: { branchDeletePending: true } });
+        await updateTaskWithHistory(t.id, { updatedBy: 'Agent', extraFields: { branchDeletePending: true } }, ws);
       } catch (err) {
         console.error(`[pr-cleanup] Failed to mark ${t.id}'s branch ${branch} for a dependency recheck:`, (err as Error)?.message);
       }
@@ -652,7 +672,7 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
   for (const t of branchTickets) {
     if (!t.branchDeletePending) continue;
     try {
-      await updateTaskWithHistory(t.id, { updatedBy: 'Agent', extraFields: { branchDeletePending: null } });
+      await updateTaskWithHistory(t.id, { updatedBy: 'Agent', extraFields: { branchDeletePending: null } }, ws);
     } catch (err) {
       console.error(`[pr-cleanup] Failed to clear the dependency-recheck marker on ${t.id}:`, (err as Error)?.message);
     }
@@ -686,10 +706,10 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
  * retired — FLUX-569). This mops up any legacy swimlanes left on tickets from before migration;
  * it only ever clears `open-pr`, leaving any other (e.g. `require-input`) swimlane alone.
  */
-async function clearOpenPrSwimlane(tickets: CachedTicket[]): Promise<void> {
+async function clearOpenPrSwimlane(tickets: CachedTicket[], ws: Workspace): Promise<void> {
   for (const t of tickets) {
     if (t.swimlane === 'open-pr') {
-      await updateTaskWithHistory(t.id, { updatedBy: 'Agent', extraFields: { swimlane: null } });
+      await updateTaskWithHistory(t.id, { updatedBy: 'Agent', extraFields: { swimlane: null } }, ws);
       broadcastEvent('taskUpdated', { id: t.id });
     }
   }
@@ -708,13 +728,13 @@ async function clearOpenPrSwimlane(tickets: CachedTicket[]): Promise<void> {
  *  - no PR   → clear a stale `open-pr` swimlane (PR was deleted).
  * Idempotent and quiet — only writes on a real change. Best-effort; never throws.
  */
-export async function reconcilePullRequests(workspaceRoot: string): Promise<void> {
+export async function reconcilePullRequests(workspaceRoot: string, ws: Workspace = getWorkspace()): Promise<void> {
   // Group non-terminal branch tickets by branch — a shared branch has one PR. PR tickets
   // (kind:'pr') are EXCLUDED: their lifecycle (status/prState/swimlane) is owned solely by
   // syncPrTickets. Treating them as normal branch tickets here let the open-pr swimlane + the
   // CLOSED→In Progress bounce mangle them (a closed PR ticket stuck In Progress — FLUX-598).
   const byBranch = new Map<string, CachedTicket[]>();
-  for (const t of Object.values(getWorkspace().tasks) as CachedTicket[]) {
+  for (const t of Object.values(ws.tasks) as CachedTicket[]) {
     if (!t.branch || t.kind === 'pr' || TERMINAL_TICKET_STATUSES.has(t.status)) continue;
     const arr = byBranch.get(t.branch) ?? [];
     arr.push(t);
@@ -726,13 +746,13 @@ export async function reconcilePullRequests(workspaceRoot: string): Promise<void
     try {
       const pr = await getPullRequestStatus(branch);
       if (!pr) {
-        await clearOpenPrSwimlane(tickets); // PR gone — mop up any legacy glow
+        await clearOpenPrSwimlane(tickets, ws); // PR gone — mop up any legacy glow
         continue;
       }
       if (pr.state === 'MERGED') {
         // auto:true → respect a deliberate reopen (don't snap it back to Done / don't prune its
         // branch). The merge already landed; re-advancing a reopened ticket every poll is the bug.
-        await cleanupMergedBranch(workspaceRoot, branch, { auto: true });
+        await cleanupMergedBranch(workspaceRoot, branch, { auto: true }, ws);
       } else if (pr.state === 'CLOSED') {
         // Bounce Ready members (work done, awaiting merge) back to In Progress — the abandon
         // path. Gated on status===Ready (not the retired open-pr swimlane — FLUX-569): an
@@ -745,7 +765,7 @@ export async function reconcilePullRequests(workspaceRoot: string): Promise<void
             entries: [{ type: 'comment', user: 'Agent', comment: `PR for \`${branch}\` was closed on GitHub without merging — returned to In Progress.`, date: new Date().toISOString() }],
             nextStatus: 'In Progress',
             extraFields: { swimlane: null, reviewState: null },
-          });
+          }, ws);
           broadcastEvent('taskUpdated', { id: t.id });
         }
         if (bounce.length > 0) {
@@ -762,7 +782,7 @@ export async function reconcilePullRequests(workspaceRoot: string): Promise<void
         // OPEN — the PR's home is now its `PR-<n>` deck card (maintained by syncPrTickets), not
         // a glow on the member tickets. Nothing to set here; just mop up any legacy `open-pr`
         // swimlane carried over from before the migration (FLUX-569).
-        await clearOpenPrSwimlane(tickets);
+        await clearOpenPrSwimlane(tickets, ws);
       }
     } catch {
       // Best-effort per branch — a single gh hiccup must not abort the sweep.
@@ -779,9 +799,9 @@ export async function reconcilePullRequests(workspaceRoot: string): Promise<void
  * them before the dependent-PR check runs), so a terminal-status filter would never see them again.
  * Persisted on ticket frontmatter rather than an in-module `Set` so it survives an engine restart.
  */
-function branchesPendingDependencyClear(): Set<string> {
+function branchesPendingDependencyClear(ws: Workspace = getWorkspace()): Set<string> {
   const branches = new Set<string>();
-  for (const t of Object.values(getWorkspace().tasks) as CachedTicket[]) {
+  for (const t of Object.values(ws.tasks) as CachedTicket[]) {
     if (t.branch && t.branchDeletePending) branches.add(t.branch);
   }
   return branches;
@@ -799,10 +819,13 @@ function branchesPendingDependencyClear(): Set<string> {
  * marker. Runs on the same cadence as `reconcilePullRequests`/`pruneMergedBranches`. Best-effort;
  * never throws.
  */
-export async function recheckDependentBranches(workspaceRoot: string): Promise<void> {
-  for (const branch of branchesPendingDependencyClear()) {
+export async function recheckDependentBranches(
+  workspaceRoot: string,
+  ws: Workspace = getWorkspace(),
+): Promise<void> {
+  for (const branch of branchesPendingDependencyClear(ws)) {
     try {
-      await cleanupMergedBranch(workspaceRoot, branch, { auto: true });
+      await cleanupMergedBranch(workspaceRoot, branch, { auto: true }, ws);
     } catch {
       // Best-effort per branch — retry next tick.
     }
@@ -827,7 +850,7 @@ const notifiedStuckBranches = new Set<string>();
  * `flux/` branch that still exists and isn't currently checked out / held by a worktree.
  * Idempotent + quiet; best-effort (never throws).
  */
-export async function pruneMergedBranches(workspaceRoot: string): Promise<void> {
+export async function pruneMergedBranches(workspaceRoot: string, ws: Workspace = getWorkspace()): Promise<void> {
   // 1. Recently-merged PR head refs (ours only).
   let mergedSet: Set<string>;
   try {
@@ -861,7 +884,7 @@ export async function pruneMergedBranches(workspaceRoot: string): Promise<void> 
   // again; force-deleting the branch would pull live work out from under them. Once the ticket
   // terminalises (Done/Archived/Released) the branch is eligible for the normal post-merge prune.
   const activeBranches = new Set<string>();
-  for (const t of Object.values(getWorkspace().tasks) as CachedTicket[]) {
+  for (const t of Object.values(ws.tasks) as CachedTicket[]) {
     if (t.branch && !TERMINAL_TICKET_STATUSES.has(t.status)) activeBranches.add(t.branch);
   }
 
@@ -878,7 +901,7 @@ export async function pruneMergedBranches(workspaceRoot: string): Promise<void> 
   // force-delete the branch on the very next tick after cleanupMergedBranch flags it — reintroducing
   // the exact GitHub auto-close-the-dependent-PR incident the guard exists to prevent. Leave it for
   // `recheckDependentBranches` to retry (via cleanupMergedBranch's own dependency check) instead.
-  const pendingDependencyBranches = branchesPendingDependencyClear();
+  const pendingDependencyBranches = branchesPendingDependencyClear(ws);
 
   for (const branch of mergedSet) {
     if (!existing.has(branch) || branch === cur || activeBranches.has(branch)) continue;

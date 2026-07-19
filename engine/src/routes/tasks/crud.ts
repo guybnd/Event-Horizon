@@ -15,7 +15,7 @@ import { serializeTaskForApi, serializeTaskForAgent, serializeTaskForList, atomi
 import { stopAllSessionsForTask, reconcileDeadSessions } from '../../session-store.js';
 import { detachTaskWorktree, taskWorktreeDir } from '../../task-worktree.js';
 import { broadcastEvent, getTasksVersion } from '../../events.js';
-import { errorMessage } from './helpers.js';
+import { errorMessage, reqWorkspace } from './helpers.js';
 import type { HistoryEntry } from './helpers.js';
 
 const router = express.Router();
@@ -31,6 +31,13 @@ function hashWorkspaceKey(root: string | null): string {
 }
 
 router.get('/', (req, res) => {
+  // FLUX-1455 (epic FLUX-1230 S10): resolve against the request's own workspace (`req.workspace`,
+  // set by `attachWorkspace` from `X-EH-Workspace`/registry — S12) instead of the bare `getWorkspace()`
+  // singleton. This is the primary read the portal's board rendering depends on (`fetchTasks`); the
+  // singleton's `activeKey` moves whenever ANY board is opened live (`openWorkspace`, S1) — including
+  // by a DIFFERENT client tab — so once a second board exists, `getWorkspace()` alone can silently
+  // serve the wrong board's tickets to a request that asked for a specific one via the header.
+  const workspace = req.workspace ?? getWorkspace();
   // FLUX-1460: refuse to serve a partial task list while the cold-boot/workspace-switch scan
   // (doActivateWorkspace -> initDir) is still populating getWorkspace().tasks. Mirrors the
   // existing POST guard below. Returning before the ETag is set is essential: a 503 is never
@@ -38,7 +45,7 @@ router.get('/', (req, res) => {
   // cacheable ETag for a partial snapshot that later polls would 304 onto forever. Written via raw
   // res.end() rather than res.json() so Express's own auto-ETag (generated for any JSON body by
   // default, independent of the version-keyed ETag below) never lands on this response either.
-  if (getWorkspace().isActivating) {
+  if (workspace.isActivating) {
     res.status(503).type('application/json');
     return res.end(JSON.stringify({ error: 'Workspace is activating, please retry' }));
   }
@@ -57,17 +64,18 @@ router.get('/', (req, res) => {
   // answer with a bodyless 304 and skip serialization entirely, so a routine unchanged poll (the
   // common case on the 3s interval) costs a header round-trip instead of re-transferring/re-parsing
   // the whole list.
-  // FLUX-1338: key the ETag by the active workspace root too, so two workspaces can never collide on
-  // a shared `tasksVersion` counter (it's a module-global that survives a workspace switch). Hashed
-  // rather than inlined because a raw path can contain spaces (invalid in an ETag opaque-tag) and is
-  // needlessly long. `doActivateWorkspace` also bumps the version on switch — belt and suspenders.
-  const wsKey = hashWorkspaceKey(getWorkspaceRoot());
+  // FLUX-1338: key the ETag by this request's workspace root too, so two workspaces can never
+  // collide on a shared `tasksVersion` counter (it's a module-global that survives a workspace
+  // switch). Hashed rather than inlined because a raw path can contain spaces (invalid in an ETag
+  // opaque-tag) and is needlessly long. `doActivateWorkspace` also bumps the version on switch —
+  // belt and suspenders.
+  const wsKey = hashWorkspaceKey(workspace.root ?? getWorkspaceRoot());
   const etag = `"tasks-${wsKey}-${activeOnly ? 'active' : 'all'}-${getTasksVersion()}"`;
   res.set('ETag', etag);
   if (req.headers['if-none-match'] === etag) {
     return res.status(304).end();
   }
-  let tasks = Object.values(getWorkspace().tasks);
+  let tasks = Object.values(workspace.tasks);
   // FLUX-970: the live 3s poll only needs non-terminal tickets — the board already filters
   // Released/Archived out client-side (Board.tsx). Opt in with ?active=true so the hot poll
   // path stops shipping/parsing/diffing thousands of resting tickets on every tick; default
@@ -81,7 +89,8 @@ router.get('/', (req, res) => {
 
 router.get('/:id', (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  // FLUX-1455 (S10): same `req.workspace` reasoning as the list route above.
+  const task = (req.workspace ?? getWorkspace()).tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
   // ?view=agent serves the digested surface (same as MCP get_ticket) for
   // agents reading via the REST fallback; the portal default stays full.
@@ -94,11 +103,19 @@ router.get('/:id', (req, res) => {
     const fullBody = req.query.fullBody === 'true';
     return res.json(serializeTaskForAgent(task, Number.isFinite(historyLimit) && historyLimit > 0 ? historyLimit : undefined, { expand, fullHistory, fullBody }));
   }
+  // FLUX-1505: ?view=list serves the SAME shape GET /api/tasks (list) uses —
+  // capped inline history, derived historyDigest, truncated liveOutput. The
+  // patch-first `taskUpdated` SSE handler fetches a single task with this view
+  // so it can merge the result straight into the list-shaped `tasks` store
+  // without producing an internally-inconsistent detail/list hybrid record.
+  if (req.query.view === 'list') {
+    return res.json(serializeTaskForList(task));
+  }
   res.json(serializeTaskForApi(task));
 });
 
 router.post('/', async (req, res) => {
-  if (getWorkspace().isActivating) return res.status(503).json({ error: 'Workspace is activating, please retry' });
+  if (reqWorkspace(req).isActivating) return res.status(503).json({ error: 'Workspace is activating, please retry' });
   const { projectKey, status, author, title, body, ...rest } = req.body;
 
   try {
@@ -117,7 +134,7 @@ router.post('/', async (req, res) => {
       // FLUX-1225: forward the ticket kind (e.g. 'scratch' from the ChatDock spawn). createTask
       // routes 'scratch' into its own SCRATCH-n id namespace and persists the kind to frontmatter.
       ...(typeof rest.kind === 'string' ? { kind: rest.kind } : {}),
-    });
+    }, req.workspace);
     res.json(serializeTaskForApi(task));
   } catch (err: unknown) {
     const message = errorMessage(err, '');
@@ -135,10 +152,10 @@ router.post('/', async (req, res) => {
 // ─── Create subtask and link to parent ───────────────────────────────────────
 
 router.post('/:parentId/subtasks', async (req, res) => {
-  if (getWorkspace().isActivating) return res.status(503).json({ error: 'Workspace is activating, please retry' });
+  if (reqWorkspace(req).isActivating) return res.status(503).json({ error: 'Workspace is activating, please retry' });
 
   const { parentId } = req.params;
-  const parent = getWorkspace().tasks[parentId];
+  const parent = reqWorkspace(req).tasks[parentId];
   if (!parent) return res.status(404).json({ error: 'Parent task not found' });
 
   const { title, status, priority, effort, body, tags, assignee, author } = req.body;
@@ -157,7 +174,7 @@ router.post('/:parentId/subtasks', async (req, res) => {
       body: body || '',
       author: actor,
       parentId,
-    });
+    }, req.workspace);
 
     // Link child to parent — derive subtasks from disk to avoid TOCTOU race
     const parentRaw = await fs.readFile(parent._path, 'utf-8');
@@ -170,7 +187,7 @@ router.post('/:parentId/subtasks', async (req, res) => {
     await atomicWriteFile(parent._path, parentContent);
 
     // Update cache
-    getWorkspace().tasks[parentId] = { ...getWorkspace().tasks[parentId], subtasks: parentSubtasks, updatedBy: actor };
+    reqWorkspace(req).tasks[parentId] = { ...reqWorkspace(req).tasks[parentId], subtasks: parentSubtasks, updatedBy: actor };
 
     log.info(`[subtasks] Created ${childId} as subtask of ${parentId}`);
     res.json(serializeTaskForApi(childTask));

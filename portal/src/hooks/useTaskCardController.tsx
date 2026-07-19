@@ -1,5 +1,5 @@
 /* eslint-disable react-hooks/exhaustive-deps -- extracted verbatim from TaskCard; deps deliberately preserved to keep original effect/handler semantics (no behavior change). */
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
 import type { CSSProperties } from 'react';
 import type { DraggableAttributes, DraggableSyntheticListeners } from '@dnd-kit/core';
 import type { Task, TaskLiveEvent, AgentSessionEntry, AgentSessionProgress } from '../types';
@@ -16,6 +16,8 @@ import { isEpic as isEpicTask, getDoneStatuses } from '../lib/epics';
 import { groupSessions, aggregateGroup, isGroupLive, isCombinerPending } from '../orchestration';
 import { useAnimationControls } from 'framer-motion';
 import { tintFill, type StatusTint } from '../statusStyles';
+import { useMotionTokens } from '../motion/tokens';
+import { prefetchTask } from '../taskPrefetch';
 
 // Stable empty subtask list so non-epic cards get a referentially-stable selector
 // result and never re-render when an unrelated task changes (FLUX-625).
@@ -481,20 +483,71 @@ export function useTaskCardController({
   const allTags = config?.tags?.map((tag) => tag.name) || [];
   const visibleTitle = titleValue || 'Untitled Task';
   const visibleAssignee = assigneeName || 'unassigned';
+  // FLUX-1507: 'moved' no longer plays the old teleport+jump-squash keyframe here — the board now
+  // flies the card immediately at the optimistic-commit boundary (Board.tsx `applyStatusChange`,
+  // see `useCardFlight`), well before this SSE-confirm reconciliation (AppContext's `loadTasks`
+  // diff) catches up. Replaying `task-column-jump` on arrival would double-animate the same move.
+  // `liveAccentClass` below (the sky ring) is untouched — a highlight, not a movement animation.
+  // FLUX-1505: 'rollback' (an optimistic button action the server rejected) gets its own shake —
+  // distinct from 'updated's success pulse, since this is a failure signal.
   const liveAnimationClass = !isOverlay && liveEvent
     ? liveEvent.kind === 'created'
       ? 'task-live-created'
       : liveEvent.kind === 'moved'
-        ? 'task-live-moved'
-        : 'task-live-updated'
+        ? ''
+        : liveEvent.kind === 'rollback'
+          ? 'task-live-rollback'
+          : 'task-live-updated'
     : '';
   const liveAccentClass = !isOverlay && liveEvent
     ? liveEvent.kind === 'created'
       ? 'ring-2 ring-emerald-200/80 dark:ring-emerald-500/20'
       : liveEvent.kind === 'moved'
         ? 'ring-2 ring-sky-200/80 dark:ring-sky-500/20'
-        : 'ring-1 ring-primary/20'
+        : liveEvent.kind === 'rollback'
+          ? 'ring-2 ring-red-300/80 dark:ring-red-500/25'
+          : 'ring-1 ring-primary/20'
     : '';
+
+  // FLUX-1526: the one routine "confirm" gesture — a card arriving in Done (merge/finish/drag)
+  // plays a single SuccessMark instead of the old board-wide confetti burst (now release-only,
+  // see AppContext.tsx). Reuses the same live-event signal as liveAnimationClass/liveAccentClass
+  // above, so no new measurement or subscription (FLUX-629).
+  const showSuccessMark = !isOverlay && liveEvent?.kind === 'moved' && liveEvent.toStatus?.toLowerCase() === 'done';
+
+  // FLUX-1523: `liveAnimationClass` is applied as part of a template-literal `className` (see
+  // TaskCard.tsx), which React only touches on the DOM when the rendered string changes. Two
+  // same-`kind` events in a row (e.g. two 'updated' events <300ms apart) produce the IDENTICAL
+  // class string, so React never re-writes the `class` attribute and the CSS keyframe — already
+  // mid-run — is never restarted; the second trigger is silently swallowed. Force a restart on
+  // every NEW `liveEvent` (keyed on `sequence`, not the class string) via the standard
+  // remove/reflow/re-add technique, directly on the DOM node the class lives on. `liveAccentClass`
+  // (the ring) has no keyframe to restart — it's a static highlight — so it's untouched here.
+  const accentRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = accentRef.current;
+    if (!el || !liveAnimationClass) return;
+    el.style.willChange = ''; // drop any stale override so the class's own will-change applies again
+    el.classList.remove(liveAnimationClass);
+    void el.offsetWidth; // force reflow so the browser forgets the animation's prior run
+    el.classList.add(liveAnimationClass);
+    // Deps: restart only on a genuinely NEW event (sequence), not on every recompute of
+    // liveAnimationClass itself — file-level exhaustive-deps disable (see top of file) applies.
+  }, [liveEvent?.sequence]);
+
+  // FLUX-1542 Fix 7: `.task-live-rollback` (index.css) carries `will-change: transform` for the
+  // class's whole lifetime (up to LIVE_EVENT_DURATION_MS in AppContext.tsx), but its
+  // `task-rollback-shake` keyframe only runs 380ms — leaving a stale compositor hint on an
+  // otherwise-idle card. Clear it via an inline override the moment the shake animation ends.
+  useEffect(() => {
+    const el = accentRef.current;
+    if (!el) return;
+    const clearRollbackWillChange = (e: AnimationEvent) => {
+      if (e.animationName === 'task-rollback-shake') el.style.willChange = 'auto';
+    };
+    el.addEventListener('animationend', clearRollbackWillChange);
+    return () => el.removeEventListener('animationend', clearRollbackWillChange);
+  }, []);
 
   // Full-wash column identity: tint the card body + add a hue left stripe so it
   // reads as belonging to its column. Applied inline because .eh-card sets
@@ -518,17 +571,20 @@ export function useTaskCardController({
   // FLUX-744: open a ticket honoring the boardCardOpenMode preference (default 'chat'). In chat mode we
   // open the chat-aligned view with its sideview, anchored to spawn from the clicked card. 'full'/'popup'
   // keep opening the center modal. A task with no id (a not-yet-created draft) always uses the modal.
+  // FLUX-1507: 'full'/'popup' now also thread `from` through to the modal opener — it already reached
+  // `openTicket` (FLUX-801's chat-window origin animation); the modal path just dropped it on the floor,
+  // which is why its `layoutId` FLIP had no live card rect to spring from (see TaskModal.tsx).
   const openBoardTask = (nextTask: Task, from?: HTMLElement | null) => {
     if (!nextTask.id) { openTask(nextTask); return; }
     const mode = config?.boardCardOpenMode || 'chat';
-    if (mode === 'full') openTaskFullView(nextTask);
-    else if (mode === 'popup') openTaskModal(nextTask);
+    if (mode === 'full') openTaskFullView(nextTask, undefined, from);
+    else if (mode === 'popup') openTaskModal(nextTask, from);
     else openTicket(nextTask.id, from);
   };
 
   const animationsEnabled = config?.animationsEnabled ?? true;
-  const speedMap = { fast: 0.2, normal: 0.4, slow: 0.7 };
-  const duration = speedMap[config?.animationSpeed || 'normal'];
+  // FLUX-1507: centralized motion physics — replaces the local `speedMap`/`duration` literal.
+  const tokens = useMotionTokens();
 
   // FLUX-629: the per-card framer-motion FLIP (layoutId) forced a layout measurement
   // (getBoundingClientRect) on EVERY re-render of every card — it collapsed drag to
@@ -561,6 +617,7 @@ export function useTaskCardController({
   }, [task.cliSession?.lastOutputAt, animationsEnabled, hasActiveCliSession, rattleControls]);
   const [popupPos, setPopupPos] = useState({ cardTop: 0, cardHeight: 0, top: 0, left: 'auto' as number | string, right: 'auto' as number | string });
   const hoverTimeout = useRef<number | null>(null);
+  const prefetchTimeout = useRef<number | null>(null);
   const popupRef = useRef<HTMLDivElement>(null);
 
   // Immediately dismiss any pending/visible description popup when a blocking overlay or the
@@ -626,9 +683,19 @@ export function useTaskCardController({
 
   const handleMouseEnter = (event: React.MouseEvent<HTMLDivElement>) => {
     isMouseOverCard.current = true;
-    if (!config?.hoverPopupsEnabled) return;
     if (isDragging) return;
     if (isOverlayOpen) return;
+
+    // FLUX-1517: hover-intent prefetch runs regardless of hoverPopupsEnabled — warms the ticket
+    // detail cache so the modal/dock opens without a skeleton flash. The 120ms intent delay is
+    // itself the concurrency guard: a fast column sweep never lets intermediate cards reach the
+    // timer, and per-id dedupe in taskPrefetch covers the rest.
+    if (task.id) {
+      if (prefetchTimeout.current !== null) window.clearTimeout(prefetchTimeout.current);
+      prefetchTimeout.current = window.setTimeout(() => { prefetchTask(task.id); }, 120);
+    }
+
+    if (!config?.hoverPopupsEnabled) return;
     if (priorityMenuOpen || effortMenuOpen || assigneeMenuOpen || tagMenuOpen || isEditingTitle) return;
     if (actionMenuActive || ticketActions.launcherOpen || ticketActions.startPromptOpen) return;
     // If comment popover is open and was opened by a click (not hover), don't start description timer
@@ -691,6 +758,10 @@ export function useTaskCardController({
       window.clearTimeout(hoverTimeout.current);
       hoverTimeout.current = null;
     }
+    if (prefetchTimeout.current !== null) {
+      window.clearTimeout(prefetchTimeout.current);
+      prefetchTimeout.current = null;
+    }
     setIsHovering(false);
     // Close hover-opened comment popover after a small delay so moving to it doesn't flicker
     if (commentOpenedByHover.current && commentCloseTimeout.current === null) {
@@ -734,6 +805,7 @@ export function useTaskCardController({
   useEffect(() => {
     return () => {
       if (hoverTimeout.current !== null) window.clearTimeout(hoverTimeout.current);
+      if (prefetchTimeout.current !== null) window.clearTimeout(prefetchTimeout.current);
       if (commentHoverTimeout.current !== null) window.clearTimeout(commentHoverTimeout.current);
       if (commentCloseTimeout.current !== null) window.clearTimeout(commentCloseTimeout.current);
       if (tagAreaHoverTimeout.current !== null) window.clearTimeout(tagAreaHoverTimeout.current);
@@ -787,15 +859,15 @@ export function useTaskCardController({
     if (isThisTaskOpen) {
       setIsAnimatingZ(true);
     } else if (isAnimatingZ) {
-      const t = setTimeout(() => setIsAnimatingZ(false), (duration + 0.3) * 1000);
+      const t = setTimeout(() => setIsAnimatingZ(false), tokens.springSettleMs);
       return () => clearTimeout(t);
     }
-  }, [isThisTaskOpen, duration, isAnimatingZ]);
+  }, [isThisTaskOpen, tokens.springSettleMs, isAnimatingZ]);
 
   const contentAnimation = animationsEnabled ? {
     initial: false,
     animate: { opacity: isThisTaskOpen ? 0 : 1 },
-    transition: isThisTaskOpen ? { duration: 0.1 } : { duration: 0.2, delay: duration }
+    transition: isThisTaskOpen ? { duration: 0.1 } : { ...tokens.fade, delay: tokens.fade.duration }
   } : {};
 
   return {
@@ -900,6 +972,8 @@ export function useTaskCardController({
     visibleAssignee,
     liveAnimationClass,
     liveAccentClass,
+    showSuccessMark,
+    accentRef,
     columnTintStyle,
     openBoardTask,
     animationsEnabled,

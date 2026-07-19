@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AnimatePresence, motion, useIsPresent, useReducedMotion } from 'framer-motion';
+import { createPortal } from 'react-dom';
+import { AnimatePresence, motion, useIsPresent } from 'framer-motion';
 import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Save, ChevronDown, Check, CircleHelp, TriangleAlert, Circle, CircleDashed, Archive, Eye, Ellipsis, NotebookPen, Play, Flame, Activity, Bot } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
@@ -7,6 +8,7 @@ import type { DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, sortableKeyboardCoordinates, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
+import { useMotionTokens } from '../motion/tokens';
 import { FURNACE_ACCENT, SmelterModeToggle } from './FurnaceDrawer';
 import { useChatSession } from '../hooks/useChatSession';
 import { ChatView } from './task-modal/ChatView';
@@ -23,11 +25,13 @@ import { parseRunProposal } from './task-modal/chatRunProposal';
 import { ChatRequireInputBanner } from './task-modal/ChatRequireInputBanner';
 import { TagSelector } from './TagSelector';
 import { TicketActions } from './ticket-actions/TicketActions';
+import { Skeleton } from './ui/Skeleton';
 import { ChatPendingInteractions, usePendingInteractions, useComposerAnswer, isPlanApprovalPending } from './pendingInteractions';
 import { planReviewDraftCount, formatRegroomNotes, loadPlanReviewDraft, clearPlanReviewDraft } from '../lib/planAnnotations';
 import { AttentionDock } from './attention/AttentionDock';
 import { useDock, MIN_SIDEVIEW_WIDTH, MAX_SIDEVIEW_WIDTH, DEFAULT_SIDEVIEW_WIDTH, type ComposerSelections, type AnchorRect, type WindowGeometry } from './DockProvider';
 import { useTicketSideView } from '../hooks/useTicketSideView';
+import { useUnsavedChangesGuard } from '../hooks/useUnsavedChangesGuard';
 import { useConfirm } from '../hooks/useConfirm';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { fireDesktopNotification } from '../hooks/useDesktopNotifications';
@@ -162,13 +166,25 @@ function splitId(id: string): { prefix: string; short: string } {
  *  way their pinned/flyout surfaces see live state even while their window is closed. Generalizes
  *  what used to be board-only inline effects (FLUX-611: event-driven fetch, refetch only on this
  *  conversation's own `activity`/`taskUpdated` event; FLUX-910: a bounded 3s poll backstops only
- *  while a turn is actively running/pending, in case the SSE stream stalls). */
-function useVirtualConversationSession(conversationId: string): CliSessionSummary | null {
+ *  while a turn is actively running/pending, in case the SSE stream stalls).
+ *
+ *  FLUX-1580: the engine now holds a SEPARATE `__board__`/`__furnace__` session per workspace —
+ *  switching the active board must swap this hook onto the newly-active workspace's session
+ *  instead of continuing to show whichever workspace's session it last fetched. `activeBoardId`
+ *  is passed in purely as a refetch trigger (it's already stamped onto every `ehFetch` call via
+ *  the module-level board key — see api.ts's `setActiveBoardKey` — so `fetchTaskCliSession` below
+ *  already targets the right workspace once this effect re-runs); the stale session is cleared
+ *  synchronously so a closed/switched conversation never renders across a workspace switch while
+ *  the fresh fetch is in flight. */
+function useVirtualConversationSession(conversationId: string, activeBoardId: string | null): CliSessionSummary | null {
   const { subscribeToEvent } = useAppActions();
   const [session, setSession] = useState<CliSessionSummary | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    // FLUX-1580: drop the previous (possibly other-workspace's) session immediately rather than
+    // rendering it under the newly-active board until the refetch below resolves.
+    setSession(null);
     const refresh = async () => {
       try {
         const s = await fetchTaskCliSession(conversationId);
@@ -185,7 +201,7 @@ function useVirtualConversationSession(conversationId: string): CliSessionSummar
     const on = (d: unknown) => { if (matches(d)) void refresh(); };
     const unsubs = [subscribeToEvent('activity', on), subscribeToEvent('taskUpdated', on)];
     return () => { cancelled = true; unsubs.forEach((u) => u()); };
-  }, [conversationId, subscribeToEvent]);
+  }, [conversationId, activeBoardId, subscribeToEvent]);
 
   const live = session?.status === 'running' || session?.status === 'pending';
   useEffect(() => {
@@ -216,6 +232,10 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
   const { subscribeToEvent, triggerRefresh } = useAppActions();
   const tasks = useAppSelector((s) => s.tasks);
   const config = useAppSelector((s) => s.config);
+  // FLUX-1580: the active board's key — passed to useVirtualConversationSession below so the
+  // board/Furnace chat viewport swaps onto the newly-active workspace's session on switch instead
+  // of continuing to show whichever workspace's session it last fetched.
+  const activeBoardId = useAppSelector((s) => s.activeBoardId);
   const currentUser = useAppSelector((s) => s.currentUser);
   const currentProject = useAppSelector((s) => s.currentProject);
   // FLUX-720: conversations with an unresolved pending interaction (approval / question /
@@ -285,8 +305,8 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
   const [showHistory, setShowHistory] = useState(false);
   // FLUX-1209: the board orchestrator and the Furnace-chat both track their live session the same
   // way — see useVirtualConversationSession above.
-  const boardSession = useVirtualConversationSession(BOARD_CONVERSATION_ID);
-  const furnaceSession = useVirtualConversationSession(FURNACE_CONVERSATION_ID);
+  const boardSession = useVirtualConversationSession(BOARD_CONVERSATION_ID, activeBoardId);
+  const furnaceSession = useVirtualConversationSession(FURNACE_CONVERSATION_ID, activeBoardId);
   // FLUX-1209 / FLUX-1212: the Furnace icon's hover flyout ("Open Furnace" / "Open Furnace chat").
   // Opens on hover (desktop) or via the kebab click (touch/no-hover fallback) — either sets the
   // same piece of state, so there's one source of truth for whether the popover is showing.
@@ -1460,8 +1480,12 @@ interface BarDropdownOption {
  *
  *  The metadata bar has `overflow-x-auto`, which (per CSS) forces the cross axis to clip too — so the
  *  menu MUST escape it. We position it with measured `position: fixed` coordinates from the trigger
- *  rect (same approach as CardMenu) instead of `absolute`, so it overlays the chat window rather than
- *  getting trapped under the bar's fold. */
+ *  rect (same approach as CardMenu) instead of `absolute`. FLUX-1509: `position: fixed` alone isn't
+ *  enough here — the dock window is a `motion.div` with an active `x`/`y`/`scale` transform (and
+ *  `overflow-hidden`), and a CSS transform on an ancestor makes IT the containing block for a `fixed`
+ *  descendant, so the menu was rendering offset relative to the window (wrong location) and clipped by
+ *  its `overflow-hidden` (cut off) instead of overlaying the viewport. Portaling to `document.body`
+ *  escapes both. */
 function BarDropdown({
   value, onChange, options, title, className = '', triggerLeading,
 }: {
@@ -1491,7 +1515,11 @@ function BarDropdown({
   useEffect(() => {
     if (!open) return;
     const onDown = (e: PointerEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      // FLUX-1509: the menu is portaled to <body>, so it's no longer a DOM descendant of `ref` —
+      // check both the trigger wrapper and the portaled list before treating the click as "outside".
+      if (ref.current?.contains(t) || listRef.current?.contains(t)) return;
+      setOpen(false);
     };
     // Re-position on scroll/resize would be ideal, but the menu closes on any outside interaction,
     // so a fixed snapshot taken at open time is sufficient.
@@ -1554,7 +1582,7 @@ function BarDropdown({
         <span className="truncate">{selected?.label ?? value}</span>
         <ChevronDown className="h-3 w-3 flex-shrink-0 opacity-60" />
       </button>
-      {open && coords && (
+      {open && coords && createPortal(
         <div
           ref={listRef}
           role="listbox"
@@ -1583,7 +1611,8 @@ function BarDropdown({
               </button>
             );
           })}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
@@ -1593,7 +1622,13 @@ function BarDropdown({
  *  pill (tags / implementation link / effort level). Closes on outside-click or Escape. Opens
  *  downward (the bar sits at the top of the chat column).
  *  FLUX-744: positioned with measured `position: fixed` (not `absolute`) so it escapes the metadata
- *  bar's `overflow-x-auto` clip and overlays the chat window instead of getting trapped under the bar. */
+ *  bar's `overflow-x-auto` clip and overlays the chat window instead of getting trapped under the bar.
+ *  FLUX-1509: `fixed` alone isn't enough — the dock window is a `motion.div` with an active
+ *  `x`/`y`/`scale` transform (and `overflow-hidden`), and a CSS transform on an ancestor makes IT the
+ *  containing block for a `fixed` descendant. That trapped the panel inside the window: offset from
+ *  its intended position (wrong location) and clipped by the window's `overflow-hidden` whenever the
+ *  content ran taller than expected (cut off). Portaling to `document.body` escapes both, and the
+ *  panel now caps its own height to the viewport with an internal scrollbar as a backstop. */
 function BarPopover({
   label, icon: Icon, active = false, title, children, align = 'left',
 }: {
@@ -1612,6 +1647,7 @@ function BarPopover({
   const [coords, setCoords] = useState<{ left: number; right: number; top: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   const toggleOpen = () => {
     if (open) { setOpen(false); return; }
@@ -1623,7 +1659,11 @@ function BarPopover({
   useEffect(() => {
     if (!open) return;
     const onDown = (e: PointerEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      // FLUX-1509: the panel is portaled to <body>, so it's no longer a DOM descendant of `ref` —
+      // check both the trigger wrapper and the portaled panel before treating the click as "outside".
+      if (ref.current?.contains(t) || panelRef.current?.contains(t)) return;
+      setOpen(false);
     };
     window.addEventListener('pointerdown', onDown);
     return () => window.removeEventListener('pointerdown', onDown);
@@ -1662,14 +1702,16 @@ function BarPopover({
         <Icon className="h-3 w-3 flex-shrink-0" />
         {label}
       </button>
-      {open && coords && (
+      {open && coords && createPortal(
         <div
+          ref={panelRef}
           onPointerDown={(e) => e.stopPropagation()}
-          style={{ left: panelLeft, top: panelTop }}
-          className="eh-border eh-surface fixed z-[60] w-64 rounded-lg border p-2.5 shadow-2xl"
+          style={{ left: panelLeft, top: panelTop, maxHeight: 'calc(100vh - 16px)' }}
+          className="eh-border eh-surface fixed z-[60] w-64 overflow-y-auto rounded-lg border p-2.5 shadow-2xl"
         >
           {children}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
@@ -1732,7 +1774,7 @@ function ChatMetadataBar({ c }: { c: ReturnType<typeof useTicketSideView> }) {
         <BarDropdown
           title="Status"
           value={c.status}
-          onChange={c.setStatus}
+          onChange={(v) => void c.saveField('status', v)}
           options={c.allStatuses.map((s) => ({ value: s, label: s, leading: <StatusDot config={config} status={s} /> }))}
           triggerLeading={<StatusDot config={config} status={c.status} />}
           className={getStatusColorClass(config, c.status)}
@@ -1740,7 +1782,7 @@ function ChatMetadataBar({ c }: { c: ReturnType<typeof useTicketSideView> }) {
         <BarDropdown
           title="Priority"
           value={c.priority}
-          onChange={c.setPriority}
+          onChange={(v) => void c.saveField('priority', v)}
           options={c.availablePriorities.map((p) => ({ value: p.name, label: p.name, leading: getPriorityIcon(p.name, config, 'h-3 w-3') }))}
           triggerLeading={getPriorityIcon(c.priority, config, 'h-3 w-3')}
           className="eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-secondary)]"
@@ -1758,16 +1800,18 @@ function ChatMetadataBar({ c }: { c: ReturnType<typeof useTicketSideView> }) {
           </span>
         )}
 
-        {/* FLUX-1281: the rarely-scanned fields fold into one disclosure — same editable fields
-            (same `useTicketSideView` setters, so the pinned Save/Discard dirty flow is untouched),
-            one click away. Worktree (read-only) rides along from the old inline strip. */}
+        {/* FLUX-1281: the rarely-scanned fields fold into one disclosure, one click away.
+            FLUX-979: every field here saves INSTANTLY on change via `c.saveField` — it never joins
+            the pinned Save/Discard dirty flow (that's now title/body/hierarchy-edits only), so
+            picking one of these never leaves the ticket in an unclear "unsaved" state. Worktree
+            (read-only) rides along from the old inline strip. */}
         <BarPopover label="More" icon={Ellipsis} title="More fields — assignee, effort, tags, link, effort level" align="right">
           <div className="flex flex-col gap-2.5">
             <div>
               <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">Assignee</label>
               <select
                 value={c.assignee}
-                onChange={(e) => c.setAssignee(e.target.value)}
+                onChange={(e) => void c.saveField('assignee', e.target.value)}
                 className="eh-border w-full cursor-pointer rounded-md border bg-[var(--eh-input-bg)] px-2 py-1 text-[12px] outline-none focus:border-primary"
               >
                 <option value="unassigned">Unassigned</option>
@@ -1780,7 +1824,7 @@ function ChatMetadataBar({ c }: { c: ReturnType<typeof useTicketSideView> }) {
               <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">Effort</label>
               <select
                 value={c.effort}
-                onChange={(e) => c.setEffort(e.target.value)}
+                onChange={(e) => void c.saveField('effort', e.target.value)}
                 className="eh-border w-full cursor-pointer rounded-md border bg-[var(--eh-input-bg)] px-2 py-1 text-[12px] outline-none focus:border-primary"
               >
                 {EFFORT_OPTIONS.map((e) => (
@@ -1791,7 +1835,7 @@ function ChatMetadataBar({ c }: { c: ReturnType<typeof useTicketSideView> }) {
             <div>
               <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">Tags</label>
               {config && (
-                <TagSelector tags={c.tags} onChange={c.setTags} availableTags={c.allTags} configTags={config.tags} />
+                <TagSelector tags={c.tags} onChange={(next) => void c.saveField('tags', next)} availableTags={c.allTags} configTags={config.tags} />
               )}
             </div>
             <div>
@@ -1799,6 +1843,7 @@ function ChatMetadataBar({ c }: { c: ReturnType<typeof useTicketSideView> }) {
               <input
                 value={c.implementationLink}
                 onChange={(e) => c.setImplementationLink(e.target.value)}
+                onBlur={() => void c.saveField('implementationLink', c.implementationLink)}
                 placeholder="https://github.com/..."
                 className="eh-border w-full rounded-md border bg-[var(--eh-input-bg)] px-2 py-1 text-[12px] outline-none focus:border-primary"
               />
@@ -1807,7 +1852,7 @@ function ChatMetadataBar({ c }: { c: ReturnType<typeof useTicketSideView> }) {
               <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">Effort Level</label>
               <select
                 value={c.effortLevel}
-                onChange={(e) => c.setEffortLevel(e.target.value)}
+                onChange={(e) => void c.saveField('effortLevel', e.target.value)}
                 className="eh-border w-full cursor-pointer rounded-md border bg-[var(--eh-input-bg)] px-2 py-1 text-[12px] outline-none focus:border-primary"
               >
                 {EFFORT_LEVEL_OPTIONS.map((o) => (
@@ -1887,6 +1932,10 @@ function TicketControllerScope({
   children: (c: ReturnType<typeof useTicketSideView>) => ReactNode;
 }) {
   const c = useTicketSideView(task);
+  // FLUX-979: native "Leave site?" guard for a tab-close/refresh/navigation with an unsaved
+  // title/body/hierarchy edit — metadata fields never contribute to `isDirty` any more (they save
+  // instantly via `saveField`), so this only fires for genuine free-text edits.
+  useUnsavedChangesGuard(c.isDirty);
   return <>{children(c)}</>;
 }
 
@@ -2136,12 +2185,19 @@ function ChatWindowHeader({
   );
 }
 
-/** FLUX-1418: cheap placeholder shown in place of the heavy transcript/sideview content while
- *  `ChatWindow` defers mounting it past the open spring (or before the shrink-close exit). */
+/** FLUX-1418/FLUX-1506: cheap placeholder shown in place of the heavy transcript/sideview content
+ *  while `ChatWindow` defers mounting it past the open spring (or before the shrink-close exit).
+ *  Ghost message rows (alternating alignment, like the transcript it's standing in for) replace the
+ *  old centered spinner. */
 function ChatWindowLoadingShell() {
+  const widths = ['w-2/3', 'w-1/2', 'w-3/5', 'w-2/5'];
   return (
-    <div className="flex h-full min-h-0 flex-1 items-center justify-center">
-      <Loader2 className="h-5 w-5 animate-spin text-[var(--eh-text-muted)]" />
+    <div className="flex h-full min-h-0 flex-1 flex-col justify-end gap-3 overflow-hidden p-4" aria-busy="true" aria-label="Loading conversation">
+      {widths.map((w, i) => (
+        <div key={i} className={`flex ${i % 2 === 0 ? 'justify-start' : 'justify-end'}`}>
+          <Skeleton variant="bar" className={`h-9 ${w} max-w-[75%] !rounded-2xl`} />
+        </div>
+      ))}
     </div>
   );
 }
@@ -2239,6 +2295,11 @@ const ChatWindow = memo(function ChatWindow({
   // chrome below, with a few Smelter-specific fallbacks (title, empty-state hint) computed off
   // `id` directly rather than threading a new prop through every caller.
   const isFurnaceChat = id === FURNACE_CONVERSATION_ID;
+  // FLUX-1580: `__board__`/`__furnace__` are the SAME id across every workspace, so an already-open
+  // window needs an explicit signal that the active board switched under it — see useChatSession's
+  // `workspaceKey` param. Per-ticket windows pass `undefined` (unaffected, byte-for-byte unchanged).
+  const isVirtualConversationWindow = id === BOARD_CONVERSATION_ID || isFurnaceChat;
+  const activeBoardId = useAppSelector((s) => s.activeBoardId);
   // FLUX-1022: ESC collapses this floating chat window back to its dock card (session preserved,
   // never destroyed) — but only while it's the frontmost window, so a press doesn't reach into
   // background windows.
@@ -2246,45 +2307,87 @@ const ChatWindow = memo(function ChatWindow({
   const confirm = useConfirm();
 
   const config = useAppSelector((s) => s.config);
-  // FLUX-801: pop-open / shrink-close animation. Gated on `animationsEnabled` (default true) AND
-  // prefers-reduced-motion, matching the TaskCard/TaskModal precedent. When off, the window renders
-  // statically (no initial/animate/exit) — zero behavior change from before.
-  const animationsEnabled = config?.animationsEnabled ?? true;
-  const reduceMotion = useReducedMotion();
-  const animateWindow = animationsEnabled && !reduceMotion;
-  const speedMap = { fast: 0.2, normal: 0.4, slow: 0.7 };
-  const duration = speedMap[config?.animationSpeed || 'normal'];
+  // FLUX-801: pop-open / shrink-close animation. Gated on the shared `instant` flag (animations
+  // disabled OR prefers-reduced-motion), matching the TaskCard/TaskModal precedent. When instant,
+  // the window renders statically (no initial/animate/exit) — zero behavior change from before.
+  // FLUX-1507: sourced from the centralized token hook — this used to call its own
+  // `useReducedMotion()` alongside a local `speedMap`; both now live in `useMotionTokens`.
+  const tokens = useMotionTokens();
+  const animateWindow = !tokens.instant;
   // FLUX-1418: defer mounting the heavy content (ChatView transcript, TicketSideView,
   // ChatDiffPanel) until the open spring settles, so the synchronous mount cost doesn't land on
-  // the animation's first frames — and swap back to the cheap shell the instant a minimize starts
-  // exiting, so unmount cost doesn't compete with the shrink-close transform either. `settled`
-  // starts true when animations are off (nothing to defer past). `useIsPresent` (not
-  // `usePresence`) is read-only — it never registers as a removal blocker, so it can't strand
-  // this window mounted after an exit finishes.
+  // the animation's first frames. FLUX-1523 changed the OTHER half of this optimization: it used
+  // to swap back to the cheap shell the instant a minimize started exiting; now it swaps back only
+  // once that close *commits* (runs to completion uninterrupted) — see `contentMounted` below —
+  // because tearing the heavy subtree down at close-start would force an expensive remount that
+  // competes with the spring if the close gets interrupted by a re-open. `hasEverMounted` starts
+  // true when animations are off (nothing to defer past). `useIsPresent` (not `usePresence`) is
+  // read-only — it never registers as a removal blocker, so it can't strand this window mounted
+  // after an exit finishes.
   const isPresent = useIsPresent();
   const [settled, setSettled] = useState(() => !animateWindow);
+  // FLUX-1523: FLUX-1418 used to be one boolean (`settled`) driving BOTH the heavy-content mount
+  // gate and the FLUX-1420 SSE-buffer gate — fine for a single uninterrupted open→close, but a
+  // rapid re-open mid-close thrashed both: the mount gate tore down `ChatDiffPanel`/`ChatView`
+  // just to remount them a frame later (perf regression), and the buffer gate could flip on/off
+  // fast enough to risk a dropped commit. Split into two latches:
+  //  - `hasEverMounted` — one-way; flips true the first time content settles in and never reverts.
+  //    Combined with `closeCommitted` below, this keeps heavy content mounted THROUGH an
+  //    interrupted close (re-open before the exit finishes) since there is nothing to remount.
+  //  - `closeCommitted` — flips true only when a close's exit animation runs to completion
+  //    (uninterrupted), and resets on the next reopen so the following close can re-commit.
+  // `settled` itself is unchanged — it still oscillates with the spring and still drives the
+  // FLUX-1420 SSE-buffer gate (`!settled` at the `useChatSession` call below) and the immediate-
+  // hydration Cmd/Ctrl+F escape hatch, independent of the mount gate.
+  const [hasEverMounted, setHasEverMounted] = useState(() => !animateWindow);
+  const [closeCommitted, setCloseCommitted] = useState(false);
+  // Heavy content (ChatDiffPanel / ChatView / TicketSideView) stays mounted once it has ever
+  // arrived, through any interrupted close, and only tears down once a close actually commits.
+  const contentMounted = hasEverMounted && !closeCommitted;
   // `useLayoutEffect` (not `useEffect`): the heavy-subtree teardown this drives must land in the
   // SAME commit that removes this window from `open`, one tick ahead of framer-motion's own
   // (rAF-driven) exit start — a passive effect would let at least one exit frame paint with the
   // heavy content still mounted before swapping to the cheap shell.
   useLayoutEffect(() => {
-    if (!isPresent) setSettled(false);
+    if (isPresent) {
+      // A genuine reopen (not merely an interrupted close retargeting back to `animate`) — clear
+      // the prior cycle's commit latch so the next close can commit again.
+      setCloseCommitted(false);
+    } else {
+      setSettled(false);
+    }
   }, [isPresent]);
   useEffect(() => {
     if (settled || !animateWindow) return;
     // Belt-and-suspenders: `onAnimationComplete` below normally flips this; this guards against a
-    // dropped/interrupted animation event stranding the window on the empty shell forever.
-    const timer = setTimeout(() => setSettled(true), duration * 1000);
+    // dropped/interrupted animation event stranding the window on the empty shell forever. Also
+    // latches `hasEverMounted` — the mount gate (`contentMounted` above) now keys off that latch,
+    // not `settled`, so without this the fallback would declare the window settled while leaving
+    // it stuck on `ChatWindowLoadingShell`. Harmless if this fires mid-close: `contentMounted`
+    // during a close keys off `closeCommitted`, not `hasEverMounted`, which is one-way regardless.
+    const timer = setTimeout(() => {
+      setSettled(true);
+      setHasEverMounted(true);
+    }, tokens.springSettleMs);
     return () => clearTimeout(timer);
-  }, [settled, animateWindow, duration]);
+  }, [settled, animateWindow, tokens.springSettleMs]);
   const handleAnimationComplete = useCallback(() => {
-    if (isPresent) setSettled(true);
+    if (isPresent) {
+      setSettled(true);
+      setHasEverMounted(true);
+    } else {
+      // This fires on THIS element's exit animation reaching completion — which only happens when
+      // the close ran uninterrupted (an interrupted close retargets the same node back toward
+      // `animate` and this callback fires with `isPresent` true instead, above). Prefer this over
+      // a timer: a re-open that preempts the exit simply never reaches this branch.
+      setCloseCommitted(true);
+    }
   }, [isPresent]);
 
   // FLUX-748: pass `working` (live running session) so the hook's message queue auto-dispatches
   // on the turn-completion edge. FLUX-1420: also pass the animating flag (the open/minimize spring
   // is in flight while `!settled`) so the hook can buffer SSE-driven commits until it settles.
-  const chat = useChatSession(id, true, working, !settled);
+  const chat = useChatSession(id, true, working, !settled, isVirtualConversationWindow ? activeBoardId : undefined);
   const allTasks = useAppSelector((s) => s.tasks) as Task[];
 
   // FLUX-1339/1362: chat-scoped plan-review panel state. The panel opens as an own full-screen
@@ -2445,24 +2548,26 @@ const ChatWindow = memo(function ChatWindow({
   const motionProps = animateWindow
     ? {
         initial: originTransform ?? restState,
-        animate: { x: 0, y: 0, scale: 1, opacity: 1, transition: { type: 'spring' as const, duration, bounce: 0.22 } },
-        exit: { ...(originTransform ?? restState), transition: { duration: duration * 0.7, ease: 'easeIn' as const } },
+        animate: { x: 0, y: 0, scale: 1, opacity: 1, transition: tokens.spring },
+        exit: { ...(originTransform ?? restState), transition: tokens.fade },
       }
     : {};
 
   // FLUX-821: Cmd/Ctrl+F must never silently no-op while content is deferred — force immediate
-  // hydration so ChatView's own find-shortcut handler (mounted only once `settled`) takes over.
+  // hydration so ChatView's own find-shortcut handler (mounted only once `contentMounted`, FLUX-1523)
+  // takes over.
   useEffect(() => {
-    if (settled || !isTopmost) return;
+    if (contentMounted || !isTopmost) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
         e.preventDefault();
+        setHasEverMounted(true);
         setSettled(true);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [settled, isTopmost]);
+  }, [contentMounted, isTopmost]);
 
   // Drag the title bar to move the window. Tracked as `{left, bottom}` (bottom-pinned) so it
   // composes with the bottom-pinned resize. Clamped to keep the window on screen.
@@ -2772,6 +2877,10 @@ const ChatWindow = memo(function ChatWindow({
       selections={selections}
       onSelectionsChange={(s) => onSelectionsChange(id, s)}
       onSend={chat.send}
+      // FLUX-685: edit-and-resend/retry only apply to a real ticket's own transcript — the virtual
+      // board/Furnace conversations (`task` undefined here) have no per-turn truncate endpoint.
+      onEditTurn={task ? chat.editAndResend : undefined}
+      onRetryTurn={task ? chat.retryLast : undefined}
       queued={chat.queued}
       onEnqueue={chat.enqueue}
       onDequeue={chat.dequeue}
@@ -2823,8 +2932,9 @@ const ChatWindow = memo(function ChatWindow({
       // FLUX-801: bring this window above its siblings when the user interacts with it.
       onMouseDown={() => onRaise?.(id)}
       {...motionProps}
-      // FLUX-1418: flips `settled` once the open spring finishes, revealing the deferred heavy
-      // content (see the effects above `startDrag`).
+      // FLUX-1418/1523: on an open completing, flips `settled`/`hasEverMounted`, revealing the
+      // deferred heavy content; on an uninterrupted close completing, flips `closeCommitted`,
+      // tearing it back down (see the effects above `startDrag`).
       onAnimationComplete={handleAnimationComplete}
       className="eh-surface eh-border fixed z-50 flex flex-col overflow-hidden rounded-2xl border shadow-2xl"
       style={{
@@ -2927,9 +3037,9 @@ const ChatWindow = memo(function ChatWindow({
               <div className="relative flex min-h-0 flex-1 overflow-hidden">
                 <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                   <ChatMetadataBar c={c} />
-                  {settled && <ChatDiffPanel task={task} />}
+                  {contentMounted && <ChatDiffPanel task={task} />}
                   <div className="flex min-h-0 flex-1 flex-col px-3 py-3">
-                    {settled ? chatViewEl : <ChatWindowLoadingShell />}
+                    {contentMounted ? chatViewEl : <ChatWindowLoadingShell />}
                   </div>
                 </div>
                 {/* FLUX-740/744: the ticket sideview + the draggable divider that rebalances it vs the
@@ -2949,7 +3059,7 @@ const ChatWindow = memo(function ChatWindow({
                     >
                       {/* FLUX-874: route an artifact-region annotation into THIS chat — enqueue if a
                           turn is live (FIFO), otherwise send straight away (starts/resumes a session). */}
-                      {settled ? (
+                      {contentMounted ? (
                         <TicketSideView
                           c={c}
                           onSendToChat={(text) => {
@@ -3058,7 +3168,7 @@ const ChatWindow = memo(function ChatWindow({
           <div className="flex min-h-0 flex-1 overflow-hidden">
             <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
               <div className="flex min-h-0 flex-1 flex-col px-3 py-3">
-                {settled ? chatViewEl : <ChatWindowLoadingShell />}
+                {contentMounted ? chatViewEl : <ChatWindowLoadingShell />}
               </div>
             </div>
           </div>

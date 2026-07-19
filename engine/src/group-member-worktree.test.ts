@@ -204,7 +204,7 @@ describe('buildGroupDocsScopeArg', () => {
   afterEach(async () => { await fs.rm(memberRoot, { recursive: true, force: true }).catch(() => {}); });
 
   it('returns [] when the store dir does not exist', () => {
-    // getMemberBinding() is null in the test context, so returns [] anyway.
+    // getWorkspace().memberBinding is null in the test context, so returns [] anyway.
     expect(buildGroupDocsScopeArg(memberRoot)).toEqual([]);
   });
 

@@ -26,7 +26,8 @@ import type { CliSessionRecord, CliFramework, TaskKey, Tier, PatternPosition, La
 import { CLI_CAPABILITIES, INTEGRATION_CONFIG_KEYS } from './types.js';
 import type { ChatAttachment } from '../projection.js';
 import { isInjectablePhaseModule, loadSkillModuleBodySync, skillModuleFallback } from '../skill-modules.js';
-import { resolveSoloChatPersona, renderPersonaTemplate } from '../orchestration-personas.js';
+import { resolveSoloChatPersona, renderPersonaTemplate, buildCommunicationBlocks } from '../orchestration-personas.js';
+import { getChatSessionForTask } from '../session-store.js';
 
 // ---- FLUX-1373: resolveModel — the one shared task-tier -> concrete-model resolver ----
 // Minimal structural shape of the pieces of `Config` (config.ts, kept `any` there) this needs —
@@ -400,6 +401,12 @@ export interface BuildInitialPromptOptions {
    * mismatch the ticket's plan flags as a risk. Omit for a true phase dispatch (Furnace,
    * gate-runner, temper, portal "Start" button) — those want the injection. */
   patternPosition?: PatternPosition | undefined;
+  /** FLUX-1383: for phase:'batch-grooming' — the eligible sibling ticket ids this session grooms
+   *  in one sitting, substituted into the persona template's `{{batchMembersList}}` token. */
+  batchTicketIds?: string[] | undefined;
+  /** FLUX-1383: members the route excluded from `batchTicketIds` (+why), substituted into the
+   *  persona template's `{{batchExcludedNote}}` token. Empty/absent renders no note. */
+  batchExcluded?: { id: string; reason: string }[] | undefined;
 }
 
 // FLUX-1073: tickets are gray-matter-parsed YAML frontmatter validated at RUNTIME by schema.ts —
@@ -449,6 +456,60 @@ export function isScratchSession(task: { kind?: string | undefined } | undefined
   return task?.kind === 'scratch';
 }
 
+
+// FLUX-1479 (FLUX-1226 Phase E): a persistent per-ticket chat session's (FLUX-602) `phase` field
+// always stays `'chat'` by design — session-store.ts's `reapStaleParkedSessions` relies on that to
+// keep it alive across status moves. `handoffPhase` is the separate, mutable field a status-change
+// handoff (mcp-server.ts's `change_status`) stamps with the destination phase so the SAME chat
+// picks up that phase's persona/skill-fragment/deny-list on its next turn. Callers that want the
+// session's CURRENT logical phase (persona resolution, deny-list recompute) go through this;
+// callers about session LIFECYCLE (ScheduleWakeup eligibility, reaping) keep reading raw `phase`.
+export function resolveEffectivePhase(session: { phase?: LaunchPhase | undefined; handoffPhase?: LaunchPhase | undefined }): LaunchPhase | undefined {
+  return session.handoffPhase ?? session.phase;
+}
+
+// FLUX-1479 (FLUX-1226 Phase E): status -> phase derivation, extracted from what was previously
+// duplicated inline in copilot.ts/gemini.ts (`taskPhase = session.phase ?? (...)`) so the SAME
+// mapping drives both (a) a session with no explicit launch phase guessing its phase from status,
+// and (b) the chat phase-handoff computed on a status transition (mcp-server.ts).
+export function derivePhaseFromStatus(status: string | undefined, groomingStatuses: string[], readyStatus: string): LaunchPhase | undefined {
+  if (status === undefined) return undefined;
+  if (groomingStatuses.includes(status)) return 'grooming';
+  if (status === 'In Progress' || status === 'Todo') return 'implementation';
+  if (status === readyStatus) return 'review';
+  return undefined;
+}
+
+
+/**
+ * FLUX-1479 (FLUX-1226 Phase E): apply a phase->persona HANDOFF to a ticket's persistent chat
+ * session (if one exists) on a status transition — called from mcp-server.ts's `change_status`
+ * handler after a status move actually commits. No-op when the ticket has no chat session, or the
+ * newly-derived phase is unchanged from the session's current `handoffPhase` (avoids re-arming the
+ * one-time announcement note on a status move that doesn't cross a phase boundary, e.g. a lateral
+ * Require Input -> Grooming bounce).
+ *
+ * Deliberately framework-agnostic and adapter-boundary-clean: this only mutates `handoffPhase` /
+ * `handoffPhaseAnnounced` on the session record. It does NOT eagerly re-stamp Claude's
+ * `disallowedEhTools` (that would require importing claude-code.ts here, which
+ * check-adapter-boundary.mjs forbids for anything outside a concrete adapter file) — every
+ * dispatched-per-turn `claude -p` session already calls `stampDisallowedEhTools` fresh on its next
+ * spawn/resume (FLUX-1389), reading `resolveEffectivePhase(session)`, so the recompute happens for
+ * real on the very next turn regardless. "Hot-swap" (mutate the existing session record) was chosen
+ * over relaunching into a new session for the same reason: the per-turn respawn architecture makes
+ * a plain field mutation here nearly free.
+ */
+export function handoffChatSessionPhase(taskId: string, newStatus: string): void {
+  const session = getChatSessionForTask(taskId);
+  if (!session) return;
+  const groomingStatuses = [getConfig().requireInputStatus || 'Require Input', 'Grooming'];
+  const readyStatus = getConfig()?.readyForMergeStatus || 'Ready';
+  const newPhase = derivePhaseFromStatus(newStatus, groomingStatuses, readyStatus);
+  if (newPhase === session.handoffPhase) return;
+  session.handoffPhase = newPhase;
+  session.handoffPhaseAnnounced = false;
+}
+
 // FLUX-1123: only Claude Code can actually ENFORCE the FLUX-926 gate — `--disallowed-tools` has no
 // equivalent in the Copilot/Gemini CLIs (see CLI_CAPABILITIES.chatEditGateEnforced and the
 // copilot-board.ts / gemini-board.ts FLUX-959 comments). Copilot/Gemini chat still gets a note so a
@@ -495,31 +556,112 @@ function resolvePhaseOverlay(_task: CliTask, _phase: string | undefined): string
   return '';
 }
 
+// FLUX-1479 (FLUX-1226 Phase E): the three cross-cutting mission-block locals below were inline
+// consts in buildInitialPrompt until this ticket needed to replay the SAME persona-mission
+// rendering mid-conversation (buildPhaseHandoffNote, further down) — factored out here so both
+// call sites share one copy of the literal text instead of drifting.
+function buildMcpNote(): string {
+  return 'CRITICAL: Use the "event-horizon" MCP tools (change_status, update_ticket, add_note) for ALL ticket updates. Do NOT edit .flux/ files directly — direct edits corrupt session tracking.';
+}
+
+// FLUX-1389: every dispatched phase session is a one-shot process that exits at turn end — a
+// scheduled wakeup (ScheduleWakeup / /loop dynamic mode) can never be honored, so deferring the
+// turn on it silently drops the session and the ticket gets parked as if review/implementation
+// never finished (real incident: FLUX-1378). Claude gets a real `--disallowed-tools` block
+// (disallowedToolsArgs in claude-code.ts); Gemini/Copilot have no equivalent flag (FLUX-1123), so
+// this text note is their only enforcement — hence it is added here, framework-agnostically, for
+// every framework's review/implementation dispatch.
+function buildNoDeferNote(): string {
+  return 'You are a one-shot unattended session — you will NOT be resumed by a scheduled wakeup. Run any verification (tests, background checks) to completion within this turn, then record your verdict/status before ending. Never defer via ScheduleWakeup, and never end the turn saying you will "wait for" a background task or notification — background tasks are killed the instant this turn ends, so nothing will ever wake you to continue; finish with what you have now.';
+}
+
+function buildOrchestrationProposalsParagraph(framework: CliFramework): string {
+  return CLI_CAPABILITIES[framework].supervisor
+    ? '\n\nORCHESTRATION PROPOSALS (FLUX-805): you can spawn a fleet of subagents from this chat (list_available_agents to discover specialists, then delegate to run them). When the user expresses an orchestratable intent in plain language — "let\'s do a review", "groom this", "implement it with a few agents", "split this up" — do NOT silently launch a fleet: that spends tokens with no confirmation. Instead PROPOSE the run. Reply with one short line saying what you\'d run (intent + roughly how many agents), and end your turn with this marker on its own final line:\n' +
+      '    <!-- eh-run intent="INTENT" label="BUTTON LABEL" -->\n' +
+      'where INTENT is exactly one of review | groom | implement | split, and BUTTON LABEL is what the confirm button should read (e.g. "Run review (3 agents)"). The marker is invisible in the chat — it renders as a one-click confirm button below the composer. ONLY after the user clicks it (their next message will explicitly confirm the launch) do you actually call delegate with the fleet you proposed (one delegation per specialist) — use list_available_agents to pick specialists fitting the intent and the ticket. That click is the cost guard: never launch a fleet without it. If the user instead asks a question or changes course, simply drop the proposal and carry on. Emit the marker only when genuinely proposing a multi-agent run — keep it conservative so you never offer a run the user didn\'t gesture at.'
+    : '';
+}
+
+/**
+ * FLUX-1479 (FLUX-1226 Phase E): resolve + render a phase's persona Mission block, factored out of
+ * buildInitialPrompt's `actionInstruction` closure so `buildPhaseHandoffNote` (below) can replay
+ * the identical rendering mid-conversation, for a DIFFERENT phase than the one the session opened
+ * with, without duplicating the placeholder wiring. Returns undefined when no persona resolves for
+ * `phase` — buildInitialPrompt's status-derived fallback text is intentionally NOT part of this;
+ * that fallback only ever applies to the very first, opening-turn prompt.
+ */
+function renderPhasePersonaMission(
+  phase: LaunchPhase,
+  task: { id?: string | number | undefined; kind?: string | undefined },
+  opts: {
+    framework: CliFramework;
+    editsGated?: boolean | undefined;
+    explicitPersonaId?: string | undefined;
+    batchTicketIds?: string[] | undefined;
+    batchExcluded?: { id: string; reason: string }[] | undefined;
+  },
+): string | undefined {
+  const persona = resolveSoloChatPersona(phase, opts.explicitPersonaId, isScratchSession(task));
+  if (!persona) return undefined;
+  const editGateBlock = opts.editsGated
+    ? `\n\n${chatEditGateNote(opts.framework, isScratchSession(task) ? 'scratch' : 'status')}`
+    : '';
+  // FLUX-1383: batch-grooming's mission lists its member tickets and names any excluded sibling —
+  // every other phase's template has no {{batchMembersList}}/{{batchExcludedNote}} token, so these
+  // render to '' there (renderPersonaTemplate leaves unmatched tokens untouched, but there are none
+  // to match in that case).
+  const batchMembersList = (opts.batchTicketIds ?? []).map((memberId) => `- ${memberId}`).join('\n');
+  const batchExcludedNote =
+    opts.batchExcluded && opts.batchExcluded.length > 0
+      ? `\nExcluded from this batch (left in Grooming for individual attention): ${opts.batchExcluded.map((e) => `${e.id} (${e.reason})`).join(', ')}.\n`
+      : '';
+  return renderPersonaTemplate(persona.prompt, {
+    taskId: String(task.id),
+    readyStatus: getConfig()?.readyForMergeStatus || 'Ready',
+    mcpNote: buildMcpNote(),
+    noDeferNote: buildNoDeferNote(),
+    editGateBlock,
+    orchestrationProposalsParagraph: buildOrchestrationProposalsParagraph(opts.framework),
+    batchMembersList,
+    batchExcludedNote,
+  });
+}
+
+/**
+ * FLUX-1479 (FLUX-1226 Phase E): a persistent chat session's Mission-block persona is only ever
+ * delivered once, in the opening turn's `buildInitialPrompt` call — `sendCliSessionInput` never
+ * replays it on later turns (there is no separate "system" channel; `--resume` continues the same
+ * conversation from the model's point of view). So a phase HANDOFF (`session.handoffPhase`, set by
+ * mcp-server.ts's `change_status` on a status transition) needs its own one-time announcement
+ * injected into the NEXT resumed turn's prompt for "the destination persona takes over the same
+ * chat" to be true in practice, not just in the session record. Returns '' (nothing to prepend)
+ * once already announced (`handoffPhaseAnnounced`) or when there is no pending handoff — callers
+ * are expected to set `handoffPhaseAnnounced = true` after actually sending a non-empty result.
+ */
+export function buildPhaseHandoffNote(
+  session: { handoffPhase?: LaunchPhase | undefined; handoffPhaseAnnounced?: boolean | undefined; personaId?: string | undefined },
+  task: { id?: string | number | undefined; kind?: string | undefined; tags?: string[] | undefined },
+  framework: CliFramework,
+): string {
+  if (!session.handoffPhase || session.handoffPhaseAnnounced) return '';
+  const mission = renderPhasePersonaMission(session.handoffPhase, task, { framework, editsGated: false, explicitPersonaId: session.personaId });
+  if (!mission) return '';
+  const moduleFragments = getModulePromptFragments(session.handoffPhase, Array.isArray(task.tags) ? task.tags : undefined, isScratchSession(task));
+  const header = `PHASE HANDOFF (FLUX-1226 Phase E): this ticket's status changed and this chat now continues as the "${session.handoffPhase}" phase — the following supersedes any earlier phase instructions given in this conversation.\n\n`;
+  return `${header}${mission}${moduleFragments ? `\n\n${moduleFragments}` : ''}`;
+}
+
 export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: BuildInitialPromptOptions): string {
   const framework = opts?.framework ?? 'claude';
   const caps = CLI_CAPABILITIES[framework];
   const readyStatus = getConfig()?.readyForMergeStatus || 'Ready';
   const taskStatus = task.status || 'Unknown';
-  const mcpNote = 'CRITICAL: Use the "event-horizon" MCP tools (change_status, update_ticket, add_note) for ALL ticket updates. Do NOT edit .flux/ files directly — direct edits corrupt session tracking.';
-
-  // FLUX-1389: every dispatched phase session is a one-shot process that exits at turn end — a
-  // scheduled wakeup (ScheduleWakeup / /loop dynamic mode) can never be honored, so deferring the
-  // turn on it silently drops the session and the ticket gets parked as if review/implementation
-  // never finished (real incident: FLUX-1378). Claude gets a real `--disallowed-tools` block
-  // (disallowedToolsArgs in claude-code.ts); Gemini/Copilot have no equivalent flag (FLUX-1123), so
-  // this text note is their only enforcement — hence it is added here, framework-agnostically, for
-  // every framework's review/implementation dispatch.
-  const noDeferNote = 'You are a one-shot unattended session — you will NOT be resumed by a scheduled wakeup. Run any verification (tests, background checks) to completion within this turn, then record your verdict/status before ending. Never defer via ScheduleWakeup, and never end the turn saying you will "wait for" a background task or notification — background tasks are killed the instant this turn ends, so nothing will ever wake you to continue; finish with what you have now.';
+  const mcpNote = buildMcpNote();
 
   const requireInputStopInstruction = caps.selfPause
     ? 'IMPORTANT: If you call change_status to "Require Input", STOP immediately after. Do not continue working — the user will reply and you will be resumed with their answer.'
     : 'IMPORTANT: If you call change_status to "Require Input", end your turn there — do not continue working. The user\'s reply starts a new turn that resumes this conversation.';
-
-  const orchestrationProposalsParagraph = caps.supervisor
-    ? '\n\nORCHESTRATION PROPOSALS (FLUX-805): you can spawn a fleet of subagents from this chat (list_available_agents to discover specialists, then delegate to run them). When the user expresses an orchestratable intent in plain language — "let\'s do a review", "groom this", "implement it with a few agents", "split this up" — do NOT silently launch a fleet: that spends tokens with no confirmation. Instead PROPOSE the run. Reply with one short line saying what you\'d run (intent + roughly how many agents), and end your turn with this marker on its own final line:\n' +
-      '    <!-- eh-run intent="INTENT" label="BUTTON LABEL" -->\n' +
-      'where INTENT is exactly one of review | groom | implement | split, and BUTTON LABEL is what the confirm button should read (e.g. "Run review (3 agents)"). The marker is invisible in the chat — it renders as a one-click confirm button below the composer. ONLY after the user clicks it (their next message will explicitly confirm the launch) do you actually call delegate with the fleet you proposed (one delegation per specialist) — use list_available_agents to pick specialists fitting the intent and the ticket. That click is the cost guard: never launch a fleet without it. If the user instead asks a question or changes course, simply drop the proposal and carry on. Emit the marker only when genuinely proposing a multi-agent run — keep it conservative so you never offer a run the user didn\'t gesture at.'
-    : '';
 
   const actionInstruction = (() => {
     // Phase-aware instructions take priority when the caller tells us the intent — every
@@ -540,20 +682,17 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
       // would thread it into the FLUX-1434 EH tool-scoping path (disallowedEhToolsForPersona,
       // keyed on session.personaId), which must stay byte-identical to before this migration.
       // Role resolution here is prompt-text-only, so that path is untouched by construction.
-      const phasePersona = resolveSoloChatPersona(opts.phase as LaunchPhase);
-      if (phasePersona) {
-        const editGateBlock = opts?.editsGated
-          ? `\n\n${chatEditGateNote(framework, isScratchSession(task) ? 'scratch' : 'status')}`
-          : '';
-        return renderPersonaTemplate(phasePersona.prompt, {
-          taskId: String(task.id),
-          readyStatus,
-          mcpNote,
-          noDeferNote,
-          editGateBlock,
-          orchestrationProposalsParagraph,
-        });
-      }
+      // FLUX-1479: the actual rendering (persona resolution + placeholder substitution) now lives
+      // in the shared `renderPhasePersonaMission` helper above, so `buildPhaseHandoffNote` can
+      // replay it mid-conversation for a phase handoff without a second copy of this wiring.
+      const rendered = renderPhasePersonaMission(opts.phase as LaunchPhase, task, {
+        framework,
+        editsGated: opts?.editsGated,
+        explicitPersonaId: undefined,
+        batchTicketIds: opts?.batchTicketIds,
+        batchExcluded: opts?.batchExcluded,
+      });
+      if (rendered !== undefined) return rendered;
     }
     // Fallback: derive intent from ticket status (backwards compat for direct API / child sessions).
     if (taskStatus === 'Grooming' || taskStatus === 'Require Input') {
@@ -575,7 +714,7 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
     return 'Respond with implementation progress updates and blockers. Keep updates concise.';
   })();
 
-  const moduleFragments = getModulePromptFragments(opts?.phase, Array.isArray(task.tags) ? task.tags : undefined);
+  const moduleFragments = getModulePromptFragments(opts?.phase, Array.isArray(task.tags) ? task.tags : undefined, isScratchSession(task));
   const phaseOverlay = resolvePhaseOverlay(task, opts?.phase);
 
   // FLUX-1377: Claude agent spawns get their phase's skill module appended here instead of
@@ -590,6 +729,15 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
   const phaseSkillModule = framework === 'claude' && !isDelegateOrRelaySpawn && isInjectablePhaseModule(injectablePhase)
     ? (loadSkillModuleBodySync(injectablePhase) ?? skillModuleFallback(injectablePhase))
     : null;
+
+  // FLUX-1502: config-driven communication blocks (user-facing style + inter-agent protocol,
+  // both default on). Skipped when the assembled prompt already carries them — a persona-launched
+  // session's `appendPrompt` arrives pre-composed by resolvePersonaPrompt, which injects the same
+  // blocks under the same settings (heading literals are the guard).
+  const communicationStyleBlock =
+    appendPrompt.includes('## Communication style') || appendPrompt.includes('## Inter-agent protocol')
+      ? null
+      : buildCommunicationBlocks();
 
   const lines = [
     `You are working on ticket ${task.id}.`,
@@ -617,6 +765,7 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
     actionInstruction,
     // FLUX-1229 seam (see resolvePhaseOverlay above) — empty today, so this never adds a line.
     ...(phaseOverlay ? ['', phaseOverlay] : []),
+    ...(communicationStyleBlock ? ['', communicationStyleBlock] : []),
     '',
     requireInputStopInstruction,
   ];

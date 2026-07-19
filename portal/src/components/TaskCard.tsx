@@ -25,11 +25,24 @@ import { CardSubtaskPopover } from './task-card/CardSubtaskPopover';
 import { CardDescriptionPopup } from './task-card/CardDescriptionPopup';
 import { PrDeckSection } from './PrDeckCard';
 import { MergeConflictBanner } from './MergeConflictBanner';
+import { SuccessMark } from '../motion/SuccessMark';
+import { useFurnaceBatchMeta } from '../store/useAppSelector';
+import { hueFromId, iconFor, batchBorderColor } from './furnace/furnaceVisuals';
 
 // Violet wash for PR cards — a translucent violet gradient layered over the eh-card bg
 // (inline so it beats eh-card's unlayered background). Module-level so it's allocated once,
 // not per render of every card (FLUX-567 perf review).
 const PR_CARD_STYLE = { backgroundImage: 'linear-gradient(135deg, rgba(139,92,246,0.13), rgba(139,92,246,0.02))' };
+
+// FLUX-1553: constant-prop icons hoisted to module scope, same precedent as PR_CARD_STYLE above —
+// skips lucide's createElement + camelCase-attr conversion on every card render. Each icon here
+// renders with identical props at every call site; conditionally-styled icons stay inline.
+const ALERT_CIRCLE_ICON = <AlertCircle className="w-5 h-5 text-amber-500 fill-amber-50 dark:fill-amber-950" />;
+const ALERT_CIRCLE_PING_ICON = <AlertCircle className="w-5 h-5 text-amber-500 opacity-40" />;
+const LAYERS_ICON = <Layers className="w-4 h-4 text-indigo-500 dark:text-indigo-300" />;
+const CIRCLE_ICON_COMPACT = <Circle className="w-3 h-3 text-gray-300 dark:text-gray-600" />;
+const CIRCLE_ICON_GRIP = <Circle className="w-3 h-3 text-gray-300 dark:text-gray-600 group-hover/grip:hidden" />;
+const GRIP_VERTICAL_ICON = <GripVertical className="hidden w-4 h-4 text-gray-400 group-hover/grip:block" />;
 
 export interface TaskCardProps {
   task: Task;
@@ -107,11 +120,10 @@ export const TaskCardInner = memo(function TaskCardInner({
   const gateParked = !planApprovalPending && isGateParkedTicket(task);
 
   // Deterministic hue from ticket ID — stable across renders, unique per ticket.
-  const foilHue = useMemo(() => {
-    let h = 0x811c9dc5;
-    for (let i = 0; i < task.id.length; i++) { h ^= task.id.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
-    return (h >>> 0) % 360;
-  }, [task.id]);
+  const foilHue = useMemo(() => hueFromId(task.id), [task.id]);
+
+  // FLUX-1539: this card's owning Furnace batch, if any — drives the corner icon badge + border tint.
+  const batchMeta = useFurnaceBatchMeta(task.id);
 
   const rustClass = useMemo(() => {
     if (boardFx?.ticketAgeRust === false || isOverlay || c.isSessionRunning) return '';
@@ -131,6 +143,10 @@ export const TaskCardInner = memo(function TaskCardInner({
   // context menu, comment badge — but with a PR-specific body (PrDeckSection) + violet identity.
   const isPrTicket = task.kind === 'pr';
 
+  // FLUX-1539: transient state borders (session-running / PR / prompt-status) win over the batch
+  // tint — the batch icon badge still shows in those states, only the border defers.
+  const showBatchBorder = !!batchMeta && !c.isSessionRunning && !isPrTicket && !(c.isPromptStatus && !compact);
+
   return (
     <CardContainer
       {...c.layoutProps}
@@ -148,7 +164,7 @@ export const TaskCardInner = memo(function TaskCardInner({
         c.setIsHovering(false);
       }}
     >
-      <motion.div {...c.contentAnimation} style={isPrTicket ? PR_CARD_STYLE : c.columnTintStyle} className={`eh-card relative flex flex-col rounded-xl border p-0 shadow-sm transition-all ${rustClass} ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${c.isSessionRunning ? 'border-emerald-400 dark:border-emerald-500/60' : isPrTicket ? 'border-violet-400 dark:border-violet-500/60' : c.isPromptStatus && !compact ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : ''} ${c.liveAnimationClass} ${c.liveAccentClass} ${c.hasUnread && !c.liveAccentClass ? 'ring-2 ring-amber-400/60 dark:ring-amber-500/40' : ''} ${c.isEpic && !isPrTicket ? 'border-l-[3px] border-l-indigo-400 dark:border-l-indigo-500' : ''}`}>
+      <motion.div ref={c.accentRef} {...c.contentAnimation} style={{ ...(isPrTicket ? PR_CARD_STYLE : c.columnTintStyle), ...(showBatchBorder ? { borderColor: batchBorderColor(batchMeta!.batchId) } : {}) }} className={`eh-card relative flex flex-col rounded-xl border p-0 shadow-sm transition-all ${rustClass} ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${c.isSessionRunning ? 'border-emerald-400 dark:border-emerald-500/60' : isPrTicket ? 'border-violet-400 dark:border-violet-500/60' : c.isPromptStatus && !compact ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : ''} ${c.liveAnimationClass} ${c.liveAccentClass} ${c.hasUnread && !c.liveAccentClass ? 'ring-2 ring-amber-400/60 dark:ring-amber-500/40' : ''} ${c.isEpic && !isPrTicket ? 'border-l-[3px] border-l-indigo-400 dark:border-l-indigo-500' : ''}`}>
         {boardFx?.ticketDna !== false && (
           <div
             className="card-foil pointer-events-none absolute inset-0 rounded-xl"
@@ -158,6 +174,11 @@ export const TaskCardInner = memo(function TaskCardInner({
         )}
         {c.isSessionRunning && !isOverlay && (
           <div className="pointer-events-none absolute inset-0 rounded-xl bot-border-breathe" />
+        )}
+        {c.showSuccessMark && (
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+            <SuccessMark size={36} />
+          </div>
         )}
         {/* Comment indicator owns the top-right corner on every surface — normal, compact
             (folded-deck) member, and PR cards (FLUX-804 returned it here after FLUX-739 had
@@ -185,13 +206,29 @@ export const TaskCardInner = memo(function TaskCardInner({
         {!planApprovalPending && !gateParked && c.isPromptStatus && !compact && (
           <div className="absolute -top-1.5 -right-1.5 z-10">
             <div className="relative">
-              <AlertCircle className="w-5 h-5 text-amber-500 fill-amber-50 dark:fill-amber-950" />
+              {ALERT_CIRCLE_ICON}
               <div className="absolute inset-0 animate-ping">
-                <AlertCircle className="w-5 h-5 text-amber-500 opacity-40" />
+                {ALERT_CIRCLE_PING_ICON}
               </div>
             </div>
           </div>
         )}
+        {/* FLUX-1539: Furnace batch membership badge — top-LEFT corner (top-right is owned by the
+            comment/status glyphs above). Stays visible even when a transient state border (session
+            running / PR / prompt-status) preempts the batch border tint, so membership never fully
+            disappears. */}
+        {batchMeta && !compact && (() => {
+          const BatchIcon = iconFor({ icon: batchMeta.icon });
+          const color = batchBorderColor(batchMeta.batchId);
+          return (
+            <div
+              className="absolute -top-1.5 -left-1.5 z-10 flex items-center justify-center w-5 h-5 rounded-full bg-white dark:bg-gray-900 shadow-sm ring-1 ring-black/5 dark:ring-white/10"
+              title={batchMeta.title}
+            >
+              <BatchIcon className="w-3 h-3" style={{ color }} />
+            </div>
+          );
+        })()}
         <div className="flex flex-1">
           {/* Top-left type indicator (FLUX-567): PR (violet) / Epic (indigo) / normal ticket
               (gray). PR tickets are engine-managed (not drag-reordered) so they have no grip;
@@ -206,7 +243,7 @@ export const TaskCardInner = memo(function TaskCardInner({
                keep a LIVE grip: expanding one and dragging it is the intended way to move a
                clustered subtask out of a foreign column (a deck card looks/behaves like any card). */
             <div className="w-8 flex items-start justify-center pt-3.5 shrink-0" title={c.isEpic ? 'Epic' : 'Ticket'}>
-              {c.isEpic ? <Layers className="w-4 h-4 text-indigo-500 dark:text-indigo-300" /> : <Circle className="w-3 h-3 text-gray-300 dark:text-gray-600" />}
+              {c.isEpic ? LAYERS_ICON : CIRCLE_ICON_COMPACT}
             </div>
           ) : (
             <div
@@ -216,11 +253,11 @@ export const TaskCardInner = memo(function TaskCardInner({
               className="group/grip w-8 flex items-start justify-center pt-3.5 cursor-grab active:cursor-grabbing border-r border-transparent group-hover:border-gray-100 dark:group-hover:border-white/5 shrink-0"
             >
               {c.isEpic ? (
-                <Layers className="w-4 h-4 text-indigo-500 dark:text-indigo-300" />
+                LAYERS_ICON
               ) : (
                 <>
-                  <Circle className="w-3 h-3 text-gray-300 dark:text-gray-600 group-hover/grip:hidden" />
-                  <GripVertical className="hidden w-4 h-4 text-gray-400 group-hover/grip:block" />
+                  {CIRCLE_ICON_GRIP}
+                  {GRIP_VERTICAL_ICON}
                 </>
               )}
             </div>

@@ -30,10 +30,11 @@ describe('buildInitialPrompt — parity by default (FLUX-960)', () => {
     }
   });
 
-  it('gives every framework the same phase-based mission text (finalize/fast-path — no phase module applies)', () => {
-    // finalize and fast-path (FLUX-1380) have no phase skill module — grooming/implementation/review
-    // do (see the FLUX-1377 test below) — so their mission text stays byte-identical across frameworks.
-    for (const phase of ['finalize', 'fast-path'] as const) {
+  it('gives every framework the same phase-based mission text (finalize/fast-path/batch-grooming — no phase module applies)', () => {
+    // finalize, fast-path (FLUX-1380), and batch-grooming (FLUX-1383) have no phase skill module —
+    // grooming/implementation/review do (see the FLUX-1377 test below) — so their mission text
+    // stays byte-identical across frameworks.
+    for (const phase of ['finalize', 'fast-path', 'batch-grooming'] as const) {
       const prompts = FRAMEWORKS.map((framework) => buildInitialPrompt(mockTask, '', { phase, framework }));
       // Strip the requireInputStopInstruction (the one line that's allowed to differ per
       // selfPause) before comparing — everything else must be byte-identical across frameworks.
@@ -97,6 +98,28 @@ describe('buildInitialPrompt — parity by default (FLUX-960)', () => {
     }
   });
 
+  it('FLUX-1502: appends the communication blocks for every framework by default, honors the config axes, and never double-injects', async () => {
+    const { getConfig } = await import('./config.js');
+    for (const framework of FRAMEWORKS) {
+      const prompt = buildInitialPrompt(mockTask, '', { phase: 'implementation', framework });
+      expect(prompt).toContain('## Communication style — to the user');
+      expect(prompt).toContain('## Inter-agent protocol');
+    }
+    // Already present in appendPrompt (a resolvePersonaPrompt-composed persona launch) → not added again.
+    const composed = buildInitialPrompt(mockTask, '## Communication style — to the user\n(pre-composed)', { phase: 'implementation', framework: 'claude' });
+    expect(composed.match(/## Communication style/g)).toHaveLength(1);
+    expect(composed).not.toContain('## Inter-agent protocol');
+    // Both axes off → absent entirely.
+    getConfig().communicationStyle = { user: 'off', interAgent: false };
+    try {
+      const prompt = buildInitialPrompt(mockTask, '', { phase: 'implementation', framework: 'claude' });
+      expect(prompt).not.toContain('## Communication style');
+      expect(prompt).not.toContain('## Inter-agent protocol');
+    } finally {
+      getConfig().communicationStyle = { user: 'concise', customText: '', interAgent: true };
+    }
+  });
+
   it('includes a provided diffBlock for every framework — parameter-driven, not framework-gated', () => {
     for (const framework of FRAMEWORKS) {
       const prompt = buildInitialPrompt(mockTask, '', { phase: 'review', framework, diffBlock: 'SENTINEL_DIFF_BLOCK' });
@@ -147,6 +170,29 @@ describe('buildInitialPrompt — parity by default (FLUX-960)', () => {
     }
   });
 
+  it('FLUX-1383: batch-grooming mission lists every member, names excluded siblings, and keeps each status move independent, for every framework', () => {
+    for (const framework of FRAMEWORKS) {
+      const prompt = buildInitialPrompt(mockTask, '', {
+        phase: 'batch-grooming',
+        framework,
+        batchTicketIds: ['FLUX-2', 'FLUX-3'],
+        batchExcluded: [{ id: 'FLUX-4', reason: 'L-effort — too large for batch-grooming' }],
+      });
+      expect(prompt).toContain('BATCH-GROOM');
+      expect(prompt).toContain('- FLUX-2');
+      expect(prompt).toContain('- FLUX-3');
+      expect(prompt).toContain('independent');
+      expect(prompt).toContain('Excluded from this batch');
+      expect(prompt).toContain('FLUX-4');
+      expect(prompt).toContain('L-effort — too large for batch-grooming');
+    }
+  });
+
+  it('FLUX-1383: batch-grooming mission omits the excluded note when nothing was excluded', () => {
+    const prompt = buildInitialPrompt(mockTask, '', { phase: 'batch-grooming', framework: 'claude', batchTicketIds: ['FLUX-2', 'FLUX-3'] });
+    expect(prompt).not.toContain('Excluded from this batch');
+  });
+
   it('falls back to status-based instructions identically across frameworks when no phase is given', () => {
     // Same normalization as the phase-based test: strip the one line allowed to differ per
     // selfPause before comparing.
@@ -163,6 +209,7 @@ describe('buildInitialPrompt — parity by default (FLUX-960)', () => {
       chat: '## Conversational session',
       grooming: '## Your Mission: GROOM this ticket',
       'fast-path': '## Your Mission: FAST-PATH this ticket',
+      'batch-grooming': '## Your Mission: BATCH-GROOM these tickets',
       implementation: '## Your Mission: IMPLEMENT this ticket',
       review: `## Your Mission: REVIEW this ticket's implementation`,
       finalize: '## Your Mission: FINALIZE this ticket',

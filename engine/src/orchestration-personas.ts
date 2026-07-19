@@ -43,6 +43,17 @@ export interface OrchestrationPersona {
    * just gets its role default (the deny list alone).
    */
   enableTools?: string[];
+  /**
+   * FLUX-1479 (FLUX-1226 Phase F): per-phase model override. When this persona resolves for a
+   * solo/dispatched Claude session (`resolveSoloChatPersona` — phase-default or explicit), its
+   * `model` wins over the task-tier policy (`resolveModel`) but loses to an explicit per-conversation
+   * override (`session.model`, e.g. the chat model picker). Claude-only (see claude-code.ts's
+   * `startCliSession`) — Copilot/Gemini derive their own `taskPhase` and don't honor persona model
+   * overrides (FLUX-931 kept them on the delegate/task-tier resolution path only). Never applied to
+   * delegate/relay spawns, which already resolve their own model via the `/delegate` route
+   * (routes/cli-session.ts) before this persona resolution ever runs.
+   */
+  model?: string;
 
   // ── Deprecated fields (read on load for backward compat, never written) ──
   /** @deprecated Use `phases` (multi-select) instead. */
@@ -86,6 +97,71 @@ Post your review using the \`add_note\` MCP tool with a structured comment. Star
 ## Status decision — CRITICAL (FLUX-816/1078)
 Do NOT use \`change_status\` unless your focus instructions explicitly say you are the SOLE reviewer. You may be one of multiple reviewers — an orchestrator synthesizes all reviews and decides the next step. If you ARE the sole reviewer, you own the decision: also pass \`reviewState: 'approved'\` (moving to Ready) or \`reviewState: 'changes-requested'\` (moving to In Progress) to \`change_status\` — a comment alone isn't machine-readable and strands the ticket.`,
 };
+
+/**
+ * FLUX-1502: communication-style blocks appended to EVERY persona prompt resolved via
+ * {@link resolvePersonaPrompt} — leads included. Unlike `PHASE_CONTRACTS` (whose lead exemption
+ * exists because a lead's own posting-format/status-authority instructions would conflict with a
+ * contract written for an individual reviewer), these blocks carry no authority or format rules —
+ * they only govern how prose is written — so they compose safely onto complete, self-contained
+ * lead workflows too. Solo/dispatched phase-default sessions never pass through
+ * `resolvePersonaPrompt` (they render via `resolveSoloChatPersona` + `renderPersonaTemplate`);
+ * they get the same blocks appended by `buildInitialPrompt` (agents/shared.ts) via
+ * {@link buildCommunicationBlocks}. Canonical long-form text:
+ * `read_skill('orchestrator', 'Communication Style')`.
+ *
+ * Two deliberately different axes (user decision, 2026-07-18):
+ * - The USER-FACING style is taste — selectable per board (`communicationStyle.user`:
+ *   'concise' | 'detailed' | 'custom' | 'off', default 'concise').
+ * - The INTER-AGENT block is protocol, not taste — one fixed contract (on/off only via
+ *   `communicationStyle.interAgent`). Grounded in the multi-agent literature: structured
+ *   artifacts beat conversational relay (MetaGPT 2023), handoffs must carry decisions AND
+ *   rationale (Cognition 2025), delegation needs explicit objective/format/boundary contracts
+ *   (Anthropic multi-agent research system 2025), and strict JSON degrades reasoning-rich
+ *   content (Tam et al. 2024) — hence semi-structured markdown, not a style menu.
+ */
+export const USER_STYLE_BLOCKS: Record<'concise' | 'detailed', string> = {
+  concise: `## Communication style — to the user
+Write questions, Require Input comments, completion summaries, and verdicts concise and reader-first: lead with the outcome or the question in the first sentence; plain language, no internal jargon or codenames; bold the 2-4 load-bearing phrases; one decision per question with a recommended default. No filler, no hedging, no padding to look thorough — length scales with substance.`,
+  detailed: `## Communication style — to the user
+Write questions, Require Input comments, completion summaries, and verdicts explanatory and self-teaching: still lead with the outcome or the question in the first sentence, then walk through the reasoning — what you did, why, and what alternatives you rejected. Gloss every internal term or codename in plain language on first use. Prefer complete explanations over brevity, but never repeat yourself or pad with filler — the reader wants to understand, not to wade.`,
+};
+
+export const INTER_AGENT_PROTOCOL = `## Inter-agent protocol
+Comments, handoffs, findings, and summaries read by OTHER AGENTS follow a fixed contract — the reader is another agent with none of your context:
+- Self-contained: exact file paths, symbol names, commands, ticket/entry ids — no pronouns for code, no "see above", no references to conversation the reader cannot see.
+- Action first: state what the reader must do or decide in the first line; evidence after.
+- Carry the decision AND its rationale: what was decided, why, and what was considered and rejected — a conclusion without its reasoning forces re-derivation and silently loses intent at every handoff.
+- Keep the structured skeletons intact: greppable headers (CONTEXT SCOUT / REVIEW SYNTHESIS / TEST CONDITIONS), severity tags (Blocker / Major / Minor), and machine fields (reviewState, completion). Write semi-structured markdown prose — not strict JSON, not telegraphic fragments.
+- When DELEGATING, the task description MUST state: the objective, the expected output format, the boundaries (what NOT to do, e.g. "do not change status"), and where to post the result. A vague delegation produces duplicated or divergent work.`;
+
+/** Shape of the `communicationStyle` board-config object (config.ts CONFIG_DEFAULTS). */
+interface CommunicationStyleConfig {
+  user?: 'concise' | 'detailed' | 'custom' | 'off';
+  customText?: string;
+  interAgent?: boolean;
+}
+
+/**
+ * Resolve the communication blocks to inject for the CURRENT board config, or null when both axes
+ * are off. Read fresh at every resolve/build so a settings flip applies to the next launch.
+ * A 'custom' style with no text falls back to 'concise' rather than silently injecting nothing.
+ * (No migration for the `injectCommunicationStyle` boolean this replaces — it lived only inside
+ * this same unreleased PR and was never persisted to any config.json.)
+ */
+export function buildCommunicationBlocks(): string | null {
+  const cs: CommunicationStyleConfig = getConfig()?.communicationStyle ?? {};
+  const user = cs.user ?? 'concise';
+  const parts: string[] = [];
+  if (user === 'custom') {
+    const text = typeof cs.customText === 'string' ? cs.customText.trim() : '';
+    parts.push(text ? `## Communication style — to the user\n${text}` : USER_STYLE_BLOCKS.concise);
+  } else if (user === 'concise' || user === 'detailed') {
+    parts.push(USER_STYLE_BLOCKS[user]);
+  }
+  if (cs.interAgent !== false) parts.push(INTER_AGENT_PROTOCOL);
+  return parts.length ? parts.join('\n\n') : null;
+}
 
 type SmelterMode = 'drafting' | 'operator';
 
@@ -696,6 +772,37 @@ const CHAT_PHASE_PERSONA: OrchestrationPersona = {
     `{{editGateBlock}}{{orchestrationProposalsParagraph}}\n\n{{mcpNote}}`,
 };
 
+
+/**
+ * FLUX-1479 (FLUX-1226 Phase D): the Scratchpad persona drives a Scratch ticket's (`task.kind ===
+ * 'scratch'`) solo chat session. Resolved the same way as every other phase-default above — via
+ * `resolveSoloChatPersona`, PROMPT TEXT ONLY, `role: 'lead'` so it is never EH-tool-scoped and
+ * never contract-composed (see CHAT_PHASE_PERSONA's comment above for the full rationale, which
+ * applies identically here) — but keyed on `phase === 'chat' && isScratchSession(task)` rather
+ * than a `LaunchPhase` of its own: scratch is a `task.kind` concept (FLUX-1443/1227/1228 all
+ * depend on that kind-based mechanism), never a new phase. Tool access is unaffected by this
+ * persona's existence: `disallowedToolsArgs` already hard-skips EH scoping for `phase === 'chat'`
+ * regardless of which chat persona resolves, and the FLUX-1443 file-mutation lock is driven by
+ * `isScratchSession(task)` directly (claude-code.ts), not by persona identity.
+ *
+ * Hidden from every persona picker (same pattern as CHAT_PHASE_PERSONA — see `ALL_PHASE_DEFAULT_PERSONAS`
+ * below) — only reachable via `resolveSoloChatPersona`/`getPersonaById`.
+ */
+const SCRATCHPAD_PHASE_PERSONA: OrchestrationPersona = {
+  id: 'phase-default-scratchpad',
+  label: 'Scratchpad (phase default)',
+  description: 'Default role text for a Scratch ticket\'s conversational session',
+  role: 'lead',
+  phases: [],
+  requiredCapabilities: [],
+  prompt:
+    `## Scratchpad session\n\n` +
+    `This is a Scratch ticket ({{taskId}}) — an open-ended conversation surface, not a ticket working through the normal board flow. There is no fixed board position to advance and no phase checklist to complete here: riff freely, explore ideas, sketch approaches, and think out loud with the user.\n` +
+    `Discussion, planning, and read-only tools (get_ticket, list_tickets, get_board_config, add_note) all work as normal. Do not change the ticket's status — a Scratch ticket does not move through the board like a normal one.\n` +
+    `When the conversation converges on something concrete enough to build, you may PROPOSE turning it into a real, groomed ticket: describe what you would extract and wait for the user's go-ahead before calling extract_ticket (or proposing a board-rebase "promote") — never promote unilaterally.\n` +
+    `{{editGateBlock}}{{orchestrationProposalsParagraph}}\n\n{{mcpNote}}`,
+};
+
 const GROOMING_PHASE_PERSONA: OrchestrationPersona = {
   id: 'phase-default-grooming',
   label: 'Grooming (phase default)',
@@ -728,6 +835,27 @@ const FAST_PATH_PHASE_PERSONA: OrchestrationPersona = {
     `5. Validate it (typecheck/tests).\n` +
     `6. Commit your changes — a branch with 0 commits ahead of base cannot open a PR, and change_status to "{{readyStatus}}" is refused in that state (FLUX-730).\n` +
     `7. Use change_status to move to "{{readyStatus}}" with a completion summary of what you implemented and validated.\n\n` +
+    `{{mcpNote}}`,
+};
+
+const BATCH_GROOMING_PHASE_PERSONA: OrchestrationPersona = {
+  id: 'phase-default-batch-grooming',
+  label: 'Batch grooming (phase default)',
+  description: 'Default role text for a batch-grooming (one session grooms several sibling tickets) launch',
+  role: 'lead',
+  phases: [],
+  requiredCapabilities: [],
+  prompt:
+    `## Your Mission: BATCH-GROOM these tickets in one sitting\n\n` +
+    `This session grooms several sibling tickets that share one parent, reading the shared parent context ONCE instead of once per ticket. The tickets to groom in this sitting are:\n` +
+    `{{batchMembersList}}\n\n` +
+    `Do the following:\n` +
+    `1. Read the shared parent ticket (get_ticket on its id) once — that context applies to every member below.\n` +
+    `2. Groom each listed ticket independently and in turn: call get_ticket(id) to read its current body/history, use update_ticket to fill metadata (priority, effort, tags) and rewrite the body with a Problem/Motivation section and Implementation Plan — the same bar as single-ticket grooming — then use change_status on THAT ticket to move it to "Todo", or to "Require Input" with a comment containing your question if that ticket alone has a blocking question.\n` +
+    `3. Each ticket's outcome is independent: a "Require Input" (or anything else) on one member must never block, skip, or change how you groom the others.\n` +
+    `4. Make every status move its own change_status call, immediately after finishing that ticket's grooming — do not defer or batch the calls together.\n` +
+    `5. End your final turn with a one-line summary naming which tickets moved to Todo and which (if any) moved to Require Input, and why.\n` +
+    `{{batchExcludedNote}}\n` +
     `{{mcpNote}}`,
 };
 
@@ -781,8 +909,10 @@ const FINALIZE_PHASE_PERSONA: OrchestrationPersona = {
 
 const ALL_PHASE_DEFAULT_PERSONAS: OrchestrationPersona[] = [
   CHAT_PHASE_PERSONA,
+  SCRATCHPAD_PHASE_PERSONA,
   GROOMING_PHASE_PERSONA,
   FAST_PATH_PHASE_PERSONA,
+  BATCH_GROOMING_PHASE_PERSONA,
   IMPLEMENTATION_PHASE_PERSONA,
   REVIEW_PHASE_PERSONA,
   FINALIZE_PHASE_PERSONA,
@@ -800,6 +930,7 @@ const PHASE_DEFAULT_PERSONAS: Partial<Record<LaunchPhase, OrchestrationPersona>>
   chat: CHAT_PHASE_PERSONA,
   grooming: GROOMING_PHASE_PERSONA,
   'fast-path': FAST_PATH_PHASE_PERSONA,
+  'batch-grooming': BATCH_GROOMING_PHASE_PERSONA,
   implementation: IMPLEMENTATION_PHASE_PERSONA,
   review: REVIEW_PHASE_PERSONA,
   finalize: FINALIZE_PHASE_PERSONA,
@@ -813,11 +944,14 @@ const PHASE_DEFAULT_PERSONAS: Partial<Record<LaunchPhase, OrchestrationPersona>>
  * parameter exists so the precedence contract is real code, not just a written rule, ready for a
  * future caller (e.g. FLUX-1229/1462) without another signature change.
  */
-export function resolveSoloChatPersona(phase: LaunchPhase | undefined, explicitPersonaId?: string): OrchestrationPersona | undefined {
+export function resolveSoloChatPersona(phase: LaunchPhase | undefined, explicitPersonaId?: string, isScratch?: boolean): OrchestrationPersona | undefined {
   if (explicitPersonaId) {
     const persona = getPersonaById(explicitPersonaId);
     if (persona) return persona;
   }
+  // FLUX-1479 (Phase D): a scratch chat gets the Scratchpad persona instead of the plain chat
+  // default — checked before the phase lookup since both key off `phase === 'chat'`.
+  if (phase === 'chat' && isScratch) return SCRATCHPAD_PHASE_PERSONA;
   return phase ? PHASE_DEFAULT_PERSONAS[phase] : undefined;
 }
 
@@ -947,6 +1081,11 @@ export async function saveCustomPersona(input: Partial<OrchestrationPersona>): P
     ...(Array.isArray(input.enableTools) && input.enableTools.length > 0
       ? { enableTools: input.enableTools.filter((t) => typeof t === 'string') }
       : {}),
+    // FLUX-1479 (FLUX-1226 Phase F): a custom persona can declare its own per-phase model override,
+    // same shape as the built-in phase defaults' `model` field.
+    ...(typeof input.model === 'string' && input.model.trim()
+      ? { model: input.model.trim() }
+      : {}),
   };
   const dir = getPersonasDir();
   if (!existsSync(dir)) await fs.mkdir(dir, { recursive: true });
@@ -1072,9 +1211,39 @@ export const NEVER_DENY = ['get_ticket', 'add_note', 'ask_user_question', 'permi
 export const PHASE_BASELINE: Partial<Record<LaunchPhase, string[]>> = {
   grooming: ['update_ticket', 'change_status', 'create_ticket', 'publish_artifact'],
   'fast-path': ['update_ticket', 'change_status', 'create_ticket', 'publish_artifact'],
+  'batch-grooming': ['update_ticket', 'change_status', 'create_ticket', 'publish_artifact'],
   implementation: ['change_status', 'create_ticket'],
   review: ['change_status', 'create_ticket', 'update_ticket'],
   finalize: ['finish_ticket', 'update_ticket', 'change_status'],
+};
+
+/**
+ * FLUX-1462: deliberate per-phase tool trims for a genuinely DISPATCHED, personaId-less solo lead
+ * session — the `role:'lead'` phase-default persona FLUX-1226 resolves for `start_session`
+ * launches (its id is never stamped onto `session.personaId`, so it can't be reached through the
+ * `CATEGORY_DENY_DEFAULTS`/persona-lookup path below; see `disallowedEhToolsForPersona`'s own
+ * personaId-less branch). Unlike `PHASE_BASELINE` (a re-grant floor layered under a worker's
+ * category deny), this is a standalone deny list applied to a phase that otherwise denies nothing
+ * at all.
+ *
+ * Each entry is justified against that phase's actual mission text (`GROOMING_PHASE_PERSONA` /
+ * `REVIEW_PHASE_PERSONA` in this file) and its injected skill doc (`.docs` via `read_skill`):
+ * - `grooming` — a grooming session writes no code and merges/finishes nothing; its mission is
+ *   `update_ticket`/`change_status`/`create_ticket`/`publish_artifact` only.
+ * - `review` — a review session judges a diff and files follow-ups; same reasoning as grooming
+ *   (no code written, nothing merged or finished on this ticket by the reviewer itself).
+ *
+ * `implementation`/`finalize`/`fast-path` are deliberately absent — implementation's own workflow
+ * checks `branch` status (step 2) and calls `finish_ticket` for branchless tickets (step 11);
+ * finalize's entire mission IS `finish_ticket`; fast-path folds both grooming's and
+ * implementation's needs into one session. Trimming any of those would risk the exact FLUX-242
+ * "missing tool" regression this ticket's own risk section warns against — do not add an entry
+ * here without re-checking the phase's mission text and skill doc first.
+ */
+export const LEAD_PHASE_DENY: Partial<Record<LaunchPhase, string[]>> = {
+  grooming: ['branch', 'finish_ticket', 'merge_tickets'],
+  'batch-grooming': ['branch', 'finish_ticket', 'merge_tickets'],
+  review: ['branch', 'finish_ticket', 'merge_tickets'],
 };
 
 /**
@@ -1120,13 +1289,14 @@ export interface ToolScopingContext {
 /**
  * The `event-horizon` tool names to DISALLOW (bare names) for a session, or `undefined` for "no
  * restriction" — `role: 'lead'` and `role: 'flex'` personas, and any unresolvable personaId
- * (custom persona removed after launch, ad-hoc non-persona session), always get the full toolset.
+ * (custom persona removed after launch, ad-hoc non-persona session), always get the full toolset,
+ * with one FLUX-1462 exception: a genuinely dispatched, personaId-less solo session (see below).
  * Fails OPEN toward more tools on ambiguity, mirroring `buildSpawnMcpConfigArgs`'s own strict-mode
  * fail-open philosophy — a session that can't be confidently scoped down is never the one that
  * loses `change_status`/`add_note`.
  */
 export function disallowedEhToolsForPersona(ctx: ToolScopingContext): string[] | undefined {
-  if (!ctx.personaId) return undefined;
+  if (!ctx.personaId) return disallowedEhToolsForDispatchedLead(ctx);
   const persona = getPersonaById(ctx.personaId);
   if (!persona || persona.role !== 'worker') return undefined;
 
@@ -1142,6 +1312,33 @@ export function disallowedEhToolsForPersona(ctx: ToolScopingContext): string[] |
 
   const categoryDeny = resolveCategoryDeny('worker');
   return categoryDeny.filter((t) => !allow.has(t) && !NEVER_DENY.includes(t));
+}
+
+/**
+ * FLUX-1462: the personaId-less branch — a solo/dispatched phase session resolving through the
+ * FLUX-1226 `role:'lead'` phase-default persona (its id deliberately never reaches
+ * `session.personaId`, per FLUX-1226 Phase B's "no-stamp" decision). Scoped down from
+ * `LEAD_PHASE_DENY` ONLY for a genuinely STANDALONE dispatch — `ctx.patternPosition` is `undefined`
+ * or the literal `'standalone'` exclusively for that case (every multi-agent position — delegate
+ * `assistant`/`step`, and the scatter-gather orchestrator/combiner `lead`/`combiner` — always
+ * stamps an explicit, non-standalone `patternPosition`, see `agents/types.ts` `PatternPosition`
+ * call sites) — so worker-delegate scoping (FLUX-1434, handled entirely by the branch above) and
+ * any multi-agent lead/combiner session are structurally unreachable here and stay exactly as
+ * before this ticket. FLUX-1562: treating `'standalone'` the same as `undefined` here mirrors the
+ * worker branch's `isDelegatePosition` check above and hardens against `cli-session.ts`'s
+ * `'standalone'`-to-unset normalization ever being removed.
+ */
+function disallowedEhToolsForDispatchedLead(ctx: ToolScopingContext): string[] | undefined {
+  if (
+    (ctx.patternPosition !== undefined && ctx.patternPosition !== 'standalone') ||
+    !ctx.phase
+  ) {
+    return undefined;
+  }
+  const deny = LEAD_PHASE_DENY[ctx.phase];
+  if (!deny || deny.length === 0) return undefined;
+  const allow = new Set(ctx.enableTools ?? []);
+  return deny.filter((t) => !allow.has(t) && !NEVER_DENY.includes(t));
 }
 
 /**
@@ -1179,16 +1376,25 @@ export function listSelectablePersonaMeta(phase?: Phase): OrchestrationPersonaMe
  * launched phase's shared contract (if one is defined) + an optional user focus
  * note. Returns undefined for unknown ids so callers can 400.
  *
- * `role: 'lead'` personas never get a contract appended — they are complete,
+ * `role: 'lead'` personas never get a PHASE contract appended — they are complete,
  * self-contained workflows (synthesis, delegation, status authority) that were
  * never shrunk to a lens, so appending contract text written for an individual
  * reviewer would conflict with their own posting-format/status-decision rules.
+ * The style-only `COMMUNICATION_CONTRACT` (FLUX-1502) is exempt from that
+ * exemption: it carries no authority or format rules, so it composes onto every
+ * role, leads included.
  */
 export function resolvePersonaPrompt(id: string, focusComment?: string, phase?: LaunchPhase): string | undefined {
   const persona = getPersonaById(id);
   if (!persona) return undefined;
   const contract = phase && persona.role !== 'lead' ? PHASE_CONTRACTS[phase] : undefined;
   let composed = contract ? `${persona.prompt}\n\n${contract}` : persona.prompt;
+  // FLUX-1502: config-driven style + protocol blocks — read fresh so a settings flip applies on
+  // the next launch.
+  const communicationBlocks = buildCommunicationBlocks();
+  if (communicationBlocks) {
+    composed = `${composed}\n\n${communicationBlocks}`;
+  }
   // FLUX-1175: mode-gated authority contract, keyed off the `furnaceSettings.smelterMode`
   // config setting rather than launch phase — see SMELTER_MODE_CONTRACTS above.
   if (id === 'smelter') {

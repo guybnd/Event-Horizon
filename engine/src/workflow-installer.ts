@@ -6,6 +6,7 @@ import { getModuleMcpServers } from './modules.js';
 import { getEnginePort } from './packaged-mode.js';
 import { signConversation } from './session-binding.js';
 import { buildCoreSkillDocument } from './skill-core.js';
+import { pathsEqual } from './workspace.js';
 
 export type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
 export type ResolvedFramework = Exclude<Framework, 'auto'>;
@@ -513,7 +514,7 @@ function mcpConfigPathFor(targetDir: string, framework: ResolvedFramework): stri
   }
 }
 
-export function buildMcpServerEntry(conversationId?: string) {
+export function buildMcpServerEntry(conversationId?: string, workspaceRoot?: string) {
   // FLUX-645: the engine serves the MCP server in-process over loopback HTTP, so the entry is
   // location-independent — no relative path, no --workspace, no worktree path. Every session
   // (main checkout or `.eh-worktrees/*` worktree) points at this one URL and shares the running
@@ -531,11 +532,23 @@ export function buildMcpServerEntry(conversationId?: string) {
   // one-shot static-config call sites, which omit it), carries that session's bound identity as
   // HTTP headers — the shared HTTP mount means every session's `event-horizon` client otherwise
   // points at this exact same entry, so there is no other way to tell sessions apart engine-side.
+  //
+  // FLUX-1448 (epic FLUX-1230 S3): `workspaceRoot`, when passed, rides alongside as
+  // `x-eh-workspace` — the per-connection MCP workspace binding `mcp-server.ts`'s
+  // `handleMcpHttpRequest` resolves against the S1 registry (`getWorkspaceByRoot`). This is the
+  // board/registry root (`getWorkspace().root`), NOT a worktree/execution path — the two differ
+  // for any worktree-isolated session, and the registry only keys on the former.
+  const headers: Record<string, string> = {};
+  if (conversationId) {
+    headers['x-eh-conversation-id'] = conversationId;
+    headers['x-eh-conversation-token'] = signConversation(conversationId);
+  }
+  if (workspaceRoot) headers['x-eh-workspace'] = workspaceRoot;
   return {
     type: 'http',
     url: `http://127.0.0.1:${getEnginePort()}/mcp`,
     alwaysLoad: true,
-    ...(conversationId ? { headers: { 'x-eh-conversation-id': conversationId, 'x-eh-conversation-token': signConversation(conversationId) } } : {}),
+    ...(Object.keys(headers).length ? { headers } : {}),
   };
 }
 
@@ -580,6 +593,43 @@ interface McpConfigFile {
   [key: string]: unknown;
 }
 
+const SIBLING_ENGINE_PROBE_TIMEOUT_MS = 1_500;
+
+/** Extract the loopback port a previous EH install wrote into an `event-horizon` MCP entry
+ *  (`url` for the Claude/generic shape, `httpUrl` for the Gemini shape), or `null` if the entry
+ *  is missing/foreign/unparseable. */
+function extractEnginePortFromMcpEntry(entry: unknown): number | null {
+  if (!entry || typeof entry !== 'object') return null;
+  const record = entry as Record<string, unknown>;
+  const url = record.url ?? record.httpUrl;
+  if (typeof url !== 'string') return null;
+  const match = url.match(/^https?:\/\/127\.0\.0\.1:(\d+)\//);
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * FLUX-1572: true when a DIFFERENT, live engine process already answers `/api/health` on `port`
+ * and reports it's bound to this exact `workspaceRoot`. Guards `installMcpConfig` against
+ * clobbering that sibling's still-valid `event-horizon` MCP entry with THIS engine's own port —
+ * the "second engine instance on the same workspace poisons .mcp.json" incident, where any agent
+ * session the healthy sibling dispatches right after would read the rewritten config and connect
+ * to a dead/wrong MCP endpoint for its entire life.
+ */
+async function isLiveSiblingEngineForWorkspace(port: number, workspaceRoot: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SIBLING_ENGINE_PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: controller.signal });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { workspace?: string | null };
+    return typeof body.workspace === 'string' && pathsEqual(body.workspace, workspaceRoot);
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Exported for gemini-conversation-headers.test.ts (FLUX-1222) — not part of the public API.
 export async function installMcpConfig(targetDir: string, sourceRoot: string, framework: ResolvedFramework): Promise<void> {
   const configPath = mcpConfigPathFor(targetDir, framework);
@@ -618,6 +668,18 @@ export async function installMcpConfig(targetDir: string, sourceRoot: string, fr
     return;
   }
   existing.mcpServers = existing.mcpServers || {};
+
+  // FLUX-1572: before stamping our own port over whatever `event-horizon` entry is already there,
+  // check whether that entry still points at a DIFFERENT engine that is alive and bound to this
+  // exact workspace right now. If so, this install run is the interloper (a second engine that
+  // just bound the same workspace another instance already serves) — leave the file untouched
+  // instead of severing the healthy sibling's MCP endpoint out from under any session it dispatches.
+  const priorPort = extractEnginePortFromMcpEntry(existing.mcpServers['event-horizon']);
+  if (priorPort != null && priorPort !== getEnginePort() && await isLiveSiblingEngineForWorkspace(priorPort, targetDir)) {
+    log.warn(`[installer] ${configPath} already points at a LIVE Event Horizon engine (port ${priorPort}) serving this exact workspace — leaving the event-horizon MCP entry untouched instead of overwriting it with this engine's port ${getEnginePort()}. This usually means two engine instances are bound to the same workspace; only one should own it.`);
+    return;
+  }
+
   existing.mcpServers['event-horizon'] = serverEntry;
 
   // Merge module MCP servers (phase-independent at install time — phase gating happens at prompt/session time)

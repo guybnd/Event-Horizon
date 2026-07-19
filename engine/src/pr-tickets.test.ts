@@ -278,7 +278,7 @@ describe('resolveMergedPrTickets (immediate post-merge PR resolution)', () => {
 
     expect(resolved).toEqual(['PR-9']);
     expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-9', { status: 'Done', prState: 'MERGED', swimlane: null });
+    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-9', { status: 'Done', prState: 'MERGED', swimlane: null }, '', expect.any(Object));
     expect(vi.mocked(broadcastEvent)).toHaveBeenCalledWith('taskUpdated', { id: 'PR-9' });
   });
 
@@ -307,7 +307,7 @@ describe('syncPrTickets (PR body carried into the card)', () => {
 
     await syncPrTickets('/repo');
 
-    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-9', expect.any(Object), 'The PR description.');
+    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-9', expect.any(Object), 'The PR description.', expect.any(Object));
     // body is the markdown carrier, NOT a frontmatter field.
     const fields = vi.mocked(upsertManagedTicket).mock.calls[0]![1];
     expect('body' in fields).toBe(false);
@@ -320,7 +320,7 @@ describe('syncPrTickets (PR body carried into the card)', () => {
 
     await syncPrTickets('/repo');
 
-    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-10', expect.any(Object), '');
+    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-10', expect.any(Object), '', expect.any(Object));
   });
 });
 
@@ -352,7 +352,7 @@ describe('syncPrTickets clears a bounced member\'s stale reviewState (FLUX-1089)
     expect(vi.mocked(updateTaskWithHistory)).toHaveBeenCalledWith('FLUX-1', expect.objectContaining({
       nextStatus: 'In Progress',
       extraFields: { reviewState: null },
-    }));
+    }), expect.any(Object));
   });
 });
 
@@ -379,7 +379,7 @@ describe('syncPrTickets preserves the merge-conflict swimlane across a poll (FLU
 
     await syncPrTickets('/repo');
 
-    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-20', expect.objectContaining({ swimlane: 'merge-conflict' }), '');
+    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-20', expect.objectContaining({ swimlane: 'merge-conflict' }), '', expect.any(Object));
   });
 
   it('CHANGES_REQUESTED still overrides a stale merge-conflict swimlane during a poll', async () => {
@@ -392,7 +392,7 @@ describe('syncPrTickets preserves the merge-conflict swimlane across a poll (FLU
 
     await syncPrTickets('/repo');
 
-    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-21', expect.objectContaining({ swimlane: 'changes-requested' }), '');
+    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-21', expect.objectContaining({ swimlane: 'changes-requested' }), '', expect.any(Object));
   });
 });
 
@@ -432,7 +432,7 @@ describe('syncPrTickets defers new-ticket creation while sync is unhealthy (FLUX
 
     await syncPrTickets('/repo');
 
-    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-11', expect.any(Object), '');
+    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-11', expect.any(Object), '', expect.any(Object));
   });
 
   it('creates a new PR ticket normally once sync is healthy again', async () => {
@@ -443,6 +443,6 @@ describe('syncPrTickets defers new-ticket creation while sync is unhealthy (FLUX
 
     await syncPrTickets('/repo');
 
-    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-12', expect.any(Object), '');
+    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-12', expect.any(Object), '', expect.any(Object));
   });
 });

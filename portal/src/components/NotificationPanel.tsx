@@ -1,4 +1,4 @@
-import { memo, useRef, useEffect, useCallback, useState } from 'react';
+import { memo, useRef, useEffect, useLayoutEffect, useCallback, useState } from 'react';
 import {
   AlertTriangle,
   BadgeCheck,
@@ -15,9 +15,10 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
-import { motion, AnimatePresence, useMotionValue, useTransform, useReducedMotion } from 'framer-motion';
+import { motion, AnimatePresence, animate, useMotionValue, useTransform, useReducedMotion, type Transition } from 'framer-motion';
 import type { Notification } from '../api';
 import { markNotificationRead, markNotificationUnread, markAllNotificationsRead, dismissNotification, executeNotificationAction, stopTaskCliSession, BOARD_CONVERSATION_ID, FURNACE_CONVERSATION_ID } from '../api';
+import { AnimatedCount } from './ui/AnimatedCount';
 import { useAppSelector, useAppActions, useTaskById } from '../store/useAppSelector';
 import { useDockActions } from './DockProvider';
 import { relativeTime, normalizeStatus } from '../workflow';
@@ -26,6 +27,8 @@ import { useNotificationPrefs, isNotificationVisible } from '../hooks/useNotific
 import { getStatusColorClass } from '../statusStyles';
 import { StatusBadge } from './StatusBadge';
 import { TicketRefChip } from './TicketRefChip';
+import { SuccessMark } from '../motion/SuccessMark';
+import { useMotionTokens } from '../motion/tokens';
 
 /**
  * FLUX-922: per-type theme tokens. Each type drives an accent rgb triplet (comma form for
@@ -55,8 +58,6 @@ const QUIPS = [
   'The board is calm',
   'Caught up. Go ship something.',
 ];
-
-const CONFETTI_COLORS = ['#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ef4444', '#ec4899'];
 
 /** Swipe threshold (px) past which a release commits the action. */
 const SWIPE_THRESHOLD = 64;
@@ -98,9 +99,55 @@ function TimeHover({ iso }: { iso: string }) {
   );
 }
 
+/** FLUX-1522: resolve the on-screen board card a notification anchors to, for the card↔panel
+ *  flight. Null for no ticket, a virtual conversation (BOARD/FURNACE — no card), an absent card,
+ *  or one fully outside the viewport — every case the flight must fall back on. */
+function resolveSourceRect(ticketId: string | undefined): DOMRect | null {
+  if (!ticketId || ticketId === BOARD_CONVERSATION_ID || ticketId === FURNACE_CONVERSATION_ID) return null;
+  const el = document.querySelector<HTMLElement>(`[data-task-id="${CSS.escape(ticketId)}"]`);
+  if (!el) return null;
+  const rect = el.getBoundingClientRect();
+  if (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth) return null;
+  return rect;
+}
+
+/** FLUX-1522 review fix: the card↔panel flight can't transform the real card in place — it's
+ *  nested inside three clipping ancestors (this card's own wrapper, the scrollable list, the
+ *  panel shell), all much smaller than a board-card-to-panel travel distance, so the real element
+ *  would be clipped to invisibility for most of the flight. Instead fly a throwaway `cloneNode`
+ *  visual at `document.body` (the `useCardFlight.ts` measured-clone pattern), which escapes every
+ *  clip, while the real card sits ready at its resting slot with `opacity` held at 0 — then remove
+ *  the clone and reveal the real card the instant it lands, so only one card is ever visible and
+ *  the handoff reads as one continuous motion. The clone is fully decorative (`pointer-events:
+ *  none`, `aria-hidden`) — never interactive, never a second `<NotificationCard>`.
+ *  `reverse` flies FROM `toRect` (the resting slot) TO `fromRect` (the source), for dismiss. */
+function flyClone(el: HTMLElement, fromRect: DOMRect, toRect: DOMRect, reverse: boolean, spring: Transition) {
+  const clone = el.cloneNode(true) as HTMLElement;
+  clone.style.position = 'fixed';
+  clone.style.left = `${toRect.left}px`;
+  clone.style.top = `${toRect.top}px`;
+  clone.style.width = `${toRect.width}px`;
+  clone.style.height = `${toRect.height}px`;
+  clone.style.margin = '0';
+  clone.style.zIndex = '80';
+  clone.style.opacity = '1';
+  clone.style.pointerEvents = 'none';
+  clone.style.willChange = 'transform';
+  clone.setAttribute('aria-hidden', 'true');
+  clone.querySelectorAll<HTMLElement>('button, a, [tabindex]').forEach((n) => { n.tabIndex = -1; });
+  document.body.appendChild(clone);
+  const dx = fromRect.left - toRect.left;
+  const dy = fromRect.top - toRect.top;
+  const controls = reverse
+    ? animate(clone, { x: [0, dx], y: [0, dy] }, spring)
+    : animate(clone, { x: [dx, 0], y: [dy, 0] }, spring);
+  return { clone, controls };
+}
+
 const NotificationCard = memo(function NotificationCard({
   notification,
   read,
+  seenIds,
   onDismiss,
   onMarkRead,
   onMarkUnread,
@@ -110,6 +157,11 @@ const NotificationCard = memo(function NotificationCard({
   notification: Notification;
   /** Effective read state (server read OR optimistically marked read by the panel). */
   read: boolean;
+  /** FLUX-1522: ids that have already played (or been skipped for) their entrance flight, shared
+   *  and mutated across every card in this panel instance — gates the flight to notifications
+   *  that are genuinely new since the panel's own mount, not every card mount (opening the panel,
+   *  or a read↔unread re-bucket remount under `popLayout`, would otherwise replay it). */
+  seenIds: Set<string>;
   onDismiss: (id: string) => void;
   onMarkRead: (id: string) => void;
   onMarkUnread: (id: string) => void;
@@ -161,6 +213,80 @@ const NotificationCard = memo(function NotificationCard({
   const dismissScale = useTransform(x, [-SWIPE_THRESHOLD * 1.4, -SWIPE_THRESHOLD], [1.15, 1]);
   const draggedRef = useRef(false);
 
+  // FLUX-1522: card↔panel flight. The visible motion is a throwaway `document.body` clone (see
+  // `flyClone`), not a transform of this real card — `opacity` hides the real card while the
+  // clone is in flight and reveals it the instant the clone lands. `x` (swipe) is untouched by
+  // this, so drag and flight never contend for the same motion value.
+  const tokens = useMotionTokens();
+  const opacity = useMotionValue(1);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const enteredRef = useRef(false);
+  const activeCloneRef = useRef<HTMLElement | null>(null);
+  const dismissTimeoutRef = useRef<number | null>(null);
+
+  /** Drop any in-flight clone / pending dismiss timer immediately — a mid-flight drag grab, a
+   *  fresh dismiss superseding an in-progress one, or unmount. */
+  const cancelActiveFlight = useCallback(() => {
+    if (activeCloneRef.current) { activeCloneRef.current.remove(); activeCloneRef.current = null; }
+    if (dismissTimeoutRef.current !== null) { window.clearTimeout(dismissTimeoutRef.current); dismissTimeoutRef.current = null; }
+  }, []);
+
+  useLayoutEffect(() => {
+    if (enteredRef.current) return;
+    enteredRef.current = true;
+    // Mark seen regardless of whether this card actually flies (fallback cases still count as
+    // "shown") so a later remount of the SAME id (e.g. a read↔unread re-bucket) never re-flies.
+    const isNew = !seenIds.has(notification.id);
+    seenIds.add(notification.id);
+    if (tokens.instant || !isNew) return;
+    const toEl = cardRef.current;
+    if (!toEl) return;
+    const fromRect = resolveSourceRect(notification.ticketId);
+    if (!fromRect) return;
+    const toRect = toEl.getBoundingClientRect();
+    if (Math.abs(fromRect.left - toRect.left) < 1 && Math.abs(fromRect.top - toRect.top) < 1) return;
+    opacity.set(0);
+    const { clone, controls } = flyClone(toEl, fromRect, toRect, false, tokens.spring);
+    activeCloneRef.current = clone;
+    let cancelled = false;
+    const land = () => {
+      clone.remove();
+      if (activeCloneRef.current === clone) activeCloneRef.current = null;
+      if (!cancelled) opacity.set(1);
+    };
+    controls.then(land).catch(land);
+    return () => { cancelled = true; controls.stop(); clone.remove(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on mount only, guarded by enteredRef
+  }, []);
+
+  // Belt-and-suspenders: drop an in-flight clone / pending dismiss timer if the card unmounts
+  // mid-animation (a server refresh replacing the list, or a sibling dismiss) — avoids a stray
+  // post-unmount `onDismiss` and a clone left animating on a detached motion value.
+  useEffect(() => cancelActiveFlight, [cancelActiveFlight]);
+
+  /** Dismiss reversed into the source card when one is visible; otherwise today's swipe/collapse
+   *  exit. Sequenced (fly the clone to the source, THEN remove the real card) rather than
+   *  concurrent with the outer wrapper's `exit` collapse (FLUX-922) — the two would otherwise
+   *  fight over the same frames; the real card is already hidden (`opacity`) so its collapse is
+   *  invisible regardless. */
+  const dismissWithFlight = useCallback((id: string) => {
+    if (tokens.instant) { onDismiss(id); return; }
+    const toEl = cardRef.current;
+    const fromRect = toEl ? resolveSourceRect(notification.ticketId) : null;
+    if (!fromRect || !toEl) { onDismiss(id); return; }
+    cancelActiveFlight();
+    const toRect = toEl.getBoundingClientRect();
+    opacity.set(0);
+    const { clone } = flyClone(toEl, fromRect, toRect, true, tokens.spring);
+    activeCloneRef.current = clone;
+    dismissTimeoutRef.current = window.setTimeout(() => {
+      clone.remove();
+      if (activeCloneRef.current === clone) activeCloneRef.current = null;
+      dismissTimeoutRef.current = null;
+      onDismiss(id);
+    }, tokens.springSettleMs);
+  }, [tokens, notification.ticketId, onDismiss, opacity, cancelActiveFlight]);
+
   const handleOpen = useCallback(() => {
     if (draggedRef.current) return; // a swipe just ended — don't also open the ticket
     if (!notification.ticketId) return;
@@ -192,7 +318,7 @@ const NotificationCard = memo(function NotificationCard({
   const handleAction = useCallback(async (e: React.MouseEvent, actionId: string) => {
     e.stopPropagation();
     if (actionId === 'dismiss') {
-      onDismiss(notification.id);
+      dismissWithFlight(notification.id);
     } else if (actionId === 'view') {
       handleOpen();
     } else if (actionId === 'open-url') {
@@ -205,7 +331,7 @@ const NotificationCard = memo(function NotificationCard({
       setSuccessMessage(label);
       setTimeout(() => onUpdate(), 2000);
     }
-  }, [notification, handleOpen, onDismiss, onMarkRead, onUpdate]);
+  }, [notification, handleOpen, dismissWithFlight, onMarkRead, onUpdate]);
 
   const handleStop = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -270,15 +396,21 @@ const NotificationCard = memo(function NotificationCard({
 
       {/* Draggable card (solid background so the actions only show as it slides). */}
       <motion.div
+        ref={cardRef}
         drag="x"
-        style={{ x }}
+        style={{ x, opacity }}
         dragConstraints={{ left: 0, right: 0 }}
         dragElastic={0.9}
         dragMomentum={false}
         dragSnapToOrigin
-        onDragStart={() => { draggedRef.current = true; }}
+        onDragStart={() => {
+          draggedRef.current = true;
+          // FLUX-1522: a mid-flight grab hands off to the drag gesture cleanly — drop the ghost
+          // clone and reveal the real (now-interactive) card immediately.
+          if (activeCloneRef.current) { cancelActiveFlight(); opacity.set(1); }
+        }}
         onDragEnd={(_, info) => {
-          if (info.offset.x <= -SWIPE_THRESHOLD || info.velocity.x < -600) onDismiss(notification.id);
+          if (info.offset.x <= -SWIPE_THRESHOLD || info.velocity.x < -600) dismissWithFlight(notification.id);
           else if (info.offset.x >= SWIPE_THRESHOLD || info.velocity.x > 600) {
             if (read) onMarkUnread(notification.id); else onMarkRead(notification.id);
           }
@@ -329,7 +461,7 @@ const NotificationCard = memo(function NotificationCard({
               {notification.title}
             </p>
             <button
-              onClick={(e) => { e.stopPropagation(); onDismiss(notification.id); }}
+              onClick={(e) => { e.stopPropagation(); dismissWithFlight(notification.id); }}
               title="Dismiss"
               aria-label="Dismiss notification"
               className="-mr-1 -mt-1 shrink-0 rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-white/10 dark:hover:text-gray-200"
@@ -418,31 +550,9 @@ const NotificationCard = memo(function NotificationCard({
   );
 });
 
-/** A one-shot confetti burst fired when the list transitions to empty. Gated by reduced-motion. */
-function ConfettiBurst() {
-  const dots = Array.from({ length: 18 });
-  return (
-    <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center overflow-hidden">
-      {dots.map((_, i) => {
-        const angle = (i / dots.length) * Math.PI * 2;
-        const dist = 64 + (i % 5) * 16;
-        return (
-          <motion.span
-            key={i}
-            initial={{ opacity: 1, x: 0, y: 0, scale: 0.5 }}
-            animate={{ opacity: 0, x: Math.cos(angle) * dist, y: Math.sin(angle) * dist, scale: 1 }}
-            transition={{ duration: 0.9 + (i % 4) * 0.1, ease: 'easeOut' }}
-            className="absolute h-1.5 w-1.5 rounded-full"
-            style={{ backgroundColor: CONFETTI_COLORS[i % CONFETTI_COLORS.length] }}
-          />
-        );
-      })}
-    </div>
-  );
-}
-
-/** The caught-up empty state: a haloed orb + a rotating quip, with confetti on the just-emptied
- *  transition. Motion (halo pulse, quip rotation, confetti) is gated behind reduced-motion. */
+/** The caught-up empty state: a haloed orb + a rotating quip, with a SuccessMark on the
+ *  just-emptied transition (FLUX-1526: confetti is reserved for releases). Motion (halo pulse,
+ *  quip rotation, SuccessMark) is gated behind reduced-motion / SuccessMark's own `instant`. */
 function EmptyState({ celebrate, actionTab }: { celebrate: boolean; actionTab: boolean }) {
   const reduce = useReducedMotion();
   const [quip, setQuip] = useState(0);
@@ -453,7 +563,11 @@ function EmptyState({ celebrate, actionTab }: { celebrate: boolean; actionTab: b
   }, [reduce]);
   return (
     <div className="relative flex flex-col items-center justify-center py-12 text-center">
-      {celebrate && !reduce && <ConfettiBurst />}
+      {celebrate && !reduce && (
+        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+          <SuccessMark size={40} />
+        </div>
+      )}
       <div className="relative mb-3">
         <div className={`absolute inset-0 rounded-full bg-primary/30 blur-xl ${reduce ? '' : 'eh-notif-orb'}`} />
         <div className="relative flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-primary/80 to-primary text-white shadow-lg">
@@ -521,6 +635,18 @@ export const NotificationPanel = memo(function NotificationPanel({ notifications
   // FLUX-800: optimistic *unread* overrides — swiping right on a read card marks it unread. Kept as
   // its own set so it can override a server `read: true` (which readIds alone cannot undo).
   const [unreadIds, setUnreadIds] = useState<Set<string>>(() => new Set());
+  // FLUX-1522: ids that have already played (or been skipped for) their card↔panel entrance
+  // flight. Lazily seeded ONCE with whatever is already visible on this panel's first render —
+  // React-sanctioned one-time ref init, safe under StrictMode's double render-body invocation —
+  // so opening the panel never bursts a flight for notifications that were already there; only
+  // ids that appear for the first time afterward (while this panel instance is mounted) are
+  // "new." Each `NotificationCard` marks its own id in this shared, stable-identity Set from its
+  // own one-shot mount effect (not here) so the bookkeeping is a plain effect-time mutation, not a
+  // render-time one.
+  const seenNotificationIdsRef = useRef<Set<string> | null>(null);
+  if (seenNotificationIdsRef.current === null) {
+    seenNotificationIdsRef.current = new Set(notifications.map((n) => n.id));
+  }
 
   useEffect(() => {
     // FLUX-898: embedded inside the attention surface the host owns open/close, so the panel must not
@@ -681,7 +807,7 @@ export const NotificationPanel = memo(function NotificationPanel({ notifications
           >
             {t.label}
             <span className={`rounded-full px-1.5 py-px text-[10px] font-bold tabular-nums ${active ? 'bg-primary/20 text-primary' : 'bg-gray-200/80 text-gray-500 dark:bg-white/10 dark:text-gray-400'}`}>
-              {t.count}
+              <AnimatedCount value={t.count} />
             </span>
           </button>
         );
@@ -715,6 +841,7 @@ export const NotificationPanel = memo(function NotificationPanel({ notifications
                       key={n.id}
                       notification={n}
                       read={isRead(n)}
+                      seenIds={seenNotificationIdsRef.current!}
                       onDismiss={dismiss}
                       onMarkRead={markRead}
                       onMarkUnread={markUnread}

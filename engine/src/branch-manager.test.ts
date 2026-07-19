@@ -5,7 +5,7 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { setWorkspaceRoot } from './workspace.js';
-import { deleteTicketBranch, planFinishPr, checkGhAuth, isMergeConflict, type PrStatus } from './branch-manager.js';
+import { deleteTicketBranch, planFinishPr, checkGhAuth, isMergeConflict, evaluateCiGate, runConfiguredCheckCommand, type PrStatus } from './branch-manager.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -317,6 +317,184 @@ describe('planFinishPr — folded-sibling auto-detect (FLUX-944)', () => {
     );
     expect(plan.action).toBe('created');
     expect(created).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLUX-560 — evaluateCiGate: the agnostic CI gate. EH only ever reads a pass/fail verdict
+// (GitHub's check rollup, or the exit code of a caller-supplied checkCommand) and never runs the
+// user's stack itself. Pure: deps are injected, so no gh/git/shell is exercised here except the
+// dedicated checkCommand tests below (which run a real trivial shell command).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function checks(overrides: Partial<{ total: number; passed: number; failed: number; pending: number }>) {
+  return { total: 0, passed: 0, failed: 0, pending: 0, ...overrides };
+}
+
+function withChecks(c: { total: number; passed: number; failed: number; pending: number }): PrStatus {
+  return { ...prStatus('OPEN'), checks: c };
+}
+
+describe('evaluateCiGate (FLUX-560)', () => {
+  it('blocks when checks.failed > 0', async () => {
+    const outcome = await evaluateCiGate('flux/x', {}, {
+      getStatus: async () => withChecks(checks({ total: 3, passed: 2, failed: 1 })),
+    });
+    expect(outcome.blocked).toBe(true);
+    expect(outcome.reason).toMatch(/1 check\(s\) failing/);
+    expect(outcome.source).toBe('github');
+  });
+
+  it('blocks on pending checks by default', async () => {
+    const outcome = await evaluateCiGate('flux/x', {}, {
+      getStatus: async () => withChecks(checks({ total: 2, passed: 1, pending: 1 })),
+    });
+    expect(outcome.blocked).toBe(true);
+    expect(outcome.reason).toMatch(/still running/);
+  });
+
+  it('allows pending checks when allowPending is set', async () => {
+    const outcome = await evaluateCiGate('flux/x', { allowPending: true }, {
+      getStatus: async () => withChecks(checks({ total: 2, passed: 1, pending: 1 })),
+    });
+    expect(outcome.blocked).toBe(false);
+  });
+
+  it('never blocks when checks.total === 0 (no CI) and no checkCommand is configured', async () => {
+    const outcome = await evaluateCiGate('flux/x', {}, {
+      getStatus: async () => withChecks(checks({})),
+    });
+    expect(outcome.blocked).toBe(false);
+    expect(outcome.reason).toBeUndefined();
+  });
+
+  it('never blocks when there is no PR at all', async () => {
+    const outcome = await evaluateCiGate('flux/x', {}, { getStatus: async () => null });
+    expect(outcome.blocked).toBe(false);
+  });
+
+  it('passes when all checks pass', async () => {
+    const outcome = await evaluateCiGate('flux/x', {}, {
+      getStatus: async () => withChecks(checks({ total: 2, passed: 2 })),
+    });
+    expect(outcome.blocked).toBe(false);
+    expect(outcome.checks?.passed).toBe(2);
+  });
+
+  it('force overrides a failing verdict (blocked: false, reason still surfaced)', async () => {
+    const outcome = await evaluateCiGate('flux/x', {}, {
+      force: true,
+      getStatus: async () => withChecks(checks({ total: 1, failed: 1 })),
+    });
+    expect(outcome.blocked).toBe(false);
+    expect(outcome.reason).toMatch(/failing/);
+  });
+
+  it('gate: "warn" never blocks but still surfaces the reason', async () => {
+    const outcome = await evaluateCiGate('flux/x', { gate: 'warn' }, {
+      getStatus: async () => withChecks(checks({ total: 1, failed: 1 })),
+    });
+    expect(outcome.blocked).toBe(false);
+    expect(outcome.reason).toMatch(/failing/);
+  });
+
+  it('gate: "off" never blocks and never even fetches the PR status', async () => {
+    let called = false;
+    const outcome = await evaluateCiGate('flux/x', { gate: 'off' }, {
+      getStatus: async () => { called = true; return withChecks(checks({ total: 1, failed: 1 })); },
+    });
+    expect(outcome.blocked).toBe(false);
+    expect(called).toBe(false);
+  });
+
+  it('runs checkCommand when there is no GitHub CI, and blocks on non-zero exit', async () => {
+    const outcome = await evaluateCiGate('flux/x', { checkCommand: 'exit 1' }, {
+      getStatus: async () => null,
+      runCheckCommand: async () => ({ ok: false, detail: 'exit code 1' }),
+    });
+    expect(outcome.blocked).toBe(true);
+    expect(outcome.reason).toMatch(/checkCommand/);
+    expect(outcome.source).toBe('checkCommand');
+  });
+
+  it('checkCommand passing does not block', async () => {
+    const outcome = await evaluateCiGate('flux/x', { checkCommand: 'exit 0' }, {
+      getStatus: async () => null,
+      runCheckCommand: async () => ({ ok: true }),
+    });
+    expect(outcome.blocked).toBe(false);
+  });
+
+  it('unset checkCommand with no GitHub CI never gates', async () => {
+    let called = false;
+    const outcome = await evaluateCiGate('flux/x', {}, {
+      getStatus: async () => null,
+      runCheckCommand: async () => { called = true; return { ok: true }; },
+    });
+    expect(outcome.blocked).toBe(false);
+    expect(called).toBe(false);
+  });
+
+  // FLUX-1564: checkCommand used to always run with cwd = requireWorkspaceRoot() (the main
+  // checkout, on the default branch) — verifying the wrong tree for a PR branch's checkCommand.
+  it('passes the resolved checkCommand cwd through to runCheckCommand', async () => {
+    let receivedCwd: string | undefined;
+    const outcome = await evaluateCiGate('flux/x', { checkCommand: 'exit 0' }, {
+      getStatus: async () => null,
+      resolveCheckCommandCwd: async () => '/some/branch/worktree',
+      runCheckCommand: async (_cmd, cwd) => { receivedCwd = cwd; return { ok: true }; },
+    });
+    expect(receivedCwd).toBe('/some/branch/worktree');
+    expect(outcome.blocked).toBe(false);
+  });
+
+  it('by default resolves checkCommand cwd to the branch worktree, not the main checkout', async () => {
+    const branch = 'flux/checkcommand-cwd';
+    const worktreePath = path.join(tmp, 'checkcommand-worktree');
+    await gitC(repo, ['worktree', 'add', worktreePath, '-b', branch]);
+
+    let receivedCwd: string | undefined;
+    const outcome = await evaluateCiGate(branch, { checkCommand: 'exit 0' }, {
+      getStatus: async () => null,
+      runCheckCommand: async (_cmd, cwd) => { receivedCwd = cwd; return { ok: true }; },
+    });
+
+    expect(receivedCwd).not.toBe(repo);
+    expect(await fs.realpath(receivedCwd!)).toBe(await fs.realpath(worktreePath));
+    expect(outcome.blocked).toBe(false);
+
+    await gitC(repo, ['worktree', 'remove', worktreePath, '--force']);
+  });
+
+  it('by default falls back to the workspace root when no worktree holds the branch', async () => {
+    let receivedCwd: string | undefined;
+    await evaluateCiGate('flux/no-worktree-for-this-branch', { checkCommand: 'exit 0' }, {
+      getStatus: async () => null,
+      runCheckCommand: async (_cmd, cwd) => { receivedCwd = cwd; return { ok: true }; },
+    });
+    expect(await fs.realpath(receivedCwd!)).toBe(await fs.realpath(repo));
+  });
+});
+
+describe('runConfiguredCheckCommand (FLUX-560)', () => {
+  const node = JSON.stringify(process.execPath);
+
+  it('ok: true on a zero exit', async () => {
+    const result = await runConfiguredCheckCommand(`${node} -e "process.exit(0)"`);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('ok: false with a detail on a non-zero exit', async () => {
+    const result = await runConfiguredCheckCommand(`${node} -e "process.exit(1)"`);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toBeTruthy();
+  });
+
+  // FLUX-1564: an explicit cwd must actually be honored — a bogus path fails to spawn instead
+  // of silently falling back to the workspace root.
+  it('runs in the supplied cwd rather than the workspace root', async () => {
+    const result = await runConfiguredCheckCommand(`${node} -e "process.exit(0)"`, path.join(tmp, 'does-not-exist'));
+    expect(result.ok).toBe(false);
   });
 });
 

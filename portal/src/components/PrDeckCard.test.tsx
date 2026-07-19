@@ -95,8 +95,11 @@ function renderPrCard(actions: AppActions) {
     </AppActionsContext.Provider>,
   );
 
-  // The member deck defaults to folded (TaskDeck) — unwind it so the nested member card renders.
-  fireEvent.click(screen.getByText('1 ticket in this PR'));
+  // FLUX-1503: a queued member (no live/actionable state) hides behind the deck's "N more…"
+  // toggle — unwind it, then click the resulting collapsed `MemberLine` to expand it to the full
+  // nested `TaskCard` this test's bubbling guard needs.
+  fireEvent.click(screen.getByText('1 more ticket in this PR'));
+  fireEvent.click(screen.getByText('Folded member ticket'));
 }
 
 describe('PR card nested-member bubbling (FLUX-1316/FLUX-1322 regression)', () => {

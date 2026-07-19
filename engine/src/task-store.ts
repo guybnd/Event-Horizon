@@ -1,4 +1,4 @@
-import { getWorkspace } from './workspace-context.js';
+import { getWorkspace, openWorkspace, runWithWorkspace, type Workspace } from './workspace-context.js';
 import { log } from './log.js';
 import { performance } from 'node:perf_hooks';
 import { recordDuration } from './perf/registry.js';
@@ -16,13 +16,14 @@ import chokidar from 'chokidar';
 // on a slow/unreachable remote or a stalled credential prompt. Route through the S1 runner.
 import { runGit } from './git-exec.js';
 import { getActiveFluxDir, getTaskAssetsDir, getFluxStoreDir, isOrphanMode, setWorkspaceRoot, getWorkspacesList, getWorkspaceRoot } from './workspace.js';
-import { attachWorktreeIfPresent, migrateStrandedFluxTickets } from './storage-sync.js';
+import { attachWorktreeIfPresent, migrateStrandedFluxTickets, ensureNonOrphanLocalGitignore } from './storage-sync.js';
 import { startSyncWatcher, allocateNewTicketId, triggerSync } from './sync-watcher.js';
 import { appendJournalEntry, setJournalReplayHandler, setJournalCacheReloadHandler } from './sync-journal.js';
 import { randomUUID } from 'crypto';
 import { loadConfig, autoRegisterUnknownTags, getConfig } from './config.js';
 import { loadCustomPersonas } from './orchestration-personas.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp, compactSessionProgress, type HistoryEntryLike } from './history.js';
+import { isPidAlive } from './kill-process-tree.js';
 import { generatePromptNotification, generateCompletionNotification, clearNotifications, checkSkillStaleness, addNotification } from './notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { broadcastEvent, bumpTasksVersion } from './events.js';
@@ -31,22 +32,49 @@ import { cliSessionsById, cliSessionIdByTaskId, rehydrateSessionStubs, armReclai
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
 import { bootstrapNewWorkspace, installSkillsForWorkspace } from './bootstrap.js';
-import { activateGroup, activateMemberBinding, getGroupContext, getMemberBinding, activeGroupDocsLabel } from './group.js';
+import { activateGroup, activateMemberBinding, groupDocsLabel } from './group.js';
 import { attachMemberWorktree } from './group-member-worktree.js';
 import { pruneTaskWorktrees } from './task-worktree.js';
 import { probeAllEnabled } from './module-probe.js';
+import { runWithConcurrency } from './concurrency.js';
+import { loadBootIndex, partitionByBootIndex, persistBootIndex } from './boot-index.js';
 
 // FLUX-343 (plan step 1): the pure serializer/validator/util surface moved to task-serialize.ts.
 // Re-exported here so the ~60 existing importers keep one stable import path; task-store's own
 // internal uses go through the import below.
-export { atomicWriteFile, serializeTaskForApi, serializeTaskForAgent, serializeTaskForList, getTerminalStatuses, subtaskIds, validateParentLink, repairTicket, truncateBodyForAgent, AGENT_BODY_LIMIT } from './task-serialize.js';
+export { atomicWriteFile, serializeTaskForApi, serializeTaskForAgent, serializeTaskForList, getTerminalStatuses, subtaskIds, validateParentLink, repairTicket, truncateBodyForAgent, AGENT_BODY_LIMIT, computeBodyVersion, computeDiskBodyVersion } from './task-serialize.js';
 export type { TaskRecord, TaskFrontmatter } from './task-serialize.js';
-import { atomicWriteFile, subtaskIds, repairTicket } from './task-serialize.js';
+import { atomicWriteFile, subtaskIds, repairTicket, computeDiskBodyVersion } from './task-serialize.js';
 import type { TaskRecord, TaskFrontmatter } from './task-serialize.js';
 
 // FLUX-343: the mutable workspace state (tasks/docs/parse-errors/isActivating) that used to be
 // exported `let` singletons here now lives on the Workspace object — read it via getWorkspace()
 // from workspace-context.ts.
+//
+// FLUX-1447 (epic FLUX-1230 S2, the routing-contract template): every stateful function below now
+// takes/receives its owning `ws: Workspace` instead of calling the bare global `getWorkspace()`
+// internally. Exported functions default `ws: Workspace = getWorkspace()` so the ~250 not-yet-
+// migrated external call sites (across 44 other files — MCP tools/S3, background jobs/S4, the many
+// `updateTaskWithHistory`/`createTask` callers) keep compiling and behaving byte-for-byte unchanged;
+// a caller that HAS already resolved a workspace (an HTTP route reading `req.workspace`, or another
+// task-store function that already has `ws` in scope) passes it explicitly instead of triggering a
+// second, potentially-divergent lookup. Internal-only helpers (no external callers) take a required
+// `ws` threaded from their one caller — no default needed since we control every call site directly.
+// `activateWorkspace`/`doActivateWorkspace` are the deliberate exception: they resolve `getWorkspace()`
+// ONCE at the activation entry point and thread that single `ws` through the rest of the activation
+// call graph, but do not route through the S1 registry (`openWorkspace`) themselves — rewiring
+// *activation* to open/target a specific registry entry is a separate decision (not owned by any S2
+// coverage-map row) left to a later subtask.
+
+// FLUX-1547: bounded concurrency for the boot scan (both the boot-index stat-comparison pass and
+// the full loadTask pool). 12 in-flight files overlaps I/O round-trips well without creating so
+// many simultaneous fs handles that it risks EMFILE on a constrained host.
+const BOOT_SCAN_CONCURRENCY = 12;
+// How often (in newly-*fully*-loaded files, not cache hits) to broadcast `bootProgress` while the
+// full-load pool is running. Lower than the old RESCAN_YIELD_EVERY (50) since parallel loads
+// finish out of order — a tighter cadence keeps the portal's progress count reading as continuous
+// instead of jumping in large steps (FLUX-1547 Phase 4 tweens on top of this on the portal side).
+const BOOT_PROGRESS_EVERY = 10;
 
 const repairingPaths = new Set<string>();
 
@@ -60,7 +88,20 @@ const recentEngineWrites = new Set<string>();
 
 // Sessions whose final message we've already surfaced as a notification (FLUX-570) —
 // dedup across the multiple terminal persists a single session can make.
+// FLUX-1445: only ever grew (no .delete()) — with N workspaces sharing this process, every
+// session across every board goes in and none come out. Capped FIFO: a session's terminal
+// persists all happen close together, so evicting the oldest entry once the cap is hit can
+// only reopen dedup for a session that's long since finished flushing.
+const SURFACED_FINAL_MESSAGES_MAX = 1000;
 const surfacedFinalMessages = new Set<string>();
+
+function markFinalMessageSurfaced(sessionId: string) {
+  surfacedFinalMessages.add(sessionId);
+  if (surfacedFinalMessages.size > SURFACED_FINAL_MESSAGES_MAX) {
+    const oldest = surfacedFinalMessages.values().next().value;
+    if (oldest !== undefined) surfacedFinalMessages.delete(oldest);
+  }
+}
 
 export async function readTaskFromDisk(task: TaskRecord): Promise<{ frontmatter: TaskFrontmatter; body: string }> {
   const fallbackFromCache = () => {
@@ -108,12 +149,12 @@ function recoverSessionEntry(taskId: string, sessionId: string, task: TaskRecord
 // does its own read-modify-write of the full frontmatter (not just the touched history entry), so
 // without the lock a concurrent write to any other field (e.g. swimlane set by change_status) could
 // read stale frontmatter here and get silently reverted when this write lands after.
-export function updateAgentSession(taskId: string, sessionId: string, updater: (session: Record<string, unknown>) => void) {
-  return serializeTicketWrite(taskId, () => updateAgentSessionLocked(taskId, sessionId, updater));
+export function updateAgentSession(taskId: string, sessionId: string, updater: (session: Record<string, unknown>) => void, ws: Workspace = getWorkspace()) {
+  return serializeTicketWrite(ws, taskId, () => updateAgentSessionLocked(taskId, sessionId, updater, ws));
 }
 
-async function updateAgentSessionLocked(taskId: string, sessionId: string, updater: (session: Record<string, unknown>) => void) {
-  const task = getWorkspace().tasks[taskId];
+async function updateAgentSessionLocked(taskId: string, sessionId: string, updater: (session: Record<string, unknown>) => void, ws: Workspace) {
+  const task = ws.tasks[taskId];
   if (!task) return null;
 
   const { frontmatter, body } = await readTaskFromDisk(task);
@@ -146,7 +187,7 @@ async function updateAgentSessionLocked(taskId: string, sessionId: string, updat
   if (sess?.status && sess.status !== 'active' && sess.finalMessage && !surfacedFinalMessages.has(sessionId)) {
     const fm = String(sess.finalMessage);
     if (finalMessageNeedsUser(fm, frontmatter.swimlane)) {
-      surfacedFinalMessages.add(sessionId);
+      markFinalMessageSurfaced(sessionId);
       // FLUX-945: raise the PERSISTENT needsAction flag in addition to the transient notification, so
       // the question survives even when the same session moved the ticket to a terminal status (Done/
       // Ready) — a notification alone evaporates the moment the user looks away. Set inline: we are
@@ -170,31 +211,85 @@ async function updateAgentSessionLocked(taskId: string, sessionId: string, updat
   const fileContent = matter.stringify(body, frontmatter);
   recentEngineWrites.add(task._path);
   await atomicWriteFile(task._path, fileContent);
-  getWorkspace().tasks[taskId] = { ...frontmatter, body, id: taskId, _path: task._path };
-  return getWorkspace().tasks[taskId];
+  ws.tasks[taskId] = { ...frontmatter, body, id: taskId, _path: task._path };
+  return ws.tasks[taskId];
 }
 
 // Per-ticket write serialization (FLUX-645). With a single shared MCP server, concurrent
 // sessions issue concurrent read-modify-write on a ticket's history; without a lock the later
 // write reads stale frontmatter and clobbers the earlier append, dropping history entries. A
-// per-ticketId promise chain serializes writes to the SAME ticket while writes to DIFFERENT
-// tickets stay parallel. (One engine process finally makes this enforceable — the old
-// N-stdio-servers design couldn't share a lock.)
-const ticketWriteChains = new Map<string, Promise<unknown>>();
+// per-(workspace, ticketId) promise chain serializes writes to the SAME ticket in the SAME
+// workspace while writes to different tickets — or the same ticket id in a different workspace —
+// stay parallel. (One engine process finally makes this enforceable — the old N-stdio-servers
+// design couldn't share a lock.)
+// FLUX-1451: keyed by `Workspace` object identity (outer WeakMap) rather than a bare ticket id —
+// with N workspaces sharing this process, ticket ids collide across boards (each board's own
+// "FLUX-1"), so an id-only key would serialize unrelated writes against each other. Object
+// identity has no null-`root`-before-first-bind case and no string-separator collision risk, and
+// the inner map is dropped for free (WeakMap GC) once a workspace is evicted from the registry.
+const ticketWriteChains = new WeakMap<Workspace, Map<string, Promise<unknown>>>();
 
-function serializeTicketWrite<T>(taskId: string, run: () => Promise<T>): Promise<T> {
-  const prev = ticketWriteChains.get(taskId) ?? Promise.resolve();
+function serializeTicketWrite<T>(ws: Workspace, taskId: string, run: () => Promise<T>): Promise<T> {
+  let chains = ticketWriteChains.get(ws);
+  if (!chains) {
+    chains = new Map<string, Promise<unknown>>();
+    ticketWriteChains.set(ws, chains);
+  }
+  const prev = chains.get(taskId) ?? Promise.resolve();
   // Chain onto the previous write whether it resolved or rejected, so one failed write
   // doesn't wedge the queue for that ticket.
   const result = prev.then(run, run);
   // Keep a non-rejecting tail as the chain head, and prune the map entry once this is the
   // last write in flight so the map doesn't grow unbounded across many tickets.
   const tail = result.then(() => {}, () => {});
-  ticketWriteChains.set(taskId, tail);
+  chains.set(taskId, tail);
   void tail.then(() => {
-    if (ticketWriteChains.get(taskId) === tail) ticketWriteChains.delete(taskId);
+    if (chains!.get(taskId) === tail) chains!.delete(taskId);
   });
   return result;
+}
+
+/**
+ * FLUX-1550: thrown by `updateTaskWithHistoryLocked` when a body write's `baseBodyVersion` no
+ * longer matches the on-disk body's current version — a lost-update race (someone else wrote the
+ * body between this caller's read and this write). Carries the fresh on-disk version so the
+ * caller can re-read and retry without a second round trip just to discover the new token.
+ */
+export class StaleBodyError extends Error {
+  currentBodyVersion: string;
+  constructor(currentBodyVersion: string) {
+    super('Ticket body changed since it was last read (stale baseBodyVersion) — re-read the ticket and retry.');
+    this.name = 'StaleBodyError';
+    this.currentBodyVersion = currentBodyVersion;
+  }
+}
+
+// FLUX-1550: bounded recoverability stash for body overwrites. A CAS rejection (StaleBodyError)
+// never touches disk — nothing to recover there. This covers the writes that DO land: a matching-
+// version write, and the deliberate grandfathered-omission hole (AC #4/#7) — so even a
+// no-token overwrite is recoverable without spelunking a session's JSONL transcript. Capped FIFO
+// per ticket; a sidecar JSON file next to the ticket's own .md, never synced/committed as ticket
+// content itself.
+const BODY_HISTORY_MAX_ENTRIES = 20;
+
+async function stashPriorBody(ticketPath: string, priorBody: string): Promise<void> {
+  const historyPath = ticketPath.replace(/\.md$/, '.body-history.json');
+  try {
+    let entries: Array<{ body: string; version: string; ts: string }> = [];
+    try {
+      const raw = await fs.readFile(historyPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) entries = parsed;
+    } catch {
+      entries = [];
+    }
+    entries.push({ body: priorBody, version: computeDiskBodyVersion(priorBody), ts: new Date().toISOString() });
+    if (entries.length > BODY_HISTORY_MAX_ENTRIES) entries = entries.slice(-BODY_HISTORY_MAX_ENTRIES);
+    await fs.writeFile(historyPath, JSON.stringify(entries), 'utf-8');
+  } catch (err) {
+    // Recoverability is best-effort — never block or fail the actual ticket write over it.
+    console.warn(`[FLUX] Failed to stash prior body for ${ticketPath}: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 export interface UpdateTaskWithHistoryOptions {
@@ -210,6 +305,12 @@ export interface UpdateTaskWithHistoryOptions {
   // are unaffected. `newTitle` is honored here because extraFields deliberately strips `title`.
   newTitle?: string;
   newBody?: string;
+  // FLUX-1550: opaque `computeBodyVersion` token the caller read alongside the body it's basing
+  // `newBody` on. Only meaningful together with `newBody` — ignored for metadata-only writes.
+  // Matches the fresh on-disk version → write proceeds. Mismatches → rejected with
+  // `StaleBodyError` instead of clobbering. Omitted entirely → grandfathered (today's pre-CAS
+  // behavior), logged via console.warn so the hole stays visible.
+  baseBodyVersion?: string;
   tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean; cacheReadTokens?: number; cacheCreationTokens?: number } | undefined;
   // FLUX-987: append this child ticket id to frontmatter.subtasks. Computed from the FRESH
   // on-disk array read under THIS lock acquisition (not a precomputed array passed via
@@ -234,8 +335,8 @@ export interface UpdateTaskWithHistoryOptions {
   __replaying?: boolean;
 }
 
-export function updateTaskWithHistory(taskId: string, options: UpdateTaskWithHistoryOptions) {
-  return serializeTicketWrite(taskId, () => updateTaskWithHistoryLocked(taskId, options));
+export function updateTaskWithHistory(taskId: string, options: UpdateTaskWithHistoryOptions, ws: Workspace = getWorkspace()) {
+  return serializeTicketWrite(ws, taskId, () => updateTaskWithHistoryLocked(taskId, options, ws));
 }
 
 // FLUX-1428: register this as the journal's replay entry point. sync-watcher.ts can't statically
@@ -247,8 +348,8 @@ setJournalReplayHandler((taskId, options) => updateTaskWithHistory(taskId, optio
 // deleted ones) for the chokidar background-pull path; reuse it rather than duplicating the logic.
 setJournalCacheReloadHandler(reconcileBackgroundPull);
 
-async function updateTaskWithHistoryLocked(taskId: string, options: UpdateTaskWithHistoryOptions) {
-  const task = getWorkspace().tasks[taskId];
+async function updateTaskWithHistoryLocked(taskId: string, options: UpdateTaskWithHistoryOptions, ws: Workspace) {
+  const task = ws.tasks[taskId];
   if (!task) return null;
 
   const actor = options.updatedBy || task.updatedBy || 'Agent';
@@ -257,6 +358,22 @@ async function updateTaskWithHistoryLocked(taskId: string, options: UpdateTaskWi
   const { _path } = task;
 
   const { frontmatter, body } = await readTaskFromDisk(task);
+
+  // FLUX-1550: body CAS. Only gates writes that actually replace the body (`newBody` present) —
+  // metadata-only writes (extraFields/nextStatus/etc. with no newBody) are unaffected regardless
+  // of what `baseBodyVersion` carries. Must run BEFORE any frontmatter mutation below so a
+  // rejected write leaves the on-disk ticket completely untouched.
+  if (options.newBody !== undefined) {
+    const currentBodyVersion = computeDiskBodyVersion(body);
+    if (options.baseBodyVersion !== undefined) {
+      if (options.baseBodyVersion !== currentBodyVersion) {
+        throw new StaleBodyError(currentBodyVersion);
+      }
+    } else {
+      // Grandfathered: no token sent, keep today's pre-CAS behavior but make the hole visible.
+      console.warn(`[FLUX] Body overwrite for ${taskId} carried no baseBodyVersion (grandfathered) — proceeding without a conflict check.`);
+    }
+  }
 
   const normalizedExistingHistory = normalizeHistoryEntries(Array.isArray(frontmatter.history) ? frontmatter.history : []);
 
@@ -376,22 +493,34 @@ async function updateTaskWithHistoryLocked(taskId: string, options: UpdateTaskWi
     return null;
   }
 
+  // FLUX-1550: stash the outgoing body before it's overwritten, whenever the body is actually
+  // changing — including the grandfathered/no-token path, which is the one CAS deliberately still
+  // lets clobber. A CAS rejection never reaches this line (thrown above), so nothing is stashed
+  // for a write that never landed. Best-effort; never blocks the real write.
+  if (options.newBody !== undefined && options.newBody !== body) {
+    await stashPriorBody(_path, body);
+  }
+
   const fileContent = matter.stringify(useBody || '', frontmatter);
   recentEngineWrites.add(_path);
   await atomicWriteFile(_path, fileContent);
-  getWorkspace().tasks[taskId] = { ...frontmatter, body: useBody, id: taskId, _path };
+  ws.tasks[taskId] = { ...frontmatter, body: useBody, id: taskId, _path };
 
   if (options.nextStatus) {
     const requireInputStatus = getConfig().requireInputStatus || 'Require Input';
     const readyStatus = getConfig().readyForMergeStatus || 'Ready';
+    // FLUX-1555: pass `ws` explicitly — this write already has the record's OWNING workspace in
+    // scope (the `ws` param above), which can differ from whatever board is ambiently active (a
+    // background loop calling `updateTaskWithHistory(id, opts, ws)` for a non-active board). Relying
+    // on the notification generators' ambient `getWorkspace()` default would misroute the toast.
     if (options.nextStatus === requireInputStatus || options.nextStatus === readyStatus) {
-      generatePromptNotification(taskId, frontmatter.title || taskId, options.nextStatus);
+      generatePromptNotification(taskId, frontmatter.title || taskId, options.nextStatus, ws);
     } else if (options.nextStatus === 'Done') {
-      generateCompletionNotification(taskId, frontmatter.title || taskId);
+      generateCompletionNotification(taskId, frontmatter.title || taskId, ws);
     }
   }
 
-  return getWorkspace().tasks[taskId];
+  return ws.tasks[taskId];
 }
 
 /**
@@ -408,13 +537,13 @@ export async function syncParentSubtaskLinks(opts: {
   oldSubtasks?: string[];
   newSubtasks?: string[];
   actor: string;
-}): Promise<void> {
+}, ws: Workspace = getWorkspace()): Promise<void> {
   const { id, oldParentId, newParentId, actor } = opts;
   const oldSubtasks = opts.oldSubtasks ?? [];
   const newSubtasks = opts.newSubtasks ?? [];
 
   const writeParentSubtasks = async (parentId: string, subtasks: string[]) => {
-    const parent = getWorkspace().tasks[parentId];
+    const parent = ws.tasks[parentId];
     if (!parent) return;
     const parentRaw = await fs.readFile(parent._path, 'utf-8');
     const parentParsed = matter(parentRaw);
@@ -422,12 +551,12 @@ export async function syncParentSubtaskLinks(opts: {
     parentParsed.data.updatedBy = actor;
     recentEngineWrites.add(parent._path);
     await atomicWriteFile(parent._path, matter.stringify(parentParsed.content, parentParsed.data));
-    getWorkspace().tasks[parentId] = { ...getWorkspace().tasks[parentId], subtasks, updatedBy: actor };
+    ws.tasks[parentId] = { ...ws.tasks[parentId], subtasks, updatedBy: actor };
     broadcastEvent('taskUpdated', { id: parentId });
   };
 
   const writeChildParent = async (childId: string, parentId: string | null) => {
-    const child = getWorkspace().tasks[childId];
+    const child = ws.tasks[childId];
     if (!child) return;
     const childRaw = await fs.readFile(child._path, 'utf-8');
     const childParsed = matter(childRaw);
@@ -436,19 +565,19 @@ export async function syncParentSubtaskLinks(opts: {
     childParsed.data.updatedBy = actor;
     recentEngineWrites.add(child._path);
     await atomicWriteFile(child._path, matter.stringify(childParsed.content, childParsed.data));
-    getWorkspace().tasks[childId] = { ...getWorkspace().tasks[childId], parentId: parentId ?? undefined, updatedBy: actor };
+    ws.tasks[childId] = { ...ws.tasks[childId], parentId: parentId ?? undefined, updatedBy: actor };
     broadcastEvent('taskUpdated', { id: childId });
   };
 
   // parentId changed → remove from old parent's subtasks, add to new parent's subtasks.
   if (newParentId !== oldParentId) {
-    if (oldParentId && getWorkspace().tasks[oldParentId]) {
-      const cur = subtaskIds(getWorkspace().tasks[oldParentId].subtasks);
+    if (oldParentId && ws.tasks[oldParentId]) {
+      const cur = subtaskIds(ws.tasks[oldParentId].subtasks);
       const filtered = cur.filter((sid) => sid !== id);
       if (filtered.length !== cur.length) await writeParentSubtasks(oldParentId, filtered);
     }
-    if (newParentId && getWorkspace().tasks[newParentId]) {
-      const cur = subtaskIds(getWorkspace().tasks[newParentId].subtasks);
+    if (newParentId && ws.tasks[newParentId]) {
+      const cur = subtaskIds(ws.tasks[newParentId].subtasks);
       if (!cur.includes(id)) await writeParentSubtasks(newParentId, [...cur, id]);
     }
   }
@@ -458,15 +587,15 @@ export async function syncParentSubtaskLinks(opts: {
   const addedChildren = newSubtasks.filter((sid) => !oldSubtasks.includes(sid));
 
   for (const childId of removedChildren) {
-    const child = getWorkspace().tasks[childId];
+    const child = ws.tasks[childId];
     if (child && child.parentId === id) await writeChildParent(childId, null);
   }
   for (const childId of addedChildren) {
-    const child = getWorkspace().tasks[childId];
+    const child = ws.tasks[childId];
     if (child && child.parentId !== id) {
       // Remove the child from its previous parent's subtasks before re-linking it here.
-      if (child.parentId && getWorkspace().tasks[child.parentId]) {
-        const prev = subtaskIds(getWorkspace().tasks[child.parentId].subtasks).filter((sid) => sid !== childId);
+      if (child.parentId && ws.tasks[child.parentId]) {
+        const prev = subtaskIds(ws.tasks[child.parentId].subtasks).filter((sid) => sid !== childId);
         await writeParentSubtasks(child.parentId, prev);
       }
       await writeChildParent(childId, id);
@@ -542,14 +671,14 @@ async function getMaxIdFromRemote(projectKey: string): Promise<number> {
   }
 }
 
-export async function createTask(options: CreateTaskOptions): Promise<CreateTaskResult> {
+export async function createTask(options: CreateTaskOptions, ws: Workspace = getWorkspace()): Promise<CreateTaskResult> {
   const pKey = options.projectKey || getConfig().projects?.[0] || 'FLUX';
   // FLUX-1225: scratch chats live in their own `SCRATCH-n` id namespace so they never consume the
   // `FLUX-n` sequence and are trivially distinguishable from board tickets. The counter is scanned
   // (cache + remote) against this prefix, so scratch and project ids increment independently.
   const idPrefix = options.kind === 'scratch' ? 'SCRATCH' : pKey;
   let maxId = 0;
-  Object.keys(getWorkspace().tasks).forEach((key) => {
+  Object.keys(ws.tasks).forEach((key) => {
     if (key.startsWith(`${idPrefix}-`)) {
       const num = parseInt(key.replace(`${idPrefix}-`, ''), 10);
       if (!isNaN(num) && num > maxId) maxId = num;
@@ -610,12 +739,12 @@ export async function createTask(options: CreateTaskOptions): Promise<CreateTask
   const fileContent = matter.stringify(body, frontmatter);
   recentEngineWrites.add(filePath);
   await atomicWriteFile(filePath, fileContent);
-  getWorkspace().tasks[nextId] = { ...frontmatter, body, id: nextId, _path: filePath };
+  ws.tasks[nextId] = { ...frontmatter, body, id: nextId, _path: filePath };
   if (!options.skipBroadcast) {
     broadcastEvent('taskCreated', { id: nextId, ...(options.parentId && { parentId: options.parentId }) });
   }
 
-  return { id: nextId, task: getWorkspace().tasks[nextId] };
+  return { id: nextId, task: ws.tasks[nextId] };
 }
 
 /**
@@ -626,9 +755,9 @@ export async function createTask(options: CreateTaskOptions): Promise<CreateTask
  * a missing file/cache entry is not an error (the caller may be compensating). Used by
  * `extractTicket` (FLUX-738) to remove an orphan card when the curation op fails to persist.
  */
-export async function deleteTask(id: string): Promise<void> {
-  const task = getWorkspace().tasks[id];
-  delete getWorkspace().tasks[id];
+export async function deleteTask(id: string, ws: Workspace = getWorkspace()): Promise<void> {
+  const task = ws.tasks[id];
+  delete ws.tasks[id];
   if (task?._path) {
     await fs.unlink(task._path).catch(() => {});
   }
@@ -650,8 +779,9 @@ export async function upsertManagedTicket(
   id: string,
   fields: Record<string, unknown>,
   body = '',
+  ws: Workspace = getWorkspace(),
 ): Promise<{ task: TaskRecord; created: boolean; changed: boolean }> {
-  const existing = getWorkspace().tasks[id];
+  const existing = ws.tasks[id];
   const fieldsChanged = !existing || Object.entries(fields).some(([k, v]) => JSON.stringify(existing[k]) !== JSON.stringify(v));
   // A non-empty `body` that differs forces a rewrite (e.g. a gh PR description changed but no
   // field did — FLUX-751). An empty `body` arg never marks changed: it means "keep existing
@@ -671,9 +801,9 @@ export async function upsertManagedTicket(
 
   recentEngineWrites.add(filePath);
   await atomicWriteFile(filePath, matter.stringify(useBody, frontmatter));
-  getWorkspace().tasks[id] = { ...frontmatter, body: useBody, id, _path: filePath };
+  ws.tasks[id] = { ...frontmatter, body: useBody, id, _path: filePath };
   broadcastEvent(existing ? 'taskUpdated' : 'taskCreated', { id });
-  return { task: getWorkspace().tasks[id], created: !existing, changed: true };
+  return { task: ws.tasks[id], created: !existing, changed: true };
 }
 
 /**
@@ -758,12 +888,12 @@ export async function normalizeInlineSubtasks(frontmatter: Record<string, unknow
   return normalizedIds;
 }
 
-export async function loadTask(filePath: string) {
+export async function loadTask(filePath: string, ws: Workspace = getWorkspace()) {
   // FLUX-1132: thin timing wrapper — every exit path (including the early-return guards below)
   // feeds `store.loadTask`, so the histogram reflects the real call rate off the file watcher.
   const __loadTaskStartedAt = performance.now();
   try {
-    return await loadTaskInner(filePath);
+    return await loadTaskInner(filePath, ws);
   } finally {
     // FLUX-1202: the histogram alone can't name the culprit behind a single-call outlier —
     // warn per-file so a future spike is diagnosable directly instead of inferred after the fact.
@@ -773,7 +903,7 @@ export async function loadTask(filePath: string) {
   }
 }
 
-async function loadTaskInner(filePath: string) {
+async function loadTaskInner(filePath: string, ws: Workspace) {
   if (!isTopLevelTaskFile(filePath)) return;
   if (repairingPaths.has(filePath)) return;
   // Skip the watcher event generated by our own write-back (see recentEngineWrites).
@@ -803,8 +933,8 @@ async function loadTaskInner(filePath: string) {
         ? `contains unresolved git conflict markers (<<<<<<< / ======= / >>>>>>>) — a sync merge committed an unresolved conflict. Resolve the markers (keep both history entries, chronological order) and save again.`
         : `YAML frontmatter is invalid: ${msg}`;
       console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  ${detail}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
-      delete getWorkspace().tasks[id];
-      getWorkspace().parseErrors[id] = { id, path: filePath, error: detail };
+      delete ws.tasks[id];
+      ws.parseErrors[id] = { id, path: filePath, error: detail };
       return;
     }
 
@@ -812,7 +942,7 @@ async function loadTaskInner(filePath: string) {
     // file lost it (and other critical fields), this is a corrupt/partial write —
     // ignore it rather than repairing it into a "(recovered)" zombie.
     const existingId = parsed.data.id || path.basename(filePath, '.md');
-    const existingCached = getWorkspace().tasks[existingId];
+    const existingCached = ws.tasks[existingId];
     if (existingCached && existingCached.title && !parsed.data.title && !parsed.data.status) {
       console.warn(`[loadTask] Ignoring corrupt write for ${existingId}: file lost title+status while cache has "${existingCached.title}". Likely a partial write or unauthorized direct edit.`);
       return;
@@ -847,8 +977,8 @@ async function loadTaskInner(filePath: string) {
         const summary = formatValidationErrors(postRepairErrors);
         console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  Schema validation failed (auto-repair insufficient):\n${summary}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
         const id = path.basename(filePath, '.md');
-        delete getWorkspace().tasks[id];
-        getWorkspace().parseErrors[id] = { id, path: filePath, error: `Schema validation failed (auto-repair attempted but insufficient):\n${summary}` };
+        delete ws.tasks[id];
+        ws.parseErrors[id] = { id, path: filePath, error: `Schema validation failed (auto-repair attempted but insufficient):\n${summary}` };
         return;
       }
     }
@@ -865,7 +995,7 @@ async function loadTaskInner(filePath: string) {
     // dropped when a spawned agent rewrites the ticket file. The agent only knows
     // about a subset of entry types and may silently discard the rest.
     let historyReinjected = false;
-    const existingTask = getWorkspace().tasks[id];
+    const existingTask = ws.tasks[id];
     if (existingTask && Array.isArray(existingTask.history)) {
       const fileSessionIds = new Set(
         history.filter((e) => e?.type === 'agent_session').map((e) => e.sessionId)
@@ -913,12 +1043,12 @@ async function loadTaskInner(filePath: string) {
     if (validationErrors.length > 0) {
       const summary = formatValidationErrors(validationErrors);
       console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  Schema validation failed:\n${summary}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
-      delete getWorkspace().tasks[id];
-      getWorkspace().parseErrors[id] = { id, path: filePath, error: `Schema validation failed:\n${summary}` };
+      delete ws.tasks[id];
+      ws.parseErrors[id] = { id, path: filePath, error: `Schema validation failed:\n${summary}` };
       return;
     }
 
-    getWorkspace().tasks[id] = {
+    ws.tasks[id] = {
       ...normalizedFrontmatter,
       id,
       body: parsed.content,
@@ -926,7 +1056,7 @@ async function loadTaskInner(filePath: string) {
     };
 
     // Clear any previous parse error for this ticket
-    delete getWorkspace().parseErrors[id];
+    delete ws.parseErrors[id];
 
     if (normalizedHistory.changed || subtasksNormalized || historyReinjected || historyCompacted) {
       const normalizedContent = matter.stringify(parsed.content, normalizedFrontmatter);
@@ -944,7 +1074,7 @@ async function loadTaskInner(filePath: string) {
   }
 }
 
-export async function loadDoc(filePath: string) {
+export async function loadDoc(filePath: string, ws: Workspace = getWorkspace()) {
   if (!isDocFile(filePath)) return;
 
   try {
@@ -961,7 +1091,7 @@ export async function loadDoc(filePath: string) {
     const directory = docPath.includes('/') ? docPath.slice(0, docPath.lastIndexOf('/')) : '';
     const slugSource = docPath.split('/').filter(Boolean).pop() || docPath;
 
-    getWorkspace().docs[docPath] = {
+    ws.docs[docPath] = {
       path: docPath,
       title,
       body: parsed.content.replace(/\r\n/g, '\n'),
@@ -977,16 +1107,16 @@ export async function loadDoc(filePath: string) {
   }
 }
 
-export async function loadDocsDirectory(directoryPath: string) {
+export async function loadDocsDirectory(directoryPath: string, ws: Workspace = getWorkspace()) {
   try {
     const entries = await fs.readdir(directoryPath, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue;
       const entryPath = path.join(directoryPath, entry.name);
       if (entry.isDirectory()) {
-        await loadDocsDirectory(entryPath);
+        await loadDocsDirectory(entryPath, ws);
       } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
-        await loadDoc(entryPath);
+        await loadDoc(entryPath, ws);
       }
     }
   } catch (error: unknown) {
@@ -999,18 +1129,21 @@ export async function loadDocsDirectory(directoryPath: string) {
 // ─── Group docs (.flux-group) surfaced read-only under the Product prefix ──────
 
 /** Map a `.flux-group` markdown file to its synthetic `Product/...` doc path. */
-function groupDocPathFromFile(storeDir: string, filePath: string): string | null {
+function groupDocPathFromFile(storeDir: string, filePath: string, ws: Workspace): string | null {
   const relative = path.relative(storeDir, filePath).split(path.sep).join('/');
   if (!relative || relative.startsWith('..') || !relative.toLowerCase().endsWith('.md')) return null;
   const withoutExt = relative.slice(0, -3);
   const segments = withoutExt.split('/').filter(Boolean);
   if (segments.length === 0 || segments.some((s) => s === '.' || s === '..')) return null;
-  return [activeGroupDocsLabel(), ...segments].join('/');
+  // FLUX-1565: label resolved from the bound `ws`'s own group fields, not the
+  // `activeGroupDocsLabel()` singleton — see `loadGroupDoc`'s doc comment.
+  const label = groupDocsLabel(ws.groupContext ?? ws.memberBinding?.parentGroup ?? null);
+  return [label, ...segments].join('/');
 }
 
 /** Load a single group doc into the cache as a read-only Product entry. */
-export async function loadGroupDoc(storeDir: string, filePath: string) {
-  const docPath = groupDocPathFromFile(storeDir, filePath);
+export async function loadGroupDoc(storeDir: string, filePath: string, ws: Workspace = getWorkspace()) {
+  const docPath = groupDocPathFromFile(storeDir, filePath, ws);
   if (!docPath) return;
   try {
     const content = await fs.readFile(filePath, 'utf-8');
@@ -1022,7 +1155,10 @@ export async function loadGroupDoc(storeDir: string, filePath: string) {
     const directory = docPath.slice(0, docPath.lastIndexOf('/'));
     const slugSource = docPath.split('/').filter(Boolean).pop() || docPath;
 
-    getWorkspace().docs[docPath] = {
+    // FLUX-1565: resolve read-only/viaParent from `ws`'s own group fields (populated per-workspace
+    // in `hydrateWorkspace`), not the `getGroupContext()`/`getMemberBinding()` singletons — those
+    // reflect whichever workspace activated last, not necessarily the one `ws` this load is for.
+    ws.docs[docPath] = {
       path: docPath,
       title,
       body: parsed.content.replace(/\r\n/g, '\n'),
@@ -1034,8 +1170,8 @@ export async function loadGroupDoc(storeDir: string, filePath: string) {
       // member also edits — its writes route through the parent via
       // `submitGroupEdit` (FLUX-419) — so it is editable, flagged `viaParent`
       // so the UI can explain the routed save.
-      readOnly: getGroupContext() == null && getMemberBinding() == null,
-      ...(getGroupContext() == null && getMemberBinding() != null ? { viaParent: true } : {}),
+      readOnly: ws.groupContext == null && ws.memberBinding == null,
+      ...(ws.groupContext == null && ws.memberBinding != null ? { viaParent: true } : {}),
       group: true,
       _path: filePath,
     };
@@ -1045,16 +1181,16 @@ export async function loadGroupDoc(storeDir: string, filePath: string) {
 }
 
 /** Walk the `.flux-group` store and load every markdown file read-only. */
-async function loadGroupDocsDirectory(storeDir: string, directoryPath: string) {
+async function loadGroupDocsDirectory(storeDir: string, directoryPath: string, ws: Workspace) {
   try {
     const entries = await fs.readdir(directoryPath, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue; // skip .git and dotfiles
       const entryPath = path.join(directoryPath, entry.name);
       if (entry.isDirectory()) {
-        await loadGroupDocsDirectory(storeDir, entryPath);
+        await loadGroupDocsDirectory(storeDir, entryPath, ws);
       } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
-        await loadGroupDoc(storeDir, entryPath);
+        await loadGroupDoc(storeDir, entryPath, ws);
       }
     }
   } catch (error: unknown) {
@@ -1069,22 +1205,22 @@ async function loadGroupDocsDirectory(storeDir: string, directoryPath: string) {
  * when neither a direct group (parent) nor a member binding is active. A parent
  * reads its own store; a bound member (Case 1) reads the parent's store in place.
  */
-function activeGroupStoreDir(): string | null {
-  return getGroupContext()?.groupStoreDir ?? getMemberBinding()?.parentGroup.groupStoreDir ?? null;
+function activeGroupStoreDir(ws: Workspace): string | null {
+  return ws.groupContext?.groupStoreDir ?? ws.memberBinding?.parentGroup.groupStoreDir ?? null;
 }
 
 /** Load all group docs for the active group. No-op in single-repo mode. */
-export async function loadGroupDocs() {
-  const storeDir = activeGroupStoreDir();
+export async function loadGroupDocs(ws: Workspace = getWorkspace()) {
+  const storeDir = activeGroupStoreDir(ws);
   if (!storeDir) return;
-  await loadGroupDocsDirectory(storeDir, storeDir);
+  await loadGroupDocsDirectory(storeDir, storeDir, ws);
 }
 
-export async function reconcileOrphanedSessions() {
+export async function reconcileOrphanedSessions(ws: Workspace = getWorkspace()) {
   const now = new Date().toISOString();
   let recoveredCount = 0;
 
-  for (const task of Object.values(getWorkspace().tasks)) {
+  for (const task of Object.values(ws.tasks)) {
     const history: HistoryEntryLike[] = Array.isArray(task.history) ? task.history : [];
 
     // Find all active agent_session entries
@@ -1094,12 +1230,22 @@ export async function reconcileOrphanedSessions() {
     );
 
     for (const session of activeSessions) {
+      // FLUX-1572: an active session whose recorded `enginePid` (the ENGINE process that started
+      // it, not the CLI subprocess) is still alive belongs to a live SIBLING engine bound to this
+      // same shared `.flux`/`.flux-store` — not a genuine restart orphan. Abandoning it here would
+      // falsely mark a still-running session dead out from under the engine that owns it. Entries
+      // written before this field existed have no `enginePid` and fall back to the old
+      // unconditional-abandon behavior (this engine restarting itself is still the common case).
+      if (typeof session.enginePid === 'number' && isPidAlive(session.enginePid)) {
+        log.info(`Skipping reconcile of session ${session.sessionId} in task ${task.id} — owning engine pid ${session.enginePid} is still alive (likely a sibling engine on this workspace).`);
+        continue;
+      }
       // Close the orphaned session
       await updateAgentSession(task.id, session.sessionId, (sessionEntry) => {
         sessionEntry.status = 'cancelled';
         sessionEntry.outcome = 'Session abandoned (engine restarted).';
         sessionEntry.endedAt = now;
-      });
+      }, ws);
       recoveredCount++;
       log.info(`Recovered orphaned session ${session.sessionId} in task ${task.id}`);
     }
@@ -1119,7 +1265,7 @@ export async function reconcileOrphanedSessions() {
       await updateTaskWithHistory(task.id, {
         updatedBy: 'Agent',
         entries: [buildActivityEntry('Claude Code session lost (engine restarted).', 'Agent', now)],
-      });
+      }, ws);
       recoveredCount++;
     }
   }
@@ -1243,7 +1389,7 @@ async function seedStarterDocs(docsDir: string): Promise<void> {
   }
 }
 
-export async function initDir() {
+export async function initDir(ws: Workspace = getWorkspace()) {
   // FLUX-1132: thin timing wrapper around the whole disk rescan — see recordFullRescan.
   const __initDirStartedAt = performance.now();
   try {
@@ -1252,7 +1398,12 @@ export async function initDir() {
       await fs.mkdir(getDocsDir(), { recursive: true });
       await fs.mkdir(getTaskAssetsDir(), { recursive: true });
       await seedStarterDocs(getDocsDir());
-      await loadDocsDirectory(getDocsDir());
+      await loadDocsDirectory(getDocsDir(), ws);
+      // FLUX-1559: orphan mode protects config.json/read-state.json/boot-index.json via the
+      // .flux-store worktree's own .gitignore (excludeLocalConfigFromSync); non-orphan mode's
+      // .flux/ has no such path at all, so these per-machine files churn the user's working
+      // tree if .flux/ is committed. Self-heals on every activation, same as the orphan path.
+      if (!isOrphanMode()) await ensureNonOrphanLocalGitignore(getActiveFluxDir());
     } catch {
       // ignore
     }
@@ -1261,27 +1412,72 @@ export async function initDir() {
     await loadCustomPersonas();
     const activeDir = getActiveFluxDir();
     const fluxFiles = await fs.readdir(activeDir).catch(() => [] as string[]);
-    // FLUX-1188: loadTask does real synchronous work (YAML parse, validation, repair)
-    // between its awaits, so a large board can hold the event loop for whole seconds
-    // straight through. Yield every RESCAN_YIELD_EVERY files so concurrent requests
-    // (and the perf sampler) get a turn instead of queuing behind the entire rescan.
-    // FLUX-1190: confirmed on a live ~1,525-ticket board that this only bounds
-    // cumulative multi-file loop time — a single pathological loadTask() call (seen up
-    // to 2.25s) still blows past the stall threshold on its own. Root cause tracked
-    // separately in FLUX-1202.
-    const RESCAN_YIELD_EVERY = 50;
-    let loadedSinceYield = 0;
-    for (const name of fluxFiles) {
-      if (isTopLevelTaskFile(path.join(activeDir, name))) {
-        await loadTask(path.join(activeDir, name));
-        loadedSinceYield += 1;
-        if (loadedSinceYield >= RESCAN_YIELD_EVERY) {
-          loadedSinceYield = 0;
-          await new Promise(setImmediate);
-        }
+    const names = fluxFiles.filter((name) => isTopLevelTaskFile(path.join(activeDir, name)));
+    // FLUX-1540: in-memory filter of the already-read `fluxFiles` list — no extra I/O —
+    // so the portal's cold-boot loading state can show real "Loaded X / Y" progress
+    // instead of a static skeleton for the whole scan.
+    const total = names.length;
+    let loaded = 0;
+    const emitBootProgress = (phase: 'cached' | 'scanning' | 'ready') => {
+      // broadcastEvent is best-effort (FLUX-910 — a dead client can't throw out of its fan-out
+      // loop), but this is deliberately isolated anyway so a future change to it can never stall
+      // or abort the boot scan.
+      try {
+        broadcastEvent('bootProgress', { loaded, total, phase }, ws);
+      } catch (err) {
+        console.warn('[FLUX] bootProgress broadcast failed (non-fatal):', err);
       }
+    };
+
+    // FLUX-1547 Phase 2: a valid persisted boot index lets an unchanged file skip the entire
+    // read+YAML-parse+validate+history-normalize pipeline — only a cheap `stat` is needed to
+    // confirm it's still fresh. Missing/corrupt/version-mismatched index → every name below is
+    // simply a "miss" and the scan behaves exactly like a fully cold boot.
+    const bootIndex = await loadBootIndex(activeDir);
+    let needsFullLoad = names;
+    if (bootIndex) {
+      needsFullLoad = await partitionByBootIndex(
+        activeDir,
+        names,
+        bootIndex,
+        (id, data, name) => {
+          ws.tasks[id] = { ...data, id, _path: path.join(activeDir, name) };
+          loaded += 1;
+        },
+        BOOT_SCAN_CONCURRENCY,
+      );
+      // Only announce the 'cached' phase when there's still full-load work left to do — a fully
+      // warm boot (every file hit the cache) has nothing more to report and falls straight
+      // through to the single unconditional 'ready' emission below.
+      if (loaded > 0 && needsFullLoad.length > 0) emitBootProgress('cached');
     }
-    await migrateRequireInputToSwimlane();
+
+    // FLUX-1547 Phase 1: bounded-concurrency pool replaces the old strictly-serial
+    // `for (const name of fluxFiles) { await loadTask(...) }` loop. The per-file guards this
+    // relies on (`repairingPaths`, `recentEngineWrites`, the corrupt-write skip in
+    // loadTaskInner) are already keyed per file path, so concurrent loads of *different* files
+    // never race each other — only re-entrant loads of the *same* path would, and the scan only
+    // ever issues one `loadTask` per path. Final `ws.tasks` state is order-independent: every
+    // file's result is written under its own id regardless of completion order. The previous
+    // explicit `RESCAN_YIELD_EVERY` + `await new Promise(setImmediate)` yield (FLUX-1188) is no
+    // longer needed — with several files in flight at once, the awaits on their own I/O already
+    // give the event loop turns at natural intervals instead of one long unbroken serial stretch.
+    let loadedSinceEmit = 0;
+    await runWithConcurrency(needsFullLoad, BOOT_SCAN_CONCURRENCY, async (name) => {
+      await loadTask(path.join(activeDir, name), ws);
+      loaded += 1;
+      loadedSinceEmit += 1;
+      if (loadedSinceEmit >= BOOT_PROGRESS_EVERY) {
+        loadedSinceEmit = 0;
+        emitBootProgress('scanning');
+      }
+    });
+    emitBootProgress('ready');
+    await migrateRequireInputToSwimlane(ws);
+
+    // Refresh the persisted index from the now-fully-populated cache so the *next* boot gets the
+    // warm-boot fast path too. Best-effort — persistBootIndex/saveBootIndex never throw.
+    await persistBootIndex(activeDir, names, ws.tasks, BOOT_SCAN_CONCURRENCY);
   } finally {
     recordFullRescan(performance.now() - __initDirStartedAt);
   }
@@ -1292,12 +1488,12 @@ export async function initDir() {
  * status restored (from the last status_change history entry's `from` field)
  * and swimlane set to 'require-input'. This runs after all tasks are loaded.
  */
-async function migrateRequireInputToSwimlane() {
+async function migrateRequireInputToSwimlane(ws: Workspace) {
   const hasSwimlanes = getConfig().swimlanes && getConfig().swimlanes.length > 0;
   if (!hasSwimlanes) return;
 
   const requireInputStatus = getConfig().requireInputStatus || 'Require Input';
-  const tasksToMigrate = Object.values(getWorkspace().tasks).filter(
+  const tasksToMigrate = Object.values(ws.tasks).filter(
     (task) => task.status === requireInputStatus && !task.swimlane
   );
 
@@ -1324,7 +1520,7 @@ async function migrateRequireInputToSwimlane() {
       nextStatus: previousStatus,
       extraFields: { swimlane: 'require-input' },
       entries: [migrationEntry],
-    });
+    }, ws);
     log.info(`[migration] ${task.id}: status "${requireInputStatus}" → "${previousStatus}" + swimlane:require-input`);
   }
 
@@ -1339,8 +1535,8 @@ async function migrateRequireInputToSwimlane() {
 // FLUX-1184: shared by the watcher's 'unlink' handler below and reconcileBackgroundPull — a
 // ticket's frontmatter `id` can differ from its filename, so prefer the cache entry whose
 // `_path` matches before falling back to the basename.
-function findTaskIdForPath(filePath: string): string {
-  const taskEntry = Object.entries(getWorkspace().tasks).find(([, task]) => task._path === filePath);
+function findTaskIdForPath(filePath: string, ws: Workspace): string {
+  const taskEntry = Object.entries(ws.tasks).find(([, task]) => task._path === filePath);
   return taskEntry?.[0] || path.basename(filePath, '.md');
 }
 
@@ -1351,22 +1547,21 @@ function findTaskIdForPath(filePath: string): string {
 // kill a boot-time reload-storm, so it no longer replays anything and can't serve as this catch-up
 // path any more. Reload exactly the files the pull touched instead — an incremental reload, not a
 // second full scan.
-export async function reconcileBackgroundPull(storeDir: string, changedRelativePaths: string[]): Promise<void> {
+export async function reconcileBackgroundPull(storeDir: string, changedRelativePaths: string[], ws: Workspace = getWorkspace()): Promise<void> {
   for (const rel of changedRelativePaths) {
     const filePath = path.join(storeDir, rel);
     if (!isTopLevelTaskFile(filePath)) continue;
     if (existsSync(filePath)) {
-      await loadTask(filePath);
+      await loadTask(filePath, ws);
     } else {
-      const id = findTaskIdForPath(filePath);
-      delete getWorkspace().tasks[id];
+      const id = findTaskIdForPath(filePath, ws);
+      delete ws.tasks[id];
       log.info(`Removed task: ${id} (background sync pull)`);
     }
   }
 }
 
-export async function startWatchers() {
-  const ws = getWorkspace();
+export async function startWatchers(ws: Workspace = getWorkspace()) {
   if (ws.fluxWatcher) { await ws.fluxWatcher.close(); ws.fluxWatcher = null; }
   if (ws.docsWatcher) { await ws.docsWatcher.close(); ws.docsWatcher = null; }
   if (ws.groupDocsWatcher) { await ws.groupDocsWatcher.close(); ws.groupDocsWatcher = null; }
@@ -1401,33 +1596,39 @@ export async function startWatchers() {
     .on('add', (filePath) => {
       // FLUX-1132: count reload events the watcher actually triggers (not every fs event chokidar
       // sees — e.g. our own write-back is filtered out inside loadTask, not here).
-      if (isTopLevelTaskFile(filePath)) { recordWatchEvent(); void loadTask(filePath); }
+      if (isTopLevelTaskFile(filePath)) { recordWatchEvent(); void loadTask(filePath, ws); }
       if (filePath === configFile) void loadConfig();
     })
     .on('change', (filePath) => {
-      if (isTopLevelTaskFile(filePath)) { recordWatchEvent(); void loadTask(filePath); }
+      if (isTopLevelTaskFile(filePath)) { recordWatchEvent(); void loadTask(filePath, ws); }
       if (filePath === configFile) void loadConfig();
     })
     .on('ready', () => {
-      void reconcileOrphanedSessions();
-      // FLUX-833 (Phase 2): re-surface HITL prompts that were still open when the engine stopped.
-      // Runs here (not earlier) so getActiveFluxDir() resolves against the now-activated workspace,
-      // alongside the orphaned-session reconcile it conceptually parallels. rehydrate self-guards
-      // each record, but wrap the call too (review M1) so nothing it does can throw out of this
-      // synchronous chokidar `ready` listener and crash boot.
-      try { rehydrateOpenPrompts(); } catch (err) { console.error('[hitl] rehydrate failed', err); }
-      // FLUX-1060: restore persisted active-session stubs so the worktree-reclaim guard (and chat
-      // resume) see pre-restart running/waiting-input sessions again — otherwise the first reclaim
-      // sweep deletes a `waiting-input` session's worktree out from under it. Arm the short post-
-      // restart reclaim grace once rehydration has run (covers the sub-sync-interval no-stub gap).
-      void rehydrateSessionStubs()
-        .then(() => armReclaimGrace())
-        .catch((err) => console.error('[session] stub rehydrate failed', err));
+      // FLUX-1556: bind the whole handler to the watcher's OWN workspace (`ws`, already the
+      // `startWatchers(ws)` closure param) — chokidar's `ready` fires asynchronously, so without
+      // this the handler's `getActiveFluxDir()` calls resolve against whichever board happens to be
+      // ambiently active at fire time, not the board whose watcher actually became ready.
+      runWithWorkspace(ws, () => {
+        void reconcileOrphanedSessions(ws);
+        // FLUX-833 (Phase 2): re-surface HITL prompts that were still open when the engine stopped.
+        // Runs here (not earlier) so getActiveFluxDir() resolves against the now-activated workspace,
+        // alongside the orphaned-session reconcile it conceptually parallels. rehydrate self-guards
+        // each record, but wrap the call too (review M1) so nothing it does can throw out of this
+        // synchronous chokidar `ready` listener and crash boot.
+        try { rehydrateOpenPrompts(); } catch (err) { console.error('[hitl] rehydrate failed', err); }
+        // FLUX-1060: restore persisted active-session stubs so the worktree-reclaim guard (and chat
+        // resume) see pre-restart running/waiting-input sessions again — otherwise the first reclaim
+        // sweep deletes a `waiting-input` session's worktree out from under it. Arm the short post-
+        // restart reclaim grace once rehydration has run (covers the sub-sync-interval no-stub gap).
+        void rehydrateSessionStubs()
+          .then(() => armReclaimGrace())
+          .catch((err) => console.error('[session] stub rehydrate failed', err));
+      });
     })
     .on('unlink', (filePath) => {
       if (isTopLevelTaskFile(filePath)) {
-        const id = findTaskIdForPath(filePath);
-        delete getWorkspace().tasks[id];
+        const id = findTaskIdForPath(filePath, ws);
+        delete ws.tasks[id];
         log.info(`Removed task: ${id}`);
       }
     })
@@ -1450,11 +1651,11 @@ export async function startWatchers() {
   const isPricingFile = (filePath: string) => path.basename(filePath) === 'model-pricing.md';
 
   ws.docsWatcher
-    .on('add', (filePath) => { if (isDocFile(filePath)) { void loadDoc(filePath); if (isPricingFile(filePath)) void loadPricingDoc(); } })
-    .on('change', (filePath) => { if (isDocFile(filePath)) { void loadDoc(filePath); if (isPricingFile(filePath)) void loadPricingDoc(); } })
+    .on('add', (filePath) => { if (isDocFile(filePath)) { void loadDoc(filePath, ws); if (isPricingFile(filePath)) void loadPricingDoc(); } })
+    .on('change', (filePath) => { if (isDocFile(filePath)) { void loadDoc(filePath, ws); if (isPricingFile(filePath)) void loadPricingDoc(); } })
     .on('unlink', (filePath) => {
       const docPath = getDocPathFromFile(filePath);
-      if (docPath) { delete getWorkspace().docs[docPath]; log.info(`Removed doc: ${docPath}`); }
+      if (docPath) { delete ws.docs[docPath]; log.info(`Removed doc: ${docPath}`); }
     })
     .on('error', (err) => console.error('[watcher:docs] file-sync paused:', err)); // FLUX-784
 }
@@ -1463,10 +1664,9 @@ export async function startWatchers() {
  * Watch the active group's `.flux-group` store so Product docs refresh after a
  * fan-out / mapping run. No-op in single-repo mode. Called after activateGroup.
  */
-export async function startGroupDocsWatcher() {
-  const ws = getWorkspace();
+export async function startGroupDocsWatcher(ws: Workspace = getWorkspace()) {
   if (ws.groupDocsWatcher) { await ws.groupDocsWatcher.close(); ws.groupDocsWatcher = null; }
-  const storeDir = activeGroupStoreDir();
+  const storeDir = activeGroupStoreDir(ws);
   if (!storeDir) return;
 
   ws.groupDocsWatcher = chokidar.watch(storeDir, {
@@ -1476,14 +1676,14 @@ export async function startGroupDocsWatcher() {
   });
 
   const reload = (filePath: string) => {
-    if (filePath.toLowerCase().endsWith('.md')) void loadGroupDoc(storeDir, filePath);
+    if (filePath.toLowerCase().endsWith('.md')) void loadGroupDoc(storeDir, filePath, ws);
   };
   ws.groupDocsWatcher
     .on('add', reload)
     .on('change', reload)
     .on('unlink', (filePath) => {
-      const docPath = groupDocPathFromFile(storeDir, filePath);
-      if (docPath) { delete getWorkspace().docs[docPath]; log.info(`Removed group doc: ${docPath}`); }
+      const docPath = groupDocPathFromFile(storeDir, filePath, ws);
+      if (docPath) { delete ws.docs[docPath]; log.info(`Removed group doc: ${docPath}`); }
     })
     .on('error', (err) => console.error('[watcher:group-docs] file-sync paused:', err)); // FLUX-784
 }
@@ -1496,11 +1696,18 @@ export async function startGroupDocsWatcher() {
  * the Workspace object; `isActivating` stays the cheap read-only signal downstream guards check.
  */
 export async function activateWorkspace(newRoot: string): Promise<string> {
-  return getWorkspace().activationLock.runExclusive(() => doActivateWorkspace(newRoot));
+  // FLUX-1447: resolve the workspace ONCE at the activation entry point and thread that single `ws`
+  // through the rest of the activation call graph below — see the migration note at the top of this
+  // file for why activation itself still resolves via the bare global rather than the S1 registry.
+  const ws = getWorkspace();
+  // Epic FLUX-1230: pin the whole activation to `ws` so global-accessor calls inside it
+  // (getActiveFluxDir/getConfig/setWorkspaceRoot) resolve to the workspace being (re)activated
+  // even when this runs inside some request's workspaceScope binding.
+  return ws.activationLock.runExclusive(() => runWithWorkspace(ws, () => doActivateWorkspace(newRoot, ws)));
 }
 
-async function doActivateWorkspace(newRoot: string): Promise<string> {
-  getWorkspace().isActivating = true;
+async function doActivateWorkspace(newRoot: string, ws: Workspace): Promise<string> {
+  ws.isActivating = true;
   // FLUX-1216 review fix: arm the post-restart reclaim grace synchronously, right here, BEFORE any
   // async work in this function runs (including the pruneTaskWorktrees fire-and-forget call below).
   // Previously this was armed only from the activeFluxWatcher 'ready' handler further down, AFTER
@@ -1527,53 +1734,12 @@ async function doActivateWorkspace(newRoot: string): Promise<string> {
     // flag can't diverge for a short/symlinked root (FLUX-711). Throws if missing, so guard it.
     try { newRoot = realpathSync.native(newRoot); } catch { /* missing/unresolvable — keep as given */ }
     setWorkspaceRoot(newRoot);
-    getWorkspace().tasks = {};
-    getWorkspace().docs = {};
-    getWorkspace().parseErrors = {};
+    ws.tasks = {};
+    ws.docs = {};
+    ws.parseErrors = {};
     clearNotifications();
     log.info(`Workspace: ${newRoot}`);
-    await bootstrapNewWorkspace();
-    // FLUX-1184: reload just the files a late-landing background pull touched — see
-    // reconcileBackgroundPull's comment for why this replaced relying on the watcher's old
-    // initial-scan replay.
-    await attachWorktreeIfPresent(newRoot, (storeDir, changedRelativePaths) => {
-      void reconcileBackgroundPull(storeDir, changedRelativePaths);
-    });
-    // Crash recovery: prune git's records of any task worktrees whose dirs were removed out of
-    // band before this workspace was last deactivated (FLUX-517) — AND sweep `.eh-worktrees/`
-    // for orphaned directories left behind by a failed removal, reaping their lock-holder
-    // processes if needed (FLUX-1216; this call now does real, best-effort filesystem deletion
-    // and can force-kill OS processes, not just touch git's bookkeeping). Fire-and-forget —
-    // runs after activation "completes" from this caller's perspective, so a request landing
-    // moments after a workspace switch can race the tail of this sweep on `.eh-worktrees/`.
-    pruneTaskWorktrees(newRoot).catch((err) =>
-      console.error('[task-worktree] prune on activation failed:', err),
-    );
-    await migrateStrandedFluxTickets(newRoot);
-    await initDir();
-    await installSkillsForWorkspace();
-    await startWatchers();
-    startSyncWatcher();
-    // FLUX-1076: a wedged/unmerged .flux-store from before an engine restart otherwise sits
-    // silent until some later local file change happens to debounce a sync tick — nothing
-    // drives that dry re-check on its own after boot. Kick one immediately (no-ops outside
-    // orphan mode) so a pre-existing conflict/error is (re)detected and surfaced right away
-    // instead of waiting on incidental activity.
-    triggerSync();
-    await activateGroup(newRoot);
-    const memberBinding = await activateMemberBinding(newRoot, (await getWorkspacesList()).map((w) => w.path));
-    if (memberBinding) {
-      // Attach (or refresh) the local group docs worktree for this member workspace
-      // so non-EH tools and agents see real files on disk (FLUX-422).
-      attachMemberWorktree(newRoot, memberBinding.parentRoot).catch((err) =>
-        console.error('[group-worktree] attach failed during workspace activation:', err),
-      );
-    }
-    await loadGroupDocs();
-    await startGroupDocsWatcher();
-    seedPromptNotifications();
-    const modulesToProbe = Array.isArray(getConfig().modules) ? getConfig().modules : [];
-    probeAllEnabled(modulesToProbe).catch(() => {});
+    await hydrateWorkspace(ws);
     return newRoot; // the canonical bound root — callers persist/respond with THIS (FLUX-711)
   } finally {
     // FLUX-1338: the task set was swapped out wholesale for a different workspace, but this path
@@ -1591,19 +1757,121 @@ async function doActivateWorkspace(newRoot: string): Promise<string> {
     // mid-activation when activation FAILS after clearing the tasks; a mid-activation 200 over a
     // partial set remains possible but self-heals on the next poll.
     bumpTasksVersion();
-    getWorkspace().isActivating = false;
+    ws.isActivating = false;
     recordWorkspaceActivation(performance.now() - __activateWorkspaceStartedAt);
   }
 }
 
-function seedPromptNotifications() {
+/**
+ * FLUX-1529 (epic FLUX-1230 S11): the load/watch/seed body extracted out of `doActivateWorkspace`
+ * so a second board can be brought live (`openWorkspaceLive` below) without duplicating this
+ * sequence. Deliberately does NOT include the realpath/`setWorkspaceRoot`/cache-clear step or the
+ * `finally` version bump — those stay caller-side (activate's clear-in-place vs. live's fresh
+ * `Workspace`) — and does NOT reset `ws.tasks`/`ws.docs`/`ws.parseErrors` itself, so calling this
+ * twice against an already-hydrated `ws` would layer onto existing state rather than reload from
+ * empty; callers own that reset before calling.
+ *
+ * Reads `root` off `ws.root` rather than taking it as a parameter — both callers already set it
+ * before invoking this (`setWorkspaceRoot` in `doActivateWorkspace`, `openWorkspace`/the explicit
+ * assignment in `openWorkspaceLive`), and per-request path/config resolution (`getActiveFluxDir`,
+ * `getConfig`, etc.) still reads the global active pointer, not `ws.root`, per the FLUX-1529 plan's
+ * decision to defer that accessor rewrite.
+ */
+async function hydrateWorkspace(ws: Workspace): Promise<void> {
+  const root = ws.root;
+  if (!root) throw new Error('hydrateWorkspace: ws.root must be set before hydration');
+  await bootstrapNewWorkspace();
+  // FLUX-1184: reload just the files a late-landing background pull touched — see
+  // reconcileBackgroundPull's comment for why this replaced relying on the watcher's old
+  // initial-scan replay.
+  await attachWorktreeIfPresent(root, (storeDir, changedRelativePaths) => {
+    void reconcileBackgroundPull(storeDir, changedRelativePaths, ws);
+  });
+  // Crash recovery: prune git's records of any task worktrees whose dirs were removed out of
+  // band before this workspace was last deactivated (FLUX-517) — AND sweep `.eh-worktrees/`
+  // for orphaned directories left behind by a failed removal, reaping their lock-holder
+  // processes if needed (FLUX-1216; this call now does real, best-effort filesystem deletion
+  // and can force-kill OS processes, not just touch git's bookkeeping). Fire-and-forget —
+  // runs after activation "completes" from this caller's perspective, so a request landing
+  // moments after a workspace switch can race the tail of this sweep on `.eh-worktrees/`.
+  pruneTaskWorktrees(root).catch((err) =>
+    console.error('[task-worktree] prune on activation failed:', err),
+  );
+  await migrateStrandedFluxTickets(root);
+  await initDir(ws);
+  await installSkillsForWorkspace();
+  await startWatchers(ws);
+  startSyncWatcher();
+  // FLUX-1076: a wedged/unmerged .flux-store from before an engine restart otherwise sits
+  // silent until some later local file change happens to debounce a sync tick — nothing
+  // drives that dry re-check on its own after boot. Kick one immediately (no-ops outside
+  // orphan mode) so a pre-existing conflict/error is (re)detected and surfaced right away
+  // instead of waiting on incidental activity.
+  triggerSync();
+  ws.groupContext = await activateGroup(root);
+  const memberBinding = await activateMemberBinding(root, (await getWorkspacesList()).map((w) => w.path));
+  ws.memberBinding = memberBinding;
+  if (memberBinding) {
+    // Attach (or refresh) the local group docs worktree for this member workspace
+    // so non-EH tools and agents see real files on disk (FLUX-422).
+    attachMemberWorktree(root, memberBinding.parentRoot).catch((err) =>
+      console.error('[group-worktree] attach failed during workspace activation:', err),
+    );
+  }
+  await loadGroupDocs(ws);
+  await startGroupDocsWatcher(ws);
+  seedPromptNotifications(ws);
+  const modulesToProbe = Array.isArray(getConfig().modules) ? getConfig().modules : [];
+  probeAllEnabled(modulesToProbe).catch(() => {});
+}
+
+/**
+ * FLUX-1529 (epic FLUX-1230 S11): loads a second board live — its own `Workspace` with
+ * tasks/docs/watchers running — through the S1 registry (`openWorkspace`), WITHOUT touching
+ * whatever `Workspace` is currently active. This is the bootstrap primitive S12 (per-request
+ * routing) and S13 (background-load UI) build on; nothing else calls it yet, and it must not be
+ * wired into a "load in background" UI before S12 lands (see the caveat below).
+ *
+ * Canonicalizes `root` the same way `doActivateWorkspace` does (FLUX-711 — the registry key must
+ * be canonical), then `openWorkspace`s it, which registers/re-touches the entry and flips the
+ * global active pointer to it. Because path/config reads resolve via that pointer, this makes the
+ * target board the resolved-active one during (and after) its load — acceptable for now because
+ * nothing but tests calls this until S12 wires per-request routing, and it never mutates any
+ * *other* `Workspace` object.
+ *
+ * Idempotent: a `ws` that already has a live `fluxWatcher` is returned as-is, no re-bootstrap.
+ */
+export async function openWorkspaceLive(root: string): Promise<Workspace> {
+  let canonicalRoot = root;
+  try { canonicalRoot = realpathSync.native(root); } catch { /* missing/unresolvable — keep as given */ }
+  const ws = openWorkspace(canonicalRoot);
+  // Epic FLUX-1230: bind the load explicitly to the workspace being brought up. The hydrate body
+  // still resolves paths/config via the global accessors (getActiveFluxDir/getConfig — the
+  // deferred accessor rewrite, see loadWorkspaceContents' doc), which used to work only because
+  // openWorkspace() just moved `activeKey` here. Under per-request resolution (workspaceScope)
+  // this call runs inside the REQUESTING board's binding — without this wrap the hydrate would
+  // read the OLD board's files into the new Workspace.
+  return ws.activationLock.runExclusive(() => runWithWorkspace(ws, async () => {
+    if (ws.fluxWatcher) return ws; // already live — idempotent, no reload
+    ws.isActivating = true;
+    try {
+      ws.root = canonicalRoot;
+      await hydrateWorkspace(ws);
+      return ws;
+    } finally {
+      ws.isActivating = false;
+    }
+  }));
+}
+
+function seedPromptNotifications(ws: Workspace) {
   const requireInputStatus = getConfig().requireInputStatus || 'Require Input';
   const readyStatus = getConfig().readyForMergeStatus || 'Ready';
-  for (const task of Object.values(getWorkspace().tasks)) {
+  for (const task of Object.values(ws.tasks)) {
     if (task.swimlane === 'require-input') {
-      generatePromptNotification(task.id, task.title || task.id, 'Require Input');
+      generatePromptNotification(task.id, task.title || task.id, 'Require Input', ws);
     } else if (task.status === requireInputStatus || task.status === readyStatus) {
-      generatePromptNotification(task.id, task.title || task.id, task.status);
+      generatePromptNotification(task.id, task.title || task.id, task.status, ws);
     }
   }
   // Check if installed agent skills match source version

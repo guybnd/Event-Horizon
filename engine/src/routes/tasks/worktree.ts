@@ -15,7 +15,7 @@ import {
 } from '../../task-worktree.js';
 import { isEditorAvailable, openEditorWindow } from '../../editor-launcher.js';
 import { broadcastEvent } from '../../events.js';
-import { git, errorMessage } from './helpers.js';
+import { git, errorMessage, reqWorkspace } from './helpers.js';
 import type { TaskRecord } from './helpers.js';
 
 const router = express.Router();
@@ -86,6 +86,10 @@ async function computeWorktrees() {
   const defaultBranch = await resolveDefaultBranch(getWorkspaceRoot()!);
   return Promise.all(
     worktrees.map(async (w) => {
+      // FLUX-1448: this memoized compute is shared cross-request (swrAsync caches one instance,
+      // not one per caller), so there's no single `req.workspace` to thread here — background/
+      // non-request-scoped code stays on the bare registry default (S4/FLUX-1449 territory), not
+      // this ticket's HTTP-route sweep.
       const ticket = (Object.values(getWorkspace().tasks) as TaskRecord[]).find((t) => t.branch === w.branch);
       // Changed-file count vs master — drives the board chip's "N changed" badge.
       const changedFiles = await worktreeChangeCount(w.path).catch(() => 0);
@@ -160,7 +164,7 @@ router.get('/uncommitted-count', async (_req, res) => {
 // a stash ref on conflict — see detachTaskWorktree).
 router.post('/:id/worktree/detach', async (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
 
   const wtPath = taskWorktreeDir(getWorkspaceRoot()!, id);
@@ -184,7 +188,7 @@ router.post('/:id/worktree/detach', async (req, res) => {
 // seed prompt to paste, and whether the editor actually launched.
 router.post('/:id/worktree/open', async (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
 
   const baseBranch: string | undefined = req.body?.baseBranch;
@@ -192,7 +196,7 @@ router.post('/:id/worktree/open', async (req, res) => {
     let branch: string | undefined = task.branch;
     if (!branch) {
       branch = await createTicketBranch(id, task.title || id, baseBranch);
-      await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch } });
+      await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch } }, req.workspace);
     }
     // Reuse a worktree already checked out on this branch (e.g. a joined ticket
     // sharing the parent's worktree); otherwise create this ticket's own.
@@ -217,7 +221,7 @@ router.post('/:id/worktree/open', async (req, res) => {
 // and execution-root resolution (by branch) routes it into the shared worktree.
 router.post('/:id/worktree/join', async (req, res) => {
   const { id } = req.params;
-  const task = getWorkspace().tasks[id];
+  const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
 
   const branch: string | undefined = typeof req.body?.branch === 'string' ? req.body.branch.trim() : undefined;
@@ -228,7 +232,7 @@ router.post('/:id/worktree/join', async (req, res) => {
     if (!worktree) {
       return res.status(409).json({ error: `No active worktree is checked out on '${branch}' to join.` });
     }
-    await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch } });
+    await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch } }, req.workspace);
     broadcastEvent('taskUpdated', { id });
     res.json({ branch, worktree, joined: true });
   } catch (err: unknown) {

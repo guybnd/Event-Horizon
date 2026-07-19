@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import { renameSync } from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 import { getConfig } from './config.js';
 import { getWorkspace } from './workspace-context.js';
 import { digestHistoryForAgent, buildHistoryDigest, extractRecentUserComments, extractLaunchFocus, type HistoryEntryLike } from './history.js';
@@ -70,10 +71,40 @@ export async function atomicWriteFile(filePath: string, content: string): Promis
   }
 }
 
+/**
+ * FLUX-1550: opaque content-hash "version" for a ticket's `body`, used as an optimistic-
+ * concurrency (CAS) token — NOT a persisted field, computed fresh from whatever body string is
+ * on hand. sha256 hex sliced to 16 chars: collision-safe for this purpose, short enough to be a
+ * cheap wire token. Callers must hash the SAME body representation on both the read side
+ * (this function, via serializeTaskForApi/Agent) and the write side (updateTaskWithHistoryLocked's
+ * in-lock `readTaskFromDisk` body) or the compare spuriously mismatches — see task-store.ts's
+ * CAS check for the write side.
+ */
+export function computeBodyVersion(body: string): string {
+  return createHash('sha256').update(body, 'utf-8').digest('hex').slice(0, 16);
+}
+
+/**
+ * FLUX-1550 (plan-review guardrail): gray-matter's `matter.stringify` always ensures a serialized
+ * body ends with exactly one trailing newline — appending one if absent, leaving it alone if
+ * already present — so a body freshly re-read off disk (readTaskFromDisk) carries that trailing
+ * `\n` even when the logical body a caller last submitted didn't. Strip a single trailing
+ * newline before hashing so this read-exposure path and the write-side CAS compare
+ * (`updateTaskWithHistoryLocked`, task-store.ts) agree on the SAME logical string — otherwise a
+ * body that just round-tripped through one disk write would 409 against the version this same
+ * function just served for it. `computeBodyVersion` itself stays a raw, unnormalized hash (it
+ * must still distinguish bodies that differ only by a genuine trailing newline); only this
+ * disk-facing wrapper normalizes.
+ */
+export function computeDiskBodyVersion(body: string): string {
+  return computeBodyVersion(body.endsWith('\n') ? body.slice(0, -1) : body);
+}
+
 export function serializeTaskForApi(task: TaskRecord) {
   const cliSessions = getAllSessionSummariesForTask(task.id);
   return {
     ...task,
+    bodyVersion: computeDiskBodyVersion(task.body || ''),
     cliSession: getCliSessionSummaryForTask(task.id),
     cliSessions: cliSessions.length > 0 ? cliSessions : undefined,
   };
@@ -143,6 +174,10 @@ export function serializeTaskForAgent(task: TaskRecord, historyLimit?: number, o
   const cliSessions = getListSessionSummariesForTask(task.id).map(slimSessionSummaryForAgent);
   return {
     ...task,
+    // FLUX-1550: hashed over the FULL on-disk body, before AXI #3 truncation below overrides the
+    // displayed `body` — a truncated-display hash would never match the CAS compare's full-body
+    // hash in updateTaskWithHistoryLocked, permanently 409ing every edit of an oversized ticket.
+    bodyVersion: computeDiskBodyVersion(typeof task.body === 'string' ? task.body : ''),
     // AXI #3 body truncation (FLUX-879): override the spread `body` only when oversized.
     ...truncateBodyForAgent(task.body, opts.fullBody),
     // FLUX-985: coerce nullable/absent frontmatter. A hand-edited or legacy ticket can carry

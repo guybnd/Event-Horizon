@@ -148,9 +148,11 @@ export function CardMetadataRow({ task, isOverlay, c }: { task: Task; isOverlay?
               event.stopPropagation();
               openBoardTask(parentTask);
             }}
-            className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/15"
+            title={`${parentTask.id} · ${parentTask.title}`}
+            className="flex max-w-[10rem] items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 transition-colors hover:border-indigo-300 hover:bg-indigo-100 dark:border-indigo-500/20 dark:bg-indigo-500/10 dark:text-indigo-300 dark:hover:bg-indigo-500/15"
           >
-            -&gt; {parentTask.id}
+            <Layers className="h-3 w-3 shrink-0" />
+            <span className="truncate">{parentTask.id} · {parentTask.title}</span>
           </button>
         )}
         {/* Effort + priority share the same wrapping metadata row as ID/status

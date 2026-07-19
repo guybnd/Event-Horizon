@@ -482,7 +482,7 @@ describe('restart-safe worktree reclaim (FLUX-1060)', () => {
     // Persist the stub the way the reconcile tick would (rehydrate first flips the boot flag so the
     // sync is allowed to write; the dir is empty so it's a no-op beyond arming the flag).
     await rehydrateSessionStubs();
-    await syncActiveSessionStubs();
+    await syncActiveSessionStubs(repo, repo);
 
     simulateEngineRestart();
     // Sanity: with the in-memory map wiped and no rehydration yet, the pre-FLUX-1060 guard is blind.
@@ -501,7 +501,7 @@ describe('restart-safe worktree reclaim (FLUX-1060)', () => {
     getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/FLUX-1' };
     addWaitingInputSession('FLUX-1', 'sess-1', 'resume-xyz');
     await rehydrateSessionStubs();
-    await syncActiveSessionStubs();
+    await syncActiveSessionStubs(repo, repo);
 
     simulateEngineRestart();
     await rehydrateSessionStubs();
@@ -518,11 +518,11 @@ describe('restart-safe worktree reclaim (FLUX-1060)', () => {
     getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready', branch: 'flux/FLUX-1' };
     addWaitingInputSession('FLUX-1', 'sess-1');
     await rehydrateSessionStubs();
-    await syncActiveSessionStubs(); // stub written while active
+    await syncActiveSessionStubs(repo, repo); // stub written while active
 
     // The session finishes (terminal) before the restart — the next sweep drops its stub.
     cliSessionsById.get('sess-1')!.status = 'completed';
-    await syncActiveSessionStubs();
+    await syncActiveSessionStubs(repo, repo);
 
     simulateEngineRestart();
     expect(await rehydrateSessionStubs()).toBe(0); // no stub → nothing rehydrated

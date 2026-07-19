@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppActions } from '../store/useAppSelector';
 import {
   startTaskCliSessionEx,
@@ -13,6 +13,7 @@ import {
 import { uploadChatImage } from '../taskAssetUploads';
 import { getTranscript, hasTranscript, setTranscript } from '../transcriptCache';
 import { getChatQueue, setChatQueue } from '../chatQueueCache';
+import { getPendingSend, setPendingSend } from '../pendingSendCache';
 
 /** FLUX-674: per-turn send options, including pasted-image attachments. */
 export interface ChatSendOptions {
@@ -62,6 +63,21 @@ export interface UseChatSession {
   error: string | null;
   send: (text: string, opts?: ChatSendOptions) => Promise<void>;
   /**
+   * FLUX-685: edit a past user turn and resend it — rewinds the displayed transcript to `seq`
+   * (dropping that turn and everything after) and resends `text` as a fresh turn, honoring the
+   * composer's model/effort/permission overrides. Requires an existing resumable session (there
+   * is nothing to rewind on a conversation that hasn't started); errors surface via `error`, same
+   * as `send`.
+   */
+  editAndResend: (seq: number, text: string, opts?: ChatSendOptions) => Promise<void>;
+  /**
+   * FLUX-685: retry the last assistant reply — drops it and resends the preceding user turn's own
+   * text unchanged (optionally with a different model/effort/permission). A thin wrapper over
+   * `editAndResend`: finds the last user message by `seq` and resends its text as-is. No-op if
+   * there's no user turn to resend.
+   */
+  retryLast: (opts?: ChatSendOptions) => Promise<void>;
+  /**
    * FLUX-748: messages submitted while the agent was mid-turn, awaiting auto-dispatch (FIFO,
    * one per turn). Empty when the session is idle / nothing is queued.
    */
@@ -107,12 +123,21 @@ export interface UseChatSession {
  * SSE-driven `setMessages`/`setLiveText` commits are buffered (never dropped/coalesced — just
  * delayed) while true, and flushed the moment it flips back to false, so the recurring React
  * commits those events drive don't stack on top of the animation.
+ *
+ * `workspaceKey` (FLUX-1580): an extra refetch trigger, ONLY meaningful for the board/Furnace
+ * virtual conversations — the caller passes the active board's key for those (and `undefined` for
+ * every per-ticket conversation, which is unaffected). A ticket id is only ever open within its
+ * own board's context, but `__board__`/`__furnace__` are the SAME string across every workspace,
+ * so without this the event-driven refetch below has nothing to tell it "the active board changed
+ * under this open window" — it would keep showing the previous workspace's transcript until the
+ * next activity/taskUpdated event happened to fire for this conversation id.
  */
 export function useChatSession(
   conversationId: string,
   enabled = true,
   working = false,
   isAnimating = false,
+  workspaceKey?: string | null,
 ): UseChatSession {
   const { subscribeToEvent } = useAppActions();
   // FLUX-750: lazy-hydrate from the module-level transcript cache so a reopened (previously
@@ -132,14 +157,27 @@ export function useChatSession(
   // once; a conversationId switch on a reused hook re-seeds via the effect below.
   const [queued, setQueued] = useState<QueuedMessage[]>(() => getChatQueue(conversationId));
   const queueIdRef = useRef(nextQueueId(getChatQueue(conversationId)));
-  const [pendingUser, setPendingUser] = useState<string | null>(null);
-  const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
+  // FLUX-1495: lazy-hydrate the optimistic bubble from the module-level cache too — same reason as
+  // the transcript/queue caches above. Without this, minimizing the instant after send() fires (a
+  // slow-preamble engine turn is still mid-flight) unmounts the bubble along with the hook, and a
+  // reopen inside that gap shows neither the real transcript entry nor the optimistic stand-in.
+  const [pendingUser, setPendingUserState] = useState<string | null>(() => getPendingSend(conversationId)?.text ?? null);
+  const [pendingAttachments, setPendingAttachmentsState] = useState<ChatAttachment[]>(() => getPendingSend(conversationId)?.attachments ?? []);
   // FLUX-921: transcript length at the moment the current pendingUser bubble was set. The landing
   // check below only looks at messages appended AFTER this point — otherwise re-sending the exact
   // same text as an earlier turn matches that OLDER message and hides the new optimistic bubble
   // immediately (the message still sends, but the bubble vanishes and reappears once the real
   // turn lands, instead of staying visible the whole time).
-  const pendingBaselineRef = useRef(0);
+  const pendingBaselineRef = useRef(getPendingSend(conversationId)?.baseline ?? 0);
+  // FLUX-1495: set (or clear, via `text: null`) the optimistic bubble AND write it through to the
+  // module cache in the same call, so every call site that used to touch `pendingUser`/
+  // `pendingAttachments` directly stays in sync with what a remount rehydrates from. Stable via
+  // useCallback (conversationId-keyed) so effects that call it don't need to re-run every render.
+  const setPending = useCallback((text: string | null, attachments: ChatAttachment[] = []) => {
+    setPendingUserState(text);
+    setPendingAttachmentsState(attachments);
+    setPendingSend(conversationId, text === null ? null : { text, attachments, baseline: pendingBaselineRef.current });
+  }, [conversationId]);
   // FLUX-916: "submitted, awaiting running" latch. Bridges the dead window between our POST
   // returning (busy → false) and the SSE `running` flip (working → true), so the live indicator
   // never blanks mid-send. Folded into the returned `busy` so no new prop threading is needed.
@@ -207,7 +245,31 @@ export function useChatSession(
     const cachedQueue = getChatQueue(conversationId);
     queueIdRef.current = nextQueueId(cachedQueue);
     setQueued(cachedQueue);
+    // FLUX-1495: same re-seed for the optimistic pending bubble — otherwise a reused hook would
+    // keep showing the PREVIOUS conversation's pending send after switching ids.
+    const cachedPending = getPendingSend(conversationId);
+    pendingBaselineRef.current = cachedPending?.baseline ?? 0;
+    setPendingUserState(cachedPending?.text ?? null);
+    setPendingAttachmentsState(cachedPending?.attachments ?? []);
   }, [conversationId, enabled]);
+
+  // FLUX-1580: `workspaceKey` changing means the ACTIVE BOARD switched under an already-open
+  // `__board__`/`__furnace__` window (`conversationId` itself never changes for those). Unlike the
+  // conversationId re-seed above, don't hydrate from the transcript cache here — it's keyed only by
+  // `conversationId`, so it would just hand back the PREVIOUS workspace's cached messages. Drop to
+  // a clean loading state instead and let the fetch effect below repopulate from the newly-active
+  // workspace. Guarded on a real change (skips the initial mount) so it never clobbers the
+  // conversationId-triggered seed above.
+  const seededWorkspaceKeyRef = useRef(workspaceKey);
+  useEffect(() => {
+    if (seededWorkspaceKeyRef.current === workspaceKey) return;
+    seededWorkspaceKeyRef.current = workspaceKey;
+    messagesRef.current = [];
+    setMessages([]);
+    setLiveText('');
+    liveTextRef.current = '';
+    setLoading(enabled);
+  }, [workspaceKey, enabled]);
 
   // Event-driven transcript sync (FLUX-611): fetch once on open, then refetch only when the
   // engine pushes an event for THIS conversation — no idle polling, so a parked chat (and N
@@ -285,7 +347,7 @@ export function useChatSession(
       subscribeToEvent('assistantDelta', onDelta),
     ];
     return () => { cancelled = true; unsubs.forEach((u) => u()); };
-  }, [conversationId, enabled, subscribeToEvent]);
+  }, [conversationId, enabled, subscribeToEvent, workspaceKey]);
 
   async function send(text: string, sendOpts?: ChatSendOptions) {
     const trimmed = text.trim();
@@ -299,8 +361,7 @@ export function useChatSession(
     setError(null);
     setLiveText(''); // FLUX-691: fresh turn — drop any live node left over from a prior turn.
     pendingBaselineRef.current = messagesRef.current.length;
-    setPendingUser(trimmed);
-    setPendingAttachments(attachments);
+    setPending(trimmed, attachments);
     setAwaitingTurn(true); // FLUX-916: keep the live indicator on until the engine reports running.
     try {
       let resumable = false;
@@ -347,8 +408,7 @@ export function useChatSession(
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message');
       // FLUX-916: the turn never sent — drop the optimistic bubble + stop the awaiting indicator.
-      setPendingUser(null);
-      setPendingAttachments([]);
+      setPending(null);
       setAwaitingTurn(false);
     } finally {
       // FLUX-916: pendingUser is cleared by the landing effect (when the committed turn appears in
@@ -357,6 +417,63 @@ export function useChatSession(
       setBusy(false);
       sendingRef.current = false;
     }
+  }
+
+  /**
+   * FLUX-685: edit-and-resend / retry transport. Rewinds the displayed transcript to `seq`
+   * (dropping that message and everything after — optimistically, so the UI feels instant) and
+   * resends `text` over the existing resume path with `truncateFromSeq: seq`, so the engine
+   * truncates its durable transcript in the SAME request before appending the resend (one atomic
+   * call — see `truncateTranscript` in the engine). Mirrors `send`'s busy/pending/error handling;
+   * deliberately has no "start fresh" fallback (unlike `send`) — editing/retrying only makes sense
+   * against an EXISTING conversation's history, so a failed resume surfaces as an error rather than
+   * silently starting a new, historyless session.
+   */
+  async function editAndResend(seq: number, text: string, opts?: ChatSendOptions) {
+    const trimmed = text.trim();
+    if (!trimmed || busy || sendingRef.current) return;
+    sendingRef.current = true;
+    setBusy(true);
+    setError(null);
+    setLiveText('');
+    // FLUX-1566: a foreign (`sourceStream`) turn's `seq` addresses another stream, and a cache-hydrated
+    // row can be seq-less — neither compares meaningfully against this stream's truncation point, so
+    // keep them regardless of `seq` instead of falling into the `Infinity` (dropped) bucket.
+    const truncated = messagesRef.current.filter((m) => m.sourceStream || (m.seq ?? Infinity) < seq);
+    messagesRef.current = truncated;
+    setMessages(truncated);
+    setTranscript(conversationId, truncated);
+    pendingBaselineRef.current = truncated.length;
+    setPending(trimmed);
+    setAwaitingTurn(true);
+    try {
+      await sendTaskCliInput(conversationId, trimmed, 'User', { ...opts, truncateFromSeq: seq });
+      // Pull immediately so the rewound + resent transcript shows without waiting a poll.
+      try {
+        const fresh = await fetchTaskTranscript(conversationId);
+        messagesRef.current = fresh;
+        setMessages((prev) => (sameMessages(prev, fresh) ? prev : fresh));
+        setTranscript(conversationId, fresh);
+      } catch { /* poll catches up */ }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to resend message');
+      setPending(null);
+      setAwaitingTurn(false);
+    } finally {
+      setBusy(false);
+      sendingRef.current = false;
+    }
+  }
+
+  /** FLUX-685: retry — resend the last user turn's own text unchanged (dropping the assistant
+   *  reply that followed it, plus anything after). No-op if there's no addressable user turn. */
+  async function retryLast(opts?: ChatSendOptions) {
+    // FLUX-1566: skip foreign (`sourceStream`) turns — their `seq` addresses another stream, so
+    // truncating THIS transcript at it would be a semantic mismatch. The UI Retry button already
+    // gates on `!m.sourceStream`; this is defense-in-depth for any other caller of `retryLast`.
+    const lastUser = [...messagesRef.current].reverse().find((m) => m.role === 'user' && m.seq !== undefined && !m.sourceStream);
+    if (!lastUser || lastUser.seq === undefined) return;
+    await editAndResend(lastUser.seq, lastUser.text, opts);
   }
 
   /** FLUX-748: park a message to auto-send once the current turn finishes. */
@@ -423,6 +540,13 @@ export function useChatSession(
       if (cancelled) return;
       const head = parked[0];
       if (!head) return;
+      // FLUX-1493: write the dequeue through to the module cache SYNCHRONOUSLY, in the same tick as
+      // dispatch — don't wait for the persist effect above (it only flushes on the next commit). If
+      // the window unmounts before that commit (minimize right after this fires), the cache would
+      // otherwise still hold the already-dispatched head and re-send it verbatim on every later
+      // reopen. `parked` (not React state) is the source of truth here since it's what was just read
+      // from the cache above.
+      setChatQueue(conversationId, parked.slice(1));
       setQueued((q) => (q[0]?.id === head.id ? q.slice(1) : q));
       void send(head.text, head.opts);
     })();
@@ -444,6 +568,10 @@ export function useChatSession(
       // FLUX-916: slice by head id (match the reopen one-shot effect) instead of positionally, so a
       // concurrent dispatch can't double-consume; sendingRef is the hard double-POST guard.
       const head = queued[0]!;
+      // FLUX-1493: same synchronous cache write-through as the reopen one-shot effect above — see
+      // that comment. Without it, a minimize immediately after this edge fires can strand the
+      // dispatched head in the module cache for the next reopen to re-send.
+      setChatQueue(conversationId, queued.slice(1));
       setQueued((q) => (q[0]?.id === head.id ? q.slice(1) : q));
       void send(head.text, head.opts);
     }
@@ -462,10 +590,9 @@ export function useChatSession(
     // FLUX-921: only match messages appended since this bubble was set (see pendingBaselineRef) —
     // matching the whole transcript hid the bubble instantly on an identical re-send.
     if (messages.slice(pendingBaselineRef.current).some((m) => m.role === 'user' && m.text === pendingUser)) {
-      setPendingUser(null);
-      setPendingAttachments([]);
+      setPending(null);
     }
-  }, [messages, pendingUser]);
+  }, [messages, pendingUser, setPending]);
 
   // FLUX-916: release the awaiting-turn latch when the engine reports the turn running (the live
   // `working` indicator takes over), with a safety timeout so a turn that never starts can't pin
@@ -507,8 +634,7 @@ export function useChatSession(
     // that has almost always already happened, so this is a no-op in the common case. It only matters
     // if that invariant is ever broken (the turn genuinely never lands), where it prevents the bubble
     // from being stuck on screen forever with no other way to dismiss it.
-    setPendingUser(null);
-    setPendingAttachments([]);
+    setPending(null);
     try {
       await stopTaskCliSession(conversationId);
     } catch {
@@ -531,7 +657,7 @@ export function useChatSession(
       setMessages([]);
       setTranscript(conversationId, []); // FLUX-750: reflect the cleared transcript in the cache.
       setLiveText('');
-      setPendingUser(null);
+      setPending(null);
       // FLUX-837: a reset wipes the conversation, so drop any parked queue too (state + cache).
       setQueued([]);
       setChatQueue(conversationId, []);
@@ -543,5 +669,5 @@ export function useChatSession(
   // FLUX-916: surface the awaiting-turn latch through `busy` so the live indicator + composer cover
   // the dead window between POST-return and the SSE `running` flip, with no extra prop threading.
   // (Internal queue effects above read the raw `busy` state, so their timing is unchanged.)
-  return { messages: merged, busy: busy || awaitingTurn, error, send, queued, enqueue, dequeue, clearQueued, stop, reset, uploadImage, liveText, loading };
+  return { messages: merged, busy: busy || awaitingTurn, error, send, editAndResend, retryLast, queued, enqueue, dequeue, clearQueued, stop, reset, uploadImage, liveText, loading };
 }

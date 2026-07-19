@@ -6,8 +6,9 @@
 // write (unconditional, earlier in the turn) already showed the reply — and it left the session
 // 'failed' rather than the resumable 'waiting-input' the /start route's FLUX-667 self-heal
 // expects, so the NEXT turn couldn't cleanly supersede it either.
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
+import path from 'path';
 import type { ChildProcessWithoutNullStreams } from 'child_process';
 
 vi.mock('../config.js', () => ({ getConfig: () => ({ projects: ['FLUX'] }) }));
@@ -31,6 +32,7 @@ import { generateOrchestratorReplyNotification } from '../notifications.js';
 import { buildBoardReprime } from '../board-reprime.js';
 import { buildBoardDigest } from '../board-digest.js';
 import { appendTranscriptEvent } from '../transcript.js';
+import { getWorkspace, getDefaultWorkspace, openWorkspace, closeWorkspace } from '../workspace-context.js';
 import { BOARD_CONVERSATION_ID, FURNACE_CONVERSATION_ID } from './board.js';
 import type { BoardSpec } from './board.js';
 import type { CliSessionRecord } from './types.js';
@@ -43,7 +45,12 @@ const mockAppendTranscriptEvent = vi.mocked(appendTranscriptEvent);
 /** A bare EventEmitter stands in for the spawned CLI's ChildProcess (mirrors adapter-contract.test.ts's fakeProc). */
 function fakeProc(): ChildProcessWithoutNullStreams {
   const proc = new EventEmitter() as unknown as ChildProcessWithoutNullStreams;
-  Object.assign(proc, { stdout: new EventEmitter(), stderr: new EventEmitter(), pid: 4242 });
+  Object.assign(proc, {
+    stdout: new EventEmitter(),
+    stderr: new EventEmitter(),
+    pid: 4242,
+    stdin: { on: vi.fn(), write: vi.fn(), end: vi.fn() },
+  });
   return proc;
 }
 
@@ -149,6 +156,68 @@ describe('wireBoardProc exit classification (FLUX-987 / B4)', () => {
 
     expect(session.status).toBe('cancelled');
     expect(mockNotify).not.toHaveBeenCalled();
+  });
+});
+
+describe('FLUX-1555 (review follow-up): orchestrator-reply notification routes to the session\'s OWNING board, not the ambient active one', () => {
+  // path.resolve so the expected values already match openWorkspace's own normalizeWorkspaceKey
+  // (path.resolve) — a bare '/tmp/...' literal compares unequal to the resolved root on Windows.
+  const bgRoot = path.resolve('/tmp/eh-board-core-bg');
+  const activeRoot = path.resolve('/tmp/eh-board-core-active');
+
+  beforeEach(() => {
+    mockNotify.mockClear();
+  });
+
+  afterEach(async () => {
+    await closeWorkspace(bgRoot);
+    await closeWorkspace(activeRoot);
+  });
+
+  it('emits with the workspace binding resolved from session.workspaceRoot, even though a different board is opened afterward', async () => {
+    openWorkspace(bgRoot);
+    openWorkspace(activeRoot);
+    // FLUX-1557: the ambient/unbound fallback is deterministically the default workspace now,
+    // never whichever board was opened most recently.
+    expect(getWorkspace()).toBe(getDefaultWorkspace());
+
+    const spec = fakeSpec({ capturesResumeId: true });
+    const adapter = makeBoardAdapter(spec);
+    const session = fakeSession();
+    session.workspaceRoot = bgRoot; // the session belongs to the background board
+
+    let observedRoot: string | null | undefined;
+    mockNotify.mockImplementation(() => {
+      observedRoot = getWorkspace().root; // what the notification generator sees while it runs
+    });
+
+    await adapter.startBoardSession(session, 'hello', '/tmp/test-repo');
+    (session.proc as unknown as EventEmitter).emit('exit', 0);
+
+    expect(observedRoot).toBe(bgRoot);
+    // The rebind is scoped to the emit only — ambient state afterwards is unaffected.
+    expect(getWorkspace()).toBe(getDefaultWorkspace());
+  });
+
+  it('falls through to the default workspace when the session has no workspaceRoot (legacy pass-through, FLUX-1557)', async () => {
+    openWorkspace(activeRoot); // some other board open — must not "win" the fallback
+
+    const spec = fakeSpec({ capturesResumeId: true });
+    const adapter = makeBoardAdapter(spec);
+    const session = fakeSession();
+    // No workspaceRoot assigned — mirrors a legacy/rehydrated session (see CliSessionSummary's
+    // doc comment on the field); exactOptionalPropertyTypes forbids an explicit `= undefined`.
+
+    let observedRoot: string | null | undefined;
+    mockNotify.mockImplementation(() => {
+      observedRoot = getWorkspace().root;
+    });
+
+    await adapter.startBoardSession(session, 'hello', '/tmp/test-repo');
+    (session.proc as unknown as EventEmitter).emit('exit', 0);
+
+    expect(observedRoot).toBe(getDefaultWorkspace().root);
+    expect(observedRoot).not.toBe(activeRoot);
   });
 });
 

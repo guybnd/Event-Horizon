@@ -17,6 +17,17 @@ import os from 'os';
 import { setWorkspaceRoot } from './workspace.js';
 import type { CliSessionStatus } from './agents/types.js';
 
+// FLUX-1551: `refreshWorktreePool` (run inside `spawnTemper`) is now keyed PER ROOT, and each test here
+// mints a brand-new temp-dir root — so, unlike a single flat TTL, the per-root freshness window never
+// absorbs the call for a root it hasn't seen before. Force the underlying git call to fail every time
+// (a real `git worktree list` would fail in this non-repo temp dir too) so `refreshWorktreePool`'s
+// best-effort catch preserves whatever `setObservedWorktrees` a test seeded, instead of overwriting it
+// with an empty scan result.
+vi.mock('./task-worktree.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./task-worktree.js')>();
+  return { ...actual, listTaskWorktrees: async () => { throw new Error('no git repo in test temp dir'); } };
+});
+
 let sessionSeq = 0;
 // dispatchSession returns a classified DispatchOutcome (FLUX-1235) — { sid } on success, { sid: null } on refusal.
 const dispatchSession = vi.fn(async (_ticketId: string, _phase: string, _opts?: unknown): Promise<{ sid: string | null }> => ({ sid: `sess-${++sessionSeq}` }));
@@ -240,7 +251,7 @@ describe('Temper (FLUX-1071) — single-ticket auto-review loop', () => {
     // Fill the shared pool to the cap so freeSlots() === 0. `refreshWorktreePool` (run inside spawnTemper)
     // shells out to git in a non-repo temp dir, fails best-effort, and keeps this observed count — so the
     // slot gate sees a full pool exactly as it would when the Furnace holds every slot.
-    setObservedWorktrees(Array.from({ length: FURNACE_SLOT_CAP }, (_, i) => `w${i}`));
+    setObservedWorktrees(getWorkspace().root, Array.from({ length: FURNACE_SLOT_CAP }, (_, i) => `w${i}`));
 
     await enterReady('WT-1');
     // The loop started (durable + in-memory) but NO session was dispatched — it is WAITING for a slot.
@@ -256,7 +267,7 @@ describe('Temper (FLUX-1071) — single-ticket auto-review loop', () => {
     expect(isTempering('WT-1')).toBe(true);
 
     // A slot frees → the next tick observes no session, re-drives the review, and dispatches it.
-    setObservedWorktrees([]);
+    setObservedWorktrees(getWorkspace().root, []);
     await temperTick();
     expect(dispatchSession).toHaveBeenCalledWith('WT-1', 'review', expect.anything());
   });
@@ -265,7 +276,7 @@ describe('Temper (FLUX-1071) — single-ticket auto-review loop', () => {
     // Pool full to the cap — but one of the occupied worktrees belongs to THIS ticket. A re-spawn reuses
     // that worktree via the shared branch (claims no new slot), so the slot gate must exempt it and let it
     // dispatch immediately rather than self-stall behind unrelated work until some other slot frees.
-    setObservedWorktrees(['OWN-1', ...Array.from({ length: FURNACE_SLOT_CAP - 1 }, (_, i) => `w${i}`)]);
+    setObservedWorktrees(getWorkspace().root, ['OWN-1', ...Array.from({ length: FURNACE_SLOT_CAP - 1 }, (_, i) => `w${i}`)]);
 
     await enterReady('OWN-1');
     expect(dispatchSession).toHaveBeenCalledWith('OWN-1', 'review', expect.anything());
@@ -274,7 +285,7 @@ describe('Temper (FLUX-1071) — single-ticket auto-review loop', () => {
 
   it('a same-tick burst of new tickets dispatches exactly the free-slot count, leaving the rest waiting (FLUX-1239)', async () => {
     // 2 slots already occupied elsewhere (e.g. Furnace-held) → 2 of the FURNACE_SLOT_CAP (4) are free.
-    setObservedWorktrees(['w0', 'w1']);
+    setObservedWorktrees(getWorkspace().root, ['w0', 'w1']);
     const ids = ['B-1', 'B-2', 'B-3', 'B-4'];
     for (const id of ids) getWorkspace().tasks[id] = { id, status: 'Ready', title: id, branch: `flux/${id}` };
 
