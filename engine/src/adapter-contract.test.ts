@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { execSync, execFileSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { readFileSync } from 'fs';
@@ -711,6 +711,18 @@ describe('FLUX-931: session.model reaches the real spawn --model arg', () => {
 // arg for a solo/dispatched Claude session — Claude-only, and only for solo/dispatched spawns
 // (never a delegate/relay position, which resolves its model entirely via the /delegate route).
 describe('FLUX-1479: persona.model reaches the real spawn --model arg (Claude solo/dispatched)', () => {
+  // FLUX-1581: this block spawns claude-code.ts's startCliSession directly (not via loadAdapter),
+  // which does its own real binary probe (checkBinaryInstalled + resolveClaudeExePath) before this
+  // suite's mockSpawn ever gets a chance to intercept it — on a machine/CI runner without the
+  // `claude` binary on PATH that throws (`which claude` ENOENT) before the model-arg assertion ever
+  // runs. Stub both the same way the FLUX-931 block above does for its own direct claude-code.ts
+  // import; beforeEach (not beforeAll) so each test gets a fresh spy that this block's existing
+  // afterEach cleanly restores.
+  beforeEach(async () => {
+    const shared = await import('./agents/shared.js');
+    vi.spyOn(shared, 'checkBinaryInstalled').mockResolvedValue(undefined);
+    vi.spyOn(shared, 'resolveClaudeExePath').mockResolvedValue('C:\\fake\\claude.exe');
+  });
   afterEach(() => {
     vi.restoreAllMocks();
   });

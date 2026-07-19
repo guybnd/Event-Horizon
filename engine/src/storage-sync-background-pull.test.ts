@@ -23,7 +23,24 @@ vi.mock('child_process', () => {
     [key: symbol]: (file: string, args: string[], options: Record<string, unknown>) => Promise<{ stdout: string; stderr: string }>;
   };
   (execFile as PromisifiedExecFile)[custom] = (file: string, args: string[], options: Record<string, unknown>) => execFileImpl(file, args, options);
-  return { execFile };
+  // FLUX-1581: branch-manager.ts (pulled into this test's module graph transitively via
+  // storage-sync.js → git-sync-env.ts → branch-manager.ts) does `import { exec } from
+  // 'child_process'` and `const execAsync = promisify(exec)` at ITS OWN module scope — never
+  // actually invoked by any code path this suite exercises (that's branch-manager's unrelated
+  // user-`checkCommand` runner), but a hand-rolled `{ execFile }`-only mock has no `exec` export at
+  // all, so that top-level `promisify(exec)` throws ("No 'exec' export is defined on the
+  // 'child_process' mock") before any test body here even runs. A no-op stub is enough.
+  //
+  // Deliberately NOT `importOriginal()`+spread: git-exec.ts's runGh/runGit spawn the real `gh`/
+  // `git` binaries via `child_process.spawn`, not `execFile`. Spreading the real module would leave
+  // `spawn` real too, so `buildGitSyncEnv`'s gh-credential probe (checkGhAuth → runGh → spawn)
+  // would shell out to an actual `gh auth status` subprocess on every `git()` call this file makes
+  // — turning this suite from a fully hermetic, deterministic mock into one that races a real
+  // subprocess against fake-pending-pull assertions (observed as a flaky "resolves without waiting
+  // for the pull to settle" failure). Leaving `spawn` absent, as before, makes that probe fail
+  // fast and synchronously instead — the same deterministic behavior this suite already relied on.
+  function exec(): void {}
+  return { execFile, exec };
 });
 
 import { attachWorktreeIfPresent } from './storage-sync.js';

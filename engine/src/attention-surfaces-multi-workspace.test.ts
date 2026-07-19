@@ -53,6 +53,13 @@ describe('Attention surfaces — multi-workspace isolation (FLUX-1555)', () => {
     otherRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-attn-other-'));
     otherWs = openWorkspace(otherRoot); // registers + activates a 2nd, "active" board
     otherWs.tasks = {};
+    // FLUX-1571/FLUX-1581: `openWorkspace()` stores the realpath-canonical form on `ws.root` (an
+    // 8.3 short-name tmpdir on Windows, a symlinked one on macOS, differs from the literal
+    // `mkdtemp()` result). `setWorkspaceRoot()` (board A's path above, the legacy not-yet-migrated
+    // single-workspace setter) does NOT canonicalize, so `defaultRoot` already matches
+    // `defaultWs.root`. Realign `otherRoot` to `otherWs.root` so the `workspaceRoot` this suite
+    // asserts against matches what `parkPrompt`'s real `getWorkspaceRoot()` stamp actually produces.
+    otherRoot = otherWs.root ?? otherRoot;
 
     clearNotifications();
   });

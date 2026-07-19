@@ -865,6 +865,15 @@ describe('active-session stub sync/rehydrate — two-board isolation (FLUX-1556)
     setWorkspaceRoot(rootA); // binds `defaultWorkspace` to board A (matches production boot)
     boardA = getDefaultWorkspace();
     boardB = openWorkspace(rootB); // registers + activates board B as a second live workspace
+    // FLUX-1571/FLUX-1581: `openWorkspace()` stores the realpath-canonical form on `ws.root` (an
+    // 8.3 short-name tmpdir on Windows, a symlinked one on macOS, resolves to a different string
+    // than the literal `mkdtemp()` result). `setWorkspaceRoot()` (board A's path, the legacy
+    // not-yet-migrated single-workspace setter) does NOT canonicalize, so `rootA` already matches
+    // `boardA.root` byte-for-byte. Realign `rootB` to `boardB.root` here so every downstream use in
+    // this suite (stub-dir I/O, `syncActiveSessionStubs`'s rehydrated-root guard, mock session
+    // `workspaceRoot` stamps) compares like-for-like with what production actually produces —
+    // without this, board B's assertions fail on Windows/macOS even though the resolver is correct.
+    rootB = boardB.root ?? rootB;
 
     cliSessionsById.clear();
     cliSessionsByTaskId.clear();

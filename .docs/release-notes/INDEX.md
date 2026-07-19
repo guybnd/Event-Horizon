@@ -706,3 +706,7 @@
 - **PR-670**: PR #670: Token observability panel: surface agent-payload metrics + waste signals in the portal
 - **PR-671**: PR #671: Persistent per-workspace orchestrator chat instances (switch, don't reset)
 
+## Release v1.8.1 — 2026-07-19T15:54:06.204Z
+
+- **FLUX-1581**: Public v1.8.0 Release CI red: engine-test gate failures (workspace-root canonicalization regression from #664 + CI-env test guards) — PR #672 squash-merged to master as 06a78956 after Temper approval. All five engine-test files green (134/134), typechec…
+

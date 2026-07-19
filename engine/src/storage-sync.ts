@@ -70,7 +70,11 @@ async function git(cwd: string, args: string[]): Promise<{ stdout: string; stder
 // FLUX-1550: <ticket>.body-history.json is a per-ticket local recovery stash of prior body
 // versions (see stashPriorBody in task-store.ts) — like sync-journal.jsonl, it must stay
 // local-only, never committed/synced through flux-data.
-const STORE_LOCAL_IGNORES = ['config.json', 'read-state.json', 'open-prompts.json', 'open-prompts.json.tmp', 'session-binding-secret', 'session-binding-secret.tmp', 'sessions/', 'sync-journal.jsonl', BOOT_INDEX_FILE, '*.body-history.json'];
+// Exported so tests that need a store worktree to already look "fully migrated" (e.g.
+// storage-sync-force-reset.test.ts's seed .gitignore, so excludeLocalConfigFromSync is a true
+// no-op instead of adding an unexpected self-healing commit) can derive their fixture from the
+// single source of truth instead of hand-duplicating it and drifting when an entry is added.
+export const STORE_LOCAL_IGNORES = ['config.json', 'read-state.json', 'open-prompts.json', 'open-prompts.json.tmp', 'session-binding-secret', 'session-binding-secret.tmp', 'sessions/', 'sync-journal.jsonl', BOOT_INDEX_FILE, '*.body-history.json'];
 
 /** Ensure the store-root `.gitignore` lists the local-only files. Returns true if it changed. */
 async function ensureStoreLocalGitignore(storeDir: string): Promise<boolean> {
