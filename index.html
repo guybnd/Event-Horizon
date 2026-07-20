@@ -1801,6 +1801,18 @@
   .vs-chat .vs-row { color: var(--text-faint); }
   .vs-row .vx { color: var(--rose); opacity: 0.65; flex: none; }
   .vs-row .vk { color: var(--good); flex: none; }
+  .cat-nav { display: flex; gap: 6px; flex-wrap: wrap; }
+  .cat-pill {
+    font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.04em;
+    border: 1px solid var(--border-strong); border-radius: 99px;
+    background: var(--surface); color: var(--text-dim);
+    padding: 7px 15px; cursor: pointer; transition: all 0.18s;
+  }
+  .cat-pill:hover { color: var(--text); border-color: var(--ember); }
+  .cat-pill.on { background: rgba(224,90,0,0.14); border-color: var(--ember); color: var(--ember-bright); }
+  .cat-pill:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+  .ch-list { display: flex; flex-direction: column; gap: 5px; font-family: var(--mono); font-size: 0.58rem; color: var(--text-dim); }
+  .ch-list span { white-space: nowrap; }
   .reel-head { margin-bottom: 18px; }
   .reel-line { margin: 0; font-size: 0.88rem; color: var(--text-dim); }
 
@@ -1847,9 +1859,9 @@
       Event Horizon
     </a>
     <div class="nav-links">
+      <a href="#highlights">Features</a>
       <a href="#demo">Product</a>
       <a href="#personas">Agents</a>
-      <a href="#highlights">Features</a>
       <a href="#markdown">No lock-in</a>
       <a class="gh-btn" href="https://github.com/guybnd/Event-Horizon">
         <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -1874,6 +1886,444 @@
     </div>
   </header>
 </div>
+
+<div class="wrap">
+  <section id="highlights">
+    <div class="section-head">
+      <div class="eyebrow">not another chat window</div>
+      <h2>One chat can’t ship a product.</h2>
+      <p>A coding agent in a terminal is one conversation wide. Event Horizon runs the work as tickets: <strong>a plan up front</strong>, an <strong>agent per branch</strong>, a <strong>review gate</strong>, and a <strong>merged PR</strong> at the end.</p>
+    </div>
+    <div class="vs-grid">
+      <div class="vs-panel vs-chat">
+        <div class="vs-title">one agent in a terminal</div>
+        <div class="vs-row"><span class="vx">✕</span> one conversation, one task at a time</div>
+        <div class="vs-row"><span class="vx">✕</span> context evaporates as the scrollback grows</div>
+        <div class="vs-row"><span class="vx">✕</span> you babysit every step</div>
+        <div class="vs-row"><span class="vx">✕</span> “done” means the model said so</div>
+      </div>
+      <div class="vs-panel vs-board">
+        <div class="vs-title">a board of agents</div>
+        <div class="vs-row"><span class="vk">✓</span> every ticket gets its own agent, branch, and worktree</div>
+        <div class="vs-row"><span class="vk">✓</span> plans and acceptance criteria live on the ticket</div>
+        <div class="vs-row"><span class="vk">✓</span> review gates catch problems before they reach you</div>
+        <div class="vs-row"><span class="vk">✓</span> done means a squash-merged PR</div>
+      </div>
+    </div>
+    <div class="car-head reel-head">
+      <div class="cat-nav" aria-label="Feature categories">
+        <button class="cat-pill on" type="button" data-ch="0">Run it all at once</button>
+        <button class="cat-pill" type="button" data-ch="1">High code quality</button>
+        <button class="cat-pill" type="button" data-ch="2">Ship faster</button>
+        <button class="cat-pill" type="button" data-ch="3">On your terms</button>
+      </div>
+      <div class="car-nav">
+        <button class="carbtn" id="hlPrev" type="button" aria-label="Scroll highlights back">←</button>
+        <button class="carbtn" id="hlNext" type="button" aria-label="Scroll highlights forward">→</button>
+      </div>
+    </div>
+    <div class="car-track" id="hlTrack" role="region" aria-label="Feature highlights" tabindex="0">
+
+      <div class="hl-chapter"><h4>Run it all<br>at once</h4><p>Parallel agents. Zero collisions. No babysitting.</p></div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-worktrees" aria-hidden="true"><div class="drow wmain"><span class="ddim">◇ main</span><span class="wnote">your checkout · untouched</span></div><div class="wfork"><div class="drow wrow b1"><span class="branchrow">⎇ lum-236-logo-fallbacks</span><span class="wdot d1"></span></div><div class="drow wrow b2"><span class="branchrow">⎇ lum-237-empty-states</span><span class="wdot d2"></span></div><div class="drow wrow b3"><span class="branchrow">⎇ lum-239-settings-copy</span><span class="wdot d3"></span></div></div><div class="dcap wcap">3 agents building · <span class="dok">0 collisions</span></div></div>
+        <h3>A sandbox per ticket</h3>
+        <p>Each session gets its own branch and git worktree. Five agents build at once; your checkout stays yours.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-furnace" aria-hidden="true"><div class="drow fhead"><span>🔥</span><span class="ddim">furnace · burning</span><span class="dbar fbar"><i></i></span></div><div class="drow frow r1"><span class="fid">LUM-236</span><span class="ddim dgrow">logo fallbacks</span><span class="fl"><span class="w dwarn">queued</span><span class="n"><span class="dbright">PR #258</span> <span class="dok">· Ready</span></span></span></div><div class="drow frow r2"><span class="fid">LUM-237</span><span class="ddim dgrow">empty states</span><span class="fl"><span class="w dwarn">queued</span><span class="n"><span class="dbright">PR #259</span> <span class="dok">· Ready</span></span></span></div><div class="drow frow r3"><span class="fid">LUM-239</span><span class="ddim dgrow">settings copy</span><span class="fl"><span class="w dwarn">queued</span><span class="n"><span class="dbright">PR #261</span> <span class="dok">· Ready</span></span></span></div><div class="dcap fcap"><span class="dbright">3 PRs waiting</span> · nothing merged without you</div></div>
+        <h3>The Furnace</h3>
+        <p>Queue a batch before bed. It implements, reviews, retries, and leaves every ticket as an open PR. Never merges without you.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-dock" aria-hidden="true">
+  <div class="dkstage">
+    <div class="dcard dkwin"><div class="dkwt"><span class="dbright">LUM-274 · retry queue</span><span class="ddim">▾</span></div><div class="ddim">agent: 37 tests passing</div></div>
+    <div class="dktoast dwarn">△ LUM-268 · needs you</div>
+  </div>
+  <div class="drow dkdock">
+    <span class="dchip dkc1"><span class="pulse-dot dkdot dkg"></span>LUM-274</span>
+    <span class="dkflip"><span class="dchip dkamber"><span class="pulse-dot dkdot dka"></span>LUM-268</span><span class="dchip dkc2"><span class="dkdot dks"></span>LUM-268</span></span>
+    <span class="dchip"><span class="dkdot dks"></span>LUM-269</span>
+  </div>
+  <div class="dcap">minimized ≠ stopped · still working</div>
+</div>
+        <h3>Minimize, keep running</h3>
+        <p>Chats dock like windows in a taskbar. A minimized session keeps working and pulses when it needs you.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-collision" aria-hidden="true"><div class="drow chead"><span class="ddim">changes · all worktrees</span></div><div class="drow cmid"><span class="cbr cl">⎇ lum-271</span><span class="dcard cfile"><span class="dbright">routes/export.ts</span></span><span class="cbr cr">⎇ lum-272</span></div><div class="drow cwarnrow"><span class="cwc">△ 2 worktrees</span></div><div class="dcap ccap">flagged before the conflict exists</div></div>
+        <h3>Collision radar</h3>
+        <p>One view of every in-flight worktree. Files touched twice get flagged before they become a conflict.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-workspaces" aria-hidden="true">
+  <div class="ws-tabs">
+    <span class="ws-tab">lumen-app</span><span class="ws-tab">atlas-api</span><span class="ws-tab">docs-site</span>
+    <i class="ws-ink"></i>
+  </div>
+  <div class="ws-boards">
+    <div class="ws-row ws-a"><span class="ws-pref">LUM</span><i class="wd d-sky"></i><i class="wd d-warn"></i><i class="wd d-good"></i><i class="wd d-ember"></i></div>
+    <div class="ws-row ws-b"><span class="ws-pref">ATL</span><i class="wd d-violet"></i><i class="wd d-sky"></i><i class="wd d-sky"></i><i class="wd d-good"></i><i class="wd d-pink"></i></div>
+  </div>
+  <div class="drow ws-live"><span class="pulse-dot"></span><span>3 sessions · live</span></div>
+  <div class="dcap ws-cap">switched · every session kept alive</div>
+</div>
+        <h3>All your repos, one engine</h3>
+        <p>Switch boards from a tab strip. Nothing reloads, no session dies, every project keeps burning.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-batchgroom" aria-hidden="true">
+  <div class="drow bgm-wrap">
+    <div class="bgm-list dgrow">
+      <div class="bgm-row"><span class="bgm-sw bgm-s1"></span><span class="dbright">LUM-262</span><span class="ddim bgm-t">session timeouts</span><span class="dok bgm-ck bgm-k1">✓ plan</span></div>
+      <div class="bgm-row"><span class="bgm-sw bgm-s2"></span><span class="dbright">LUM-263</span><span class="ddim bgm-t">csv import</span><span class="dok bgm-ck bgm-k2">✓ plan</span></div>
+      <div class="bgm-row"><span class="bgm-sw bgm-s3"></span><span class="dbright">LUM-264</span><span class="ddim bgm-t">audit filters</span><span class="dok bgm-ck bgm-k3">✓ plan</span></div>
+      <div class="bgm-row"><span class="bgm-sw bgm-s4"></span><span class="dbright">LUM-265</span><span class="ddim bgm-t">2fa nudge</span><span class="dok bgm-ck bgm-k4">✓ plan</span></div>
+      <div class="bgm-row"><span class="bgm-sw bgm-s5"></span><span class="dbright">LUM-266</span><span class="ddim bgm-t">error toasts</span><span class="dok bgm-ck bgm-k5">✓ plan</span></div>
+    </div>
+    <div class="bgm-side">
+      <div class="bgm-sess"><span class="pulse-dot"></span><span>1 session</span></div>
+      <div class="dok bgm-pay">✓ 5 plans</div>
+      <div class="ddim bgm-note">one sitting</div>
+    </div>
+  </div>
+</div>
+        <h3>Groom five at once</h3>
+        <p>One session plans a whole family of sibling tickets in a single sitting. Cheaper, faster, consistent.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-triggers" aria-hidden="true"><div class="dcard drow wave1"><span class="prstack"><span class="prchip pr1">PR #251 · open</span><span class="prchip merged pr2">PR #251 · merged ✓</span></span><span class="ddim">wave 1</span></div><div class="tdown">▾ auto-ignite</div><div class="dcard drow wave2"><span class="dbright">wave 2</span><span class="ddim">4 tickets</span><span class="armstack"><span class="dchip a1">armed</span><span class="burn">🔥 burning</span></span></div><div class="dcap">armed → self-started</div></div>
+        <h3>Batches that chain</h3>
+        <p>Arm a batch to ignite when a PR merges. The next wave starts itself.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-orchestrator" aria-hidden="true">
+  <div class="drow orc-main">
+    <div class="orc-chat dgrow">
+      <div class="orc-line you"><span class="orc-you">you ▸</span> split the export epic</div>
+      <div class="orc-line bot"><span class="orc-bot">orch ▸</span> splitting LUM-270</div>
+    </div>
+    <div class="orc-col">
+      <div class="orc-colhead">Todo · 3</div>
+      <div class="orc-card c1"><span class="orc-id">LUM-271</span><span class="orc-t">csv</span><span class="o-live s1"><span class="pulse-dot"></span></span></div>
+      <div class="orc-card c2"><span class="orc-id">LUM-272</span><span class="orc-t">pdf</span><span class="o-live s2"><span class="pulse-dot"></span></span></div>
+      <div class="orc-more c3">+ LUM-273 · webhook</div>
+    </div>
+  </div>
+  <div class="dcap orc-cap">3 tickets created · <span class="dok">2 dispatched</span></div>
+</div>
+        <h3>A chat above the board</h3>
+        <p>It sees every ticket, session, and PR. Say "split this epic" and watch the cards land.</p>
+      </div>
+
+      <div class="hl-chapter"><h4>High code<br>quality</h4><p>Enforced on every ticket:</p><div class="ch-list"><span>◇ a plan gate before code</span><span>⛶ specialist review panels</span><span>⚑ human checkpoints</span><span>✓ CI checks on the PR</span></div></div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-dial" aria-hidden="true">
+  <div class="drow"><span class="ddim">autonomy</span><span class="dgrow"></span><span class="dchip">lumen-app</span></div>
+  <div class="dial-track">
+    <i class="dial-pill"></i>
+    <span class="dial-seg">Manual</span><span class="dial-seg">Guided</span><span class="dial-seg">Autonomous</span>
+  </div>
+  <div class="dcap dial-caps">
+    <span class="dial-cap capM">plans: you · merges: you</span>
+    <span class="dial-cap capA3">hands off · gates green</span>
+    <span class="dial-cap capG1">plans: auto · merges: you</span>
+    <span class="dial-cap capG2 ddim">plans: auto · merges: you</span>
+  </div>
+</div>
+        <h3>An autonomy dial</h3>
+        <p>Manual, Guided, or Autonomous. You decide which gates need a human: plans, merges, or nothing.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-scatter" aria-hidden="true">
+  <div class="drow scat-main">
+    <div class="scat-node">
+      <span class="prchip">PR #247</span>
+      <span class="ddim">6 files</span>
+    </div>
+    <div class="scat-fan">
+      <i class="scat-line l1"></i><i class="scat-line l2"></i><i class="scat-line l3"></i>
+    </div>
+    <div class="scat-workers dgrow">
+      <div class="drow w1"><span class="scat-dot sd-sky"></span><span>security</span><span class="dok v1">✓ clean</span></div>
+      <div class="drow w2"><span class="scat-dot sd-teal"></span><span>perf</span><span class="dok v2">✓ p95 ok</span></div>
+      <div class="drow w3"><span class="scat-dot sd-violet"></span><span>api</span><span class="dwarn v3">△ 1 nit</span></div>
+    </div>
+  </div>
+  <div class="dcap scat-cap">supervisor · 1 review posted · <span class="dok">✓ approved</span></div>
+</div>
+        <h3>Reviews that fan out</h3>
+        <p>One diff, three specialist reviewers in parallel, one synthesized verdict posted back.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-annotate" aria-hidden="true"><div class="drow ahead"><span class="ddim">LUM-250 · checkout mockup</span><span class="arv">rev 2 published</span></div><div class="awf"><div class="ablock anav"></div><div class="acols"><div class="ablock aform"><span class="aline"></span><span class="aline s"></span></div><div class="ablock aside"><span class="aline s"></span></div></div><span class="apin p1"><span class="anum">①</span><span class="achk">✓</span></span><span class="apin p2"><span class="anum">②</span><span class="achk">✓</span></span></div><div class="dcap acap"><span class="dok">✓ 2 notes addressed</span></div></div>
+        <h3>Pin notes on mockups</h3>
+        <p>Agents publish clickable mockups to the ticket. Pin a note on any element; a revision comes back.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-prs" aria-hidden="true"><div class="dcard pcard"><div class="drow"><span class="pf"><span class="prchip pv">◇ PR #257</span><span class="prchip merged pm">✓ PR #257</span></span><span class="branchrow pbr">⎇ lum-252-payout-alerts</span></div><div class="drow pchecks"><span class="ck c1"><span class="dok">✓</span> build</span><span class="ck c2"><span class="ddim">·</span> <span class="dok">✓</span> e2e</span><span class="ck c3"><span class="ddim">·</span> <span class="dok">✓</span> review</span></div></div><div class="dcap pcap">squash-merged → <span class="st done">Done</span></div></div>
+        <h3>Ship from the card</h3>
+        <p>Ready opens a real pull request. Review the diff, request changes, rebase, and squash-merge without leaving the board.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-needsyou" aria-hidden="true">
+  <div class="drow"><span class="dchip">LUM-267</span><span class="ddim dgrow">digest tuning</span><span class="nypill"><span class="st done nyb">✓ answered</span><span class="st input nya">Require Input</span></span></div>
+  <div class="dcard nyq"><div class="dbright nyqt">digest window: 30s or 60s?</div><div class="drow"><span class="dchip">30s</span><span class="nyopt"><span class="dchip nysel">✓ 60s</span><span class="dchip nyun">60s</span></span></div></div>
+  <div class="dcap">asked 2h ago · survived a restart</div>
+</div>
+        <h3>It asks before it guesses</h3>
+        <p>When a decision is yours, the agent stops and asks. Prompts wait for you and survive restarts.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-personas" aria-hidden="true">
+  <div class="pcard">
+    <div class="drow prow"><span class="pname">◇ perf-hound</span><span class="ptag">persona</span></div>
+    <div class="pchips">
+      <span class="dchip pc1">model: opus</span>
+      <span class="dchip pc2">effort: high</span>
+      <span class="dchip pc3">lens: hot paths only</span>
+    </div>
+  </div>
+  <div class="dcap"><span class="dok sv">✓ saved</span><span class="ddim rw">· reusable everywhere</span></div>
+</div>
+        <h3>Roll your own crew</h3>
+        <p>Compose personas with their own mission, model, and effort. Reuse them anywhere on the board.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-timeline" aria-hidden="true"><div class="tstage"><div class="tools"><div class="drow t1"><span class="ddim">▸</span><span class="dbright">Read</span><span class="tpath">Dashboard.tsx</span></div><div class="drow t2"><span class="ddim">▸</span><span class="dbright">Edit</span><span class="tpath">rollups.ts</span></div><div class="drow t3"><span class="ddim">▸</span><span class="dbright">Bash</span><span class="ddim">npm test</span><span class="dok">✓</span></div></div><div class="drow fold"><span class="dchip">3 tool calls ▾</span><span class="dok">✓ passing</span></div></div><div class="dcap">click a path · opens in your editor</div></div>
+        <h3>Watch every move</h3>
+        <p>Tool calls stream live: reads, edits, test runs. Collapse the noise; click a path to open the file.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-editresend" aria-hidden="true">
+  <div class="drow er-user">
+    <span class="er-edit">✎</span>
+    <span class="dcard er-bubble"><span class="er-old">use a 30s window</span><span class="er-new">use a 60s window</span></span>
+  </div>
+  <div class="drow er-agent">
+    <span class="er-retry">↻</span>
+    <span class="dcard er-abubble"><span class="pulse-dot"></span><span>re-running · 60s window</span></span>
+  </div>
+  <div class="dcap er-cap"><span class="dok">✓</span><span>turn 3 edited · resent in place</span></div>
+</div>
+        <h3>Rewrite history, rerun it</h3>
+        <p>Edit any earlier message and resend, or retry a turn. The conversation is a surface, not a log.</p>
+      </div>
+
+      <div class="hl-chapter"><h4>Ship<br>faster</h4><p>Less ceremony where it’s safe. More throughput everywhere.</p></div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-fastpath" aria-hidden="true"><div class="dcard drow trow"><span class="dchip">LUM-256</span><span class="ddim dgrow ttitle">typo in the fee tooltip</span><span class="dchip xs">XS</span><span class="pillstack"><span class="st grooming p1">Grooming</span><span class="st inprogress p2">In Progress</span><span class="st ready p3">Ready</span></span></div><div class="drow gaterow"><span class="ddim">◇ plan gate</span><span class="dchip gskip">skipped</span></div><div class="dcap">one session · zero ceremony</div></div>
+        <h3>Small tickets, zero ceremony</h3>
+        <p>An XS ticket grooms and builds in one session, skipping the plan gate it doesn't need.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-triage" aria-hidden="true">
+  <div class="drow tr-head">
+    <span class="dchip tr-hb">◇ board health</span>
+    <span class="tr-flip"><span class="dchip tr-apply">apply 3</span><span class="dchip tr-done">✓ applied</span></span>
+  </div>
+  <div class="drow tr-r tr-r1"><span class="tr-k tr-kf">⇄ fold</span><span class="ddim">LUM-201 → LUM-198</span></div>
+  <div class="drow tr-r tr-r2"><span class="tr-k tr-ka">▾ archive</span><span class="ddim">LUM-188 · 34d stale</span></div>
+  <div class="drow tr-r tr-r3"><span class="tr-k tr-kb">↗ bump</span><span class="ddim">LUM-205 · High</span></div>
+  <div class="dcap tr-cap">3 moves · approved in one pass</div>
+</div>
+        <h3>One-tap board health</h3>
+        <p>It reads staleness signals and proposes folds, archives, and moves. Approve the batch in one pass.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-epicdecks" aria-hidden="true">
+  <div class="drow">
+    <span class="dcard dgrow ed-card"><span class="ed-dia">◇</span><span class="dbright">LUM-230</span><span class="ddim">· Insights v2</span><span class="dchip ed-fold">+3 folded</span></span>
+  </div>
+  <div class="drow ed-minis">
+    <span class="ed-ghost ddim">▴ subtasks live inside the deck</span>
+    <span class="dcard ed-m ed-m1">LUM-275</span>
+    <span class="dcard ed-m ed-m2">LUM-276</span>
+    <span class="dcard ed-m ed-m3">LUM-277</span>
+  </div>
+  <div class="dcap ed-cap"><span class="dbar"><i class="ed-fill"></i></span><span class="ed-ct">one deck · 64% complete</span></div>
+</div>
+        <h3>Epics fold their children</h3>
+        <p>Subtasks stack under their epic in one deck, and a roadmap view tracks what remains.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-scratch" aria-hidden="true">
+  <div class="drow"><span class="ddim">◇ scratch chat · off the board</span></div>
+  <div class="scstage">
+    <div class="scfloat scin"><span class="dchip">SCRATCH-3 · rate-limit idea</span><span class="pulse-dot scdot"></span></div>
+    <div class="scfloat scpromo"><span class="ddim">▸ promote to ticket</span></div>
+    <div class="dcard sccard"><span class="dbright">LUM-249 · Rate-limit alerts</span><span class="st todo sctd">Todo</span></div>
+  </div>
+  <div class="dcap">promoted · scratch consumed</div>
+</div>
+        <h3>Scratch chats</h3>
+        <p>Think out loud off the board. If a scratch chat earns a card, promote it into a real ticket.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-release" aria-hidden="true">
+  <div class="drow rcols">
+    <div class="rleft">
+      <div class="trow"><span class="ddim">LUM-278</span><span class="pstack"><span class="st done pu">Done</span><span class="pr pr1"><span class="st released">Released</span></span></span></div>
+      <div class="trow"><span class="ddim">LUM-279</span><span class="pstack"><span class="st done pu">Done</span><span class="pr pr2"><span class="st released">Released</span></span></span></div>
+    </div>
+    <div class="dcard rlog dgrow">
+      <div class="ddim">changelog · v2.4</div>
+      <div class="lgl lg1"><span class="dmk">▸</span> feat: fee summaries</div>
+      <div class="lgl lg2"><span class="dmk">▸</span> fix: 429 retry</div>
+    </div>
+  </div>
+  <div class="dcap"><span class="pubstack"><span class="dchip pub">publish v2.4</span><span class="tagd"><span class="tagok">✓ tagged</span></span></span><span class="ddim shp">2 tickets shipped</span></div>
+</div>
+        <h3>Done pile to changelog</h3>
+        <p>Select what shipped, get an annotated changelog, publish the release. Tickets flip to Released.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-costs" aria-hidden="true">
+  <div class="drow"><span class="dchip">LUM-274</span><span class="ddim dgrow">retry queue</span><span class="dbright cprice">$0.42</span></div>
+  <div class="drow cbarrow"><span class="cbar"><span class="cseg ccache"></span><span class="cseg cfresh"></span></span><span class="cpct"><span class="dok cpb">✓ 71% cached</span><span class="ddim cpa">71% cached</span></span></div>
+  <div class="drow crank cr1"><span class="ddim">#1</span><span class="ddim dgrow">LUM-254 · checkout flow</span><span class="dwarn">$1.84</span></div>
+  <div class="drow crank cr2"><span class="ddim">#2</span><span class="ddim dgrow">LUM-274 · retry queue</span><span class="dbright">$0.42</span></div>
+</div>
+        <h3>Token spend, in dollars</h3>
+        <p>Every ticket shows its spend, split cached versus fresh, ranked so you know where the budget goes.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-contextdiet" aria-hidden="true">
+  <div class="drow crow"><span class="ddim">LUM-198 · full history</span><span class="rlab">118k chars raw</span></div>
+  <div class="track"><i class="rawfill"></i></div>
+  <div class="drow crow"><span class="ddim jl">agent joins at session #7</span><span class="glab">9k digest</span></div>
+  <div class="track"><i class="digfill"></i></div>
+  <div class="dcap">same ticket · <span class="dok">92% lighter</span></div>
+</div>
+        <h3>Old tickets stay cheap</h3>
+        <p>Heavy histories collapse into digests, so an agent joining a month-old ticket doesn't pay for all of it.</p>
+      </div>
+
+      <div class="hl-chapter"><h4>On your<br>terms</h4><p>Your CLI, your repo, your machine.</p></div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-byoa" aria-hidden="true">
+  <div class="drow byoa-ticket">
+    <span class="dchip">LUM-249</span>
+    <span class="ddim byoa-title">rate limit alerts</span>
+    <span class="st inprogress">In Progress</span>
+  </div>
+  <div class="drow byoa-slot">
+    <span class="byoa-lbl">adapter</span>
+    <span class="byoa-stack">
+      <span class="byoa-chip ba-a">▸ claude-code</span>
+      <span class="byoa-chip ba-b">▸ gemini-cli</span>
+      <span class="byoa-chip ba-c">▸ copilot-cli</span>
+    </span>
+    <span class="dok byoa-ok">✓ session started</span>
+  </div>
+  <div class="dcap byoa-cap">same board · your CLI · no second bill</div>
+</div>
+        <h3>Bring your own agent</h3>
+        <p>Claude Code, Gemini CLI, or Copilot CLI. Same board, same tools, no second bill.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-surfaces" aria-hidden="true">
+  <div class="drow"><span class="dchip sf1">◇ desktop</span><span class="dchip sf2">▾ tray</span><span class="dchip sf3">↗ browser</span></div>
+  <div class="dcard sfterm"><div class="sfln sfcmd"><span class="ddim">$</span> <span class="dbright">npm start</span><span class="sfcaret">▍</span></div><div class="sfln sfok"><span class="dok">✓ board is up · localhost</span></div></div>
+  <div class="dcap">local-first · every surface</div>
+</div>
+        <h3>Desktop, tray, or browser</h3>
+        <p>A native app, a single tray binary, or plain npm start. Local-first in every form.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-terminal" aria-hidden="true"><div class="drow thead"><span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span><span class="ddim tlabel">⎇ lum-236 · worktree</span></div><div class="tline l1"><span class="tprompt">$</span><span class="dbright tcmd">npm test</span></div><div class="tline l2 dok">✓ 42 passing · 0 failing</div><div class="tline l3"><span class="tprompt">$</span><span class="tcaret">▍</span></div></div>
+        <h3>A real terminal, in the board</h3>
+        <p>Full PTY in a panel. Run tests and scripts next to the tickets that need them.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-modules" aria-hidden="true">
+  <div class="drow mrow"><span class="dbright">serena</span><span class="ddim mst ms1">symbols indexed</span><span class="tgl"><span class="ton t1"></span><i class="kn k1"></i><i class="kg g1"></i></span></div>
+  <div class="drow mrow"><span class="dbright">context7</span><span class="ddim mst ms2">docs live</span><span class="tgl"><span class="ton t2"></span><i class="kn k2"></i><i class="kg g2"></i></span></div>
+  <div class="drow mrow"><span class="dbright">memory</span><span class="ddim mst ms3">12 memories</span><span class="tgl"><span class="ton t3"></span><i class="kn k3"></i><i class="kg g3"></i></span></div>
+  <div class="dcap"><span class="dok">✓ 3 modules on</span> · scoped to lumen-app</div>
+</div>
+        <h3>Plug-in superpowers</h3>
+        <p>Flip on Serena for symbol-level edits, Context7 for live docs, Memory for cross-session recall.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-groups" aria-hidden="true">
+  <div class="gp-top"><span class="dchip gp-doc">◇ auth-contract.md</span></div>
+  <div class="gp-dot gp-d1"></div>
+  <div class="gp-dot gp-d2"></div>
+  <div class="gp-dot gp-d3"></div>
+  <div class="drow gp-repos">
+    <span class="dchip gp-repo">lumen-app<span class="dok gp-ck gp-c1">✓</span></span>
+    <span class="dchip gp-repo">lumen-api<span class="dok gp-ck gp-c2">✓</span></span>
+    <span class="dchip gp-repo">lumen-site<span class="dok gp-ck gp-c3">✓</span></span>
+  </div>
+  <div class="dcap gp-cap">1 doc · 3 repos · always in sync</div>
+</div>
+        <h3>One product, many repos</h3>
+        <p>Link repos into a group. Shared docs fan out to every member, so every agent knows the whole product.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-stoplight" aria-hidden="true">
+  <div class="drow cols">
+    <div class="dcard files">
+      <div class="frow"><span class="fck c1">✓</span><span class="dbright">src/export.ts</span></div>
+      <div class="frow"><span class="fck c2">✓</span><span class="dbright">api/csv.ts</span></div>
+      <div class="frow"><span class="fda">△</span><span class="ddim">config.ts</span></div>
+    </div>
+    <div class="rail">
+      <div class="lstack">
+        <div class="lrow la"><i class="ldot da"></i><span class="dwarn">4 uncommitted</span></div>
+        <div class="lrow lg"><i class="ldot dgn"></i><span class="dok">✓ committed</span></div>
+      </div>
+      <div class="cchip">commit 2</div>
+    </div>
+  </div>
+  <div class="dcap">picked from the board · no terminal</div>
+</div>
+        <h3>Your working tree, watched</h3>
+        <p>A stoplight counts uncommitted files. Open the panel, pick diffs, commit right from the board.</p>
+      </div>
+
+      <div class="hl-card">
+        <div class="hl-demo hv-conflicts" aria-hidden="true"><div class="drow confmain"><span class="chipstack"><span class="dchip cneutral">local</span><span class="dchip cwin">✓ local</span></span><span class="carrow">⇄</span><span class="dcard filecard dbright">LUM-242.md</span><span class="carrow">⇄</span><span class="dchip rchip">remote</span></div><div class="drow cstatus"><span class="badgestack"><span class="cbadge dwarn">△ edited on both machines</span><span class="csync">✓ synced</span></span></div><div class="dcap ccap">no merge markers · ever</div></div>
+        <h3>Conflicts, defused</h3>
+        <p>When boards diverge, pick use-local or use-remote per file in a modal. No raw merge markers.</p>
+      </div>
+
+    </div>
+    <div class="car-progress" aria-hidden="true"><i id="hlProg"></i></div>
+  </section>
+</div>
+
 
 <!-- ================= DEMO: one window, nine abilities ================= -->
 <div class="wrap-wide" id="demo">
@@ -2412,436 +2862,6 @@ arrive as one digest, not five…</pre>
       </div>
     </div>
     <p class="vig-caption">same files, three homes — <em class="b">the orphan branch</em> keeps the board in the repo <em>without touching master's history</em></p>
-  </section>
-
-  <section id="highlights">
-    <div class="section-head">
-      <div class="eyebrow">not another chat window</div>
-      <h2>One chat can’t ship a product.</h2>
-      <p>A coding agent in a terminal is one conversation wide. Event Horizon runs the work as tickets: <strong>a plan up front</strong>, an <strong>agent per branch</strong>, a <strong>review gate</strong>, and a <strong>merged PR</strong> at the end.</p>
-    </div>
-    <div class="vs-grid">
-      <div class="vs-panel vs-chat">
-        <div class="vs-title">one agent in a terminal</div>
-        <div class="vs-row"><span class="vx">✕</span> one conversation, one task at a time</div>
-        <div class="vs-row"><span class="vx">✕</span> context evaporates as the scrollback grows</div>
-        <div class="vs-row"><span class="vx">✕</span> you babysit every step</div>
-        <div class="vs-row"><span class="vx">✕</span> “done” means the model said so</div>
-      </div>
-      <div class="vs-panel vs-board">
-        <div class="vs-title">a board of agents</div>
-        <div class="vs-row"><span class="vk">✓</span> every ticket gets its own agent, branch, and worktree</div>
-        <div class="vs-row"><span class="vk">✓</span> plans and acceptance criteria live on the ticket</div>
-        <div class="vs-row"><span class="vk">✓</span> review gates catch problems before they reach you</div>
-        <div class="vs-row"><span class="vk">✓</span> done means a squash-merged PR</div>
-      </div>
-    </div>
-    <div class="car-head reel-head">
-      <p class="reel-line">Here’s what you get, each in a tiny demo. Drag through, or use the arrows.</p>
-      <div class="car-nav">
-        <button class="carbtn" id="hlPrev" type="button" aria-label="Scroll highlights back">←</button>
-        <button class="carbtn" id="hlNext" type="button" aria-label="Scroll highlights forward">→</button>
-      </div>
-    </div>
-    <div class="car-track" id="hlTrack" role="region" aria-label="Feature highlights" tabindex="0">
-
-      <div class="hl-chapter"><h4>Run it all<br>at once</h4><p>Parallel agents. Zero collisions. No babysitting.</p></div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-worktrees" aria-hidden="true"><div class="drow wmain"><span class="ddim">◇ main</span><span class="wnote">your checkout · untouched</span></div><div class="wfork"><div class="drow wrow b1"><span class="branchrow">⎇ lum-236-logo-fallbacks</span><span class="wdot d1"></span></div><div class="drow wrow b2"><span class="branchrow">⎇ lum-237-empty-states</span><span class="wdot d2"></span></div><div class="drow wrow b3"><span class="branchrow">⎇ lum-239-settings-copy</span><span class="wdot d3"></span></div></div><div class="dcap wcap">3 agents building · <span class="dok">0 collisions</span></div></div>
-        <h3>A sandbox per ticket</h3>
-        <p>Each session gets its own branch and git worktree. Five agents build at once; your checkout stays yours.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-furnace" aria-hidden="true"><div class="drow fhead"><span>🔥</span><span class="ddim">furnace · burning</span><span class="dbar fbar"><i></i></span></div><div class="drow frow r1"><span class="fid">LUM-236</span><span class="ddim dgrow">logo fallbacks</span><span class="fl"><span class="w dwarn">queued</span><span class="n"><span class="dbright">PR #258</span> <span class="dok">· Ready</span></span></span></div><div class="drow frow r2"><span class="fid">LUM-237</span><span class="ddim dgrow">empty states</span><span class="fl"><span class="w dwarn">queued</span><span class="n"><span class="dbright">PR #259</span> <span class="dok">· Ready</span></span></span></div><div class="drow frow r3"><span class="fid">LUM-239</span><span class="ddim dgrow">settings copy</span><span class="fl"><span class="w dwarn">queued</span><span class="n"><span class="dbright">PR #261</span> <span class="dok">· Ready</span></span></span></div><div class="dcap fcap"><span class="dbright">3 PRs waiting</span> · nothing merged without you</div></div>
-        <h3>The Furnace</h3>
-        <p>Queue a batch before bed. It implements, reviews, retries, and leaves every ticket as an open PR. Never merges without you.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-dock" aria-hidden="true">
-  <div class="dkstage">
-    <div class="dcard dkwin"><div class="dkwt"><span class="dbright">LUM-274 · retry queue</span><span class="ddim">▾</span></div><div class="ddim">agent: 37 tests passing</div></div>
-    <div class="dktoast dwarn">△ LUM-268 · needs you</div>
-  </div>
-  <div class="drow dkdock">
-    <span class="dchip dkc1"><span class="pulse-dot dkdot dkg"></span>LUM-274</span>
-    <span class="dkflip"><span class="dchip dkamber"><span class="pulse-dot dkdot dka"></span>LUM-268</span><span class="dchip dkc2"><span class="dkdot dks"></span>LUM-268</span></span>
-    <span class="dchip"><span class="dkdot dks"></span>LUM-269</span>
-  </div>
-  <div class="dcap">minimized ≠ stopped · still working</div>
-</div>
-        <h3>Minimize, keep running</h3>
-        <p>Chats dock like windows in a taskbar. A minimized session keeps working and pulses when it needs you.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-collision" aria-hidden="true"><div class="drow chead"><span class="ddim">changes · all worktrees</span></div><div class="drow cmid"><span class="cbr cl">⎇ lum-271</span><span class="dcard cfile"><span class="dbright">routes/export.ts</span></span><span class="cbr cr">⎇ lum-272</span></div><div class="drow cwarnrow"><span class="cwc">△ 2 worktrees</span></div><div class="dcap ccap">flagged before the conflict exists</div></div>
-        <h3>Collision radar</h3>
-        <p>One view of every in-flight worktree. Files touched twice get flagged before they become a conflict.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-workspaces" aria-hidden="true">
-  <div class="ws-tabs">
-    <span class="ws-tab">lumen-app</span><span class="ws-tab">atlas-api</span><span class="ws-tab">docs-site</span>
-    <i class="ws-ink"></i>
-  </div>
-  <div class="ws-boards">
-    <div class="ws-row ws-a"><span class="ws-pref">LUM</span><i class="wd d-sky"></i><i class="wd d-warn"></i><i class="wd d-good"></i><i class="wd d-ember"></i></div>
-    <div class="ws-row ws-b"><span class="ws-pref">ATL</span><i class="wd d-violet"></i><i class="wd d-sky"></i><i class="wd d-sky"></i><i class="wd d-good"></i><i class="wd d-pink"></i></div>
-  </div>
-  <div class="drow ws-live"><span class="pulse-dot"></span><span>3 sessions · live</span></div>
-  <div class="dcap ws-cap">switched · every session kept alive</div>
-</div>
-        <h3>All your repos, one engine</h3>
-        <p>Switch boards from a tab strip. Nothing reloads, no session dies, every project keeps burning.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-batchgroom" aria-hidden="true">
-  <div class="drow bgm-wrap">
-    <div class="bgm-list dgrow">
-      <div class="bgm-row"><span class="bgm-sw bgm-s1"></span><span class="dbright">LUM-262</span><span class="ddim bgm-t">session timeouts</span><span class="dok bgm-ck bgm-k1">✓ plan</span></div>
-      <div class="bgm-row"><span class="bgm-sw bgm-s2"></span><span class="dbright">LUM-263</span><span class="ddim bgm-t">csv import</span><span class="dok bgm-ck bgm-k2">✓ plan</span></div>
-      <div class="bgm-row"><span class="bgm-sw bgm-s3"></span><span class="dbright">LUM-264</span><span class="ddim bgm-t">audit filters</span><span class="dok bgm-ck bgm-k3">✓ plan</span></div>
-      <div class="bgm-row"><span class="bgm-sw bgm-s4"></span><span class="dbright">LUM-265</span><span class="ddim bgm-t">2fa nudge</span><span class="dok bgm-ck bgm-k4">✓ plan</span></div>
-      <div class="bgm-row"><span class="bgm-sw bgm-s5"></span><span class="dbright">LUM-266</span><span class="ddim bgm-t">error toasts</span><span class="dok bgm-ck bgm-k5">✓ plan</span></div>
-    </div>
-    <div class="bgm-side">
-      <div class="bgm-sess"><span class="pulse-dot"></span><span>1 session</span></div>
-      <div class="dok bgm-pay">✓ 5 plans</div>
-      <div class="ddim bgm-note">one sitting</div>
-    </div>
-  </div>
-</div>
-        <h3>Groom five at once</h3>
-        <p>One session plans a whole family of sibling tickets in a single sitting. Cheaper, faster, consistent.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-triggers" aria-hidden="true"><div class="dcard drow wave1"><span class="prstack"><span class="prchip pr1">PR #251 · open</span><span class="prchip merged pr2">PR #251 · merged ✓</span></span><span class="ddim">wave 1</span></div><div class="tdown">▾ auto-ignite</div><div class="dcard drow wave2"><span class="dbright">wave 2</span><span class="ddim">4 tickets</span><span class="armstack"><span class="dchip a1">armed</span><span class="burn">🔥 burning</span></span></div><div class="dcap">armed → self-started</div></div>
-        <h3>Batches that chain</h3>
-        <p>Arm a batch to ignite when a PR merges. The next wave starts itself.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-orchestrator" aria-hidden="true">
-  <div class="drow orc-main">
-    <div class="orc-chat dgrow">
-      <div class="orc-line you"><span class="orc-you">you ▸</span> split the export epic</div>
-      <div class="orc-line bot"><span class="orc-bot">orch ▸</span> splitting LUM-270</div>
-    </div>
-    <div class="orc-col">
-      <div class="orc-colhead">Todo · 3</div>
-      <div class="orc-card c1"><span class="orc-id">LUM-271</span><span class="orc-t">csv</span><span class="o-live s1"><span class="pulse-dot"></span></span></div>
-      <div class="orc-card c2"><span class="orc-id">LUM-272</span><span class="orc-t">pdf</span><span class="o-live s2"><span class="pulse-dot"></span></span></div>
-      <div class="orc-more c3">+ LUM-273 · webhook</div>
-    </div>
-  </div>
-  <div class="dcap orc-cap">3 tickets created · <span class="dok">2 dispatched</span></div>
-</div>
-        <h3>A chat above the board</h3>
-        <p>It sees every ticket, session, and PR. Say "split this epic" and watch the cards land.</p>
-      </div>
-
-      <div class="hl-chapter"><h4>Tickets come<br>out better</h4><p>Plans, gates, and review are built into the flow.</p></div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-dial" aria-hidden="true">
-  <div class="drow"><span class="ddim">autonomy</span><span class="dgrow"></span><span class="dchip">lumen-app</span></div>
-  <div class="dial-track">
-    <i class="dial-pill"></i>
-    <span class="dial-seg">Manual</span><span class="dial-seg">Guided</span><span class="dial-seg">Autonomous</span>
-  </div>
-  <div class="dcap dial-caps">
-    <span class="dial-cap capM">plans: you · merges: you</span>
-    <span class="dial-cap capA3">hands off · gates green</span>
-    <span class="dial-cap capG1">plans: auto · merges: you</span>
-    <span class="dial-cap capG2 ddim">plans: auto · merges: you</span>
-  </div>
-</div>
-        <h3>An autonomy dial</h3>
-        <p>Manual, Guided, or Autonomous. You decide which gates need a human: plans, merges, or nothing.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-scatter" aria-hidden="true">
-  <div class="drow scat-main">
-    <div class="scat-node">
-      <span class="prchip">PR #247</span>
-      <span class="ddim">6 files</span>
-    </div>
-    <div class="scat-fan">
-      <i class="scat-line l1"></i><i class="scat-line l2"></i><i class="scat-line l3"></i>
-    </div>
-    <div class="scat-workers dgrow">
-      <div class="drow w1"><span class="scat-dot sd-sky"></span><span>security</span><span class="dok v1">✓ clean</span></div>
-      <div class="drow w2"><span class="scat-dot sd-teal"></span><span>perf</span><span class="dok v2">✓ p95 ok</span></div>
-      <div class="drow w3"><span class="scat-dot sd-violet"></span><span>api</span><span class="dwarn v3">△ 1 nit</span></div>
-    </div>
-  </div>
-  <div class="dcap scat-cap">supervisor · 1 review posted · <span class="dok">✓ approved</span></div>
-</div>
-        <h3>Reviews that fan out</h3>
-        <p>One diff, three specialist reviewers in parallel, one synthesized verdict posted back.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-annotate" aria-hidden="true"><div class="drow ahead"><span class="ddim">LUM-250 · checkout mockup</span><span class="arv">rev 2 published</span></div><div class="awf"><div class="ablock anav"></div><div class="acols"><div class="ablock aform"><span class="aline"></span><span class="aline s"></span></div><div class="ablock aside"><span class="aline s"></span></div></div><span class="apin p1"><span class="anum">①</span><span class="achk">✓</span></span><span class="apin p2"><span class="anum">②</span><span class="achk">✓</span></span></div><div class="dcap acap"><span class="dok">✓ 2 notes addressed</span></div></div>
-        <h3>Pin notes on mockups</h3>
-        <p>Agents publish clickable mockups to the ticket. Pin a note on any element; a revision comes back.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-prs" aria-hidden="true"><div class="dcard pcard"><div class="drow"><span class="pf"><span class="prchip pv">◇ PR #257</span><span class="prchip merged pm">✓ PR #257</span></span><span class="branchrow pbr">⎇ lum-252-payout-alerts</span></div><div class="drow pchecks"><span class="ck c1"><span class="dok">✓</span> build</span><span class="ck c2"><span class="ddim">·</span> <span class="dok">✓</span> e2e</span><span class="ck c3"><span class="ddim">·</span> <span class="dok">✓</span> review</span></div></div><div class="dcap pcap">squash-merged → <span class="st done">Done</span></div></div>
-        <h3>Ship from the card</h3>
-        <p>Ready opens a real pull request. Review the diff, request changes, rebase, and squash-merge without leaving the board.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-needsyou" aria-hidden="true">
-  <div class="drow"><span class="dchip">LUM-267</span><span class="ddim dgrow">digest tuning</span><span class="nypill"><span class="st done nyb">✓ answered</span><span class="st input nya">Require Input</span></span></div>
-  <div class="dcard nyq"><div class="dbright nyqt">digest window: 30s or 60s?</div><div class="drow"><span class="dchip">30s</span><span class="nyopt"><span class="dchip nysel">✓ 60s</span><span class="dchip nyun">60s</span></span></div></div>
-  <div class="dcap">asked 2h ago · survived a restart</div>
-</div>
-        <h3>It asks before it guesses</h3>
-        <p>When a decision is yours, the agent stops and asks. Prompts wait for you and survive restarts.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-personas" aria-hidden="true">
-  <div class="pcard">
-    <div class="drow prow"><span class="pname">◇ perf-hound</span><span class="ptag">persona</span></div>
-    <div class="pchips">
-      <span class="dchip pc1">model: opus</span>
-      <span class="dchip pc2">effort: high</span>
-      <span class="dchip pc3">lens: hot paths only</span>
-    </div>
-  </div>
-  <div class="dcap"><span class="dok sv">✓ saved</span><span class="ddim rw">· reusable everywhere</span></div>
-</div>
-        <h3>Roll your own crew</h3>
-        <p>Compose personas with their own mission, model, and effort. Reuse them anywhere on the board.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-timeline" aria-hidden="true"><div class="tstage"><div class="tools"><div class="drow t1"><span class="ddim">▸</span><span class="dbright">Read</span><span class="tpath">Dashboard.tsx</span></div><div class="drow t2"><span class="ddim">▸</span><span class="dbright">Edit</span><span class="tpath">rollups.ts</span></div><div class="drow t3"><span class="ddim">▸</span><span class="dbright">Bash</span><span class="ddim">npm test</span><span class="dok">✓</span></div></div><div class="drow fold"><span class="dchip">3 tool calls ▾</span><span class="dok">✓ passing</span></div></div><div class="dcap">click a path · opens in your editor</div></div>
-        <h3>Watch every move</h3>
-        <p>Tool calls stream live: reads, edits, test runs. Collapse the noise; click a path to open the file.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-editresend" aria-hidden="true">
-  <div class="drow er-user">
-    <span class="er-edit">✎</span>
-    <span class="dcard er-bubble"><span class="er-old">use a 30s window</span><span class="er-new">use a 60s window</span></span>
-  </div>
-  <div class="drow er-agent">
-    <span class="er-retry">↻</span>
-    <span class="dcard er-abubble"><span class="pulse-dot"></span><span>re-running · 60s window</span></span>
-  </div>
-  <div class="dcap er-cap"><span class="dok">✓</span><span>turn 3 edited · resent in place</span></div>
-</div>
-        <h3>Rewrite history, rerun it</h3>
-        <p>Edit any earlier message and resend, or retry a turn. The conversation is a surface, not a log.</p>
-      </div>
-
-      <div class="hl-chapter"><h4>Ship<br>faster</h4><p>Less ceremony where it’s safe. More throughput everywhere.</p></div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-fastpath" aria-hidden="true"><div class="dcard drow trow"><span class="dchip">LUM-256</span><span class="ddim dgrow ttitle">typo in the fee tooltip</span><span class="dchip xs">XS</span><span class="pillstack"><span class="st grooming p1">Grooming</span><span class="st inprogress p2">In Progress</span><span class="st ready p3">Ready</span></span></div><div class="drow gaterow"><span class="ddim">◇ plan gate</span><span class="dchip gskip">skipped</span></div><div class="dcap">one session · zero ceremony</div></div>
-        <h3>Small tickets, zero ceremony</h3>
-        <p>An XS ticket grooms and builds in one session, skipping the plan gate it doesn't need.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-triage" aria-hidden="true">
-  <div class="drow tr-head">
-    <span class="dchip tr-hb">◇ board health</span>
-    <span class="tr-flip"><span class="dchip tr-apply">apply 3</span><span class="dchip tr-done">✓ applied</span></span>
-  </div>
-  <div class="drow tr-r tr-r1"><span class="tr-k tr-kf">⇄ fold</span><span class="ddim">LUM-201 → LUM-198</span></div>
-  <div class="drow tr-r tr-r2"><span class="tr-k tr-ka">▾ archive</span><span class="ddim">LUM-188 · 34d stale</span></div>
-  <div class="drow tr-r tr-r3"><span class="tr-k tr-kb">↗ bump</span><span class="ddim">LUM-205 · High</span></div>
-  <div class="dcap tr-cap">3 moves · approved in one pass</div>
-</div>
-        <h3>One-tap board health</h3>
-        <p>It reads staleness signals and proposes folds, archives, and moves. Approve the batch in one pass.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-epicdecks" aria-hidden="true">
-  <div class="drow">
-    <span class="dcard dgrow ed-card"><span class="ed-dia">◇</span><span class="dbright">LUM-230</span><span class="ddim">· Insights v2</span><span class="dchip ed-fold">+3 folded</span></span>
-  </div>
-  <div class="drow ed-minis">
-    <span class="ed-ghost ddim">▴ subtasks live inside the deck</span>
-    <span class="dcard ed-m ed-m1">LUM-275</span>
-    <span class="dcard ed-m ed-m2">LUM-276</span>
-    <span class="dcard ed-m ed-m3">LUM-277</span>
-  </div>
-  <div class="dcap ed-cap"><span class="dbar"><i class="ed-fill"></i></span><span class="ed-ct">one deck · 64% complete</span></div>
-</div>
-        <h3>Epics fold their children</h3>
-        <p>Subtasks stack under their epic in one deck, and a roadmap view tracks what remains.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-scratch" aria-hidden="true">
-  <div class="drow"><span class="ddim">◇ scratch chat · off the board</span></div>
-  <div class="scstage">
-    <div class="scfloat scin"><span class="dchip">SCRATCH-3 · rate-limit idea</span><span class="pulse-dot scdot"></span></div>
-    <div class="scfloat scpromo"><span class="ddim">▸ promote to ticket</span></div>
-    <div class="dcard sccard"><span class="dbright">LUM-249 · Rate-limit alerts</span><span class="st todo sctd">Todo</span></div>
-  </div>
-  <div class="dcap">promoted · scratch consumed</div>
-</div>
-        <h3>Scratch chats</h3>
-        <p>Think out loud off the board. If a scratch chat earns a card, promote it into a real ticket.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-release" aria-hidden="true">
-  <div class="drow rcols">
-    <div class="rleft">
-      <div class="trow"><span class="ddim">LUM-278</span><span class="pstack"><span class="st done pu">Done</span><span class="pr pr1"><span class="st released">Released</span></span></span></div>
-      <div class="trow"><span class="ddim">LUM-279</span><span class="pstack"><span class="st done pu">Done</span><span class="pr pr2"><span class="st released">Released</span></span></span></div>
-    </div>
-    <div class="dcard rlog dgrow">
-      <div class="ddim">changelog · v2.4</div>
-      <div class="lgl lg1"><span class="dmk">▸</span> feat: fee summaries</div>
-      <div class="lgl lg2"><span class="dmk">▸</span> fix: 429 retry</div>
-    </div>
-  </div>
-  <div class="dcap"><span class="pubstack"><span class="dchip pub">publish v2.4</span><span class="tagd"><span class="tagok">✓ tagged</span></span></span><span class="ddim shp">2 tickets shipped</span></div>
-</div>
-        <h3>Done pile to changelog</h3>
-        <p>Select what shipped, get an annotated changelog, publish the release. Tickets flip to Released.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-costs" aria-hidden="true">
-  <div class="drow"><span class="dchip">LUM-274</span><span class="ddim dgrow">retry queue</span><span class="dbright cprice">$0.42</span></div>
-  <div class="drow cbarrow"><span class="cbar"><span class="cseg ccache"></span><span class="cseg cfresh"></span></span><span class="cpct"><span class="dok cpb">✓ 71% cached</span><span class="ddim cpa">71% cached</span></span></div>
-  <div class="drow crank cr1"><span class="ddim">#1</span><span class="ddim dgrow">LUM-254 · checkout flow</span><span class="dwarn">$1.84</span></div>
-  <div class="drow crank cr2"><span class="ddim">#2</span><span class="ddim dgrow">LUM-274 · retry queue</span><span class="dbright">$0.42</span></div>
-</div>
-        <h3>Token spend, in dollars</h3>
-        <p>Every ticket shows its spend, split cached versus fresh, ranked so you know where the budget goes.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-contextdiet" aria-hidden="true">
-  <div class="drow crow"><span class="ddim">LUM-198 · full history</span><span class="rlab">118k chars raw</span></div>
-  <div class="track"><i class="rawfill"></i></div>
-  <div class="drow crow"><span class="ddim jl">agent joins at session #7</span><span class="glab">9k digest</span></div>
-  <div class="track"><i class="digfill"></i></div>
-  <div class="dcap">same ticket · <span class="dok">92% lighter</span></div>
-</div>
-        <h3>Old tickets stay cheap</h3>
-        <p>Heavy histories collapse into digests, so an agent joining a month-old ticket doesn't pay for all of it.</p>
-      </div>
-
-      <div class="hl-chapter"><h4>On your<br>terms</h4><p>Your CLI, your repo, your machine.</p></div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-byoa" aria-hidden="true">
-  <div class="drow byoa-ticket">
-    <span class="dchip">LUM-249</span>
-    <span class="ddim byoa-title">rate limit alerts</span>
-    <span class="st inprogress">In Progress</span>
-  </div>
-  <div class="drow byoa-slot">
-    <span class="byoa-lbl">adapter</span>
-    <span class="byoa-stack">
-      <span class="byoa-chip ba-a">▸ claude-code</span>
-      <span class="byoa-chip ba-b">▸ gemini-cli</span>
-      <span class="byoa-chip ba-c">▸ copilot-cli</span>
-    </span>
-    <span class="dok byoa-ok">✓ session started</span>
-  </div>
-  <div class="dcap byoa-cap">same board · your CLI · no second bill</div>
-</div>
-        <h3>Bring your own agent</h3>
-        <p>Claude Code, Gemini CLI, or Copilot CLI. Same board, same tools, no second bill.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-surfaces" aria-hidden="true">
-  <div class="drow"><span class="dchip sf1">◇ desktop</span><span class="dchip sf2">▾ tray</span><span class="dchip sf3">↗ browser</span></div>
-  <div class="dcard sfterm"><div class="sfln sfcmd"><span class="ddim">$</span> <span class="dbright">npm start</span><span class="sfcaret">▍</span></div><div class="sfln sfok"><span class="dok">✓ board is up · localhost</span></div></div>
-  <div class="dcap">local-first · every surface</div>
-</div>
-        <h3>Desktop, tray, or browser</h3>
-        <p>A native app, a single tray binary, or plain npm start. Local-first in every form.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-terminal" aria-hidden="true"><div class="drow thead"><span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span><span class="ddim tlabel">⎇ lum-236 · worktree</span></div><div class="tline l1"><span class="tprompt">$</span><span class="dbright tcmd">npm test</span></div><div class="tline l2 dok">✓ 42 passing · 0 failing</div><div class="tline l3"><span class="tprompt">$</span><span class="tcaret">▍</span></div></div>
-        <h3>A real terminal, in the board</h3>
-        <p>Full PTY in a panel. Run tests and scripts next to the tickets that need them.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-modules" aria-hidden="true">
-  <div class="drow mrow"><span class="dbright">serena</span><span class="ddim mst ms1">symbols indexed</span><span class="tgl"><span class="ton t1"></span><i class="kn k1"></i><i class="kg g1"></i></span></div>
-  <div class="drow mrow"><span class="dbright">context7</span><span class="ddim mst ms2">docs live</span><span class="tgl"><span class="ton t2"></span><i class="kn k2"></i><i class="kg g2"></i></span></div>
-  <div class="drow mrow"><span class="dbright">memory</span><span class="ddim mst ms3">12 memories</span><span class="tgl"><span class="ton t3"></span><i class="kn k3"></i><i class="kg g3"></i></span></div>
-  <div class="dcap"><span class="dok">✓ 3 modules on</span> · scoped to lumen-app</div>
-</div>
-        <h3>Plug-in superpowers</h3>
-        <p>Flip on Serena for symbol-level edits, Context7 for live docs, Memory for cross-session recall.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-groups" aria-hidden="true">
-  <div class="gp-top"><span class="dchip gp-doc">◇ auth-contract.md</span></div>
-  <div class="gp-dot gp-d1"></div>
-  <div class="gp-dot gp-d2"></div>
-  <div class="gp-dot gp-d3"></div>
-  <div class="drow gp-repos">
-    <span class="dchip gp-repo">lumen-app<span class="dok gp-ck gp-c1">✓</span></span>
-    <span class="dchip gp-repo">lumen-api<span class="dok gp-ck gp-c2">✓</span></span>
-    <span class="dchip gp-repo">lumen-site<span class="dok gp-ck gp-c3">✓</span></span>
-  </div>
-  <div class="dcap gp-cap">1 doc · 3 repos · always in sync</div>
-</div>
-        <h3>One product, many repos</h3>
-        <p>Link repos into a group. Shared docs fan out to every member, so every agent knows the whole product.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-stoplight" aria-hidden="true">
-  <div class="drow cols">
-    <div class="dcard files">
-      <div class="frow"><span class="fck c1">✓</span><span class="dbright">src/export.ts</span></div>
-      <div class="frow"><span class="fck c2">✓</span><span class="dbright">api/csv.ts</span></div>
-      <div class="frow"><span class="fda">△</span><span class="ddim">config.ts</span></div>
-    </div>
-    <div class="rail">
-      <div class="lstack">
-        <div class="lrow la"><i class="ldot da"></i><span class="dwarn">4 uncommitted</span></div>
-        <div class="lrow lg"><i class="ldot dgn"></i><span class="dok">✓ committed</span></div>
-      </div>
-      <div class="cchip">commit 2</div>
-    </div>
-  </div>
-  <div class="dcap">picked from the board · no terminal</div>
-</div>
-        <h3>Your working tree, watched</h3>
-        <p>A stoplight counts uncommitted files. Open the panel, pick diffs, commit right from the board.</p>
-      </div>
-
-      <div class="hl-card">
-        <div class="hl-demo hv-conflicts" aria-hidden="true"><div class="drow confmain"><span class="chipstack"><span class="dchip cneutral">local</span><span class="dchip cwin">✓ local</span></span><span class="carrow">⇄</span><span class="dcard filecard dbright">LUM-242.md</span><span class="carrow">⇄</span><span class="dchip rchip">remote</span></div><div class="drow cstatus"><span class="badgestack"><span class="cbadge dwarn">△ edited on both machines</span><span class="csync">✓ synced</span></span></div><div class="dcap ccap">no merge markers · ever</div></div>
-        <h3>Conflicts, defused</h3>
-        <p>When boards diverge, pick use-local or use-remote per file in a modal. No raw merge markers.</p>
-      </div>
-
-    </div>
-    <div class="car-progress" aria-hidden="true"><i id="hlProg"></i></div>
   </section>
 
   <section>
@@ -4317,12 +4337,23 @@ window.pg = pg;
   next.addEventListener('click', () => track.scrollBy({ left: step(), behavior: reduced ? 'auto' : 'smooth' }));
 
   let raf = 0;
+  const chapters = [...track.querySelectorAll('.hl-chapter')];
+  const pills = [...document.querySelectorAll('.cat-pill')];
+  const chapterLeft = ch => ch.getBoundingClientRect().left - track.getBoundingClientRect().left + track.scrollLeft;
+  pills.forEach((pl, i) => pl.addEventListener('click', () => {
+    const ch = chapters[i];
+    if (ch) track.scrollTo({ left: chapterLeft(ch) - 4, behavior: reduced ? 'auto' : 'smooth' });
+  }));
   const sync = () => {
     raf = 0;
     const max = track.scrollWidth - track.clientWidth;
     prev.disabled = track.scrollLeft < 8;
     next.disabled = track.scrollLeft > max - 8;
     if (prog) prog.style.transform = 'scaleX(' + (max > 0 ? (track.scrollLeft + track.clientWidth) / track.scrollWidth : 1) + ')';
+    let act = 0;
+    chapters.forEach((ch, i) => { if (chapterLeft(ch) - 60 <= track.scrollLeft) act = i; });
+    if (track.scrollLeft > max - 8) act = chapters.length - 1;
+    pills.forEach((pl, i) => pl.classList.toggle('on', i === act));
   };
   const queueSync = () => { if (!raf) raf = requestAnimationFrame(sync); };
   track.addEventListener('scroll', queueSync, { passive: true });
