@@ -113,6 +113,13 @@ function toSummary(session: CliSessionRecord): CliSessionSummary {
   if (session.wakeAt) summary.wakeAt = session.wakeAt;
   if (session.wakeReason) summary.wakeReason = session.wakeReason;
   if (session.disallowedEhTools && session.disallowedEhTools.length > 0) summary.disallowedEhTools = session.disallowedEhTools;
+  // FLUX-1601: expose WHY a terminal session ended (previously stamped on the record but never
+  // copied to the portal-visible summary) so the chat error card can tell an auth-expired failure
+  // apart from a plain crash instead of matching on the raw error string.
+  if (session.terminalReason) summary.terminalReason = session.terminalReason;
+  // FLUX-1599: expose the auth self-diagnosis so the chat error card (FLUX-1601) can read a
+  // structured verdict instead of re-parsing the raw provider error text.
+  if (session.authDiagnosis) summary.authDiagnosis = session.authDiagnosis;
   return summary;
 }
 
@@ -747,7 +754,10 @@ export function reconcileDeadSessions(now: number = Date.now()): number {
     if (session.status !== 'running' && session.status !== 'pending') continue;
     const proc = session.proc;
     const procDead = !!proc && (proc.exitCode !== null || proc.signalCode !== null);
-    if (!procDead) continue;
+    if (!procDead) {
+      reapHungSilentSpawn(session, proc, now);
+      continue;
+    }
     const lastBeat = Date.parse(session.lastOutputAt ?? session.startedAt) || 0;
     if (now - lastBeat < DEAD_SESSION_GRACE_MS) continue;
     session.status = proc.exitCode === 0 ? 'completed' : 'failed';
@@ -760,6 +770,61 @@ export function reconcileDeadSessions(now: number = Date.now()): number {
     broadcastEvent('taskUpdated', { id: session.taskId });
   }
   return reaped;
+}
+
+// Silent-spawn watchdog: how long a spawned child may run with ZERO output (stdout or stderr —
+// `lastOutputAt` stamps on both, appendSessionOutput in agents/shared.ts) before it is presumed
+// hung and killed. Deliberately scoped to NEVER-output-this-turn only: a healthy CLI emits its
+// stream-json init event within seconds of every turn (fresh spawn or resume), while a turn that
+// HAS produced output can then legitimately go silent for many minutes inside one long-running
+// tool call — so "any silence > N" would false-positive, but "no output at all since the turn
+// started" cannot. 3 minutes comfortably clears a cold first launch (MCP handshakes are capped
+// pre-spawn; the CLI's own init lands well under a minute even cold).
+const SILENT_SPAWN_TIMEOUT_MS = 180_000;
+
+/**
+ * FLUX-1596: kill a spawned-but-silent child — the fresh-install wedge (1.8.1, macOS): a `claude` that is
+ * installed but was never onboarded/logged-in can hang headless forever writing NOTHING. The
+ * session then sits 'running' with a live proc, which reconcileDeadSessions' dead-proc clause can
+ * never touch (proc alive) — unreapable, 409-ing every subsequent start ("… session already
+ * active" / "Task already has a live CLI session") until the engine restarts, with no response
+ * ever shown to the user.
+ *
+ * Detection: proc spawned and alive, and NO output has EVER landed for the current turn — i.e.
+ * `lastOutputAt` is unset (first turn) or predates the turn's own start (`lastInputAt`, a hung
+ * resume) — for more than SILENT_SPAWN_TIMEOUT_MS since the turn began. Equality counts as output
+ * (a turn whose only output landed the same instant it started is alive, matching the existing
+ * reconcile tests). Pre-spawn sessions (no `proc`) stay untouched for the FLUX-846 reasons above.
+ *
+ * Action: seed `stderrCapture` with an actionable hint, then tree-kill the child. Status is NOT
+ * set here — the kill fires the normal `exit` handler (signal → non-zero path), which owns the
+ * terminal bookkeeping every adapter already has: per-ticket `finalizeTerminalSession` surfaces
+ * the ⚠️ line (with this stderr hint) inline in chat + raises needsAction; the board/Furnace exit
+ * handler appends the transcript error event (board-core.ts). If that exit event is ever lost,
+ * the next reconcile pass reaps the now-dead proc via the FLUX-846 clause above — belt and braces.
+ * `hungSpawnKilledAt` latches so the lazy reaper (called from every active-session read) never
+ * stacks repeat kills while the exit is still in flight.
+ */
+function reapHungSilentSpawn(session: CliSessionRecord, proc: CliSessionRecord['proc'], now: number): void {
+  if (!proc || session.hungSpawnKilledAt) return;
+  const turnStart = Math.max(
+    Date.parse(session.startedAt) || 0,
+    session.lastInputAt ? Date.parse(session.lastInputAt) || 0 : 0,
+  );
+  if (!turnStart || now - turnStart < SILENT_SPAWN_TIMEOUT_MS) return;
+  const lastOutput = session.lastOutputAt ? Date.parse(session.lastOutputAt) || 0 : 0;
+  if (lastOutput >= turnStart) return; // the turn HAS produced output — a long tool call, not a hang
+  session.hungSpawnKilledAt = new Date(now).toISOString();
+  const minutes = Math.round(SILENT_SPAWN_TIMEOUT_MS / 60_000);
+  // Framework-neutral wording (adapter-boundary rule: no per-CLI literals outside agents/) — the
+  // framework name itself is data off the session record, not a hardcoded CLI branch.
+  const hint =
+    `The agent process produced no output for ${minutes} minutes and was terminated by Event Horizon. ` +
+    `This usually means the "${session.framework}" CLI cannot run headless on this machine — check that it is ` +
+    `logged in and replies from a plain terminal in non-interactive (print) mode, then send your message again.`;
+  session.stderrCapture = ((session.stderrCapture ?? '') + `\n${hint}`).slice(-500);
+  console.warn(`[session] killing hung silent ${session.taskId} session ${session.id} (pid ${session.pid ?? proc.pid ?? '?'}) — no output since turn start ${new Date(turnStart).toISOString()}`);
+  killProcessTree(proc, 'SIGKILL', { label: `hung-spawn ${session.taskId}` });
 }
 
 /** FLUX-604: all currently-active sessions across the whole board (orchestrator situational awareness). */

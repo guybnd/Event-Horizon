@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { isGateParkedTicket, isPlanApprovalPending, isPlanApprovalNeedsYou, isPlanGateRevising, canApprovePlan, planReviewFeedback, planTldr, revisePlan, dismissPlanReview, dispatchApprovedImplementation, approvePlanAndStart } from './pendingInteractions';
+import { isGateParkedTicket, isPlanApprovalPending, isPlanApprovalNeedsYou, isPlanGateRevising, isPlanGateInFlight, canApprovePlan, planReviewFeedback, planTldr, revisePlan, dismissPlanReview, dispatchApprovedImplementation, approvePlanAndStart } from './pendingInteractions';
 import { updateTask, startPlanRevise, createBranch } from '../api';
 import { launchPhaseDefault } from '../agentActions';
 import type { Config, Task, CliSessionSummary } from '../types';
@@ -148,6 +148,31 @@ describe('isPlanGateRevising (FLUX-1319)', () => {
 
   it('is false when the gate is not running', () => {
     expect(isPlanGateRevising(makeTask({ planReviewState: 'changes-requested' }))).toBe(false);
+  });
+});
+
+describe('isPlanGateInFlight (FLUX-1585)', () => {
+  it('is true for an ACTIVE run (planGateRunning), regardless of verdict', () => {
+    expect(isPlanGateInFlight(makeTask({ status: 'Grooming', planGateRunning: true, planReviewState: 'changes-requested' }))).toBe(true);
+    expect(isPlanGateInFlight(makeTask({ status: 'Grooming', planGateRunning: true, planReviewState: null }))).toBe(true);
+  });
+
+  it('is true for the PARKED wedge — planGateRunning cleared, but the verdict is still changes-requested in Grooming', () => {
+    // The FLUX-1560 repro shape: `stopGateRun` deleted the registry entry and `planGateRunning`, but
+    // the changes-requested verdict from the last review pass is still on the ticket.
+    expect(isPlanGateInFlight(makeTask({ status: 'Grooming', planGateRunning: undefined, planReviewState: 'changes-requested' }))).toBe(true);
+  });
+
+  it('is false for an approved verdict with no active run — nothing to protect from a chat resume', () => {
+    expect(isPlanGateInFlight(makeTask({ status: 'Grooming', planReviewState: 'approved' }))).toBe(false);
+  });
+
+  it('is false outside Grooming even with a stale changes-requested verdict', () => {
+    expect(isPlanGateInFlight(makeTask({ status: 'Todo', planReviewState: 'changes-requested' }))).toBe(false);
+  });
+
+  it('is false for a plain Grooming ticket with no gate activity at all', () => {
+    expect(isPlanGateInFlight(makeTask({ status: 'Grooming' }))).toBe(false);
   });
 });
 

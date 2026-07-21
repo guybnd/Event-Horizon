@@ -301,6 +301,7 @@ The decision core is a **pure, exhaustively unit-tested** function `decideTicket
 | reviewing | completed + no verdict, already nudged/retried once | `park` (never falsely approve) |
 | any active | `failed` + `terminalReason: context-exhausted`, retries left | `retry-exhausted` — re-drive the phase with a fresh session (FLUX-1047) |
 | any active | `failed` + `terminalReason: rate-limited` | `cooldown-rate-limited` — enter `cooling-down`, **not** a park (FLUX-1063) |
+| any active | `failed` + `terminalReason: auth-expired` | `halt-auth-expired` — halt the whole batch (every ticket sharing the CLI's credential would fail identically), one re-auth-needed notification instead of N independent parks (FLUX-1397). The halt `reason`/`stopReason` shown in the Furnace report banner is `formatAuthDiagnosisMessage(session.authDiagnosis)` when the self-diagnosis (FLUX-1599) landed in time — the SAME verdict-specific headline+remedy as the chat's actionable auth error card (FLUX-1601) — falling back to a generic "run `claude login`" reason otherwise. |
 | `cooling-down` | `now < nextRetryAt` | `wait` |
 | `cooling-down` | retry window elapsed, under the max-wait ceiling | `retry-rate-limited` — restore the phase, spawn a fresh session |
 | `cooling-down` | past the `rateLimitMaxWaitMs` ceiling | `park` — the limit never cleared; fail outright |

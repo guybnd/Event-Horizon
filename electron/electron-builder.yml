@@ -9,14 +9,15 @@ directories:
   buildResources: build
 
 # Only the shell's own files ship in the asar; the engine is staged as a resource (below).
-# build/icon.png + build/tray.png are shipped too so main.js can set the window + tray icon
-# at runtime (electron-builder also derives the .ico/.icns app icon from build/icon.png).
+# build/icon-axis.png + build/tray-axis.png are shipped too so main.js can set the window + tray
+# icon at runtime (electron-builder derives the platform .icns/.ico app icon from icon: below;
+# win.icon points at the hand-tuned icon-axis.ico instead of deriving from the PNG).
 files:
   - main.js
   - preload.js
   - package.json
-  - build/icon.png
-  - build/tray.png
+  - build/icon-axis.png
+  - build/tray-axis.png
 
 # Bundle the self-contained engine bundle so the app needs no external Node/engine. Run
 # `npm run build` at the repo root first — it produces engine/dist/ (esbuild bundle with all deps
@@ -33,20 +34,21 @@ extraResources:
 
 win:
   target: nsis
-  icon: build/icon.png
+  icon: build/icon-axis.ico
 mac:
   target: dmg
   category: public.app-category.developer-tools
-  icon: build/icon.png
+  icon: build/icon-axis.png
 linux:
   target: AppImage
   category: Development
-  icon: build/icon.png
+  icon: build/icon-axis.png
 
 nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
 
-# App/tray icons are generated from the portal favicon — see scripts/gen-icons.mjs.
-# electron-builder derives the platform .ico/.icns from build/icon.png.
+# App/tray icons are the Axis Mundi mark — see scripts/gen-axis-icons.mjs and the masters at
+# build/icon-axis*.svg. electron-builder derives the platform .icns/AppImage icon from icon-axis.png;
+# win.icon uses the hand-tuned icon-axis.ico (small sizes beat auto-derivation from the PNG).

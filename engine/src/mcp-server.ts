@@ -37,7 +37,6 @@ import { sharedNonDoneSiblings, prTicketsOnBranch } from './pr-tickets.js';
 import { existsSync } from 'fs';
 import { getActiveSessionsForTask, getLiveStandaloneSessionForTask, stopAllSessionsForTask, reapStaleParkedSessions, getCliSessionSummaryForTask } from './session-store.js';
 import { handoffChatSessionPhase } from './agents/shared.js';
-import type { CliSessionRecord } from './agents/types.js';
 import { SKILL_MODULES, type SkillModule } from './workflow-installer.js';
 import { generatePromptNotification, generateReviewNotification, dismissNotificationsForTicket, addNotification } from './notifications.js';
 import { groupDocsLabel, summarizeGroup, groupDocPathToStoreRelative } from './group.js';
@@ -50,7 +49,7 @@ import { igniteBatch, stopBatch, burnRateClampWarning, retryTicket, resumeBatch,
 import { newBatchTicket, isBatchActive, isTerminalTicketState, validateBatchTrigger, batchBelongsToWorkspaceRoot, DEFAULT_RETRY_CAP, type BatchKind, type BatchTrigger, type FurnaceBatch } from './models/furnace.js';
 import { maybeStartTemper } from './temper.js';
 import { planBodyHash, resolveGateValue, hasHumanGateTouch, SELF_ATTESTED_AUTHOR_FIELD } from './models/gate-policy.js';
-import { planLint, formatLintFindings } from './models/plan-lint.js';
+import { planLint, formatLintFindings, BODY_WARN_CHARS } from './models/plan-lint.js';
 import { startPlanGateNow, resolvePlanVerdictNow, type PlanGateMode } from './gate-runner.js';
 import type { OrchestrationPersonaMeta } from './orchestration-personas.js';
 
@@ -321,94 +320,6 @@ export function permissionDecisionFor(toolName: string, input?: unknown): 'allow
   if (SAFE_PERMISSION_TOOLS.has(bare)) return 'allow';
   if (CONFIRM_PERMISSION_TOOLS.has(bare)) return 'confirm';
   return 'allow';
-}
-
-// ─── Hard gate: dispatched skip-permission sessions can't silently advance past Ready (FLUX-850) ──
-//
-// `permissionDecisionFor` above only runs for GATED sessions (`--permission-prompt-tool`) — a
-// dispatched session (`start_session` / board-rebase / Furnace) always runs with
-// `skipPermissions: true`, so it never calls `permission_prompt` at all and the gate above is a
-// no-op for it. That's the FLUX-840/841/844 incident: an unattended session could move a ticket
-// straight to Ready with nothing but a notification. `skipPermissions` alone can't distinguish the
-// dangerous case from a normal one, though — an interactive portal session (chat, or a human
-// clicking Groom/Implement/Review/Finalize) can ALSO run skip-permissions, and blocking THOSE would
-// break the ordinary "start a ticket" flow the product depends on. The actual crux is ORIGIN: was
-// a human present to see the move happen. `CliSessionRecord.dispatched` (agents/types.ts) is the
-// explicit marker each unattended dispatch path stamps on itself; the portal never sets it.
-
-/**
- * True when at least one ACTIVE session on this ticket is both dispatched (unattended, no human
- * present — see `CliSessionRecord.dispatched`) and running with `skipPermissions`. Pure over
- * already-resolved session records (mirrors `permissionDecisionFor`'s idiom) so the two call sites
- * (`change_status`, `finish_ticket`) can unit-test the predicate without touching the live session
- * store — each derives its input via `getActiveSessionsForTask(ticketId)`.
- */
-export function hasDispatchedSkipPermissionSession(
-  sessions: readonly Pick<CliSessionRecord, 'status' | 'dispatched' | 'skipPermissions'>[],
-): boolean {
-  return sessions.some((s) => s.status === 'running' && s.dispatched === true && s.skipPermissions === true);
-}
-
-/**
- * `change_status` variant of the gate: covers a direct move into Ready OR the literal 'Done'
- * status (an agent can call `change_status` with `newStatus:'Done'` directly, bypassing
- * `finish_ticket` entirely — the gate must not have a hole there). Only a FORWARD move is
- * dangerous — a re-affirming call that leaves the ticket at its current status is a no-op the gate
- * must not re-intercept (it would otherwise bounce the ticket to Require Input every time a
- * session re-states the same status). Pure + exported for unit test, same idiom as
- * `evaluatePlanGateTrigger`.
- */
-export function shouldGateDispatchedAdvance(opts: {
-  hasDispatchedSkipPermissionSession: boolean;
-  currentStatus: string;
-  newStatus: string;
-  readyStatus: string;
-}): boolean {
-  if (!opts.hasDispatchedSkipPermissionSession) return false;
-  if (opts.currentStatus === opts.newStatus) return false;
-  return opts.newStatus === opts.readyStatus || opts.newStatus === 'Done';
-}
-
-/**
- * The actual redirect once `shouldGateDispatchedAdvance` fires: same "Require Input" swimlane
- * mechanics as an agent's own `change_status("Require Input")` call below, except the AGENT never
- * asked a question here — a hard gate intercepted its move — so the comment says that explicitly
- * rather than reading like the agent's judgement call. Shared by both call sites (`change_status`
- * → Ready/Done, `finish_ticket` → Done) since the mechanics are identical; only the headline
- * differs. Returns `null` on a write failure so the caller can fall back to its own error result.
- */
-async function redirectDispatchedAdvanceToRequireInput(
-  ticketId: string,
-  task: TaskRecord,
-  currentStatusLabel: string,
-  headline: string,
-  agentComment: string | undefined,
-  sanitizedCompletion: ReturnType<typeof sanitizeCompletion>,
-) {
-  const confirmComment = agentComment ? `${headline}\n\n${agentComment}` : headline;
-  const entries: Record<string, unknown>[] = [
-    { type: 'comment', user: 'Agent', comment: confirmComment, date: new Date().toISOString(), ...(sanitizedCompletion !== undefined ? { completion: sanitizedCompletion } : {}) },
-    { type: 'swimlane_change', swimlane: 'require-input', action: 'set', user: 'Agent', date: new Date().toISOString(), comment: confirmComment },
-  ];
-  const result = await updateTaskWithHistory(ticketId, {
-    entries,
-    updatedBy: 'Agent',
-    extraFields: { swimlane: 'require-input' },
-  });
-  if (!result) return null;
-
-  const sessions = getActiveSessionsForTask(ticketId);
-  for (const s of sessions) {
-    s.status = 'waiting-input';
-    s.pausedForInput = true;
-  }
-
-  broadcastEvent('taskUpdated', { id: ticketId });
-  generatePromptNotification(ticketId, task.title || ticketId, 'Require Input');
-  return textResult(
-    `${ticketId} stays in "${currentStatusLabel}" — a hard gate blocks a dispatched, unattended session from advancing it without a surfaced confirmation. ` +
-    `Swimlane set to 'require-input' with your summary attached.\nNext: STOP. Do not keep working this ticket meanwhile — the user resumes it when they confirm.`
-  );
 }
 
 /**
@@ -729,11 +640,6 @@ function decodeResourceVar(value: string | string[] | undefined): string {
     return raw;
   }
 }
-
-// Soft ceiling for ticket bodies written by agents. The body is injected in
-// full into every future agent session, so oversized bodies tax every session
-// on the ticket. The write is accepted either way — this only nudges.
-const BODY_WARN_CHARS = 10_000;
 
 function bodySizeWarning(body: string | undefined | null): string | undefined {
   if (!body || body.length <= BODY_WARN_CHARS) return undefined;
@@ -1579,25 +1485,6 @@ export function buildMcpServer(): McpServer {
         return errorResult('Transitioning to Ready requires a completion comment.', 'validation_failed');
       }
 
-      // FLUX-850: hard gate — a dispatched, unattended, skip-permission session cannot silently
-      // advance this ticket to Ready/Done. Runs AFTER the comment-required check above (so the
-      // agent's completion summary is captured either way) but BEFORE any Ready-only side effects
-      // below (PR creation, worktree reclaim) — the ticket stays at its current status, so none of
-      // that should fire yet. An ordinary interactive session (portal chat, a human-clicked phase
-      // launch) never sets `dispatched`, so this never intercepts those.
-      const dispatchedGateActive = hasDispatchedSkipPermissionSession(getActiveSessionsForTask(ticketId));
-      if (shouldGateDispatchedAdvance({ hasDispatchedSkipPermissionSession: dispatchedGateActive, currentStatus: task.status, newStatus, readyStatus })) {
-        const redirected = await redirectDispatchedAdvanceToRequireInput(
-          ticketId,
-          task,
-          task.status,
-          `Dispatched session wants to move ${ticketId} to "${newStatus}" — confirm to proceed.`,
-          comment,
-          sanitizedCompletion,
-        );
-        return redirected ?? errorResult(`Failed to update ${ticketId}`);
-      }
-
       const entries: Record<string, unknown>[] = [];
       // FLUX-1379: audit entry for the XS/S auto-skip (decision 5 — effort-gaming is accepted for v1,
       // but every skip leaves a durable trail). Only fires when the skip was the actual reason the
@@ -2138,28 +2025,6 @@ export function buildMcpServer(): McpServer {
         );
       }
 
-      // FLUX-850: hard gate — a dispatched, unattended, skip-permission session cannot silently
-      // merge + Done this ticket. Mirrors the `change_status` gate above (same predicate, same
-      // Require-Input redirect) — runs BEFORE the shared-PR guard / merge-lock / actual merge below,
-      // so nothing merges before a human confirms. An ordinary interactive session never sets
-      // `dispatched`, so this never intercepts a human-driven finish.
-      if (shouldGateDispatchedAdvance({
-        hasDispatchedSkipPermissionSession: hasDispatchedSkipPermissionSession(getActiveSessionsForTask(ticketId)),
-        currentStatus: task.status,
-        newStatus: 'Done',
-        readyStatus,
-      })) {
-        const redirected = await redirectDispatchedAdvanceToRequireInput(
-          ticketId,
-          task,
-          task.status,
-          `Dispatched session wants to finish ${ticketId} (merge → Done) — confirm to proceed.`,
-          completionComment,
-          sanitizedCompletion,
-        );
-        return redirected ?? errorResult(`Failed to update ${ticketId}`);
-      }
-
       // Finish-on-shared-PR guard (FLUX-569, from the FLUX-556/PR#6 incident): finishing one
       // member of a SHARED branch merges the whole PR — advancing every bundled sibling to Done
       // as a one-way door, even ones that aren't finished. Refuse when the branch is shared by
@@ -2568,14 +2433,11 @@ export function buildMcpServer(): McpServer {
       try {
         const framework = process.env.EVENT_HORIZON_FRAMEWORK || resolveDefaultFramework();
         // FLUX-845: isolate by default — the engine creates the branch+worktree before spawning.
-        // FLUX-850: `dispatched: true` marks this an unattended, no-human-present launch so
-        // change_status/finish_ticket hard-gate it from silently advancing the ticket past Ready.
         const body: Record<string, unknown> = {
           framework,
           skipPermissions: true,
           patternPosition: 'standalone',
           isolation: worktree === false ? 'branch' : 'worktree',
-          dispatched: true,
         };
         if (phase) body.phase = phase;
         if (batchTicketIds && batchTicketIds.length > 0) body.batchTicketIds = batchTicketIds;

@@ -38,6 +38,10 @@ interface MetadataPanelProps {
   /** "popup" renders a compact horizontal bar; default renders the full sidebar panel */
   variant?: 'popup';
   isWideMode?: boolean;
+  /** FLUX-1592: true for the id-less create surface — demotes Assignee into a collapsed "Advanced"
+   *  group and hides Implementation Link (no id/branch exist yet to link). Effort Override stays
+   *  inline in both variants per the mockup annotation. */
+  isNew?: boolean;
 }
 
 export function MetadataPanel({
@@ -53,6 +57,7 @@ export function MetadataPanel({
   onDiffFileClick,
   variant,
   isWideMode,
+  isNew = false,
 }: MetadataPanelProps) {
   const { triggerRefresh, refreshWorktrees } = useAppActions();
   const confirm = useConfirm();
@@ -100,64 +105,89 @@ export function MetadataPanel({
 
   if (variant === 'popup') {
     return (
-      <div className={isWideMode ? 'flex items-end gap-4' : 'flex flex-wrap items-end gap-3'}>
-        <div className={isWideMode ? 'w-32' : 'w-36'}>
-          <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Status</label>
-          <select
-            className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-            value={status}
-            onChange={(e) => setStatus(e.target.value)}
-          >
-            {allStatuses.map((item) => (
-              <option key={item} value={item}>{item}</option>
-            ))}
-          </select>
+      <div className="space-y-2">
+        <div className={isWideMode ? 'flex items-end gap-4' : 'flex flex-wrap items-end gap-3'}>
+          <div className={isWideMode ? 'w-32' : 'w-36'}>
+            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Status</label>
+            <select
+              className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+              value={status}
+              onChange={(e) => setStatus(e.target.value)}
+            >
+              {allStatuses.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+          </div>
+
+          {!isNew && (
+            <div className={isWideMode ? 'w-32' : 'w-40'}>
+              <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Assignee</label>
+              <select
+                className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+                value={assignee}
+                onChange={(e) => setAssignee(e.target.value)}
+              >
+                <option value="unassigned">Unassigned</option>
+                {allUsers.map((item) => (
+                  <option key={item} value={item}>{item}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <div className={isWideMode ? 'w-40' : 'w-40'}>
+            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Priority</label>
+            <select
+              className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+              value={priority}
+              onChange={(e) => setPriority(e.target.value)}
+            >
+              {availablePriorities.map((item) => (
+                <option key={item.name} value={item.name}>{item.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className={isWideMode ? 'w-28' : 'w-28'}>
+            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Effort</label>
+            <select
+              className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+              value={effort}
+              onChange={(e) => setEffort(e.target.value)}
+            >
+              {EFFORT_OPTIONS.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className={isWideMode ? 'w-64' : 'min-w-[240px] flex-1'}>
+            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Tags</label>
+            <TagSelector tags={tags} onChange={setTags} availableTags={allTags} configTags={configTags} />
+          </div>
         </div>
 
-        <div className={isWideMode ? 'w-32' : 'w-40'}>
-          <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Assignee</label>
-          <select
-            className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-            value={assignee}
-            onChange={(e) => setAssignee(e.target.value)}
-          >
-            <option value="unassigned">Unassigned</option>
-            {allUsers.map((item) => (
-              <option key={item} value={item}>{item}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className={isWideMode ? 'w-40' : 'w-40'}>
-          <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Priority</label>
-          <select
-            className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-            value={priority}
-            onChange={(e) => setPriority(e.target.value)}
-          >
-            {availablePriorities.map((item) => (
-              <option key={item.name} value={item.name}>{item.name}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className={isWideMode ? 'w-28' : 'w-28'}>
-          <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Effort</label>
-          <select
-            className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-            value={effort}
-            onChange={(e) => setEffort(e.target.value)}
-          >
-            {EFFORT_OPTIONS.map((item) => (
-              <option key={item} value={item}>{item}</option>
-            ))}
-          </select>
-        </div>
-
-        <div className={isWideMode ? 'w-64' : 'min-w-[240px] flex-1'}>
-          <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Tags</label>
-          <TagSelector tags={tags} onChange={setTags} availableTags={allTags} configTags={configTags} />
-        </div>
+        {isNew && (
+          <details className="group">
+            <summary className="cursor-pointer select-none text-xs font-semibold text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+              Advanced
+            </summary>
+            <div className="mt-2 w-48">
+              <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Assignee</label>
+              <select
+                className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+                value={assignee}
+                onChange={(e) => setAssignee(e.target.value)}
+              >
+                <option value="unassigned">Unassigned</option>
+                {allUsers.map((item) => (
+                  <option key={item} value={item}>{item}</option>
+                ))}
+              </select>
+            </div>
+          </details>
+        )}
       </div>
     );
   }
@@ -177,19 +207,21 @@ export function MetadataPanel({
         </select>
       </div>
 
-      <div>
-        <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Assignee</label>
-        <select
-          className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-          value={assignee}
-          onChange={(e) => setAssignee(e.target.value)}
-        >
-          <option value="unassigned">Unassigned</option>
-          {allUsers.map((item) => (
-            <option key={item} value={item}>{item}</option>
-          ))}
-        </select>
-      </div>
+      {!isNew && (
+        <div>
+          <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Assignee</label>
+          <select
+            className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+            value={assignee}
+            onChange={(e) => setAssignee(e.target.value)}
+          >
+            <option value="unassigned">Unassigned</option>
+            {allUsers.map((item) => (
+              <option key={item} value={item}>{item}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div>
         <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Priority</label>
@@ -233,16 +265,39 @@ export function MetadataPanel({
         </select>
       </div>
 
-      <div>
-        <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Implementation Link</label>
-        <input
-          className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-          value={implementationLink}
-          onChange={(e) => setImplementationLink(e.target.value)}
-          onBlur={() => onImplementationLinkBlur?.()}
-          placeholder="https://github.com/..."
-        />
-      </div>
+      {!isNew && (
+        <div>
+          <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Implementation Link</label>
+          <input
+            className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+            value={implementationLink}
+            onChange={(e) => setImplementationLink(e.target.value)}
+            onBlur={() => onImplementationLinkBlur?.()}
+            placeholder="https://github.com/..."
+          />
+        </div>
+      )}
+
+      {isNew && (
+        <details className="group">
+          <summary className="cursor-pointer select-none text-xs font-semibold text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+            Advanced
+          </summary>
+          <div className="mt-3">
+            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Assignee</label>
+            <select
+              className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+              value={assignee}
+              onChange={(e) => setAssignee(e.target.value)}
+            >
+              <option value="unassigned">Unassigned</option>
+              {allUsers.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+          </div>
+        </details>
+      )}
 
       {task?.branch && (
         <div>

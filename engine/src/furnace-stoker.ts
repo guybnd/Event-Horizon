@@ -31,6 +31,8 @@ import { updateTaskWithHistory } from './task-store.js';
 import { addNotification } from './notifications.js';
 import { cliSessionsById, getActiveSessionsForTaskInWorkspace, getAllSessionsForTask, isResumable, stopAllSessionsForTask } from './session-store.js';
 import type { CliSessionRecord, CliSessionStatus, TaskKey } from './agents/types.js';
+import type { AuthDiagnosis } from './agents/auth-diagnostics.js';
+import { formatAuthDiagnosisMessage } from './agents/auth-diagnostics.js';
 import {
   getFurnaceBatch,
   getFurnaceBatchesCache,
@@ -246,6 +248,10 @@ export function decideTicketAction(input: {
   ticket: BatchTicket;
   sessionStatus?: CliSessionStatus;
   terminalReason?: 'context-exhausted' | 'rate-limited' | 'auth-expired';
+  // FLUX-1601: the session's structured self-diagnosis (auth-diagnostics.ts), when terminalReason is
+  // 'auth-expired' — folded into the halt reason so the Furnace banner shows the SAME verdict-specific
+  // remedy as the chat's actionable error card, instead of the generic "run claude login".
+  authDiagnosis?: AuthDiagnosis;
   // FLUX-1156: the failed/cancelled session's own recorded outcome (its agent_session entry's
   // `outcome`, e.g. "Claude Code session failed to start: refusing to run the agent on master") — when
   // present, folded into the park reason instead of the opaque generic "session ended failed" so a
@@ -263,10 +269,22 @@ export function decideTicketAction(input: {
   nowMs?: number;
   rateLimitRetryIntervalMs?: number;
   rateLimitMaxWaitMs?: number;
+  // FLUX-1585: true when the caller (currently only the plan gate's `reconcileGateTicket`) detects
+  // that the ticket body no longer hashes to the last-recorded review-body-hash while a
+  // 'reimplementing' (revise) run is in flight — i.e. SOME session already produced (or absorbed)
+  // the revision, regardless of what happened to the tracked revise session itself (the FLUX-1560
+  // wedge: a misrouted session folded in the revision, then the tracked revise session got
+  // cancelled). Only consulted while `ticket.state === 'reimplementing'`; every other caller
+  // (Temper's review loop, the plain Furnace implementation loop) never sets this, so their
+  // behavior is unchanged.
+  bodyHashDrifted?: boolean;
 }): TicketAction {
   const { ticket, sessionStatus, terminalReason, reviewState, ticketStatus, retryCap } = input;
   const requireInput = input.requireInputStatus || 'Require Input';
   const currentPhase: FurnacePhase = ticket.state === 'reviewing' ? 'review' : 'implementation';
+  // FLUX-1585: the body already moved past the last verdict — judge what's there instead of
+  // redriving/parking on a revise-session signal that no longer reflects reality.
+  const reviseHashDrifted = ticket.state === 'reimplementing' && input.bodyHashDrifted === true;
 
   // FLUX-1063: a ticket cooling down after a rate limit — decide retry vs. keep waiting vs. give up.
   // Handled BEFORE the active-state gate below, since `cooling-down` is deliberately non-active.
@@ -287,7 +305,9 @@ export function decideTicketAction(input: {
   if (!isActiveTicketState(ticket.state)) return { type: 'wait' };
 
   // No observable session → the phase never recorded a session or the engine restarted: re-drive it.
-  if (sessionStatus === undefined) return { type: 'redrive', phase: currentPhase };
+  // FLUX-1585: unless the body already drifted past the last verdict — then there's nothing to
+  // redrive a revise for, the revision already landed; go straight to review.
+  if (sessionStatus === undefined) return reviseHashDrifted ? { type: 'review' } : { type: 'redrive', phase: currentPhase };
 
   // Still working. FLUX-1390: 'scheduled' is a session honoring a ScheduleWakeup call — asleep,
   // not idle — the engine's own wake ticker resumes it via `--resume` at wakeAt, so it must never be
@@ -303,9 +323,12 @@ export function decideTicketAction(input: {
   // auth fails identically) — halt the batch immediately with a single re-auth-needed signal instead of
   // parking this ticket alone and letting N siblings each independently trip the circuit breaker.
   if (sessionStatus === 'failed' && terminalReason === 'auth-expired') {
+    const diagnosisReason = input.authDiagnosis ? formatAuthDiagnosisMessage(input.authDiagnosis) : undefined;
     return {
       type: 'halt-auth-expired',
-      reason: `the ${currentPhase} session hit an expired or invalid auth credential — run 'claude login' (or refresh the API key), then resume the batch`,
+      reason: diagnosisReason
+        ? `${diagnosisReason} Resume the batch once fixed.`
+        : `the ${currentPhase} session hit an expired or invalid auth credential — run 'claude login' (or refresh the API key), then resume the batch`,
     };
   }
 
@@ -332,6 +355,12 @@ export function decideTicketAction(input: {
     if (sessionStatus === 'cancelled' && isBoardMergedStatus(ticketStatus)) {
       return { type: 'yield', reason: `the ${currentPhase} session was stopped and the ticket is already ${ticketStatus}` };
     }
+    // FLUX-1585: the tracked revise session ended badly, but the body already moved past the last
+    // verdict (the FLUX-1560 wedge: a misrouted session absorbed the revision, then the real revise
+    // session got cancelled) — judge what's there instead of parking on a session-lifecycle signal
+    // that no longer reflects reality. Deliberately does NOT burn a retry attempt (no `reimplement`
+    // dispatched here) — see furnace-stoker.test.ts's cancelled-attempt coverage.
+    if (reviseHashDrifted) return { type: 'review' };
     const reason = input.sessionOutcome
       ? `the ${currentPhase} session ended ${sessionStatus} — ${input.sessionOutcome}`
       : `the ${currentPhase} session ended ${sessionStatus}`;
@@ -471,17 +500,6 @@ export async function dispatchSession(
     // FLUX-1235: the Furnace is the authoritative driver — take over an IDLE (waiting-input) session
     // even if it is resumable (the grooming→implementation handoff). A LIVE session still 409s.
     supersedeParked: true,
-    // FLUX-850: deliberately NOT stamping `dispatched: true` here. That marker makes
-    // change_status/finish_ticket hard-gate a forward move into Ready/Done, which is exactly what a
-    // Furnace-run ticket needs to do at the end of its implementation phase (see
-    // .docs/skills/event-horizon-implementation.md step 9) and again after review approval — Furnace's
-    // whole model is "a batch burns unattended and leaves its PR open at Ready" (this file's header
-    // comment). Marking these sessions broke that: every implementation session got redirected to
-    // Require Input instead of reaching Ready, parking the ticket for a human on every single run.
-    // Furnace itself never calls `finish_ticket` (see this file's header comment — "NEVER finish_ticket")
-    // and never advances a ticket past Ready, so it isn't the silent-merge-to-Done surface the
-    // FLUX-840/841/844 incident targets; the gate's actual scope is `start_session` (mcp-server.ts) and
-    // the board-rebase `dispatch` verb (board-rebase.ts), which still mark `dispatched: true`.
   };
   if (opts.personaId) body.personaId = opts.personaId;
   if (opts.focusComment) body.focusComment = opts.focusComment;
@@ -1588,6 +1606,7 @@ async function reconcileTicket(batchId: string, ticketId: string, ws: Workspace 
     ticket,
     ...(sess ? { sessionStatus: sess.status } : {}),
     ...(sess?.terminalReason ? { terminalReason: sess.terminalReason } : {}),
+    ...(sess?.authDiagnosis ? { authDiagnosis: sess.authDiagnosis } : {}),
     ...(sessionOutcome ? { sessionOutcome } : {}),
     reviewState: task?.reviewState ?? null,
     ...(task?.status ? { ticketStatus: task.status } : {}),

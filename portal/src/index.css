@@ -227,6 +227,62 @@
   --eh-texture-size: 20px 20px;
 }
 
+/* ─── Axis Night (Axis Mundi study: the vigil) ───────────────────── */
+:root[data-theme="axis-night"] {
+  --eh-accent: #d9a441;
+  --eh-accent-hover: #c2903a;
+  --eh-accent-glow: rgba(217, 164, 65, 0.15);
+  --eh-base: #0f0e11;
+  --eh-surface: #14131a;
+  --eh-surface-raised: #1a1820;
+  --eh-surface-overlay: rgba(15, 14, 17, 0.92);
+  --eh-border: rgba(236, 232, 223, 0.1);
+  --eh-border-subtle: rgba(236, 232, 223, 0.05);
+  --eh-border-accent: rgba(217, 164, 65, 0.35);
+  --eh-text-primary: #ece8df;
+  --eh-text-secondary: #b3aeb9;
+  --eh-text-muted: #817c8c;
+  --eh-card-bg: rgba(26, 24, 32, 0.85);
+  --eh-card-border: rgba(236, 232, 223, 0.07);
+  --eh-card-hover-border: rgba(217, 164, 65, 0.45);
+  --eh-header-bg: rgba(13, 12, 16, 0.75);
+  --eh-column-bg: rgba(217, 164, 65, 0.02);
+  --eh-input-bg: rgba(10, 9, 14, 0.5);
+  --eh-input-border: rgba(236, 232, 223, 0.1);
+  --eh-dropdown-bg: #14131a;
+  --eh-glow-color: rgba(217, 164, 65, 0.05);
+  --eh-shadow-color: rgba(0, 0, 0, 0.45);
+  --eh-texture: none;
+}
+
+/* ─── Axis Day (Axis Mundi study: the forum) ─────────────────────── */
+:root[data-theme="axis-day"] {
+  --eh-accent: #a87a1f;
+  --eh-accent-hover: #8a6318;
+  --eh-accent-glow: rgba(168, 122, 31, 0.14);
+  --eh-base: #f2efe8;
+  --eh-surface: #f9f6ee;
+  --eh-surface-raised: #fbf9f3;
+  --eh-surface-overlay: rgba(242, 239, 232, 0.88);
+  --eh-border: rgba(36, 34, 42, 0.14);
+  --eh-border-subtle: rgba(36, 34, 42, 0.07);
+  --eh-border-accent: rgba(168, 122, 31, 0.3);
+  --eh-text-primary: #24222a;
+  --eh-text-secondary: #57545e;
+  --eh-text-muted: #8b8794;
+  --eh-card-bg: rgba(251, 249, 243, 0.9);
+  --eh-card-border: rgba(36, 34, 42, 0.12);
+  --eh-card-hover-border: rgba(168, 122, 31, 0.45);
+  --eh-header-bg: rgba(242, 239, 232, 0.78);
+  --eh-column-bg: rgba(36, 34, 42, 0.04);
+  --eh-input-bg: #f4f1e9;
+  --eh-input-border: rgba(36, 34, 42, 0.16);
+  --eh-dropdown-bg: #fbf9f3;
+  --eh-glow-color: rgba(168, 122, 31, 0.05);
+  --eh-shadow-color: rgba(36, 34, 42, 0.1);
+  --eh-texture: none;
+}
+
 /* ─── Apply Theme ────────────────────────────────────────────────── */
 body {
   background-color: var(--eh-base);
@@ -242,13 +298,15 @@ body {
    white on the dark themes. Bind the scheme to the active theme and tint
    <option>s with the dropdown token so popups follow the theme. */
 :root,
-:root[data-theme="light"] {
+:root[data-theme="light"],
+:root[data-theme="axis-day"] {
   color-scheme: light;
 }
 :root[data-theme="dark"],
 :root[data-theme="matrix"],
 :root[data-theme="cyber"],
-:root[data-theme="midnight"] {
+:root[data-theme="midnight"],
+:root[data-theme="axis-night"] {
   color-scheme: dark;
 }
 
@@ -624,7 +682,7 @@ body::before {
 }
 
 /* ─── Bulk Override for Textured Themes ───────────────────────────── */
-:root:is([data-theme="matrix"], [data-theme="cyber"], [data-theme="midnight"]) {
+:root:is([data-theme="matrix"], [data-theme="cyber"], [data-theme="midnight"], [data-theme="axis-night"]) {
   & [class*="dark:bg-[#1a1b23]"] { background-color: var(--eh-surface) !important; }
   & [class*="dark:bg-[#252630]"] { background-color: var(--eh-surface-raised) !important; }
   & [class*="dark:bg-[#1f2028]"] { background-color: var(--eh-surface) !important; }
@@ -644,6 +702,23 @@ body::before {
   & [class*="dark:text-gray-300"] { color: var(--eh-text-secondary) !important; }
   & [class*="dark:text-gray-400"] { color: var(--eh-text-muted) !important; }
   & [class*="dark:text-gray-500"] { color: var(--eh-text-muted) !important; }
+}
+
+/* ─── Bulk Override for Axis Day (light-side equivalent, FLUX-1589) ──
+   Axis Day's tokens (cream/ink) diverge from the plain-Tailwind light palette (white/gray) that
+   `light` happens to already match, so — unlike `light` — axis-day needs its own remap of the
+   literal (non dark:-prefixed) surface/text/border classes. `[class~=...]` (exact class-token
+   match, not substring) so a paired `text-gray-700 dark:text-gray-300` on the same element only
+   retints the light-active token, never the co-located dark:-prefixed one. */
+:root:is([data-theme="axis-day"]) {
+  & [class~="bg-white"] { background-color: var(--eh-surface-raised) !important; }
+  & [class~="bg-gray-50"] { background-color: var(--eh-surface) !important; }
+  & [class~="bg-gray-100"] { background-color: var(--eh-surface) !important; }
+  & [class~="border-gray-200"] { border-color: var(--eh-border) !important; }
+  & [class~="border-gray-300"] { border-color: var(--eh-border) !important; }
+  & [class~="text-gray-900"] { color: var(--eh-text-primary) !important; }
+  & [class~="text-gray-800"] { color: var(--eh-text-primary) !important; }
+  & [class~="text-gray-700"] { color: var(--eh-text-secondary) !important; }
 }
 
 /* ─── Themed Component Overrides ─────────────────────────────────── */
@@ -725,6 +800,66 @@ body::before {
 /* Glow effects — toned down */
 .eh-glow {
   box-shadow: 0 0 16px var(--eh-accent-glow);
+}
+
+/* ─── Axis Mundi v2: light rules (FLUX-1589) ──────────────────────────
+   Night = starlit top edge + crisp downward shadow (one light from above, no blur).
+   Day = sundial cut (white top edge + crisp downward shadow, no blur). Applied to the
+   codebase's existing token-driven surface primitives (cards/dropdowns/raised panels/header) —
+   the reusable "surface" abstraction already used throughout the portal. */
+:root[data-theme="axis-night"] :is(.eh-card, .eh-dropdown, .eh-surface-raised, .eh-surface-overlay, .eh-header) {
+  box-shadow: inset 0 1px 0 rgba(236, 232, 223, 0.14), 0 2px 0 rgba(0, 0, 0, 0.35) !important;
+  backdrop-filter: none !important;
+}
+:root[data-theme="axis-day"] :is(.eh-card, .eh-dropdown, .eh-surface-raised, .eh-surface-overlay, .eh-header) {
+  box-shadow: inset 0 1px 0 #ffffff, 0 2px 0 rgba(36, 34, 42, 0.10) !important;
+  backdrop-filter: none !important;
+}
+
+/* ─── Axis Mundi v2: cut-stone radii (FLUX-1589) ──────────────────────
+   Cards/panels/dropdowns settle to 9px under both axis themes; `rounded-full` (pills/badges/
+   avatars) is untouched. Same scoped [class*=...] + !important bulk-override technique as the
+   token-coverage blocks above. */
+:root:is([data-theme="axis-night"], [data-theme="axis-day"]) {
+  & [class*="rounded-2xl"] { border-radius: 9px !important; }
+  & [class*="rounded-xl"] { border-radius: 9px !important; }
+  & [class*="rounded-lg"] { border-radius: 9px !important; }
+}
+
+/* ─── Axis Mundi v2: gilt never fills at night (FLUX-1589, C2) ───────
+   Every primary CTA is the shared Button `variant="filled" intent="accent"` (or an equivalent
+   ad-hoc `bg-primary ... text-white` button) — that combination of class tokens is unique to
+   filled-accent buttons (quiet/ghost variants use `text-primary`, never paired with `text-white`),
+   so this selector can't leak onto secondary/quiet buttons. Night: outlined gilt, fills gilt with
+   dark text on hover/focus. Day keeps the filled bronze button (untouched). */
+:root[data-theme="axis-night"] [class*="bg-primary"][class*="text-white"] {
+  background-color: transparent !important;
+  color: var(--eh-accent) !important;
+  border: 1px solid var(--eh-accent) !important;
+}
+:root[data-theme="axis-night"] [class*="bg-primary"][class*="text-white"]:hover,
+:root[data-theme="axis-night"] [class*="bg-primary"][class*="text-white"]:focus-visible {
+  background-color: var(--eh-accent) !important;
+  color: var(--eh-base) !important;
+}
+
+/* ─── Axis Mundi v2: stoic pass — retint non-semantic hues (FLUX-1589, C3) ─────
+   Only elements marked with these dedicated hooks are retouched — deliberately NOT a generic
+   Tailwind-class bulk override, because the source colours here (`text-amber-600`/
+   `dark:text-amber-400`, etc) are the same literal classes the rest of the app uses for the real
+   "attention" run-state; matching on those class names directly would incorrectly mute genuine
+   attention indicators everywhere. `.eh-stoic-neutral` opts a specific decorative (non-semantic)
+   chip into stone/muted under axis themes without touching the four run-state token colours. */
+:root:is([data-theme="axis-night"], [data-theme="axis-day"]) .eh-stoic-neutral {
+  background-color: var(--eh-surface-raised) !important;
+  color: var(--eh-text-muted) !important;
+}
+
+/* Calm capitals: column ticket-count is gilt (identity colour), never a fire/live state. */
+:root:is([data-theme="axis-night"], [data-theme="axis-day"]) .eh-column-count:not(.column-fire-1):not(.column-fire-2):not(.column-fire-3) {
+  background-color: transparent !important;
+  color: var(--eh-accent) !important;
+  font-weight: 600;
 }
 
 /* ─── Interactive Feedback ───────────────────────────────────────── */
@@ -1669,4 +1804,33 @@ button:not(:disabled):active {
 .eh-idle .column-idle-dust::before,
 .eh-idle .column-idle-dust::after {
   animation-play-state: paused !important;
+}
+
+/* ─── Axis Mundi display type (lapidary capitals) ────────────────── */
+:root[data-theme="axis-night"] .eh-wordmark,
+:root[data-theme="axis-day"] .eh-wordmark,
+:root[data-theme="axis-night"] .eh-column-title,
+:root[data-theme="axis-day"] .eh-column-title {
+  font-family: 'Cinzel', Georgia, 'Times New Roman', serif;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+/* Settled tracking (artifact rev 2): column titles a touch tighter than the wordmark. */
+:root[data-theme="axis-night"] .eh-column-title,
+:root[data-theme="axis-day"] .eh-column-title {
+  letter-spacing: 0.20em;
+}
+:root[data-theme="axis-night"] .eh-wordmark,
+:root[data-theme="axis-day"] .eh-wordmark {
+  letter-spacing: 0.24em;
+}
+/* Night: engraved (cut by shadow from a light above) */
+:root[data-theme="axis-night"] .eh-wordmark,
+:root[data-theme="axis-night"] .eh-column-title {
+  text-shadow: 0 -1px 0 rgba(0, 0, 0, 0.6), 0 1px 0 rgba(236, 232, 223, 0.1);
+}
+/* Day: chiseled (white cut beneath, letters in marble) */
+:root[data-theme="axis-day"] .eh-wordmark,
+:root[data-theme="axis-day"] .eh-column-title {
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.9);
 }

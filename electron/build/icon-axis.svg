@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Axis Mundi app mark, subtle version: bare glyph on transparent. Gilt axis,
+       bone world-circle. No tip, no tile, no glow, no ground line.
+       Master for icon-axis.png / tray-axis.png and the >=48px .ico entries (gen-axis-icons.mjs). -->
+
+  <!-- axis -->
+  <line x1="512" y1="96" x2="512" y2="928" stroke="#d9a441" stroke-width="34"/>
+
+  <!-- world: dark outline behind the bone stroke so it stays legible on light surfaces
+       (File Explorer, light desktop) where bone-on-white nearly disappears -->
+  <circle cx="512" cy="600" r="240" fill="none" stroke="#24222a" stroke-width="58"/>
+  <circle cx="512" cy="600" r="240" fill="none" stroke="#ece8df" stroke-width="34"/>
+</svg>

@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { Send, ExternalLink, ClipboardCheck } from 'lucide-react';
 import { useChatSession } from '../../hooks/useChatSession';
 import { ChatView } from './ChatView';
+import { AuthErrorCard } from './AuthErrorCard';
 import { ChatDiffPanel } from './ChatDiffPanel';
 import { ChatPresenceRail, ChatOrchestrationBlock } from './ChatOrchestration';
 import { TicketContextCard, SessionMeter } from './chatContext';
@@ -119,6 +120,11 @@ export function ChatPane({ task }: { task: Task }) {
         liveText={chat.liveText}
         busy={chat.busy}
         error={chat.error}
+        authErrorCard={
+          task.cliSession?.status === 'failed' && task.cliSession?.terminalReason === 'auth-expired'
+            ? <AuthErrorCard diagnosis={task.cliSession.authDiagnosis} recovering={chat.recovering} />
+            : undefined
+        }
         working={task.cliSession?.status === 'running'}
         activity={task.cliSession?.currentActivity}
         emptyHint={`Ask anything about ${task.id}. Runs the Claude CLI bound to this ticket.`}

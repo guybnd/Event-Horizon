@@ -15,6 +15,7 @@ import {
   DUPLICATE_CHECK,
   ADVERSARIAL_CHECK,
 } from './gate-runner.js';
+import { planLint, formatLintFindings, BODY_WARN_CHARS } from './models/plan-lint.js';
 
 describe('planReviewFocus (FLUX-1469 text-split)', () => {
   it('carries the verdict contract verbatim at every depth', () => {
@@ -69,5 +70,12 @@ describe('planReviewFocus (FLUX-1469 text-split)', () => {
   it('appends lint findings verbatim when present', () => {
     const focus = planReviewFocus('quick', true, 'W1: no artifact published');
     expect(focus).toContain('W1: no artifact published');
+  });
+
+  it('an oversize body (W2, FLUX-1584) rides the deterministic-lint path into the dispatched focus', () => {
+    const lint = planLint({ body: 'x'.repeat(BODY_WARN_CHARS + 1), effort: 'M', hasArtifact: true });
+    const focus = planReviewFocus('quick', true, formatLintFindings(lint.warns));
+    expect(focus).toContain('W2');
+    expect(focus).toContain(`soft limit ${BODY_WARN_CHARS}`);
   });
 });

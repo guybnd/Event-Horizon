@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { planLint, formatLintFindings, type PlanLintInput } from './plan-lint.js';
+import { planLint, formatLintFindings, BODY_WARN_CHARS, type PlanLintInput } from './plan-lint.js';
 
 /** Long-enough filler so body-length-gated rules (B1/B3 thresholds) can be crossed deliberately. */
 const filler = (n: number) => 'x'.repeat(n);
@@ -134,6 +134,36 @@ describe('planLint (FLUX-1379)', () => {
     it('does not apply to XS/S', () => {
       const result = planLint(base({ effort: 'XS', hasArtifact: false, body: 'Two sentences.' }));
       expect(result.warns).toHaveLength(0);
+    });
+  });
+
+  describe('W2 — oversize body (warn not bounce, FLUX-1584)', () => {
+    it('warns once the body exceeds BODY_WARN_CHARS', () => {
+      const result = planLint(base({ effort: 'M', body: `${TLDR}${AC_CHECKLIST}${filler(BODY_WARN_CHARS)}` }));
+      expect(result.warns.map((f) => f.code)).toContain('W2');
+      expect(result.bounces).toHaveLength(0);
+    });
+
+    it('is silent at exactly the threshold (over, not at-or-over)', () => {
+      const result = planLint(base({ effort: 'M', body: filler(BODY_WARN_CHARS) }));
+      expect(result.warns.map((f) => f.code)).not.toContain('W2');
+    });
+
+    it('is silent for a body under the threshold', () => {
+      const result = planLint(base({ effort: 'M', body: `${TLDR}${AC_CHECKLIST}${filler(400)}` }));
+      expect(result.warns.map((f) => f.code)).not.toContain('W2');
+    });
+
+    it('applies regardless of effort tier (XS/S included — the soft limit is universal)', () => {
+      const result = planLint(base({ effort: 'XS', body: filler(BODY_WARN_CHARS + 1) }));
+      expect(result.warns.map((f) => f.code)).toContain('W2');
+    });
+
+    it('names the char count in the message', () => {
+      const body = filler(BODY_WARN_CHARS + 1);
+      const result = planLint(base({ effort: 'M', body }));
+      const w2 = result.warns.find((f) => f.code === 'W2');
+      expect(w2?.message).toContain(String(body.length));
     });
   });
 

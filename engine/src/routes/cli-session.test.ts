@@ -461,6 +461,68 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
     });
   });
 
+  // FLUX-1585: backend backstop for the FLUX-1560 incident — a plan-gate run owns this Grooming
+  // ticket, so a no-target follow-up must never land on a `phase:'review'` session (it would fold the
+  // user's message into the plan body and self-approve its own edit). The frontend already routes
+  // this input through `POST /plan-review/revise` instead; this guard covers any other caller that
+  // hits this route directly with no explicit `sessionId`.
+  describe('plan-gate review-session guard (FLUX-1585)', () => {
+    async function sendInput(body: Record<string, unknown> = {}) {
+      return fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/input`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'please fix the color', user: 'Guy', ...body }),
+      });
+    }
+
+    it('409s a no-target message against a review-phase session while a plan-gate run is ACTIVE', async () => {
+      getWorkspace().tasks['FLUX-1']!.status = 'Grooming';
+      getWorkspace().tasks['FLUX-1']!.planGateRunning = true;
+      seedBlockingSession({ status: 'waiting-input', resumeSessionId: 'resume-me', phase: 'review' });
+      const res = await sendInput();
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/plan-review\/revise/);
+      expect(sendInputMock).not.toHaveBeenCalled();
+    });
+
+    it('409s the same way against the PARKED wedge — planGateRunning cleared, verdict still changes-requested', async () => {
+      getWorkspace().tasks['FLUX-1']!.status = 'Grooming';
+      getWorkspace().tasks['FLUX-1']!.planReviewState = 'changes-requested';
+      seedBlockingSession({ status: 'waiting-input', resumeSessionId: 'resume-me', phase: 'review' });
+      const res = await sendInput();
+      expect(res.status).toBe(409);
+      expect(sendInputMock).not.toHaveBeenCalled();
+    });
+
+    it('an EXPLICIT sessionId still resumes the review session — the guard only covers the no-target fallback', async () => {
+      getWorkspace().tasks['FLUX-1']!.status = 'Grooming';
+      getWorkspace().tasks['FLUX-1']!.planGateRunning = true;
+      seedBlockingSession({ status: 'waiting-input', resumeSessionId: 'resume-me', phase: 'review' });
+      const res = await sendInput({ sessionId: 'pre' });
+      expect(res.status).toBe(200);
+      expect(sendInputMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not block a non-review (grooming revise) session while the gate is active', async () => {
+      getWorkspace().tasks['FLUX-1']!.status = 'Grooming';
+      getWorkspace().tasks['FLUX-1']!.planGateRunning = true;
+      seedBlockingSession({ status: 'waiting-input', resumeSessionId: 'resume-me', phase: 'grooming' });
+      const res = await sendInput();
+      expect(res.status).toBe(200);
+      expect(sendInputMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not block a review-phase session once the ticket has left Grooming', async () => {
+      getWorkspace().tasks['FLUX-1']!.status = 'Todo';
+      getWorkspace().tasks['FLUX-1']!.planGateRunning = true; // stale flag, no longer meaningful outside Grooming
+      seedBlockingSession({ status: 'waiting-input', resumeSessionId: 'resume-me', phase: 'review' });
+      const res = await sendInput();
+      expect(res.status).toBe(200);
+      expect(sendInputMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('truncateFromSeq — edit-and-resend / retry (FLUX-685)', () => {
     async function sendInput(body: Record<string, unknown> = {}) {
       return fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/input`, {

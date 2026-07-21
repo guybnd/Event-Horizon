@@ -228,6 +228,10 @@ export interface ChatViewProps {
    *  Caller builds it (`ChatWindow`) so ChatView stays transport-free; omit it (the normal case) and
    *  nothing renders. */
   planReviewStrip?: ReactNode;
+  /** FLUX-1601: an actionable auth-failure card (`<AuthErrorCard/>`) shown in place of the plain
+   *  `error` string when the bound session's `terminalReason` is 'auth-expired'. Caller builds it so
+   *  ChatView stays transport-free; omit to fall back to the plain error text. */
+  authErrorCard?: ReactNode;
 }
 
 /**
@@ -307,6 +311,7 @@ export function ChatView({
   onOpenArtifact,
   planReadyPresent = false,
   planReviewStrip,
+  authErrorCard,
 }: ChatViewProps) {
   // FLUX-1362: keep the open handler in a ref so the (markdown-heavy) rows memo doesn't need it as a
   // dep — a marker's click always performs the same "open the artifact" action regardless of identity.
@@ -1070,7 +1075,11 @@ export function ChatView({
         )}
       </div>
 
-      {error && <p className="px-0.5 text-[11px] text-red-500">{error}</p>}
+      {authErrorCard ? (
+        <div className="px-0.5">{authErrorCard}</div>
+      ) : (
+        error && <p className="px-0.5 text-[11px] text-red-500">{error}</p>
+      )}
 
       {/* FLUX-686: quiet caller-built meter (e.g. the session token/cost readout), right-aligned
           just above the composer area so it's glanceable without competing with the transcript. */}

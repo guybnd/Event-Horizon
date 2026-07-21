@@ -68,7 +68,18 @@ const THEME_SWATCH: Record<AppTheme, string> = {
   matrix: 'bg-emerald-600',
   cyber: 'bg-violet-600',
   midnight: 'bg-sky-800',
+  'axis-night': 'bg-[#0f0e11] border border-[#d9a441]',
+  'axis-day': 'bg-[#f2efe8] border border-[#a87a1f]',
 };
+
+const AxisMark = ({ className }: { className?: string }) => (
+  <svg viewBox="0 0 64 72" fill="none" className={className} aria-hidden="true">
+    <line x1="32" y1="6" x2="32" y2="70" stroke="var(--eh-accent)" strokeWidth="4" />
+    <circle cx="32" cy="42" r="17" stroke="var(--eh-text-primary)" strokeWidth="4" />
+    <path d="M32 0 L37 9 L32 7 L27 9 Z" fill="var(--eh-accent)" />
+    <line x1="20" y1="70" x2="44" y2="70" stroke="var(--eh-text-primary)" strokeWidth="4" />
+  </svg>
+);
 
 // The logo doubles as the theme selector. It glows on a slow cadence so the
 // otherwise-non-obvious "click me to theme" affordance gets noticed.
@@ -95,10 +106,10 @@ const Branding = memo(function Branding() {
         aria-label="Change theme"
         className={`eh-logo-button rounded-lg p-1.5 transition-colors cursor-pointer ${isOpen ? 'bg-primary/15' : 'bg-primary/10 hover:bg-primary/15'}`}
       >
-        <Rocket className="w-4 h-4 text-primary" />
+        {theme.startsWith('axis') ? <AxisMark className="w-4 h-4" /> : <Rocket className="w-4 h-4 text-primary" />}
       </button>
       <div>
-        <h1 className="text-[15px] font-extrabold tracking-[-0.03em] leading-none">Event Horizon</h1>
+        <h1 className="eh-wordmark text-[15px] font-extrabold tracking-[-0.03em] leading-none">Event Horizon</h1>
         <p className="text-[9px] font-medium leading-none mt-1 tracking-[0.08em] uppercase" style={{ color: 'var(--eh-text-muted)' }}>Local-first agentic tickets</p>
       </div>
 

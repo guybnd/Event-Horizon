@@ -332,7 +332,7 @@ export const TaskCardInner = memo(function TaskCardInner({
                 {/* member cards in a deck don't carry their own Finish/Review (compact) — the
                     PR card owns the lifecycle (FLUX-567). */}
                 {!isOverlay && !compact && (
-                  <CardActionButtons c={c} />
+                  <CardActionButtons task={task} c={c} />
                 )}
               </>
             )}

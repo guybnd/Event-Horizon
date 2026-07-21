@@ -16,6 +16,7 @@ import { getWorkspaceRoot } from '../workspace.js';
 import { resolveWorkspaceByRoot, runWithWorkspace } from '../workspace-context.js';
 import type { CliSessionRecord, SendInputOptions } from './types.js';
 import { checkBinaryInstalled, appendSessionOutput, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction } from './shared.js';
+import { invalidateClaudeBinaryDarwinCache } from './claude-binary-darwin.js';
 import { BOARD_CONVERSATION_ID, type BoardAdapter, type BoardSpec } from './board.js';
 
 // FLUX-1175: the default identity block, extracted to a function of the project key so a
@@ -77,6 +78,12 @@ function wireBoardProc(spec: BoardSpec, proc: ReturnType<typeof spawn>, session:
   const commitPending = spec.attachStdout(proc, session, session.taskId);
   proc.stderr!.on('data', (chunk) => appendSessionOutput(session, chunk, 'stderr', false));
   proc.on('error', (error) => {
+    // FLUX-1600: the cached darwin login-shell resolution pointed at a binary that no longer
+    // exists (moved/uninstalled since it was cached) — drop the cache so the next board spawn
+    // re-probes instead of dead-spawning the same stale path forever.
+    if (spec.binary === 'claude' && process.platform === 'darwin' && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+      invalidateClaudeBinaryDarwinCache();
+    }
     session.status = 'failed';
     session.endedAt = new Date().toISOString();
     commitPending();
@@ -96,6 +103,18 @@ function wireBoardProc(spec: BoardSpec, proc: ReturnType<typeof spawn>, session:
     } else if (code !== 0) {
       session.status = 'failed';
       session.endedAt = new Date().toISOString();
+      // FLUX-1596: surface the crash INLINE in the board/Furnace chat. Previously a non-zero board
+      // turn only flipped status — nothing visible in the conversation, so a dead turn looked
+      // identical to a slow one (the per-ticket path has had this via finalizeTerminalSession /
+      // FLUX-981 all along). Include the stderr tail — which the silent-spawn watchdog
+      // (session-store.ts) also seeds with its actionable hint when it was the killer.
+      const outcome = `${session.label} turn ended with code ${code ?? 'unknown'} and no reply.`;
+      const stderrHint = session.stderrCapture?.trim();
+      appendTranscriptEvent(session.taskId, {
+        type: 'error',
+        text: stderrHint ? `${outcome}\n\n${stderrHint}` : outcome,
+        timestamp: session.endedAt,
+      });
     } else {
       // FLUX-987 (B4): code===0 means the CLI replied even if it never emitted a resumeSessionId
       // this turn (gemini-only — copilot has a dual capture site; the transcript write earlier in

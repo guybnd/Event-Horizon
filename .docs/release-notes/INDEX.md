@@ -710,3 +710,19 @@
 
 - **FLUX-1581**: Public v1.8.0 Release CI red: engine-test gate failures (workspace-root canonicalization regression from #664 + CI-env test guards) — PR #672 squash-merged to master as 06a78956 after Temper approval. All five engine-test files green (134/134), typechec…
 
+
+## Release v1.9.0 — 2026-07-21
+
+- **FLUX-714**: Chat send() raced a still-booting session — now queues into the in-flight turn instead of cold-starting a duplicate that 409s.
+- **FLUX-1596**: Fresh-install wedge: silent hung agent spawn (zero output ever) left the session unreapable and 409-ing every chat — silent-spawn watchdog kills it after 3 min with an actionable hint; board/Furnace crashes now surface as a ⚠️ error bubble in chat.
+- **FLUX-1600**: Resolve the claude binary via the login shell on macOS — fixes persistent 401s from a stale/divergent binary while "the terminal works".
+- **FLUX-1599**: Auth-failure self-diagnostics: engine detects binary divergence, duplicate installs, and settings/env credential shadowing itself.
+- **FLUX-1601**: Actionable auth-error card in chat (verdict + remedy + copy `claude login`), auto-recovers when credentials refresh; sessions fail fast on 401/403 instead of 10 blind retries.
+- **FLUX-1602**: Axis Day is the default theme for new installs; Axis Night / Axis Day themes + axis mark shipped (#675, #677).
+- **FLUX-1589**: Axis Mundi icon set wired through exe/tray/window icons and portal favicon (#679).
+- **FLUX-1592**: New Task create screen redesigned — deduplicated grooming CTA, right-sized description box (#678, #682).
+- **FLUX-1603**: Board card collapses to a lone Stop button while a session is live.
+- **FLUX-1579**: upsertManagedTicket create-path resolves via the requesting workspace, not the ambient one.
+- **FLUX-1583/1584/1585**: Grooming skill module final compression rules.
+- Sync watcher conflict-resolution git calls routed through the hardened git runner (timeout + tree-kill).
+- Reverted the FLUX-850 hard-gate on skip-permission sessions auto-advancing past Ready (#676).

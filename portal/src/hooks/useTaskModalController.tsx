@@ -420,7 +420,11 @@ export function useTaskModalController() {
     closeModal();
   };
 
-  const handleSave = async (customHistory?: HistoryEntry[], keepOpen = false) => {
+  // FLUX-1592: returns the saved task (created or updated) so create-time callers — the image
+  // "persist then upload" path and the Save & Groom / Save & Fast-path footer actions — can launch
+  // against the new id without relying on a stale closure over `modalTask`. Returns undefined on
+  // failure (saveError is already set for the banner).
+  const handleSave = async (customHistory?: HistoryEntry[], keepOpen = false): Promise<Task | undefined> => {
     setSaving(true);
     setSaveError(null);
     const payload = { title, body, status, assignee, tags, priority, effort, effortLevel: effortLevel || undefined, implementationLink: implementationLink.trim(), subtasks, parentId: parentId || undefined, order: modalTask?.order };
@@ -438,6 +442,7 @@ export function useTaskModalController() {
     }
 
     try {
+      let savedTask: Task;
       if (modalTask?.id) {
         if (!customHistory && modalTask.status && modalTask.status !== status) {
           historyUpdates.push({
@@ -460,12 +465,15 @@ export function useTaskModalController() {
           ...(modalTask.bodyVersion !== undefined ? { baseBodyVersion: modalTask.bodyVersion } : {}),
         });
         setModalTask(updatedTask);
+        savedTask = updatedTask;
       } else {
         const createdTask = await createTask({ ...payload, history: historyUpdates, projectKey: currentProject, author: currentUser });
         setModalTask(createdTask);
+        savedTask = createdTask;
       }
       triggerRefresh();
       if (!keepOpen && !customHistory) closeModal();
+      return savedTask;
     } catch (error) {
       console.error(error);
       // FLUX-1550: a stale-body 409 is a distinct, recoverable state — not a generic engine
@@ -481,10 +489,73 @@ export function useTaskModalController() {
       } else {
         setSaveError(error instanceof Error ? error.message : 'Failed to save changes. Make sure the engine is running.');
       }
+      return undefined;
     } finally {
       setSaving(false);
     }
   };
+
+  // FLUX-1592: image paste/drop on an unsaved (id-less) ticket — persists the ticket first (via
+  // the normal create path, kept open) and hands the new id back to TaskDescriptionSurface so the
+  // upload proceeds as one atomic user gesture. Returns undefined on a failed create; the surface
+  // then shows a save-failed error instead of a phantom upload.
+  const persistForImageUpload = useCallback(async (): Promise<string | undefined> => {
+    const saved = await handleSave(undefined, true);
+    return saved?.id;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [title, body, status, assignee, tags, priority, effort, effortLevel, implementationLink, subtasks, parentId, modalTask, currentUser, currentProject]);
+
+  // FLUX-1592: create-surface footer actions — create the ticket, then launch the matching
+  // session against the freshly-created id. Mirrors `handleGrooming` (which only works against an
+  // already-saved ticket) but folds the create step in first.
+  const handleSaveAndGroom = useCallback(async () => {
+    const saved = await handleSave(undefined, true);
+    if (!saved?.id) return;
+    setCliSessionBusy(true);
+    setCliSessionError('');
+    try {
+      const session = await launchPhaseDefault({
+        taskId: saved.id,
+        framework: selectedCliFramework,
+        phase: 'grooming',
+        currentUser,
+        skipPermissions,
+        phaseDefaults: config?.phaseDefaults,
+        supervisorCapable: frameworkSupports(config, selectedCliFramework, 'supervisor'),
+      });
+      setCliSession(session);
+      triggerRefresh();
+    } catch (error) {
+      setCliSessionError(error instanceof Error ? error.message : 'Failed to start grooming session.');
+    } finally {
+      setCliSessionBusy(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [title, body, status, assignee, tags, priority, effort, effortLevel, implementationLink, subtasks, parentId, modalTask, currentUser, currentProject, selectedCliFramework, skipPermissions, config]);
+
+  const handleSaveAndFastPath = useCallback(async () => {
+    const saved = await handleSave(undefined, true);
+    if (!saved?.id) return;
+    setCliSessionBusy(true);
+    setCliSessionError('');
+    try {
+      const session = await runAgentAction({
+        taskId: saved.id,
+        framework: selectedCliFramework,
+        action: { kind: 'launch' },
+        currentUser,
+        skipPermissions,
+        phase: 'fast-path',
+      });
+      setCliSession(session);
+      triggerRefresh();
+    } catch (error) {
+      setCliSessionError(error instanceof Error ? error.message : 'Failed to start fast-path session.');
+    } finally {
+      setCliSessionBusy(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [title, body, status, assignee, tags, priority, effort, effortLevel, implementationLink, subtasks, parentId, modalTask, currentUser, currentProject, selectedCliFramework, skipPermissions]);
 
   // FLUX-979: dropdown/tag metadata fields save instantly on change instead of joining the
   // title/body dirty-then-Save flow — the field never shows as "unsaved" and a status change
@@ -952,7 +1023,10 @@ export function useTaskModalController() {
     (e) => e.type === 'comment' && e.id && !readCommentIds.has(e.id) && e.user !== currentUser
   ).length;
 
-  const groomingBanner = useMemo(() => status === 'Grooming' ? (
+  // FLUX-1592: the create surface already offers its own "Save & Groom" footer action, and
+  // handleGrooming (above) no-ops without a saved id — so this banner is redundant/broken for a
+  // not-yet-saved ticket and should only show once the ticket actually exists.
+  const groomingBanner = useMemo(() => (status === 'Grooming' && modalTask?.id) ? (
     <div className="flex items-center justify-between gap-4 rounded-xl border border-primary/20 bg-primary/5 p-4 dark:border-primary/30 dark:bg-primary/10">
       <div className="flex gap-3">
         <div className="mt-0.5 rounded-lg bg-primary/10 p-1.5 text-primary dark:bg-primary/20">
@@ -974,7 +1048,7 @@ export function useTaskModalController() {
         {cliSessionBusy ? 'Starting...' : 'Start Grooming'}
       </button>
     </div>
-  ) : null, [status, cliSessionBusy, sessionIsActive, handleGrooming]);
+  ) : null, [status, modalTask?.id, cliSessionBusy, sessionIsActive, handleGrooming]);
 
   const requireInputBanner = useMemo(() => (isRequireInput && lastComment) ? (
     <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-900/20">
@@ -1074,7 +1148,8 @@ export function useTaskModalController() {
     sendCommentDirectly, sendReplyDirectly, submitRequireInputResponse,
     handleReturnToWork, openLauncher, handleReviewLaunch,
     sendFinishCommand, handleLaunchWithBranchCheck, handleStartPromptConfirm,
-    handleGrooming, handleToggleReply, handleCancelReply,
+    handleGrooming, persistForImageUpload, handleSaveAndGroom, handleSaveAndFastPath,
+    handleToggleReply, handleCancelReply,
     handleToggleCollapsed, handleClearReplyAssetError,
     // launcher
     reviewModalOpen, setReviewModalOpen, launcherPhase,

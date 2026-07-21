@@ -10,7 +10,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { useMotionTokens } from '../motion/tokens';
 import { FURNACE_ACCENT, SmelterModeToggle } from './FurnaceDrawer';
-import { useChatSession } from '../hooks/useChatSession';
+import { useChatSession, type ChatSendOptions } from '../hooks/useChatSession';
 import { ChatView } from './task-modal/ChatView';
 import { ChatPresenceRail, ChatOrchestrationBlock } from './task-modal/ChatOrchestration';
 import { selectChatRunGroup, isActiveSession } from '../orchestration';
@@ -23,10 +23,11 @@ import { TicketContextCard, BoardSnapshotCard, SessionMeter } from './task-modal
 import { parseQuickReplies } from './task-modal/chatQuickReplies';
 import { parseRunProposal } from './task-modal/chatRunProposal';
 import { ChatRequireInputBanner } from './task-modal/ChatRequireInputBanner';
+import { AuthErrorCard } from './task-modal/AuthErrorCard';
 import { TagSelector } from './TagSelector';
 import { TicketActions } from './ticket-actions/TicketActions';
 import { Skeleton } from './ui/Skeleton';
-import { ChatPendingInteractions, usePendingInteractions, useComposerAnswer, isPlanApprovalPending } from './pendingInteractions';
+import { ChatPendingInteractions, usePendingInteractions, useComposerAnswer, isPlanApprovalPending, isPlanGateInFlight, revisePlan } from './pendingInteractions';
 import { planReviewDraftCount, formatRegroomNotes, loadPlanReviewDraft, clearPlanReviewDraft } from '../lib/planAnnotations';
 import { AttentionDock } from './attention/AttentionDock';
 import { useDock, MIN_SIDEVIEW_WIDTH, MAX_SIDEVIEW_WIDTH, DEFAULT_SIDEVIEW_WIDTH, type ComposerSelections, type AnchorRect, type WindowGeometry } from './DockProvider';
@@ -326,6 +327,13 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
   // whose session emits newer output than this lights an unread dot. In-memory (resets on
   // reload, where everything baselines as read) — no persistence needed for v1.
   const seenRef = useRef<Record<string, string>>({});
+  // FLUX-1576: `open` is app-root-global (DockProvider), so without this a window opened in one
+  // workspace kept rendering — with `task={undefined}` — over every other workspace, and closing
+  // it there (`closeCard`) mutated the shared `open` array and closed it everywhere. Stamp each
+  // id with the board it was FIRST seen open under; `visibleOpen` below then only renders ids
+  // stamped to the active board (plus the always-visible virtual conversations), while `open`
+  // itself stays untouched so the window's state is preserved — just hidden — on switch-away.
+  const boardOfRef = useRef<Record<string, string>>({});
   // Drives the adaptive tab sizing — labels shrink as the viewport narrows / tabs multiply.
   const [viewportW, setViewportW] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 1280));
   useEffect(() => {
@@ -658,18 +666,32 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
     [openSideView, setSectionOpen],
   );
 
+  // FLUX-1576: filter `open` down to windows stamped to the active board. Stamping on first-seen
+  // (rather than in an effect) is what lets a just-opened window — including a new Scratch not yet
+  // in `allTasks` — render on this same pass with no one-frame flash, while a window opened under
+  // another board stays stamped there and is filtered out here on every subsequent switch.
+  const visibleOpen = open.filter((id) => {
+    if (id === BOARD_CONVERSATION_ID || id === FURNACE_CONVERSATION_ID) return true;
+    const b = boardOfRef.current[id];
+    if (b === undefined) {
+      boardOfRef.current[id] = activeBoardId ?? '';
+      return true;
+    }
+    return b === activeBoardId;
+  });
+
   return (
     <>
       {/* FLUX-801: AnimatePresence gives each window an exit animation (shrink back toward its
           origin card) when it leaves `open`. mode defaults to "sync" so multiple windows coexist. */}
       <AnimatePresence>
-      {open.map((id) => (
+      {visibleOpen.map((id) => (
         <ChatWindow
           key={id}
           id={id}
           orchestrator={id === BOARD_CONVERSATION_ID}
           // FLUX-1022: only the frontmost (last in paint order) window collapses on ESC.
-          isTopmost={id === open[open.length - 1]}
+          isTopmost={id === visibleOpen[visibleOpen.length - 1]}
           task={allTasks.find((t) => t.id === id)}
           // FLUX-801: the clicked card's rect (pop-open origin) + bring-to-front on focus.
           originRect={anchorRects[id]}
@@ -2305,6 +2327,7 @@ const ChatWindow = memo(function ChatWindow({
   // background windows.
   useEscapeKey(() => onMinimize(id), { enabled: isTopmost });
   const confirm = useConfirm();
+  const currentUser = useAppSelector((s) => s.currentUser);
 
   const config = useAppSelector((s) => s.config);
   // FLUX-801: pop-open / shrink-close animation. Gated on the shared `instant` flag (animations
@@ -2783,15 +2806,41 @@ const ChatWindow = memo(function ChatWindow({
     </div>
   ) : undefined;
 
+  // FLUX-1585: a plan-gate run owns this ticket (active or parked — see `isPlanGateInFlight`'s doc)
+  // — any incoming user text belongs to the grooming revise, never to whatever `phase:'review'`
+  // session `chat`/`routeToChat` would otherwise resume (the FLUX-1560 incident: a resumed reviewer
+  // session absorbed the user's annotations and self-approved its own edit). `false` for the
+  // orchestrator/Furnace windows (`task` is undefined there — this gate is per-ticket only).
+  const planGateOwnsInput = !!task && isPlanGateInFlight(task);
+  const dispatchAsRevise = useCallback((text: string) => {
+    if (!task) return;
+    revisePlan(task.id, currentUser, text).catch((err) => {
+      console.error(`Failed to route chat input to a plan revise for ${task.id}:`, err);
+    });
+  }, [task, currentUser]);
+
   // The chat surface itself is identical for orchestrator + ticket windows; only the surrounding
   // chrome (metadata bar, diff panel, sideview) differs, so it's built once and reused in both
   // branches of the body below.
   // FLUX-1339: route text into THIS chat — enqueue behind a live turn (FIFO), else send straight
   // away. Shared by the sideview, the plan panel, and the close-guard's "Send now".
   const routeToChat = (text: string) => {
+    if (planGateOwnsInput) { dispatchAsRevise(text); return; }
     if (working || chat.busy) chat.enqueue(text);
     else void chat.send(text);
   };
+
+  // FLUX-1585: the composer's own Send/Enqueue wrap the same gate — a plain typed chat message is
+  // "mid-gate user input" exactly as much as a routed annotation is (AC #3). `handleSend` keeps
+  // `chat.send`'s Promise return so the composer's busy/error handling is unaffected either way.
+  const handleSend = useCallback((text: string, opts?: ChatSendOptions) => {
+    if (planGateOwnsInput) { dispatchAsRevise(text); return Promise.resolve(); }
+    return chat.send(text, opts);
+  }, [planGateOwnsInput, dispatchAsRevise, chat]);
+  const handleEnqueue = useCallback((text: string, opts?: ChatSendOptions) => {
+    if (planGateOwnsInput) { dispatchAsRevise(text); return; }
+    chat.enqueue(text, opts);
+  }, [planGateOwnsInput, dispatchAsRevise, chat]);
 
   // FLUX-1339: flush the ticket's unsent plan-review draft into this chat (the guard's "Send now"),
   // then clear it so it can't re-prompt.
@@ -2860,6 +2909,11 @@ const ChatWindow = memo(function ChatWindow({
       loading={chat.loading}
       busy={chat.busy}
       error={chat.error}
+      authErrorCard={
+        session?.status === 'failed' && session?.terminalReason === 'auth-expired'
+          ? <AuthErrorCard diagnosis={session.authDiagnosis} recovering={chat.recovering} />
+          : undefined
+      }
       working={working}
       activity={activity}
       emptyHint={
@@ -2876,13 +2930,13 @@ const ChatWindow = memo(function ChatWindow({
       onDraftChange={(t) => onDraftChange(id, t)}
       selections={selections}
       onSelectionsChange={(s) => onSelectionsChange(id, s)}
-      onSend={chat.send}
+      onSend={handleSend}
       // FLUX-685: edit-and-resend/retry only apply to a real ticket's own transcript — the virtual
       // board/Furnace conversations (`task` undefined here) have no per-turn truncate endpoint.
       onEditTurn={task ? chat.editAndResend : undefined}
       onRetryTurn={task ? chat.retryLast : undefined}
       queued={chat.queued}
-      onEnqueue={chat.enqueue}
+      onEnqueue={handleEnqueue}
       onDequeue={chat.dequeue}
       onStop={chat.stop}
       onUploadImage={chat.uploadImage}

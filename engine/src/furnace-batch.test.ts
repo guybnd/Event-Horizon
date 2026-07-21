@@ -359,6 +359,59 @@ describe('decideTicketAction (pure decision core)', () => {
     const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'failed', ticketStatus: 'Done', retryCap: 2 });
     expect(a.type).toBe('park');
   });
+
+  // FLUX-1585: `bodyHashDrifted` — the plan gate's own redrive signal for the wedge where the tracked
+  // revise session ends unproductively (cancelled, or lost entirely) but the ticket body already moved
+  // past the last verdict (some OTHER session — e.g. a misrouted reviewer — produced the revision).
+  // `reconcileGateTicket` (gate-runner.ts) is the only caller that ever sets this; every other caller
+  // (Temper, the plain Furnace loop) leaves it unset, so this is a no-op for them.
+  describe('bodyHashDrifted redrive (FLUX-1585)', () => {
+    it('a cancelled reimplementing session with a drifted body reviews instead of parking — and burns no attempt (no `reimplement` dispatched here)', () => {
+      const a = decideTicketAction({
+        ticket: mkTicket({ state: 'reimplementing', attempts: 1 }),
+        sessionStatus: 'cancelled',
+        retryCap: 2,
+        bodyHashDrifted: true,
+      });
+      expect(a).toEqual({ type: 'review' });
+    });
+    it('a cancelled reimplementing session with NO drift still parks — nothing landed to judge', () => {
+      const a = decideTicketAction({
+        ticket: mkTicket({ state: 'reimplementing', attempts: 1 }),
+        sessionStatus: 'cancelled',
+        retryCap: 2,
+        bodyHashDrifted: false,
+      });
+      expect(a.type).toBe('park');
+    });
+    it('an undefined (lost) session with a drifted body reviews instead of redriving another revise', () => {
+      const a = decideTicketAction({
+        ticket: mkTicket({ state: 'reimplementing', attempts: 1 }),
+        retryCap: 2,
+        bodyHashDrifted: true,
+      });
+      expect(a).toEqual({ type: 'review' });
+    });
+    it('is a no-op for a REVIEWING ticket — the flag only redrives mid-revise (state === reimplementing)', () => {
+      const a = decideTicketAction({
+        ticket: mkTicket({ state: 'reviewing', attempts: 1 }),
+        sessionStatus: 'cancelled',
+        retryCap: 2,
+        bodyHashDrifted: true,
+      });
+      expect(a.type).toBe('park'); // unaffected — no reviewing-state redrive from this flag
+    });
+    it('FLUX-1297 precedence still wins: a cancelled session on an already-Done ticket yields even with a drifted body', () => {
+      const a = decideTicketAction({
+        ticket: mkTicket({ state: 'reimplementing', attempts: 1 }),
+        sessionStatus: 'cancelled',
+        ticketStatus: 'Done',
+        retryCap: 2,
+        bodyHashDrifted: true,
+      });
+      expect(a.type).toBe('yield');
+    });
+  });
 });
 
 // FLUX-1396 (Group B): additional decideTicketAction edge cases the earlier per-ticket tickets didn't

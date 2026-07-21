@@ -13,7 +13,7 @@ Scope: Interpret requirements, update frontmatter, and handle `.flux` metadata d
 
 # Event Horizon Agent — Grooming Skill
 
-Version: 2.18.0
+Version: 2.19.0
 
 ## When This Skill Applies
 
@@ -42,7 +42,7 @@ All persistence uses MCP tools (see "Editing & Safety" below).
 
 ## Plan-reviewer Agent Handoff
 
-When resuming a ticket that's already in `Grooming`, check `planReviewState` first. If it's `changes-requested`, read the latest plan-review comment (or the plan-approval panel's "Send back to Grooming" notes, FLUX-1273) before touching the plan — it explains what needs revising. Address every point raised, then re-run workflow step 7 (`change_status` to `Todo`) as normal.
+When resuming a ticket that's already in `Grooming`, check `planReviewState` first. If it's `changes-requested`, read the latest plan-review comment (or the plan-approval panel's "Send back to Grooming" notes, FLUX-1273) before touching the plan — it explains what needs revising. Address every point raised, then re-run workflow step 7 (`change_status` to `Todo`) as normal. Write the revision as if the plan had been right the first time — ticket history already records what changed; never annotate the body with what a prior draft got wrong or which review round/annotation resolved a point.
 
 The `Auto` gate's own revise-dispatch already carries this instruction via `gate-runner.ts`'s `PLAN_REVISE_FOCUS` session focus text — but that only fires when the gate itself dispatches the revision. A groomer resuming manually (not freshly dispatched by the gate — e.g. picking the ticket back up after a `you`-gate rejection, or continuing a stalled session) gets no equivalent guidance without this section.
 
@@ -50,7 +50,7 @@ The `Auto` gate's own revise-dispatch already carries this instruction via `gate
 
 Borrowed from Builder.io's `agent-native` `/visual-plan` skill. Like the artifact heuristic below, **none of this is a blanket rule.** A small UI bug fix or a one-line change should stay a two-sentence plan — apply these in proportion to the ticket's size and risk, not because the section exists. Each item states its own skip condition; read the skip condition *before* reaching for the item.
 
-1. **Anchor to real code, lead with reuse.** When the Implementation plan touches existing code, name the actual files/functions/symbols you found while reading the ticket and docs — not invented ones — and state what each step reuses (an existing action, component, or helper) before what it adds.
+1. **Anchor to real code, lead with reuse.** When the Implementation plan touches existing code, name the actual files/functions/symbols you found while reading the ticket and docs — not invented ones — and state what each step reuses (an existing action, component, or helper) before what it adds. **Prefer symbol names over line numbers** — a line cite drifts the moment an earlier item in the same plan lands; cite a line only where it's genuinely load-bearing (e.g. pinpointing one spot in a large file with no distinguishing symbol). Fewer, stabler anchors also cheapen the plan-review gate's `ANCHOR_CHECK`, which re-derives every citation on every review pass.
    - *Skip for:* XS tickets and single-line fixes where "fix line N in file.ts" is the whole plan.
 2. **Call out hard-to-reverse decisions.** If the ticket touches wire format, public ids, data-model/schema shape, or auth/ownership boundaries, name those decisions explicitly in the plan and state what's deferred vs. decided now.
    - *Skip for:* UI-only, XS/S, or bug-fix tickets — never add an empty section just to have covered it; only write it when such a decision genuinely exists.
@@ -65,6 +65,8 @@ Borrowed from Builder.io's `agent-native` `/visual-plan` skill. Like the artifac
    - *Skip for:* XS/S-effort tickets, UI-only tickets, and tickets where the test approach is self-evident from the Acceptance Criteria (e.g. "existing suite covers this," "run `npm run check`").
 7. **Consequence tracing, when the plan moves content/config into a destination (FLUX-1480).** For every file, constant, list, or module the plan says to move something INTO, name who actually consumes that destination and confirm the move still achieves the plan's goal — don't stop at "the destination exists and the plan reads consistently." The gate's own Standard-and-above check (`CONSEQUENCE_CHECK` in `gate-runner.ts`) re-asks this at review time; asking it yourself first catches the mistake before a review pass has to.
    - *Skip for:* plans that don't move anything into a shared destination (most bug fixes, UI tweaks, single-file additions).
+8. **State each constraint once (FLUX-1582).** Write a shared constraint — a validation rule, a derived value, an edge case — in the one implementation step where it's acted on. Acceptance Criteria and any Risks section may reference it by name ("see item 2") but must never restate it in their own words. A Risks/Considerations section that just paraphrases the impl plan instead of naming a genuinely new risk gets cut, not trimmed — restating isn't a lighter version of the same information, it's the same information twice.
+   - *Skip for:* tickets with only one implementation step — nothing to restate across.
 
 ## "Reground before starting" — tickets filed from point-in-time analysis (FLUX-1048)
 

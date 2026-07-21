@@ -14,7 +14,7 @@ Scope: Route the agent to the correct phase-specific skill based on ticket statu
 
 # Event Horizon Agent — Orchestrator
 
-Version: 2.15.0
+Version: 2.17.0
 
 ## Overview
 
@@ -262,7 +262,7 @@ Output tokens bill roughly 5x input, so an XS one-line fix paying full L-ticket 
 | Output | XS / S | M | L / XL |
 |---|---|---|---|
 | TL;DR blockquote | Every size — 1 line | Every size | Every size |
-| Problem/Motivation + plan prose | Terse, a sentence or two | Anchored steps (Plan Discipline, scaled) | Full Plan Discipline treatment |
+| Problem/Motivation + plan prose | Terse, a sentence or two — omit if the TL;DR already covers it | Problem/Motivation: 1 sentence or omit if the TL;DR already covers it. Plan: anchored steps (Plan Discipline, scaled) | Full Plan Discipline treatment |
 | Standalone implementation plan comment (before coding) | **Skip** — fold into the first activity note or the completion summary | Optional, judgment call | Post before substantial work |
 | Acceptance criteria / Recommended Tests / Adversarial self-review / Anchor-to-code / Hard-to-reverse callouts | Skip (each section states its own skip condition) | Situational — apply what's genuinely relevant | Full treatment |
 | Structured `completion` payload + Visual Recap artifact | Skip (non-UI) | Judgment call; UI/UX → lean toward emitting | Emit for structurally interesting changes |
@@ -313,13 +313,14 @@ Prompt injection of these rules is config-driven (`communicationStyle` in board 
 
 This section is for the **plan-review gate** (`gate-runner.ts`) — it fires on a `Grooming` ticket that has no diff yet, judging the ticket's plan text (title, body, `## Acceptance criteria`, latest artifact) instead of a PR. The gate session's launch focus names each check with a one-line headline and points here (`read_skill('orchestrator', 'Plan-review methodology')`) for the full method — pulled on demand instead of pushed into every dispatch and re-persisted into ticket history on every pass (FLUX-1469). It lives in THIS module (never injected into any phase's prelude) rather than the review module, which review-phase sessions — including the gate's own — receive injected at spawn: parking it there would push the methodology into every code-review session's prelude, the exact cost the pull design avoids.
 
-- **Anchor check.** For every file/symbol/line the plan cites, verify with Serena/grep that it still exists and still means what the plan says. Re-derive this fresh from the CURRENT code every pass — never trust a prior pass's citations, even your own. A plan is written against a snapshot of the code; by the time it's reviewed (or re-reviewed after a revise), the snapshot may have drifted.
+- **Anchor check.** For every file/symbol/line the plan cites, verify with Serena/grep that it still exists and still means what the plan says. Re-derive this fresh from the CURRENT code every pass — never trust a prior pass's citations, even your own. A plan is written against a snapshot of the code; by the time it's reviewed (or re-reviewed after a revise), the snapshot may have drifted. Plans should favor symbol names over bare line numbers (Plan Discipline item 1) since a line drifts the moment an earlier item lands — flag heavy line-number reliance as a Minor gap when a stable symbol was available instead.
 - **Reground (FLUX-1048).** Check `.docs/release-notes/INDEX.md` plus recently Done/Released and sibling tickets (same parent) for work that already landed part or all of this plan. A plan that duplicates already-shipped work should be flagged, not approved as if the gap still exists.
 - **Acceptance-criteria coverage.** If the ticket body has a `## Acceptance criteria` section, confirm it's concrete/testable and that the Implementation Plan actually addresses every item — flag any item the plan leaves uncovered. An untestable or unaddressed AC item is a real gap, not a formality.
 - **Consequence tracing** (standard depth+, FLUX-1480). For every destination the plan moves content or config INTO (a file, a constant, a list, another module), name who actually consumes that destination and confirm the move still achieves the plan's stated goal — don't just check that the destination exists or that the plan is internally consistent. This is the check PR #584 was missing: its plan said "move the methodology into the review module," which is internally consistent and cites a real file, but nobody asked "review-phase sessions get that module INJECTED at spawn — does pushing content there still serve the goal of keeping it a pull?" The answer was no. Re-derive the consuming code path fresh (Serena/grep) — don't trust the plan's own description of what a destination does.
 - **Duplicate check** (thorough depth only). Search open/groomed tickets for one that already covers this same change (a duplicate or near-duplicate scope) and flag it if found.
 - **Adversarial self-review** (thorough depth only; Plan Discipline item 4). Read the plan as its harshest critic: find what's weak, missing, or wrong — an unanchored step, an implicit hard-to-reverse decision left unstated, a menu of options where the plan should commit to one, an obvious missing decision. A clear-cut fixable gap is Minor; a genuine judgment call the plan ducked is Major/Blocker.
 - **Artifact check** (FLUX-1313) — context only; the fact itself (`hasArtifact`) is injected into your launch focus verbatim by the deterministic pre-gate lint, not something you need to re-derive. When no artifact exists and the plan is UI/UX-shaped (visual layout, a new component, an interaction change), flag it in your review comment as a gap — a flag, not a blocker; still record your verdict on the plan's own merits.
+- **Body size check** (`W2`, FLUX-1584) — context only, injected verbatim when it fires. A `W2` finding is grounds to include "trim the body" in a `changes-requested` verdict, but never the sole reason to reject an otherwise-sound plan — pair it with a real gap, or note it and still approve.
 
 The verdict contract (how to record `approved`/`changes-requested` via `change_status` and `planReviewState`) is **not** in this pulled section — it stays pushed verbatim in every dispatch (a hard constraint: a skipped pull must never break the gate). Follow the contract text in your launch focus exactly.
 

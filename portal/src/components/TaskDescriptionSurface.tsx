@@ -16,6 +16,7 @@ import { buildUnsupportedImageMessage, uploadTaskImageMarkdownLinks } from '../t
 import { normalizeTaskMarkdownBody, resolveTaskMarkdownHref } from '../taskMarkdownUtils';
 import { parseAcceptanceCriteriaProgress } from '../lib/acceptanceCriteria';
 import { EpicProgressBar } from './EpicProgressBar';
+import { useAppSelector } from '../store/useAppSelector';
 import { PromptModal, type PromptModalState } from './task-modal/PromptModal';
 
 type TaskDescriptionSurfaceMode = 'popup' | 'full' | 'backlog';
@@ -99,12 +100,13 @@ export function TaskDescriptionSurface({
   saveDisabled = false,
   saveLabel = 'Save description',
   isSaving = false,
+  onNeedsPersist,
 }: {
   value: string;
   onChange: (value: string) => void;
   taskId?: string;
   mode?: TaskDescriptionSurfaceMode;
-  emptyMessage?: string;
+  emptyMessage?: ReactNode;
   compact?: boolean;
   /** FLUX-744: hide the non-editing "Rendered Markdown / Click description to edit" header bar. The
    *  ticket sideview sets this — the bar is dead space there, and its save/dirty state is surfaced by
@@ -116,6 +118,11 @@ export function TaskDescriptionSurface({
   saveDisabled?: boolean;
   saveLabel?: string;
   isSaving?: boolean;
+  /** FLUX-1592: called when an image is pasted/dropped but `taskId` is absent (the ticket hasn't
+   *  been saved yet) — should persist the ticket and resolve with its new id, or resolve `undefined`
+   *  on failure. When omitted, an id-less attach falls back to the old "save the ticket first"
+   *  error, matching pre-FLUX-1592 behavior. */
+  onNeedsPersist?: () => Promise<string | undefined>;
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [assetError, setAssetError] = useState('');
@@ -361,6 +368,12 @@ export function TaskDescriptionSurface({
   // FLUX-1148: advisory "X/Y criteria checked" indicator parsed from the ticket's own
   // `## Acceptance criteria` body section — null (no badge) when there's no such section.
   const acceptanceCriteria = parseAcceptanceCriteriaProgress(value);
+  // FLUX-1589 (C3): axis themes render the fill stone/bone in flight, success green at 100%.
+  const theme = useAppSelector((s) => s.theme);
+  const isAxisTheme = theme === 'axis-night' || theme === 'axis-day';
+  const acceptanceCriteriaFillClass = isAxisTheme
+    ? (acceptanceCriteria && acceptanceCriteria.done >= acceptanceCriteria.total ? 'bg-[var(--eh-state-success)]' : 'bg-[var(--eh-text-muted)]')
+    : 'bg-sky-500 dark:bg-sky-400';
 
   const overflowClass = mode === 'backlog' ? '' : 'overflow-hidden';
   const surfaceClassName = mode === 'full'
@@ -401,16 +414,29 @@ export function TaskDescriptionSurface({
       return;
     }
 
-    if (!taskId) {
-      setAssetError('Save the ticket before attaching images.');
-      return;
+    let effectiveTaskId = taskId;
+    if (!effectiveTaskId) {
+      if (!onNeedsPersist) {
+        setAssetError('Save the ticket before attaching images.');
+        return;
+      }
+      setAssetError('');
+      try {
+        effectiveTaskId = await onNeedsPersist();
+      } catch (error) {
+        setAssetError(error instanceof Error ? error.message : 'Failed to save the ticket before attaching the image.');
+        return;
+      }
+      if (!effectiveTaskId) {
+        setAssetError('Failed to save the ticket before attaching the image.');
+        return;
+      }
     }
-
 
     setAssetError('');
 
     try {
-      const { markdownLinks, unsupportedFiles } = await uploadTaskImageMarkdownLinks(taskId, files);
+      const { markdownLinks, unsupportedFiles } = await uploadTaskImageMarkdownLinks(effectiveTaskId, files);
 
       if (markdownLinks.length === 0) {
         setAssetError(buildUnsupportedImageMessage(unsupportedFiles));
@@ -629,7 +655,7 @@ export function TaskDescriptionSurface({
                 className="flex items-center gap-1.5 font-semibold text-gray-500 dark:text-gray-400"
                 title="Acceptance criteria checked (advisory — not a gate)"
               >
-                <span className="w-12"><EpicProgressBar done={acceptanceCriteria.done} total={acceptanceCriteria.total} fillClass="bg-sky-500 dark:bg-sky-400" /></span>
+                <span className="w-12"><EpicProgressBar done={acceptanceCriteria.done} total={acceptanceCriteria.total} fillClass={acceptanceCriteriaFillClass} /></span>
                 {acceptanceCriteria.done}/{acceptanceCriteria.total} criteria
               </span>
             )}

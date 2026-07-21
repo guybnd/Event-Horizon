@@ -285,6 +285,17 @@ export type ExecutionPattern = 'relay' | 'scatter-gather' | 'supervisor';
 export type PatternPosition = 'lead' | 'assistant' | 'combiner' | 'step' | 'standalone';
 export type GroupVariant = 'combiner' | 'headless';
 
+/** FLUX-1599/1601: mirrors the engine's `AuthDiagnosis` (agents/auth-diagnostics.ts) — the
+ *  self-diagnosis attached to a session whose `terminalReason` is 'auth-expired'. Drives the chat
+ *  error card's verdict-specific headline + remedy instead of the raw provider 401 string. */
+export interface AuthDiagnosis {
+  spawnedBinary: { path: string; version?: string };
+  terminalBinary?: { resolution: string; path?: string; version?: string };
+  duplicates: string[];
+  shadowing: { settingsKey: boolean; settingsHelper: boolean; envKey: boolean; baseUrl: boolean };
+  verdict: 'binary-divergence' | 'duplicate-installs' | 'shadowed-credentials' | 'token-rejected' | 'unknown';
+}
+
 export interface CliSessionSummary {
   id: string;
   taskId: string;
@@ -333,6 +344,11 @@ export interface CliSessionSummary {
   /** FLUX-1434: `event-horizon` MCP tool names (bare) disallowed for this session at its last
    *  spawn/resume — the deny-list model's computed output, read-only. Absent/empty = unscoped. */
   disallowedEhTools?: string[];
+  /** FLUX-1047/1063/1397/1601: mirrors the engine's `CliSessionRecord.terminalReason` — why a
+   *  terminal session ended, when the raw exit is otherwise an opaque `failed`. */
+  terminalReason?: 'context-exhausted' | 'rate-limited' | 'auth-expired';
+  /** FLUX-1599/1601: structured self-diagnosis attached when `terminalReason` is 'auth-expired'. */
+  authDiagnosis?: AuthDiagnosis;
 }
 
 export interface TaskLiveEvent {

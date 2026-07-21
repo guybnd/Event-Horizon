@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Axis Mundi app mark, subtle version, small-size variant for the 16/24/32px .ico entries:
+       same bare glyph on transparent, thicker strokes so it survives tiny rasters. -->
+
+  <!-- axis -->
+  <line x1="512" y1="72" x2="512" y2="944" stroke="#d9a441" stroke-width="84"/>
+
+  <!-- world: dark outline behind the bone stroke so it stays legible on light surfaces
+       (File Explorer, light desktop) where bone-on-white nearly disappears -->
+  <circle cx="512" cy="600" r="252" fill="none" stroke="#24222a" stroke-width="132"/>
+  <circle cx="512" cy="600" r="252" fill="none" stroke="#ece8df" stroke-width="84"/>
+</svg>

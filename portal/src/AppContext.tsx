@@ -32,6 +32,8 @@ export const THEMES: ThemeDef[] = [
   { name: 'matrix', label: 'Matrix', baseMode: 'dark' },
   { name: 'cyber', label: 'Cyber', baseMode: 'dark' },
   { name: 'midnight', label: 'Midnight', baseMode: 'dark' },
+  { name: 'axis-night', label: 'Axis Night', baseMode: 'dark' },
+  { name: 'axis-day', label: 'Axis Day', baseMode: 'light' },
 ];
 
 const VALID_THEMES = new Set<string>(THEMES.map(t => t.name));
@@ -47,13 +49,42 @@ function captureOriginRect(el?: HTMLElement | null): { left: number; top: number
 function getInitialTheme(): AppTheme {
   const stored = localStorage.getItem('eh-theme');
   if (stored && VALID_THEMES.has(stored)) return stored as AppTheme;
-  return 'matrix';
+  return 'axis-day';
 }
+
+// FLUX-1589 (E): AxisMark favicon under the axis themes. Mirrors Header.tsx's <AxisMark> SVG but
+// with hardcoded colours — a `data:` favicon can't read CSS custom properties. Built once (not
+// per-call) since the marks never change.
+function buildAxisMarkFavicon(accent: string, ink: string): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 72">`
+    + `<line x1="32" y1="6" x2="32" y2="70" stroke="${accent}" stroke-width="4"/>`
+    + `<circle cx="32" cy="42" r="17" stroke="${ink}" stroke-width="4" fill="none"/>`
+    + `<path d="M32 0 L37 9 L32 7 L27 9 Z" fill="${accent}"/>`
+    + `<line x1="20" y1="70" x2="44" y2="70" stroke="${ink}" stroke-width="4"/>`
+    + `</svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+const AXIS_FAVICON: Partial<Record<AppTheme, string>> = {
+  'axis-night': buildAxisMarkFavicon('#d9a441', '#ece8df'),
+  'axis-day': buildAxisMarkFavicon('#a87a1f', '#24222a'),
+};
+// Cached lazily on first `applyTheme` call — whatever favicon href is live at that point (the
+// real `/favicon.svg` from index.html) — and restored for every non-axis theme.
+let cachedOriginalFaviconHref: string | null = null;
 
 function applyTheme(theme: AppTheme) {
   const def = THEMES.find(t => t.name === theme)!;
   document.documentElement.classList.toggle('dark', def.baseMode === 'dark');
   document.documentElement.setAttribute('data-theme', theme);
+
+  const faviconLink = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+  if (faviconLink) {
+    if (cachedOriginalFaviconHref === null) {
+      cachedOriginalFaviconHref = faviconLink.getAttribute('href') ?? '/favicon.svg';
+    }
+    const axisHref = AXIS_FAVICON[theme];
+    faviconLink.setAttribute('href', axisHref ?? cachedOriginalFaviconHref);
+  }
 }
 
 const VIEW_PATHS: Record<AppView, string> = {
@@ -691,7 +722,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const openTaskModal = (task?: Partial<Task>, from?: HTMLElement | null) => {
     setOpenModalInFullView(false);
-    const nextTask = task || { status: 'Todo' };
+    // FLUX-1592: the compact create surface's own default (no explicit status from the caller) is
+    // Grooming — every other create entry point already passes an explicit status (Column's
+    // per-column "+", BacklogScreen's "Backlog", Header's "New Task").
+    const nextTask = task || { status: 'Grooming' };
     if (nextTask.id) {
       updateTicketViewUrl(nextTask.id, 'popup');
     }
@@ -1251,7 +1285,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
         } catch { /* non-JSON payload — skip */ }
       });
-      for (const type of ['activity', 'progress', 'assistantDelta', 'taskUpdated', 'permission-request', 'permission-resolved', 'ask-question', 'ask-question-resolved', 'board-rebase-proposed', 'board-rebase-resolved', 'artifactReady', 'furnace-updated', 'furnace-deleted']) {
+      for (const type of ['activity', 'progress', 'assistantDelta', 'taskUpdated', 'permission-request', 'permission-resolved', 'ask-question', 'ask-question-resolved', 'board-rebase-proposed', 'board-rebase-resolved', 'artifactReady', 'furnace-updated', 'furnace-deleted', 'authRecovered']) {
         trackListener(type, (e: MessageEvent) => {
           try { forward(type, JSON.parse(e.data)); } catch { /* non-JSON payload — skip */ }
         });

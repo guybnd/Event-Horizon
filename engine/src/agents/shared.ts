@@ -22,6 +22,7 @@ import { updateAgentSession, updateTaskWithHistory } from '../task-store.js';
 import { getWorkspace } from '../workspace-context.js';
 import { buildActivityEntry } from '../history.js';
 import { raiseNeedsAction } from '../parked-ticket.js';
+import { resolveClaudeBinaryPathDarwin, invalidateClaudeBinaryDarwinCache } from './claude-binary-darwin.js';
 import type { CliSessionRecord, CliFramework, TaskKey, Tier, PatternPosition, LaunchPhase } from './types.js';
 import { CLI_CAPABILITIES, INTEGRATION_CONFIG_KEYS } from './types.js';
 import type { ChatAttachment } from '../projection.js';
@@ -144,6 +145,23 @@ export async function checkBinaryInstalled(binaryName: string): Promise<void> {
     if (cached.ok) return;
     throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`);
   }
+  // FLUX-1600: on darwin, `claude` may resolve to a DIFFERENT binary via a bare `which` than what
+  // the adapter actually spawns (login-shell alias/function resolution — claude-binary-darwin.ts).
+  // Validate THAT resolved path rather than re-deriving a separate answer via `which`, so this
+  // check can never disagree with what actually gets spawned.
+  if (binaryName === 'claude' && process.platform === 'darwin') {
+    const resolvedPath = await resolveClaudeBinaryPathDarwin(binaryName);
+    if (resolvedPath) {
+      if (fs.existsSync(resolvedPath)) {
+        binaryInstalledCache.set(binaryName, { ok: true, at: now });
+        return;
+      }
+      // Cached resolution points at a binary that's gone (uninstalled/moved) — invalidate so the
+      // next spawn re-probes, then fall through to the bare PATH check below for THIS call.
+      invalidateClaudeBinaryDarwinCache();
+    }
+  }
+
   const checker = process.platform === 'win32' ? 'where' : 'which';
   try {
     await execFileAsync(checker, [binaryName], { env: cleanChildEnv(), timeout: 10_000, windowsHide: true });

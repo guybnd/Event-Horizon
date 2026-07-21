@@ -366,6 +366,80 @@ describe('session-store', () => {
     });
   });
 
+  describe('silent-spawn watchdog (FLUX-1596)', () => {
+    const STALE = '2026-06-27T15:00:00.000Z';
+    const NOW = Date.parse('2026-06-27T15:30:00.000Z'); // 30m after STALE — well past the 3m window
+    // A LIVE proc (exit/signal both null) — the dead-proc reconcile clause never touches these.
+    const liveProc = () => ({ exitCode: null, signalCode: null } as unknown as ChildProcessWithoutNullStreams);
+
+    it('kills a spawned session that never produced any output past the window', () => {
+      const s = createMockSession({ id: 'sess-hung', taskId: 'FLUX-1', status: 'running', startedAt: STALE, proc: liveProc() });
+      cliSessionsById.set('sess-hung', s);
+      expect(reconcileDeadSessions(NOW)).toBe(0); // a kill is not a reap — the exit handler owns status
+      expect(s.hungSpawnKilledAt).toBe(new Date(NOW).toISOString());
+      expect(s.stderrCapture).toContain('produced no output');
+      expect(s.status).toBe('running'); // status is finalized by the kill's own exit event
+    });
+
+    it('leaves a young silent spawn alone (still inside the window)', () => {
+      const s = createMockSession({ id: 'sess-young', taskId: 'FLUX-1', status: 'running', startedAt: new Date(NOW - 60_000).toISOString(), proc: liveProc() });
+      cliSessionsById.set('sess-young', s);
+      reconcileDeadSessions(NOW);
+      expect(s.hungSpawnKilledAt).toBeUndefined();
+    });
+
+    it('leaves a turn that HAS produced output alone, however long it has been silent since (long tool call)', () => {
+      const s = createMockSession({ id: 'sess-tool', taskId: 'FLUX-1', status: 'running', startedAt: STALE, lastOutputAt: STALE, proc: liveProc() });
+      cliSessionsById.set('sess-tool', s);
+      reconcileDeadSessions(NOW);
+      expect(s.hungSpawnKilledAt).toBeUndefined();
+    });
+
+    it('kills a hung RESUME (lastInputAt newer than any output) past the window', () => {
+      const s = createMockSession({
+        id: 'sess-hung-resume', taskId: 'FLUX-1', status: 'running',
+        startedAt: STALE, lastOutputAt: STALE, // output exists, but from a PRIOR turn
+        lastInputAt: new Date(NOW - 10 * 60_000).toISOString(), // this turn started 10m ago
+        proc: liveProc(),
+      });
+      cliSessionsById.set('sess-hung-resume', s);
+      reconcileDeadSessions(NOW);
+      expect(s.hungSpawnKilledAt).toBe(new Date(NOW).toISOString());
+    });
+
+    it('leaves an active resume alone (output after this turn started)', () => {
+      const s = createMockSession({
+        id: 'sess-live-resume', taskId: 'FLUX-1', status: 'running',
+        startedAt: STALE,
+        lastInputAt: new Date(NOW - 10 * 60_000).toISOString(),
+        lastOutputAt: new Date(NOW - 9 * 60_000).toISOString(), // replied after the input landed
+        proc: liveProc(),
+      });
+      cliSessionsById.set('sess-live-resume', s);
+      reconcileDeadSessions(NOW);
+      expect(s.hungSpawnKilledAt).toBeUndefined();
+    });
+
+    it('is a one-shot latch — a second pass never re-kills or re-appends the hint', () => {
+      const s = createMockSession({ id: 'sess-latch', taskId: 'FLUX-1', status: 'running', startedAt: STALE, proc: liveProc() });
+      cliSessionsById.set('sess-latch', s);
+      reconcileDeadSessions(NOW);
+      const firstStamp = s.hungSpawnKilledAt;
+      const firstCapture = s.stderrCapture;
+      reconcileDeadSessions(NOW + 60_000);
+      expect(s.hungSpawnKilledAt).toBe(firstStamp);
+      expect(s.stderrCapture).toBe(firstCapture);
+    });
+
+    it('never touches a pre-spawn session with no proc', () => {
+      const s = createMockSession({ id: 'sess-prespawn', taskId: 'FLUX-1', status: 'pending', startedAt: STALE });
+      cliSessionsById.set('sess-prespawn', s);
+      reconcileDeadSessions(NOW);
+      expect(s.hungSpawnKilledAt).toBeUndefined();
+      expect(s.status).toBe('pending');
+    });
+  });
+
   describe('getListSessionSummariesForTask', () => {
     const reg = (s: CliSessionRecord) => {
       cliSessionsById.set(s.id, s);

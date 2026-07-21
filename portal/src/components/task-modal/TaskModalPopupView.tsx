@@ -21,6 +21,7 @@ import { HistoryList } from './HistoryList';
 import { PrPanel } from './PrPanel';
 import { RetryBanner } from './RetryBanner';
 import { ChatPane } from './ChatPane';
+import { NewTicketHints } from './NewTicketHints';
 import { SkeletonLines } from '../ui/Skeleton';
 import type { Task } from '../../types';
 import type { TaskModalController } from '../../hooks/useTaskModalController';
@@ -85,12 +86,23 @@ export function TaskModalPopupView({
     body,
     setBody,
     cliSession,
+    cliSessionBusy,
     liveOutputRef,
     isReadyForMerge,
     commentBoxRef,
     openLauncher,
     isTaskLoading,
+    effort,
+    persistForImageUpload,
+    handleSaveAndGroom,
+    handleSaveAndFastPath,
   } = c;
+
+  // FLUX-1592: the create surface trims sections that need an id (Activity & Comments, History,
+  // Subtasks) and demotes Assignee/adds a footer action group — every branch below is gated on
+  // this so the existing-ticket path stays pixel-for-pixel unchanged.
+  const isNew = !modalTask?.id;
+  const fastPathDisabledForEffort = effort === 'L' || effort === 'XL';
 
   // FLUX-1200: same skeleton/defer gate as TaskModalFullView — covers both the truly-new/
   // fetching-task case (`isTaskLoading`) and the common case this view previously had NO gate
@@ -171,18 +183,58 @@ export function TaskModalPopupView({
               <Maximize2 className="h-3.5 w-3.5" />
               Full View
             </button>
-            <button
-              disabled={saving || !isDirty}
-              onClick={() => handleSave()}
-              className={`flex items-center gap-1.5 rounded-md px-4 py-1.5 text-xs font-semibold shadow-sm ${
-                isDirty
-                  ? 'cursor-pointer bg-primary text-white shadow-primary/20 hover:bg-primary-hover'
-                  : 'cursor-not-allowed bg-gray-200 text-gray-400 dark:bg-white/10'
-              }`}
-            >
-              <Save className="h-3.5 w-3.5" />
-              {saving ? 'Saving...' : 'Save'}
-            </button>
+            {isNew ? (
+              <div className="flex items-center overflow-hidden rounded-md border border-gray-200 shadow-sm dark:border-white/10">
+                <button
+                  disabled={saving || !isDirty}
+                  onClick={() => void handleSave()}
+                  title="Create the ticket"
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold ${
+                    isDirty ? 'cursor-pointer bg-primary text-white hover:bg-primary-hover' : 'cursor-not-allowed bg-gray-200 text-gray-400 dark:bg-white/10'
+                  }`}
+                >
+                  <Save className="h-3.5 w-3.5" />
+                  {saving ? 'Saving...' : 'Save'}
+                </button>
+                <button
+                  disabled={saving || cliSessionBusy || !isDirty}
+                  onClick={() => void handleSaveAndGroom()}
+                  title="Create the ticket and start a grooming session"
+                  className={`border-l px-3 py-1.5 text-xs font-semibold ${
+                    isDirty && !cliSessionBusy
+                      ? 'cursor-pointer border-white/20 bg-primary/90 text-white hover:bg-primary-hover'
+                      : 'cursor-not-allowed border-gray-200 bg-gray-200 text-gray-400 dark:border-white/10 dark:bg-white/10'
+                  }`}
+                >
+                  Save & Groom
+                </button>
+                <button
+                  disabled={saving || cliSessionBusy || !isDirty || fastPathDisabledForEffort}
+                  onClick={() => void handleSaveAndFastPath()}
+                  title={fastPathDisabledForEffort ? 'Fast-path is unavailable for L/XL effort — use Save & Groom instead.' : 'Create the ticket and start an inline groom + implement session'}
+                  className={`border-l px-3 py-1.5 text-xs font-semibold ${
+                    isDirty && !cliSessionBusy && !fastPathDisabledForEffort
+                      ? 'cursor-pointer border-white/20 bg-primary/90 text-white hover:bg-primary-hover'
+                      : 'cursor-not-allowed border-gray-200 bg-gray-200 text-gray-400 dark:border-white/10 dark:bg-white/10'
+                  }`}
+                >
+                  Save & Fast-path
+                </button>
+              </div>
+            ) : (
+              <button
+                disabled={saving || !isDirty}
+                onClick={() => handleSave()}
+                className={`flex items-center gap-1.5 rounded-md px-4 py-1.5 text-xs font-semibold shadow-sm ${
+                  isDirty
+                    ? 'cursor-pointer bg-primary text-white shadow-primary/20 hover:bg-primary-hover'
+                    : 'cursor-not-allowed bg-gray-200 text-gray-400 dark:bg-white/10'
+                }`}
+              >
+                <Save className="h-3.5 w-3.5" />
+                {saving ? 'Saving...' : 'Save'}
+              </button>
+            )}
             <button onClick={handleCloseAttempt} className="cursor-pointer text-gray-400 transition-colors hover:text-gray-600 dark:hover:text-white">
               <X className="h-5 w-5" />
             </button>
@@ -209,10 +261,10 @@ export function TaskModalPopupView({
           )}
 
           <div className="space-y-3 rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/10">
-            <MetadataPanel {...metadataPanelProps} variant="popup" isWideMode={isWideMode} />
+            <MetadataPanel {...metadataPanelProps} variant="popup" isWideMode={isWideMode} isNew={isNew} />
           </div>
 
-          <div className="flex min-h-[280px] flex-1 flex-col gap-2">
+          <div className={`flex flex-col gap-2 ${isNew ? 'min-h-[160px]' : 'min-h-[280px] flex-1'}`}>
             {modalTask && <RetryBanner task={modalTask} />}
             {diffViewFile && modalTask?.id ? (
               <DiffViewer taskId={modalTask.id} file={diffViewFile} onBack={() => setDiffViewFile(null)} />
@@ -225,13 +277,14 @@ export function TaskModalPopupView({
               onChange={setBody}
               taskId={deferredModalTask?.id}
               mode="popup"
-              emptyMessage="No description yet."
+              emptyMessage={isNew && !title.trim() ? <NewTicketHints /> : 'No description yet.'}
+              onNeedsPersist={isNew ? persistForImageUpload : undefined}
             />
               </>
             )}
           </div>
 
-          {subtasksPanel}
+          {!isNew && subtasksPanel}
 
           {modalTask?.id && <ChatPane task={modalTask as Task} />}
 
@@ -247,25 +300,27 @@ export function TaskModalPopupView({
             </div>
           )}
 
-          <div className="border-t border-gray-200 pt-4 dark:border-white/10">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <h3 className="flex items-center gap-2 text-sm font-bold text-gray-700 dark:text-gray-300">
-                <MessageSquare className="h-4 w-4" /> Activity & Comments
-              </h3>
-              {activityFilterTabs}
-            </div>
-            <div className="mb-4"><HistoryList {...historyListProps} /></div>
-            {!isRequireInput && <CommentBox ref={commentBoxRef} {...commentBoxProps} />}
-            {/* The PR surface now lives ONLY on the PR ticket (kind:'pr') — the FLUX-558 PrPanel
-                on normal branch tickets (hasOpenPr / isReadyForMerge) is retired in favour of the
-                PR-<n> deck card (FLUX-569). It renders regardless of the PR ticket's status. */}
-            {modalTask?.id && modalTask.branch && modalTask.kind === 'pr' && (
-              <div className="mb-4">
-                <PrPanel taskId={modalTask.id} branch={modalTask.branch} onSendForReview={() => openLauncher('review')} />
+          {!isNew && (
+            <div className="border-t border-gray-200 pt-4 dark:border-white/10">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                <h3 className="flex items-center gap-2 text-sm font-bold text-gray-700 dark:text-gray-300">
+                  <MessageSquare className="h-4 w-4" /> Activity & Comments
+                </h3>
+                {activityFilterTabs}
               </div>
-            )}
-            {isReadyForMerge && readyForMergePrompt}
-          </div>
+              <div className="mb-4"><HistoryList {...historyListProps} /></div>
+              {!isRequireInput && <CommentBox ref={commentBoxRef} {...commentBoxProps} />}
+              {/* The PR surface now lives ONLY on the PR ticket (kind:'pr') — the FLUX-558 PrPanel
+                  on normal branch tickets (hasOpenPr / isReadyForMerge) is retired in favour of the
+                  PR-<n> deck card (FLUX-569). It renders regardless of the PR ticket's status. */}
+              {modalTask?.id && modalTask.branch && modalTask.kind === 'pr' && (
+                <div className="mb-4">
+                  <PrPanel taskId={modalTask.id} branch={modalTask.branch} onSendForReview={() => openLauncher('review')} />
+                </div>
+              )}
+              {isReadyForMerge && readyForMergePrompt}
+            </div>
+          )}
         </div>
         </motion.div>
       </Container>

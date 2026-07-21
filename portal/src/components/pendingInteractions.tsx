@@ -172,6 +172,22 @@ export function isPlanGateRevising(task: Task): boolean {
   return !!task.planGateRunning && task.planReviewState === 'changes-requested';
 }
 
+/** FLUX-1585: does a mid-gate user message (annotation reply, plain chat) belong to the plan-gate's
+ *  revise flow instead of whatever ordinary chat session the ticket's `cliSession` happens to point
+ *  at? True for an ACTIVE run (`planGateRunning`) AND for a PARKED wedge — the verdict is still
+ *  `changes-requested` in Grooming even after `stopGateRun` tore down the run's registry entry (see
+ *  the engine's `sweepParkedGateWedges`, `gate-runner.ts`). Broader than `isPlanGateRevising` (which
+ *  requires BOTH flags together): a parked wedge has `planGateRunning` cleared, so that check alone
+ *  would miss it. Chat/annotation composers gate their resume preference on this — never resuming a
+ *  `phase:'review'` session while it's true — because `isLiveInputTarget`'s session-lifecycle signal
+ *  has no way to know a review-phase session should never absorb this input while the gate owns the
+ *  ticket (the FLUX-1560 incident this fixes: a resumed reviewer session folded in the user's
+ *  annotations itself instead of the dispatched revise session doing it). */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper colocated with the pending-interactions model it feeds (FLUX-1585); shared with ChatDock's send/enqueue/routeToChat.
+export function isPlanGateInFlight(task: Task): boolean {
+  return task.status === 'Grooming' && (!!task.planGateRunning || task.planReviewState === 'changes-requested');
+}
+
 /** FLUX-1319: does this plan-approval ticket belong in the blocking "Needs You" inbox RIGHT NOW?
  *  Only when a verdict is pending AND the gate loop is NOT actively revising it (see
  *  `isPlanGateRevising`). While the auto-loop revises/re-reviews a changes-requested plan the human

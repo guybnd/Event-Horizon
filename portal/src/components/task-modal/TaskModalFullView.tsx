@@ -21,6 +21,7 @@ import { CommentBox } from './CommentBox';
 import { HistoryList } from './HistoryList';
 import { PayloadSizePanel } from './PayloadSizePanel';
 import { ChatPane } from './ChatPane';
+import { NewTicketHints } from './NewTicketHints';
 import { getPriorityIcon } from './taskModalHelpers';
 import { TicketActions } from '../ticket-actions/TicketActions';
 import type { TaskModalController } from '../../hooks/useTaskModalController';
@@ -102,7 +103,17 @@ export function TaskModalFullView({
     commentBoxRef,
     setIsDraggingSidebar,
     priority,
+    persistForImageUpload,
+    handleSaveAndGroom,
+    handleSaveAndFastPath,
+    effort,
   } = c;
+
+  // FLUX-1592: see TaskModalPopupView for the same gate — the create surface trims
+  // Activity/History/Subtasks and demotes Assignee/Implementation Link, gated everywhere on this
+  // so the existing-ticket path is untouched.
+  const isNew = !modalTask?.id;
+  const fastPathDisabledForEffort = effort === 'L' || effort === 'XL';
 
   return (
     <Container
@@ -150,18 +161,58 @@ export function TaskModalFullView({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-3">
-          <button
-            disabled={saving || !isDirty}
-            onClick={() => handleSave(undefined, true)}
-            className={`flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-semibold shadow-sm ${
-              isDirty
-                ? 'cursor-pointer bg-primary text-white shadow-primary/20 hover:bg-primary-hover'
-                : 'cursor-not-allowed bg-gray-200 text-gray-400 dark:bg-white/10'
-            }`}
-          >
-            <Save className="h-4 w-4" />
-            {saving ? 'Saving...' : 'Save'}
-          </button>
+          {isNew ? (
+            <div className="flex items-center overflow-hidden rounded-md border border-gray-200 shadow-sm dark:border-white/10">
+              <button
+                disabled={saving || !isDirty}
+                onClick={() => void handleSave(undefined, true)}
+                title="Create the ticket"
+                className={`flex items-center gap-1.5 px-3 py-2 text-sm font-semibold ${
+                  isDirty ? 'cursor-pointer bg-primary text-white hover:bg-primary-hover' : 'cursor-not-allowed bg-gray-200 text-gray-400 dark:bg-white/10'
+                }`}
+              >
+                <Save className="h-4 w-4" />
+                {saving ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                disabled={saving || cliSessionBusy || !isDirty}
+                onClick={() => void handleSaveAndGroom()}
+                title="Create the ticket and start a grooming session"
+                className={`border-l px-3 py-2 text-sm font-semibold ${
+                  isDirty && !cliSessionBusy
+                    ? 'cursor-pointer border-white/20 bg-primary/90 text-white hover:bg-primary-hover'
+                    : 'cursor-not-allowed border-gray-200 bg-gray-200 text-gray-400 dark:border-white/10 dark:bg-white/10'
+                }`}
+              >
+                Save & Groom
+              </button>
+              <button
+                disabled={saving || cliSessionBusy || !isDirty || fastPathDisabledForEffort}
+                onClick={() => void handleSaveAndFastPath()}
+                title={fastPathDisabledForEffort ? 'Fast-path is unavailable for L/XL effort — use Save & Groom instead.' : 'Create the ticket and start an inline groom + implement session'}
+                className={`border-l px-3 py-2 text-sm font-semibold ${
+                  isDirty && !cliSessionBusy && !fastPathDisabledForEffort
+                    ? 'cursor-pointer border-white/20 bg-primary/90 text-white hover:bg-primary-hover'
+                    : 'cursor-not-allowed border-gray-200 bg-gray-200 text-gray-400 dark:border-white/10 dark:bg-white/10'
+                }`}
+              >
+                Save & Fast-path
+              </button>
+            </div>
+          ) : (
+            <button
+              disabled={saving || !isDirty}
+              onClick={() => handleSave(undefined, true)}
+              className={`flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-semibold shadow-sm ${
+                isDirty
+                  ? 'cursor-pointer bg-primary text-white shadow-primary/20 hover:bg-primary-hover'
+                  : 'cursor-not-allowed bg-gray-200 text-gray-400 dark:bg-white/10'
+              }`}
+            >
+              <Save className="h-4 w-4" />
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+          )}
           {modalTask && (
             <TokenBadge
               data={modalTask.tokenMetadata}
@@ -267,7 +318,7 @@ export function TaskModalFullView({
                 <PrPanel taskId={modalTask.id} branch={modalTask.branch} onSendForReview={() => openLauncher('review')} />
               </div>
             )}
-            <div className="flex-1 flex flex-col border-b border-gray-200 dark:border-white/10">
+            <div className={`flex flex-col border-b border-gray-200 dark:border-white/10 ${isNew ? '' : 'flex-1'}`}>
               {diffViewFile && modalTask?.id ? (
                 <DiffViewer taskId={modalTask.id} file={diffViewFile} onBack={() => setDiffViewFile(null)} />
               ) : (
@@ -278,14 +329,15 @@ export function TaskModalFullView({
                   <p className="text-sm text-gray-500">Rendered markdown by default, editable in place.</p>
                 </div>
               </div>
-              <div className="flex-1 px-6 pb-6 min-h-[200px]">
+              <div className={`px-6 pb-6 ${isNew ? 'min-h-[280px]' : 'flex-1 min-h-[200px]'}`}>
                 <TaskDescriptionSurface
                   key={`${deferredModalTask?.id || 'new-task'}-full`}
                   value={body}
                   onChange={setBody}
                   taskId={deferredModalTask?.id}
                   mode="full"
-                  emptyMessage="No description yet."
+                  emptyMessage={isNew && !title.trim() ? <NewTicketHints /> : 'No description yet.'}
+                  onNeedsPersist={isNew ? persistForImageUpload : undefined}
                 />
               </div>
                 </>
@@ -298,31 +350,33 @@ export function TaskModalFullView({
               </div>
             )}
 
-            <div ref={commentSectionRef} className="px-6 py-4 flex flex-col pb-8">
-              <div className="flex items-center justify-between gap-4 mb-4">
-                <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Activity & Comments</p>
-                {activityFilterTabs}
-              </div>
-              <div className="flex-1 mb-4"><HistoryList {...historyListProps} /></div>
-              {(!isRequireInput) && (
-                <div className="mt-2 w-full">
-                  {!isCommentBoxVisible ? (
-                    <div className="flex justify-end">
-                      <button
-                        onClick={() => setIsCommentBoxVisible(true)}
-                        className="bg-primary text-white px-4 py-2 rounded-full font-bold shadow-md hover:bg-primary-hover text-sm"
-                      >
-                        Reply
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="rounded-xl shadow-lg border border-gray-200 bg-white dark:bg-[#1f2028] dark:border-white/10 w-full">
-                      <CommentBox ref={commentBoxRef} {...commentBoxProps} />
-                    </div>
-                  )}
+            {!isNew && (
+              <div ref={commentSectionRef} className="px-6 py-4 flex flex-col pb-8">
+                <div className="flex items-center justify-between gap-4 mb-4">
+                  <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Activity & Comments</p>
+                  {activityFilterTabs}
                 </div>
-              )}
-            </div>
+                <div className="flex-1 mb-4"><HistoryList {...historyListProps} /></div>
+                {(!isRequireInput) && (
+                  <div className="mt-2 w-full">
+                    {!isCommentBoxVisible ? (
+                      <div className="flex justify-end">
+                        <button
+                          onClick={() => setIsCommentBoxVisible(true)}
+                          className="bg-primary text-white px-4 py-2 rounded-full font-bold shadow-md hover:bg-primary-hover text-sm"
+                        >
+                          Reply
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="rounded-xl shadow-lg border border-gray-200 bg-white dark:bg-[#1f2028] dark:border-white/10 w-full">
+                        <CommentBox ref={commentBoxRef} {...commentBoxProps} />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -334,15 +388,15 @@ export function TaskModalFullView({
 
         <aside className="min-h-0 min-w-0 overflow-y-auto bg-gray-50/80 p-6 dark:bg-black/10" style={{ width: `${sidebarWidth}px`, overflowX: 'hidden' }}>
           <div className="space-y-6 w-full">
-            <MetadataPanel {...metadataPanelProps} />
-            {subtasksPanel}
+            <MetadataPanel {...metadataPanelProps} isNew={isNew} />
+            {!isNew && subtasksPanel}
             <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/10">
               <div className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-200">
                 {getPriorityIcon(priority, config)}
                 {priority}
               </div>
             </div>
-            {detailsPanel}
+            {!isNew && detailsPanel}
             {modalTask?.id && <PayloadSizePanel taskId={modalTask.id} />}
           </div>
         </aside>

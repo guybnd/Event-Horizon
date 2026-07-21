@@ -790,7 +790,22 @@ export async function upsertManagedTicket(
   const changed = !existing || fieldsChanged || bodyChanged;
   if (existing && !changed) return { task: existing, created: false, changed: false };
 
-  const filePath = existing?._path || path.join(getActiveFluxDir(), `${id}.md`);
+  // FLUX-1579: resolve a NEW ticket's path via `ws`'s own store, never the ambient
+  // `getActiveFluxDir()` — the reconcile fan-out in index.ts invokes this once per live
+  // workspace inside one tick, and an unbound `getActiveFluxDir()` resolves to whichever
+  // board is ambiently active, not `ws`. Binding through `runWithWorkspace` guarantees a
+  // background tick for board B creates B's new PR-<n> card in B's own store even while
+  // board A is the ambiently active one (the HomeUp PR #90 → EH PR-90.md incident).
+  const filePath = existing?._path || path.join(runWithWorkspace(ws, () => getActiveFluxDir()), `${id}.md`);
+
+  // Defensive check (FLUX-1579): a brand-new ticket whose resolved path already exists on
+  // disk means `ws.tasks` disagrees with the store — refuse rather than blind-overwrite a
+  // file that may belong to a different ticket/board entirely.
+  if (!existing && existsSync(filePath)) {
+    log.warn(`[upsertManagedTicket] refusing to create ${id} — ${filePath} already exists on disk but is absent from ws.tasks (store/memory mismatch)`);
+    throw new Error(`upsertManagedTicket: refusing to overwrite existing file ${filePath} for untracked ticket ${id}`);
+  }
+
   const now = new Date().toISOString();
   const history = Array.isArray(existing?.history) && existing.history.length > 0
     ? existing.history

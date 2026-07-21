@@ -71,6 +71,7 @@ import { newBatchTicket, DEFAULT_RETRY_CAP } from './models/furnace.js';
 import { getConfig } from './config.js';
 import { startPlanGateNow, startPlanReviseNow, resolvePlanVerdictNow, gateRunnerTick, isGateRunning, rehydrateGateRunner, __resetGateRunnerForTests } from './gate-runner.js';
 import { getNotifications, clearNotifications, dismissNotification } from './notifications.js';
+import { planBodyHash } from './models/gate-policy.js';
 
 function putSession(id: string, phase: string, status: CliSessionStatus): void {
   cliSessionsById.set(id, { id, phase, status } as unknown as ReturnType<typeof cliSessionsById.get> & object);
@@ -657,6 +658,103 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
       await resolvePlanVerdictNow('EG-9', 'approved');
       expect(isGateRunning('EG-9')).toBe(true);
       expect(getWorkspace().tasks['EG-9'].status).toBe('Grooming');
+    });
+  });
+
+  // ── FLUX-1585: the FLUX-1560 wedge — a plan-gate run whose revise session gets cancelled after some
+  // OTHER session (e.g. a misrouted reviewer) already moved the body past the last verdict. Two layers:
+  // (1a) the in-registry drift trigger reviews instead of parking on the very next tick; (1b) a board
+  // scan re-adopts the ticket even after it was PARKED (registry entry + `planGateRunning` both gone).
+
+  describe('FLUX-1585 — hash-drift redrive', () => {
+    it('(1a) a cancelled revise session whose body already drifted past the last verdict re-reviews instead of parking', async () => {
+      seedGrooming('DR-1', { body: 'plan v1', planReviewState: 'changes-requested' });
+      const res = await startPlanReviseNow('DR-1', { user: 'Guy' });
+      expect(res.ok).toBe(true);
+      const revisedSessionId = `sess-${sessionSeq}`;
+      expect(getWorkspace().tasks['DR-1'].planReviewBodyHash).toBe(planBodyHash('plan v1'));
+      expect(getWorkspace().tasks['DR-1'].planGateAttempts).toBe(1);
+
+      // Some OTHER session (e.g. a misrouted reviewer resume) edits the body underneath the tracked
+      // revise session, which then gets cancelled — exactly the FLUX-1560 sequence.
+      getWorkspace().tasks['DR-1'].body = 'plan v2 (revised by the misrouted session)';
+      putSession(revisedSessionId, 'grooming', 'cancelled');
+      dispatchSession.mockClear();
+      parkTicketOnBoard.mockClear();
+
+      await gateRunnerTick();
+
+      expect(parkTicketOnBoard).not.toHaveBeenCalled();
+      expect(isGateRunning('DR-1')).toBe(true); // still owned by the gate — not wedged
+      expect(dispatchSession).toHaveBeenCalledWith('DR-1', 'review', expect.objectContaining({ skipIsolation: true }));
+      // No `reimplement` was dispatched to reach this review — the attempt count from the original
+      // revise dispatch is untouched (FLUX-1585 fix 3: a cancelled revise must not burn an attempt).
+      expect(getWorkspace().tasks['DR-1'].planGateAttempts).toBe(1);
+    });
+
+    it('(1a) a cancelled revise session with NO body drift still parks — nothing landed to judge', async () => {
+      seedGrooming('DR-2', { body: 'plan v1', planReviewState: 'changes-requested' });
+      await startPlanReviseNow('DR-2', { user: 'Guy' });
+      putSession(`sess-${sessionSeq}`, 'grooming', 'cancelled'); // body left untouched
+      dispatchSession.mockClear();
+      parkTicketOnBoard.mockClear();
+
+      await gateRunnerTick();
+
+      expect(parkTicketOnBoard).toHaveBeenCalledTimes(1);
+      expect(isGateRunning('DR-2')).toBe(false);
+    });
+
+    it('(1b) a board-scan sweep re-adopts a PARKED ticket (no registry entry, no planGateRunning) whose body drifted since the last verdict', async () => {
+      // Simulates the actual repro state left behind by `parkGate` -> `stopGateRun`: the registry
+      // entry and the durable `planGateRunning`/`planGateAttempts` flags are gone, but the verdict
+      // and its reviewed-body hash are still on the ticket.
+      seedGrooming('PW-1', {
+        body: 'plan v2 (revised after the park)',
+        planReviewState: 'changes-requested',
+        planReviewBodyHash: planBodyHash('plan v1'), // stale — recorded against the pre-park body
+      });
+      expect(isGateRunning('PW-1')).toBe(false);
+      dispatchSession.mockClear();
+
+      await gateRunnerTick();
+
+      expect(isGateRunning('PW-1')).toBe(true);
+      expect(getWorkspace().tasks['PW-1'].planGateRunning).toBe(true);
+      expect(getWorkspace().tasks['PW-1'].planGateAttempts).toBe(1); // fresh human-initiated loop
+      expect(dispatchSession).toHaveBeenCalledWith('PW-1', 'review', expect.objectContaining({ skipIsolation: true }));
+    });
+
+    it('(1b) leaves a genuinely resting parked ticket alone — hash matches, nothing to redrive', async () => {
+      seedGrooming('PW-2', {
+        body: 'plan v1',
+        planReviewState: 'changes-requested',
+        planReviewBodyHash: planBodyHash('plan v1'), // matches — no drift
+      });
+      dispatchSession.mockClear();
+
+      await gateRunnerTick();
+
+      expect(isGateRunning('PW-2')).toBe(false);
+      expect(dispatchSession).not.toHaveBeenCalled();
+    });
+
+    it('(1b) does not double-dispatch a parked ticket that already has a live session working it', async () => {
+      seedGrooming('PW-3', {
+        body: 'plan v2',
+        planReviewState: 'changes-requested',
+        planReviewBodyHash: planBodyHash('plan v1'),
+      });
+      putSession('sess-live-pw3', 'grooming', 'running');
+      const { cliSessionsByTaskId } = await import('./session-store.js');
+      cliSessionsByTaskId.set('PW-3', ['sess-live-pw3']);
+      dispatchSession.mockClear();
+
+      await gateRunnerTick();
+
+      expect(isGateRunning('PW-3')).toBe(false); // left alone — the sweep did not re-register it
+      expect(dispatchSession).not.toHaveBeenCalled();
+      cliSessionsByTaskId.delete('PW-3');
     });
   });
 });

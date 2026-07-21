@@ -108,6 +108,12 @@ export interface UseChatSession {
    * the first fetch resolves. The consumer shows a skeleton/spinner instead of a blank pane.
    */
   loading: boolean;
+  /**
+   * FLUX-1601: true from the moment the engine broadcasts `authRecovered` for this conversation
+   * (credentials changed after an `auth-expired` failure) until the auto-retried turn's `send`
+   * settles. Drives the auth error card's "credentials updated — retrying…" line.
+   */
+  recovering: boolean;
 }
 
 /**
@@ -187,6 +193,9 @@ export function useChatSession(
   const sendingRef = useRef(false);
   // FLUX-691: token-by-token live stream for the current turn (see `liveText` in UseChatSession).
   const [liveText, setLiveText] = useState('');
+  // FLUX-1601: see `recovering` in UseChatSession — set on the engine's `authRecovered` broadcast,
+  // cleared once the auto-retried turn settles.
+  const [recovering, setRecovering] = useState(false);
   // Mirror of `messages` so the event-driven `load()` can tell a real transcript change (the turn
   // committed) from a no-op refetch (mid-turn activity/progress tick) without a stale closure.
   const messagesRef = useRef<TranscriptMessage[]>(getTranscript(conversationId) ?? []);
@@ -365,6 +374,7 @@ export function useChatSession(
     setAwaitingTurn(true); // FLUX-916: keep the live indicator on until the engine reports running.
     try {
       let resumable = false;
+      let live = false;
       try {
         const current = await fetchTaskCliSession(conversationId);
         // FLUX-606: resume the most-recent session whenever the engine says it's resumable
@@ -372,8 +382,27 @@ export function useChatSession(
         // session's thread instead of spawning a fresh, amnesiac chat. `completed` is now
         // included via the engine's `resumable` flag, not just running/waiting-input.
         resumable = !!current?.resumable;
+        // FLUX-714 (direct-send twin): is a turn genuinely IN FLIGHT right now? A cold first start
+        // (spawn still booting — ensureMcp shared-server boot + first CLI launch + the CLI's own
+        // first-run) sits `running` for seconds BEFORE it captures a resumeSessionId, so it is
+        // live-but-not-yet-`resumable`. Both engine routes 409 a live session — /start with
+        // "…already active" / "…already has a live CLI session", /input with "…mid-turn" — so
+        // neither a cold start NOR a resume is legal while this is true.
+        live = current?.status === 'running' || current?.status === 'pending';
       } catch {
         /* no live session — start a fresh chat */
+      }
+      // FLUX-714 (direct-send twin): a turn is in flight — never cold-start a duplicate (the 409
+      // "already active" / "already has a live CLI session" the user hits by re-sending into the
+      // cold-start window) and never fire input mid-turn (also a 409). Queue the message so the
+      // working-edge dispatcher below delivers it FIFO the moment this turn lands. The queue-
+      // dispatch effects already guard on liveness this way; the direct send() path was the one
+      // place still keying on `resumable` alone, so a still-booting session cold-started again.
+      if (live) {
+        enqueue(trimmed, sendOpts);
+        setPending(null);
+        setAwaitingTurn(false);
+        return;
       }
       const startFresh = () =>
         startTaskCliSessionEx(conversationId, {
@@ -475,6 +504,23 @@ export function useChatSession(
     if (!lastUser || lastUser.seq === undefined) return;
     await editAndResend(lastUser.seq, lastUser.text, opts);
   }
+
+  // FLUX-1601: auto-recover — the engine watches ~/.claude/.credentials.json after an auth-expired
+  // failure and broadcasts `authRecovered` the moment it changes (bounded to 15 min server-side, see
+  // watchForCredentialRefresh). Re-dispatch the failed turn through the existing retry path — one
+  // automatic attempt; if it 401s again, the auth error card just reappears via the normal error
+  // path, `recovering` resets to false either way. Deps intentionally just [conversationId] (mirrors
+  // the reopen-dispatch effect above) — `retryLast` reads live state through refs/setters, not the
+  // closure itself, so a subscription fixed at mount still calls into fresh data at fire time.
+  useEffect(() => {
+    return subscribeToEvent('authRecovered', (d) => {
+      const o = d as { taskId?: string } | null;
+      if (!o || o.taskId !== conversationId) return;
+      setRecovering(true);
+      void retryLast().finally(() => setRecovering(false));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, subscribeToEvent]);
 
   /** FLUX-748: park a message to auto-send once the current turn finishes. */
   function enqueue(text: string, opts?: ChatSendOptions) {
@@ -669,5 +715,5 @@ export function useChatSession(
   // FLUX-916: surface the awaiting-turn latch through `busy` so the live indicator + composer cover
   // the dead window between POST-return and the SSE `running` flip, with no extra prop threading.
   // (Internal queue effects above read the raw `busy` state, so their timing is unchanged.)
-  return { messages: merged, busy: busy || awaitingTurn, error, send, editAndResend, retryLast, queued, enqueue, dequeue, clearQueued, stop, reset, uploadImage, liveText, loading };
+  return { messages: merged, busy: busy || awaitingTurn, error, send, editAndResend, retryLast, queued, enqueue, dequeue, clearQueued, stop, reset, uploadImage, liveText, loading, recovering };
 }

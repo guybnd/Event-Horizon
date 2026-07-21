@@ -250,9 +250,6 @@ interface SpawnOptions {
    *  deny-list model) — re-enabled regardless of pattern position, same as persona.enableTools.
    *  Forwarded from the `/start` and `/delegate` route bodies and the `delegate` MCP tool. */
   enableTools?: string[] | undefined;
-  /** FLUX-850: explicit "this is an unattended, no-human-present dispatch" marker — see
-   *  CliSessionRecord.dispatched (agents/types.ts) for the full rationale. */
-  dispatched?: boolean | undefined;
   /** FLUX-1383: for phase:'batch-grooming' — the eligible member ticket ids (see
    *  CliSessionSummary.batchTicketIds) and the excluded members + reasons (see
    *  CliSessionRecord.batchExcluded), computed once by the route's validation block above. */
@@ -362,7 +359,6 @@ function createPendingSession(task: TaskRecord, opts: SpawnOptions): CliSessionR
   if (opts.personaId) session.personaId = opts.personaId;
   if (opts.focusComment) session.focusComment = opts.focusComment;
   if (opts.enableTools && opts.enableTools.length > 0) session.enableTools = opts.enableTools;
-  if (opts.dispatched) session.dispatched = true;
   if (opts.batchTicketIds && opts.batchTicketIds.length > 0) session.batchTicketIds = opts.batchTicketIds;
   if (opts.batchExcluded && opts.batchExcluded.length > 0) session.batchExcluded = opts.batchExcluded;
   if (opts.model) session.model = opts.model;
@@ -925,11 +921,6 @@ router.post('/:id/cli-session/start', async (req, res) => {
   const personaId = typeof req.body?.personaId === 'string' ? req.body.personaId.trim() : '';
   const focusComment = typeof req.body?.focusComment === 'string' ? req.body.focusComment.trim() : '';
   const enableTools = parseEnableTools(req.body?.enableTools);
-  // FLUX-850: explicit, caller-stamped "this is an unattended dispatch" marker — see
-  // CliSessionRecord.dispatched (agents/types.ts). Only the MCP `start_session` tool,
-  // board-rebase's `dispatch` verb, and Furnace's `dispatchSession` set this true; the portal
-  // (chat send, phase-launch buttons) never does, even though it posts to this same route.
-  const dispatched = req.body?.dispatched === true;
   const launchedBy = typeof req.body?.user === 'string' && req.body.user.trim() ? req.body.user.trim() : 'User';
   let appendPrompt = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
   if (personaId) {
@@ -1093,7 +1084,6 @@ router.post('/:id/cli-session/start', async (req, res) => {
       personaId: personaId || undefined,
       focusComment: focusComment || undefined,
       enableTools,
-      dispatched,
       batchTicketIds,
       batchExcluded,
     };
@@ -1511,6 +1501,21 @@ router.post('/:id/cli-session/input', async (req, res) => {
   const session = cliSessionsById.get(sessionId);
   if (!session || !['running', 'waiting-input', 'scheduled', 'completed'].includes(session.status)) {
     return res.status(409).json({ error: 'CLI session is not resumable', session: getCliSessionSummaryForTask(id) || null });
+  }
+  // FLUX-1585: backend backstop for the FLUX-1560 incident — a plan-gate run owns this Grooming
+  // ticket (active: `planGateRunning`, or parked: the verdict is still `changes-requested` after
+  // `stopGateRun` tore down the run's registry entry — see the engine's `gate-runner.ts`), so a
+  // `phase:'review'` session must never absorb user input: it folds the message into the plan body
+  // itself and self-approves its own edit instead of the dispatched revise session doing it. The
+  // frontend (ChatDock's `routeToChat`/composer) already routes mid-gate input through `POST
+  // /tasks/:id/plan-review/revise` instead of this route — this is the defense-in-depth backstop for
+  // any other caller that reaches here directly with no explicit `sessionId`.
+  if (!targetSessionId && session.phase === 'review' && task.status === 'Grooming'
+    && (task.planGateRunning === true || task.planReviewState === 'changes-requested')) {
+    return res.status(409).json({
+      error: `${id} has a plan-review gate run in progress — send this as a plan revision instead of resuming the review session (POST /tasks/${id}/plan-review/revise).`,
+      session: getCliSessionSummaryForTask(id) || null,
+    });
   }
   // FLUX-1392: mirror the board branch's FLUX-714 guard (line ~1257) onto this ticket-session
   // branch, which had no equivalent. sendCliSessionInput sets status='running' before several

@@ -227,9 +227,7 @@ function registerDefaults(): void {
     // FLUX-845: board-rebase dispatch is unattended and often launches several sessions in one
     // approved batch — isolate each in its own worktree by default so they never share a checkout
     // (the FLUX-840/841/844 tangle). The engine creates the branch+worktree before spawning.
-    // FLUX-850: `dispatched: true` marks this an unattended, no-human-present launch so
-    // change_status/finish_ticket hard-gate it from silently advancing the ticket past Ready.
-    const body: Record<string, unknown> = { framework: 'claude', skipPermissions: true, patternPosition: 'standalone', isolation: 'worktree', dispatched: true };
+    const body: Record<string, unknown> = { framework: 'claude', skipPermissions: true, patternPosition: 'standalone', isolation: 'worktree' };
     if (item.phase) body.phase = item.phase;
     try {
       const res = await fetch(`http://127.0.0.1:${getEnginePort()}/api/tasks/${ticketId}/cli-session/start`, {

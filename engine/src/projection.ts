@@ -407,6 +407,13 @@ export function projectTranscript(
       } else {
         out.push(note);
       }
+    } else if (evt?.type === 'error' && typeof evt.text === 'string' && evt.text.trim()) {
+      // FLUX-1596: a turn that died without a reply (non-zero/signalled exit — including the
+      // silent-spawn watchdog's kill). Render as a visible ⚠️ assistant bubble so a crashed turn
+      // is distinguishable from a slow one on reload / cold resume, mirroring the per-ticket
+      // FLUX-981 inline surfacing.
+      const ts = typeof evt.timestamp === 'string' ? evt.timestamp : turn.ts;
+      out.push(tag({ role: 'assistant', text: `⚠️ ${evt.text}`, ts }, turn));
     } else if (evt?.type === 'action' && typeof evt.phase === 'string') {
       // FLUX-794: the user pressed a non-chat phase action (Groom / Implement / Review / Finalize)
       // and the chat popped in. Emit a non-bubble `note` row so the portal renders it as a quiet

@@ -175,6 +175,11 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
   const config = useAppSelector((s) => s.config);
   const readComments = useAppSelector((s) => s.readComments);
   const prByBranch = useAppSelector((s) => s.prByBranch);
+  // FLUX-1589: Axis Mundi stoic pass — the decorative hue underline (below) has no CSS hook
+  // (its colour is a dynamic Tailwind class, `tint.accent`), so suppressing it at rest under the
+  // axis themes has to happen here rather than via the scoped index.css overrides used elsewhere.
+  const theme = useAppSelector((s) => s.theme);
+  const isAxisTheme = theme === 'axis-night' || theme === 'axis-day';
   // FLUX-1300: a still-pinned task must escape whichever swimlane bucket it'd otherwise land in
   // (Running/Awaiting Input/Pending Approval/Needs Action/Open PRs all render above `restTasks`
   // regardless of the incoming sort order) — read directly from the store like the selectors above.
@@ -289,7 +294,7 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
               <span className="hidden group-hover:inline">Release</span>
             </button>
           ) : (
-            <h2 className="truncate text-sm font-bold uppercase tracking-[0.14em] text-gray-700 dark:text-gray-200">
+            <h2 className="eh-column-title truncate text-sm font-bold uppercase tracking-[0.14em] text-gray-700 dark:text-gray-200">
               {title}
             </h2>
           )}
@@ -302,13 +307,13 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
                 type="button"
                 onClick={() => columnUnreadByTask.forEach(({ taskId, ids }) => markAllCommentsRead(taskId, ids))}
                 title={`${columnUnreadByTask.length} ticket${columnUnreadByTask.length === 1 ? '' : 's'} with unread comments · mark all read`}
-                className="flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-amber-600 transition-colors hover:bg-amber-500/30 dark:text-amber-400"
+                className="eh-stoic-neutral flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-amber-600 transition-colors hover:bg-amber-500/30 dark:text-amber-400"
               >
                 <span className="h-1.5 w-1.5 rounded-full bg-current" />
                 <AnimatedCount value={columnUnreadByTask.length} />
               </button>
             )}
-            <span className={`shrink-0 text-xs px-2.5 py-0.5 rounded-full font-medium ${liveEvent ? 'column-live-badge' : ''} ${
+            <span className={`eh-column-count shrink-0 text-xs px-2.5 py-0.5 rounded-full font-medium ${liveEvent ? 'column-live-badge' : ''} ${
               boardFx?.columnFire !== false && tasks.length >= 20
                 ? 'column-fire-3'
                 : boardFx?.columnFire !== false && tasks.length >= 13
@@ -333,7 +338,7 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
               </span>
             )}
           </span>
-          <span className={`block h-1 rounded-full ${tint.accent}`} style={{ width: `${Math.round(titleChars * 10.5)}px` }} aria-hidden />
+          <span className={`block h-1 rounded-full ${isAxisTheme ? 'bg-[var(--eh-border)]' : tint.accent}`} style={{ width: `${Math.round(titleChars * 10.5)}px` }} aria-hidden />
           <span className="flex h-3 items-center justify-start text-[9px] font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
             {flowRight > 0 && (
               <span className="flex items-center gap-0.5" style={{ opacity: 0.55 + Math.min(1, flowRight / 10) * 0.45 }} title={`${flowRight} moved forward to the next column in the last 24h`}>

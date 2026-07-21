@@ -60,6 +60,8 @@ export function AppearanceSection({
     matrix: { base: '#0a0f0a', accent: '#00e639', texture: 'repeating-linear-gradient(rgba(0,255,65,0.08) 0px, rgba(0,255,65,0.08) 1px, transparent 1px, transparent 12px), repeating-linear-gradient(90deg, rgba(0,255,65,0.08) 0px, rgba(0,255,65,0.08) 1px, transparent 1px, transparent 12px)' },
     cyber: { base: '#0d0b1a', accent: '#a78bfa', texture: 'repeating-linear-gradient(135deg, rgba(139,92,246,0.1) 0px, rgba(139,92,246,0.1) 1px, transparent 1px, transparent 8px)' },
     midnight: { base: '#0b1121', accent: '#38bdf8', texture: 'radial-gradient(circle, rgba(148,163,184,0.15) 1px, transparent 1px)' },
+    'axis-night': { base: '#0f0e11', accent: '#d9a441', texture: '' },
+    'axis-day': { base: '#f2efe8', accent: '#a87a1f', texture: '' },
   };
 
   const fxAnyOn = BOARD_FX_EFFECTS.some(({ key }) => boardFx[key] ?? true);

@@ -3,6 +3,7 @@
 // re-prime, transcript events, exit-state machine) lives in the generic core (board-core.ts).
 import { spawn } from 'child_process';
 import { cleanChildEnv, resolveClaudeExePath } from './shared.js';
+import { resolveClaudeBinaryPathDarwin } from './claude-binary-darwin.js';
 import { attachStdoutProcessing, buildSpawnMcpConfigArgs, modelEffortArgs, permissionArgs, ensureSharedServersForRoot, DISALLOW_NATIVE_ASK } from './claude-code.js';
 import type { BoardSpec } from './board.js';
 import { makeBoardAdapter } from './board-core.js';
@@ -20,6 +21,13 @@ async function spawnClaudeForBoard(claudeArgs: string[], executionRoot: string, 
       throw new Error('claude.exe not found. Please install @anthropic-ai/claude-code globally: npm install -g @anthropic-ai/claude-code');
     }
     return spawn(exePath, claudeArgs, { cwd: executionRoot, env: cleanChildEnv('claude', conversationId), stdio: 'pipe', windowsHide: true });
+  }
+  if (process.platform === 'darwin') {
+    // FLUX-1600: same login-shell binary resolution as the per-ticket spawn paths in
+    // claude-code.ts, cached across every board spawn/resume too. Falls back to the bare PATH
+    // spawn below when the probe fails/times out or finds no login-shell override.
+    const darwinExePath = await resolveClaudeBinaryPathDarwin('claude');
+    return spawn(darwinExePath ?? 'claude', claudeArgs, { cwd: executionRoot, env: cleanChildEnv('claude', conversationId), stdio: 'pipe', windowsHide: true });
   }
   return spawn('claude', claudeArgs, { cwd: executionRoot, env: cleanChildEnv('claude', conversationId), stdio: 'pipe', windowsHide: true });
 }

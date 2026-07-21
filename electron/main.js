@@ -152,7 +152,7 @@ function createWindow() {
     minHeight: 600,
     backgroundColor: '#0a0d08', // matches the Matrix theme base so there's no white flash
     title: 'Event Horizon',
-    icon: path.join(__dirname, 'build', 'icon.png'), // window + taskbar icon (Win/Linux)
+    icon: path.join(__dirname, 'build', 'icon-axis.png'), // window + taskbar icon (Win/Linux)
     autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,
@@ -281,7 +281,7 @@ function updateBadge(count, iconDataUrl) {
 function showNotification({ title, body, ticketId }) {
   if (!Notification.isSupported()) return;
   try {
-    const iconPath = path.join(__dirname, 'build', 'icon.png');
+    const iconPath = path.join(__dirname, 'build', 'icon-axis.png');
     const n = new Notification({
       title: title || 'Event Horizon',
       body: body || '',
@@ -311,7 +311,7 @@ function isAppUrl(url) {
 // ── Tray ──────────────────────────────────────────────────────────────────────
 function createTray() {
   try {
-    const iconPath = path.join(__dirname, 'build', 'tray.png');
+    const iconPath = path.join(__dirname, 'build', 'tray-axis.png');
     const image = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
     tray = new Tray(image);
     tray.setToolTip('Event Horizon');

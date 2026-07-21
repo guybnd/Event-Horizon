@@ -28,6 +28,9 @@ import type { AgentAdapter, CliSessionRecord, ProviderManifest, SendInputOptions
 import { CLI_CAPABILITIES } from './types.js';
 import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, resolveEffectivePhase, buildPhaseHandoffNote } from './shared.js';
 import { BOARD_CONVERSATION_ID } from './board.js';
+import { diagnoseAuthFailure } from './auth-diagnostics.js';
+import { watchForCredentialRefresh } from './auth-recovery-watch.js';
+import { resolveClaudeBinaryPathDarwin, invalidateClaudeBinaryDarwinCache } from './claude-binary-darwin.js';
 
 /**
  * One entry of the `--mcp-config` server map: either a shared HTTP endpoint (FLUX-579) or a
@@ -427,6 +430,42 @@ export function isAuthError(message: string | undefined | null): boolean {
   );
 }
 
+/**
+ * FLUX-1599: fire the self-diagnosis the instant a session is classified `auth-expired` — fire-
+ * and-forget (the caller has already killed/is finalizing the process; the diagnosis's own probes
+ * must never block that). Stamps the structured verdict onto the session (surfaced to the portal
+ * via session-store's toSummary) and appends one more human-readable chat line explaining WHY,
+ * on top of the raw "authentication failed" line already appended by the caller. Logged at info
+ * level too — support requests today arrive as screenshots of a bare 401 with no way to tell which
+ * of these causes applied.
+ */
+function surfaceAuthDiagnosis(session: CliSessionRecord, taskId: string) {
+  const binaryName = session.command || 'claude';
+  void diagnoseAuthFailure(binaryName, session.workspaceRoot, {
+    resolveSpawnedPath: process.platform === 'win32' ? resolveClaudeExePath : undefined,
+  })
+    .then((diagnosis) => {
+      session.authDiagnosis = diagnosis;
+      log.info(
+        `[${taskId}] auth-diagnosis: verdict=${diagnosis.verdict} ` +
+        `spawnedBinary=${diagnosis.spawnedBinary.path || '(unresolved)'} ` +
+        `duplicates=${diagnosis.duplicates.length} ` +
+        `terminalBinary=${diagnosis.terminalBinary?.path || diagnosis.terminalBinary?.resolution || '(n/a)'} ` +
+        `shadowing=${JSON.stringify(diagnosis.shadowing)}`
+      );
+      // FLUX-1601: no chat line here — `formatAuthDiagnosisMessage` now backs the portal's actionable
+      // auth error card (reading `session.authDiagnosis` off the summary) and the Furnace halt banner
+      // (furnace-stoker.ts), not a raw transcript append. broadcastEvent('taskUpdated', …) from the
+      // exit funnel that already ran is what tells the portal to refetch and pick this up.
+    })
+    .catch((err) => {
+      log.info(`[${taskId}] auth-diagnosis failed (non-fatal):`, err);
+    });
+  // FLUX-1601: start the bounded credential-refresh watch alongside the diagnosis so a re-login
+  // auto-retries the failed turn — no app restart, no re-typing the message.
+  watchForCredentialRefresh(taskId);
+}
+
 /** Claude Code `--output-format stream-json` content block (`assistant`/`user` message content[]). */
 export interface ClaudeContentBlock {
   type?: string;
@@ -462,6 +501,9 @@ interface ClaudeCliEvent {
   error?: string;
   subtype?: string;
   api_error_status?: number;
+  /** FLUX-1598: mid-stream `system`/`api_retry` event's status field — NB distinct name from the
+   *  terminal `result` event's `api_error_status` above; same provider HTTP status semantics. */
+  error_status?: number;
   result?: string;
   tool_name?: string;
   /** FLUX-1378: per-model breakdown the CLI reports alongside a `result` event's `usage` — the only
@@ -530,6 +572,29 @@ export function attachStdoutProcessing(
             }
           }
           return; // FLUX-932: was `continue` — now a return from onEvent (the loop lives in shared.ts).
+        }
+        // FLUX-1598: the CLI emits mid-stream `system`/`api_retry` events on every retry attempt,
+        // long before the terminal `result` event (below) that this parser already classifies as
+        // 'auth-expired'. A 401/403 never heals by retrying — the CLI still rides out all
+        // `max_retries` (10, exponential backoff — ~2 min total) before surfacing anything, so the
+        // chat sits frozen the whole time. Abort on the FIRST auth-coded retry instead. Keep
+        // FLUX-1406 discipline: only the structured numeric `error_status` (or an exact
+        // 'authentication_failed' error code — NOT free-text scanning of stream content) triggers
+        // this, so an unrelated mid-task tool 401/403 can never reach here (this is a system-level
+        // provider event, not tool output). 429/5xx retries are left alone — they have a real
+        // cooldown / are genuinely transient — and continue their normal backoff untouched.
+        if (evt.type === 'system' && evt.subtype === 'api_retry') {
+          appendTranscriptLine(taskId, trimmed);
+          if (!session.terminalReason
+            && (evt.error_status === 401 || evt.error_status === 403 || evt.error === 'authentication_failed')) {
+            session.terminalReason = 'auth-expired';
+            // FLUX-1601: no raw "HTTP 401" line in chat — the portal's actionable auth error card
+            // reads `terminalReason`/`authDiagnosis` off the session summary instead. surfaceAuthDiagnosis
+            // also starts the bounded credential-refresh watch that drives the card's auto-retry.
+            surfaceAuthDiagnosis(session, taskId);
+            proc.kill();
+          }
+          return;
         }
         // FLUX-981: surface a real rate-limit throttle inline. Gate on the TOP-LEVEL
         // `rate_limit_info.status` (e.g. anything other than 'allowed'), NOT `overageStatus` —
@@ -708,29 +773,35 @@ export function attachStdoutProcessing(
             });
           });
         } else if (evt.type === 'result' && evt.is_error) {
+          // FLUX-1047 / FLUX-1063 / FLUX-1397: classify a RECOVERABLE terminal cause here — the only
+          // reliable point, since the exit funnel only sees an opaque nonzero code by the time this
+          // surfaces. Stamp the structured terminalReason BEFORE the exit funnel flips status to
+          // 'failed', so the Furnace stoker can read it and recover (fresh session / cooldown) instead
+          // of parking on the first strike. A rate limit hides in `result` + `api_error_status` (not
+          // `error`/`subtype`): the 5-hour-limit payload is `{is_error:true, subtype:"success",
+          // api_error_status:429, result:"You've hit your session limit …"}`, so `errText` alone is
+          // just "success".
+          const errText = String(evt.error || evt.subtype || 'unknown');
+          const resultText = typeof evt.result === 'string' ? evt.result : '';
+          const combined = `${errText} ${resultText}`;
+          const isAuth = evt.api_error_status === 401 || evt.api_error_status === 403 || isAuthError(combined);
           // FLUX-981: a non-permission result error (API error, overload, invalid request) was
           // previously DROPPED — it doesn't match the permission regex above and there's no other
           // handler, so it fell silently into liveOutputBuffer. Surface it inline. Do NOT flip to
           // waiting-input: this isn't a HITL prompt, and the exit handler still runs afterward.
-          const errText = String(evt.error || evt.subtype || 'unknown');
-          appendErrorToSession(session, `Agent error: ${errText}`);
-          // FLUX-1047 / FLUX-1063: classify a RECOVERABLE terminal cause here — the only reliable point,
-          // since the exit funnel only sees an opaque nonzero code by the time this surfaces. Stamp the
-          // structured terminalReason BEFORE the exit funnel flips status to 'failed', so the Furnace
-          // stoker can read it and recover (fresh session / cooldown) instead of parking on the first
-          // strike. A rate limit hides in `result` + `api_error_status` (not `error`/`subtype`): the
-          // 5-hour-limit payload is `{is_error:true, subtype:"success", api_error_status:429,
-          // result:"You've hit your session limit …"}`, so `errText` alone is just "success".
-          const resultText = typeof evt.result === 'string' ? evt.result : '';
-          const combined = `${errText} ${resultText}`;
+          // FLUX-1601: EXCEPT an auth failure — no raw provider 401 string in chat; the portal's
+          // actionable auth error card reads `terminalReason`/`authDiagnosis` off the session summary
+          // instead of this line.
+          if (!isAuth) appendErrorToSession(session, `Agent error: ${errText}`);
           if (isContextExhaustionError(combined)) {
             session.terminalReason = 'context-exhausted';
           } else if (evt.api_error_status === 429 || isRateLimitError(combined)) {
             session.terminalReason = 'rate-limited';
-          } else if (evt.api_error_status === 401 || evt.api_error_status === 403 || isAuthError(combined)) {
+          } else if (isAuth) {
             // FLUX-1397: an expired/invalid credential is a HUMAN action, not a per-ticket retry — see
             // decideTicketAction's 'auth-expired' branch, which halts the whole batch instead of parking.
             session.terminalReason = 'auth-expired';
+            surfaceAuthDiagnosis(session, taskId);
           }
         }
     },
@@ -1223,6 +1294,15 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
       stdio: 'pipe',
       windowsHide: true,
     });
+  } else if (process.platform === 'darwin' && binaryName === 'claude') {
+    // FLUX-1600: resolve the login-shell claude binary (cached across every spawn); probe
+    // failure/timeout or "no override found" degrades gracefully to the bare PATH spawn below.
+    const darwinExePath = await resolveClaudeBinaryPathDarwin(binaryName);
+    proc = spawn(darwinExePath ?? binaryName, claudeArgs, {
+      cwd: executionRoot,
+      env: cleanChildEnv('claude', id),
+      stdio: 'pipe',
+    });
   } else {
     proc = spawn(binaryName, claudeArgs, {
       cwd: executionRoot,
@@ -1256,6 +1336,12 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
   });
 
   proc.on('error', async (error) => {
+    // FLUX-1600: the cached darwin login-shell resolution pointed at a binary that no longer
+    // exists (moved/uninstalled since it was cached) — drop the cache so the next spawn re-probes
+    // instead of dead-spawning the same stale path forever.
+    if (process.platform === 'darwin' && binaryName === 'claude' && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+      invalidateClaudeBinaryDarwinCache();
+    }
     // Node can fire both 'error' and 'exit' for one failed spawn — guard raiseNeedsAction on
     // whether THIS handler is the first to observe the spawn's outcome (mirrors the 'exit'
     // handler below), so a healthy 'exit' that already ran first can't be overridden by a
@@ -1655,6 +1741,15 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       stdio: 'pipe',
       windowsHide: true,
     });
+  } else if (process.platform === 'darwin' && binaryName === 'claude') {
+    // FLUX-1600: same login-shell resolution as the initial spawn above, cached across turns.
+    const darwinExePath = await resolveClaudeBinaryPathDarwin(binaryName);
+    replyProc = spawn(darwinExePath ?? binaryName, resumeArgs, {
+      cwd: executionRoot,
+      env: cleanChildEnv('claude', id),
+      stdio: 'pipe',
+      windowsHide: true,
+    });
   } else {
     replyProc = spawn(binaryName, resumeArgs, {
       cwd: executionRoot,
@@ -1677,6 +1772,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   replyProc.on('error', async (error) => {
+    // FLUX-1600: same cache-invalidation-on-ENOENT as the initial spawn above.
+    if (process.platform === 'darwin' && binaryName === 'claude' && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+      invalidateClaudeBinaryDarwinCache();
+    }
     // FLUX-1204: Node can fire both 'error' and 'exit' for one failed spawn — guard
     // raiseNeedsAction on whether THIS handler is the first to observe the outcome (mirrors the
     // initial-spawn path), so a healthy 'exit' that already ran first can't be overridden by a

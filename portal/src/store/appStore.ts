@@ -4,7 +4,7 @@ import type { BatchTicket } from '../furnaceTypes';
 
 export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases' | 'workflows' | 'changes' | 'epics' | 'token-costs' | 'dev-onboarding';
 export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
-export type AppTheme = 'light' | 'dark' | 'matrix' | 'cyber' | 'midnight';
+export type AppTheme = 'light' | 'dark' | 'matrix' | 'cyber' | 'midnight' | 'axis-night' | 'axis-day';
 
 /**
  * FLUX-1540: real cold-boot scan progress, fed by the engine's `bootProgress` SSE event (emitted
@@ -308,7 +308,7 @@ function createInitialState(): AppStoreState {
     config: null,
     readComments: {},
     totalUnreadCount: 0,
-    theme: 'matrix',
+    theme: 'axis-day',
     parseErrors: [],
     parseErrorsLoading: false,
     notifications: [],

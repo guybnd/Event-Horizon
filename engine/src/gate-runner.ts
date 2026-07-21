@@ -147,6 +147,7 @@ export function planReviewFocus(depth: PlanReviewDepth, hasArtifact: boolean, wa
 export const PLAN_REVISE_FOCUS =
   "A plan-review pass just requested changes on this ticket's plan (see the latest review comment in its history) — revise the ticket body via `update_ticket` to address every point raised, then STOP. " +
   'Do not call `change_status` yourself and do not start implementing; the plan-review gate automatically re-reviews your revision. ' +
+  'Write the revision as if the plan had been right the first time — ticket history already records what changed; never annotate the body with what a prior draft got wrong or which review round/annotation resolved a point. ' +
   'When revising an artifact: revise minimally — answer every annotation explicitly, show the annotated element before→after, and never silently redesign elements the user already approved.';
 
 /** Mirrors Temper's `REVIEW_NUDGE_FOCUS`, keyed to `planReviewState` instead of `reviewState`. */
@@ -559,6 +560,13 @@ async function reconcileGateTicket(ticketId: string, ws: Workspace): Promise<voi
   const task = ws.tasks[ticketId];
   const verdict = (task?.[spec.verdictField] ?? null) as 'approved' | 'changes-requested' | null;
   const sessionOutcome = findSessionOutcome(task, sess?.id ?? ticket.currentSessionId);
+  // FLUX-1585: has the body already moved past the last verdict's recorded hash? Only meaningful
+  // while a `changes-requested` verdict is still on file (the revise-in-flight window) and only the
+  // plan gate stamps `planReviewBodyHash` — a hypothetical future gate that never sets this field
+  // always reads `false` here and falls back to today's session-lifecycle-only behavior.
+  const bodyHashDrifted = verdict === 'changes-requested' && typeof task?.planReviewBodyHash === 'string'
+    ? planBodyHash(typeof task.body === 'string' ? task.body : '') !== task.planReviewBodyHash
+    : false;
   const action = decideTicketAction({
     ticket,
     ...(sess ? { sessionStatus: sess.status } : {}),
@@ -569,6 +577,7 @@ async function reconcileGateTicket(ticketId: string, ws: Workspace): Promise<voi
     ...(getConfig().requireInputStatus ? { requireInputStatus: getConfig().requireInputStatus } : {}),
     retryCap: DEFAULT_RETRY_CAP,
     reviewVerdictMarkerSeen: lastCommentMatchesVerdictMarker(task?.history, ticket.sessionStartedAt),
+    bodyHashDrifted,
   });
   await advanceGateTicket(ticketId, ws, action);
 }
@@ -836,6 +845,14 @@ export async function gateRunnerTick(): Promise<void> {
         }
       }
     }
+    // FLUX-1585: catches the parked-wedge repro the loop above structurally cannot see (no registry
+    // entry survives a park) — see `sweepParkedGateWedges`'s own doc comment for why this can't be
+    // folded into the per-entry loop above.
+    try {
+      await sweepParkedGateWedges();
+    } catch (e: unknown) {
+      log.error(`[gate] parked-wedge sweep failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   } finally {
     ticking = false;
   }
@@ -864,6 +881,69 @@ export function rehydrateGateRunner(): void {
         const state = liveRevise ? ('reimplementing' as const) : ('reviewing' as const);
         ticketsFor(ws).set(id, { spec, mode, ws, ticket: { ticketId: id, order: 0, state, attempts, sessionIds: [] } });
         log.info(`[gate:${spec.gate}] rehydrated ${id} (attempts ${attempts}, mode ${mode}, state ${state}, workspace ${ws.root}) — will re-drive on the next tick.`);
+      }
+    }
+  }
+}
+
+/**
+ * FLUX-1585: reaches the parked-wedge repro (FLUX-1560) that neither `gateRunnerTick` nor
+ * `rehydrateGateRunner` can ever see again. `parkGate` -> `stopGateRun` deletes this ticket's
+ * registry entry AND its durable `planGateRunning` flag, so a parked `changes-requested` Grooming
+ * ticket has no live handle at all — `gateRunnerTick` only iterates existing registry entries, and
+ * `rehydrateGateRunner` only re-adopts `planGateRunning === true`. The only way back in is a scan:
+ * every Grooming ticket still carrying a `changes-requested` verdict whose current body no longer
+ * hashes to its last-recorded `planReviewBodyHash` had ITS revision land somehow (the tracked
+ * revise session or a misrouted one, doesn't matter which) — re-adopt it and dispatch a fresh
+ * review pass. Edge-triggered by real body drift, so an untouched parked ticket is left alone
+ * forever (matches the existing park contract: park means "give up, flag the human" until a human
+ * acts, not a permanent phantom run — see the plan's rejected-alternative note on FLUX-1585).
+ */
+export async function sweepParkedGateWedges(): Promise<void> {
+  const spec = PLAN_GATE_SPEC;
+  for (const ws of liveWorkspaces()) {
+    for (const id of Object.keys(ws.tasks)) {
+      const t = ws.tasks[id];
+      if (!t || t.status !== GROOMING_STATUS) continue;
+      if (t[spec.verdictField] !== 'changes-requested') continue;
+      if (typeof t.planReviewBodyHash !== 'string') continue;
+      if (isGateRunning(id, ws)) continue; // still registered — the in-registry drift trigger (1a) owns this one
+      const currentHash = planBodyHash(typeof t.body === 'string' ? t.body : '');
+      if (currentHash === t.planReviewBodyHash) continue; // no drift — genuinely resting, leave it parked
+
+      // Something may already be actively working this ticket even though the gate's own registry
+      // entry is gone (e.g. a human-resumed session) — don't double-dispatch on top of it.
+      const liveSessions = getActiveSessionsForTaskInWorkspace(id, ws.root, getDefaultWorkspace().root);
+      if (pickSessionForPhase(liveSessions, 'review') || pickSessionForPhase(liveSessions, spec.revisePhase)) continue;
+
+      const mode: PlanGateMode = PLAN_GATE_MODES.includes(t.planGateMode as PlanGateMode)
+        ? (t.planGateMode as PlanGateMode)
+        : t.planGateOneShot === true ? 'one-pass' : 'loop-auto';
+      // A fresh human-initiated revision resets the attempt budget for this new loop (mirrors
+      // `startPlanReviseNow`'s own `attempts: 1`) — the retry cap still bounds THIS loop below.
+      const entry: GateRunEntry = { spec, mode, ws, ticket: { ticketId: id, order: 0, state: 'reviewing', attempts: 1, sessionIds: [] }, starting: true };
+      ticketsFor(ws).set(id, entry);
+      try {
+        await updateTaskWithHistory(id, {
+          extraFields: { [spec.runningField]: true, [spec.attemptsField]: 1, planGateMode: mode },
+          entries: [{
+            type: 'activity',
+            user: 'Plan Gate',
+            comment: `${spec.gate} gate: re-adopted a parked ticket — its plan body changed since the last verdict, dispatching a fresh review pass.`,
+            date: nowIso(),
+          }],
+          updatedBy: 'Plan Gate',
+        }, ws);
+      } catch (e: unknown) {
+        log.warn(`[gate:${spec.gate}] ${id} parked-wedge sweep persist failed: ${e instanceof Error ? e.message : String(e)}`);
+        ticketsFor(ws).delete(id);
+        continue;
+      }
+      log.info(`[gate:${spec.gate}] ${id} parked-wedge sweep: body drifted past last verdict — re-adopted for review (workspace ${ws.root}).`);
+      try {
+        await runWithWorkspace(ws, () => advanceGateTicket(id, ws, { type: 'review' }));
+      } finally {
+        entry.starting = false;
       }
     }
   }

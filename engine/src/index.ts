@@ -744,19 +744,23 @@ async function startServer() {
             // (or terminal) with no live session, so the board-wide pool doesn't exhaust while
             // PRs await review. Independent of gh — reclamation is a local git/worktree op — so
             // it runs even when GitHub CLI is unconfigured.
-            reclaimReadyWorktrees(workspaceRoot, ws),
+            // FLUX-1579: every reconciler below is now wrapped in `runWithWorkspace(ws, …)` too
+            // (belt + suspenders alongside the `upsertManagedTicket` path fix) — any ambient
+            // getActiveFluxDir()/getWorkspace() call reached from inside these must resolve to
+            // `ws`, not whichever board happens to be ambiently active during this tick.
+            runWithWorkspace(ws, () => reclaimReadyWorktrees(workspaceRoot, ws)),
             // The remaining reconcilers depend on gh; skip them when it's unavailable.
             ...(ghAuthAvailable
               ? [
-                  reconcilePullRequests(workspaceRoot, ws),
+                  runWithWorkspace(ws, () => reconcilePullRequests(workspaceRoot, ws)),
                   // FLUX-566: maintain the engine-managed PR-<n> tickets (the PR-as-first-class entity).
-                  syncPrTickets(workspaceRoot, ws),
+                  runWithWorkspace(ws, () => syncPrTickets(workspaceRoot, ws)),
                   // FLUX-599: backstop — reclaim merged branches whose merge-time delete was missed.
-                  pruneMergedBranches(workspaceRoot, ws),
+                  runWithWorkspace(ws, () => pruneMergedBranches(workspaceRoot, ws)),
                   // FLUX-1326: retry branches cleanupMergedBranch kept alive under its dependent-PR
                   // guard (FLUX-1270) — reconcilePullRequests's non-terminal grouping never revisits
                   // them on its own once their tickets reach Done.
-                  recheckDependentBranches(workspaceRoot, ws),
+                  runWithWorkspace(ws, () => recheckDependentBranches(workspaceRoot, ws)),
                 ]
               : []),
           ];

@@ -16,10 +16,11 @@ vi.mock('../transcript.js', () => ({
 vi.mock('../events.js', () => ({ broadcastEvent: vi.fn() }));
 
 /** A bare EventEmitter stands in for the spawned CLI's ChildProcess — attachStdoutProcessing only
- *  ever calls `proc.stdout!.on('data', ...)`, so this is a faithful, dependency-free stand-in
- *  (same technique as adapter-contract.test.ts's A.1 fixtures). */
+ *  ever calls `proc.stdout!.on('data', ...)` and (FLUX-1598) `proc.kill()` on a fail-fast auth abort,
+ *  so this is a faithful, dependency-free stand-in (same technique as adapter-contract.test.ts's A.1
+ *  fixtures). */
 function fakeProc(): ChildProcessWithoutNullStreams {
-  return { stdout: new EventEmitter() } as ChildProcessWithoutNullStreams;
+  return { stdout: new EventEmitter(), kill: vi.fn() } as unknown as ChildProcessWithoutNullStreams;
 }
 
 /** Minimal CliSessionRecord — only the fields the result/is_error branch actually touches. */
@@ -174,5 +175,94 @@ describe('auth errors are classified distinctly from rate-limit / context-exhaus
     }) + '\n'));
     await session.writeQueue;
     expect(session.terminalReason).toBeUndefined();
+  });
+});
+
+// FLUX-1598: a 401/403 never heals by retrying, but the CLI rides out `max_retries` (10, exponential
+// backoff — ~2 min total) before the terminal `result` event above ever fires. The CLI surfaces each
+// retry attempt as a mid-stream `system`/`api_retry` event well before that — abort on the FIRST
+// auth-coded one instead of waiting out the whole backoff window with the chat frozen.
+describe('mid-stream `system`/`api_retry` events (FLUX-1598) — fail fast on auth, ride out rate-limit/5xx', () => {
+  for (const status of [401, 403]) {
+    it(`error_status ${status} kills the process immediately and stamps terminalReason 'auth-expired'`, async () => {
+      const session = fakeSession();
+      const proc = fakeProc();
+      attachStdoutProcessing(proc, session, 'FLUX-1396');
+      proc.stdout.emit('data', Buffer.from(JSON.stringify({
+        type: 'system',
+        subtype: 'api_retry',
+        attempt: 1,
+        max_retries: 10,
+        retry_delay_ms: 514,
+        error_status: status,
+        error: 'authentication_failed',
+      }) + '\n'));
+      await session.writeQueue;
+      expect(session.terminalReason).toBe('auth-expired');
+      expect(proc.kill).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  it('an exact "authentication_failed" error code with no error_status still fails fast', async () => {
+    const session = fakeSession();
+    const proc = fakeProc();
+    attachStdoutProcessing(proc, session, 'FLUX-1396');
+    proc.stdout.emit('data', Buffer.from(JSON.stringify({
+      type: 'system',
+      subtype: 'api_retry',
+      attempt: 3,
+      max_retries: 10,
+      error: 'authentication_failed',
+    }) + '\n'));
+    await session.writeQueue;
+    expect(session.terminalReason).toBe('auth-expired');
+    expect(proc.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it('a second, later api_retry event does not re-kill an already-aborted session', async () => {
+    const session = fakeSession();
+    const proc = fakeProc();
+    attachStdoutProcessing(proc, session, 'FLUX-1396');
+    const authRetry = JSON.stringify({ type: 'system', subtype: 'api_retry', error_status: 401 }) + '\n';
+    proc.stdout.emit('data', Buffer.from(authRetry));
+    proc.stdout.emit('data', Buffer.from(authRetry));
+    await session.writeQueue;
+    expect(session.terminalReason).toBe('auth-expired');
+    expect(proc.kill).toHaveBeenCalledTimes(1);
+  });
+
+  for (const status of [429, 500, 503]) {
+    it(`error_status ${status} does NOT kill the process or set terminalReason (rate-limit/5xx ride out their normal backoff)`, async () => {
+      const session = fakeSession();
+      const proc = fakeProc();
+      attachStdoutProcessing(proc, session, 'FLUX-1396');
+      proc.stdout.emit('data', Buffer.from(JSON.stringify({
+        type: 'system',
+        subtype: 'api_retry',
+        attempt: 1,
+        max_retries: 10,
+        error_status: status,
+        error: status === 429 ? 'rate_limit_error' : 'internal_server_error',
+      }) + '\n'));
+      await session.writeQueue;
+      expect(session.terminalReason).toBeUndefined();
+      expect(proc.kill).not.toHaveBeenCalled();
+    });
+  }
+
+  it('an api_retry event with no error_status and an unrelated error code does not fail fast', async () => {
+    const session = fakeSession();
+    const proc = fakeProc();
+    attachStdoutProcessing(proc, session, 'FLUX-1396');
+    proc.stdout.emit('data', Buffer.from(JSON.stringify({
+      type: 'system',
+      subtype: 'api_retry',
+      attempt: 2,
+      max_retries: 10,
+      error: 'overloaded_error',
+    }) + '\n'));
+    await session.writeQueue;
+    expect(session.terminalReason).toBeUndefined();
+    expect(proc.kill).not.toHaveBeenCalled();
   });
 });

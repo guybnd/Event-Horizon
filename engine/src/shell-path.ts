@@ -28,30 +28,48 @@ export function looksLaunchdMinimal(pathEnv: string | undefined): boolean {
 }
 
 /**
- * Spawn the user's login shell once to read its resolved PATH. `-ilc` makes it an
- * interactive login shell so `.zprofile`/`.bash_profile`/`.zshrc` (wherever the user's
- * PATH additions actually live) run; a marker precedes the PATH so noisy rc-file output
- * (motd, nvm banners, etc.) on stdout can't be mistaken for it. No stdin, hard timeout —
- * a hung or prompting shell must not block engine startup.
+ * Spawn the user's login shell once to run an arbitrary read-only `script` and capture its
+ * stdout. `-ilc` makes it an interactive login shell so `.zprofile`/`.bash_profile`/`.zshrc`
+ * (wherever the user's PATH/alias setup actually lives) run; a marker precedes the script's
+ * output so noisy rc-file output (motd, nvm banners, etc.) on stdout can't be mistaken for it.
+ * No stdin, hard timeout — a hung or prompting shell must not block the caller.
+ *
+ * Deliberately ignores `err`: a non-zero exit from `script` itself (e.g. `command -v` finding
+ * nothing) is an expected "no match" outcome, not a probe failure — only the ABSENCE of the
+ * marker in stdout (shell never got far enough to run `script`, or failed to spawn at all)
+ * counts as a genuine probe failure, signaled by resolving `null`. A clean-but-empty result
+ * (marker found, nothing after it) resolves as `''` — callers that treat "no output" and
+ * "probe failed" the same way (like probeLoginShellPath below) collapse that themselves;
+ * callers that need to tell them apart (the darwin claude-binary resolver, FLUX-1600,
+ * claude-binary-darwin.ts — an empty `command -v` means "not found", not "shell hung") can't
+ * if this collapsed it here. Also shared by probeLoginShellPath (FLUX-1408).
  */
-export function probeLoginShellPath(
+export function probeLoginShellCommand(
   shell: string,
+  script: string,
   timeoutMs = DEFAULT_PROBE_TIMEOUT_MS
 ): Promise<string | null> {
   return new Promise((resolve) => {
     execFile(
       shell,
-      ['-ilc', `echo -n ${MARKER}; command printf '%s' "$PATH"`],
+      ['-ilc', `echo -n ${MARKER}; ${script}`],
       { timeout: timeoutMs, windowsHide: true },
-      (err, stdout) => {
-        if (err || !stdout) { resolve(null); return; }
+      (_err, stdout) => {
+        if (!stdout) { resolve(null); return; }
         const idx = stdout.indexOf(MARKER);
         if (idx === -1) { resolve(null); return; }
-        const value = stdout.slice(idx + MARKER.length).trim();
-        resolve(value || null);
+        resolve(stdout.slice(idx + MARKER.length).trim());
       }
     );
   });
+}
+
+/** PATH-flavored specialization of probeLoginShellCommand — see its doc comment for the mechanics. */
+export function probeLoginShellPath(
+  shell: string,
+  timeoutMs = DEFAULT_PROBE_TIMEOUT_MS
+): Promise<string | null> {
+  return probeLoginShellCommand(shell, 'command printf \'%s\' "$PATH"', timeoutMs).then((value) => value || null);
 }
 
 /** Union of the shell-resolved PATH (first) and the existing PATH, de-duplicated. */

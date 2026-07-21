@@ -1,6 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from 'child_process';
 import type { ChatAttachment } from '../projection.js';
 import type { AgentSessionEntry } from '../history.js';
+import type { AuthDiagnosis } from './auth-diagnostics.js';
 
 /** FLUX-674: optional per-turn extras for a chat reply (pasted image attachments). */
 export interface SendInputOptions {
@@ -177,6 +178,11 @@ export interface CliSessionSummary {
    * An extensible enum — the durable seam FLUX-996's hardened runner can build on.
    */
   terminalReason?: 'context-exhausted' | 'rate-limited' | 'auth-expired';
+  /** FLUX-1599: structured self-diagnosis attached whenever `terminalReason` is 'auth-expired' —
+   *  which binary was spawned vs. what the login shell resolves, duplicate installs, and
+   *  settings/env credential shadowing. See `agents/auth-diagnostics.ts`. Portal-visible (the
+   *  chat error card, FLUX-1601, reads this instead of the raw provider error). */
+  authDiagnosis?: AuthDiagnosis;
   liveOutput?: string;
   currentActivity?: string | undefined;
   skipPermissions?: boolean;
@@ -270,16 +276,6 @@ export interface CliSessionRecord extends CliSessionSummary {
    *  on resume so a resumed session's toolset always matches its current mission. Internal, same
    *  as personaId/focusComment above. */
   enableTools?: string[] | undefined;
-  /** FLUX-850: true when this session was launched by an unattended, no-human-present dispatch
-   *  path — the MCP `start_session` tool, a board-rebase `dispatch` verb, or Furnace's
-   *  `dispatchSession` — as opposed to a human clicking Start/Send in the portal. Portal launches
-   *  (chat send, the phase-launch buttons) route through the identical `/cli-session/start`
-   *  request and can carry the same `phase`/`skipPermissions` values, so neither is a reliable
-   *  "was a human present" signal on its own — this field is the explicit one each dispatch path
-   *  stamps itself. Consumed by `change_status`/`finish_ticket` (mcp-server.ts) to hard-gate a
-   *  dispatched+skip-permission session from silently advancing a ticket past Ready. Internal
-   *  (not part of CliSessionSummary — never exposed to the client), same as personaId/focusComment. */
-  dispatched?: boolean;
   /** Set when the session paused itself via change_status('Require Input'). */
   pausedForInput?: boolean;
   /**
@@ -335,6 +331,12 @@ export interface CliSessionRecord extends CliSessionSummary {
    *  "GitHub Copilot extension is not installed" that arrive on stderr rather than stdout
    *  are surfaced in the chat log instead of silently dropped. */
   stderrCapture?: string;
+  /** Stamped when the silent-spawn watchdog (reconcileDeadSessions, session-store.ts) killed this
+   *  session's child because it produced zero output for the whole watchdog window — a spawned CLI
+   *  that hangs without ever writing a byte (e.g. `claude` installed but never onboarded/logged in
+   *  on a fresh machine). One-shot latch so the lazy reaper never re-kills the same session while
+   *  the exit event is still in flight. Internal — not part of CliSessionSummary. */
+  hungSpawnKilledAt?: string;
   /** FLUX-1378: the session's live context size as of the LAST `result` event (non-cumulative —
    *  overwritten every turn, unlike inputTokens/etc. which accumulate). Used by
    *  `resumeOrDispatchSession`'s viability check: a session sitting near its context window is

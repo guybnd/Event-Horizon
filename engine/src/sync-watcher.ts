@@ -463,7 +463,12 @@ export class SyncWorker {
       let addAttempts = 0;
       while (addAttempts < 3) {
         try {
-          await execFileAsync('git', ['-C', storeDir, 'add', '-A']);
+          // FLUX-1596 release hygiene: routed through runGit (timeout + non-interactive env +
+          // tree-kill) — these three were the last bare git spawns added after the FLUX-997
+          // ratchet was seeded, and a bare `git push` with no timeout on the sync path is exactly
+          // the silent-hang class this gate exists to prevent. Error shape is compatible: runGit
+          // rejects with stderr in the message, so the index.lock match below keeps working.
+          await runGit(['add', '-A'], { cwd: storeDir });
           break;
         } catch (addErr: unknown) {
           const msg = addErr instanceof Error ? addErr.message : String(addErr);
@@ -477,7 +482,7 @@ export class SyncWorker {
         }
       }
 
-      await execFileAsync('git', ['-C', storeDir, 'commit', '-m', 'flux: sync (resolved conflicts)']);
+      await runGit(['commit', '-m', 'flux: sync (resolved conflicts)'], { cwd: storeDir });
       log.info('[sync-watcher] Committed merge with resolved conflicts');
     } catch (err: unknown) {
       // FLUX-994: this used to fall through uncaught — status stayed stranded at 'syncing'
@@ -491,7 +496,7 @@ export class SyncWorker {
     }
 
     try {
-      await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
+      await runGit(['push', 'origin', 'flux-data'], { cwd: storeDir });
       this.markSynced();
       log.info('[sync-watcher] Pushed resolved conflicts to remote');
     } catch (pushErr: unknown) {

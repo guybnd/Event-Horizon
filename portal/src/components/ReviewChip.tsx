@@ -96,7 +96,7 @@ export function internalApprovedChip(): JSX.Element {
   return (
     <span
       title="All current member tickets approved internally — not yet reflected as a GitHub review"
-      className="inline-flex items-center gap-1 rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-semibold text-teal-700 dark:bg-teal-500/15 dark:text-teal-300"
+      className="eh-stoic-neutral inline-flex items-center gap-1 rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-semibold text-teal-700 dark:bg-teal-500/15 dark:text-teal-300"
     >
       <ShieldCheck className="h-3 w-3" /> Reviewed (internal)
     </span>
