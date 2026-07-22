@@ -103,16 +103,36 @@ export interface CliCapabilities {
   // shared.ts) rather than a real block. Distinct from `toolGating` (generic tool restriction
   // capability, unused today) — this one specifically drives which wording buildInitialPrompt uses.
   chatEditGateEnforced: boolean;
+  // (B.9): does the WORKSPACE INSTALLER need to bake a static, project-committed
+  // "trust the event-horizon MCP server unconditionally" config into this framework at install
+  // time? Without it, a restrictive local default (Claude Code's `dontAsk` permission mode is the
+  // confirmed case) can silently deny every EH tool call from an unattended/orchestrator session —
+  // no prompt (there's no user to ask), no error anywhere but the denied session's own transcript.
+  // The per-CLI mechanism differs and only Claude's needs a DEDICATED installer step:
+  //  - claude: true  — installClaudeSettingsPermissions (workflow-installer.ts) merges
+  //    `permissions.allow: ["mcp__event-horizon"]` into the project's committed .claude/settings.json.
+  //  - gemini: false — Gemini CLI's fix is a `trust: true` field on the SAME mcpServers.event-horizon
+  //    entry every Gemini/Antigravity install already writes (buildGeminiMcpServerEntry) — solved by
+  //    construction, no separate capability-gated step needed, so this stays false to avoid a second,
+  //    redundant install path for it.
+  //  - copilot: false — confirmed (GitHub Copilot CLI docs, 2026-07-22) there is NO project-level
+  //    committable permission config: approvals persist only to the user's own home-dir
+  //    `~/.copilot/permissions-config.json`, which an installer must not write (that's personal
+  //    global state, not project state, and copilot has no `.claude/settings.json`-equivalent
+  //    project file). Engine-DISPATCHED Copilot sessions are unaffected regardless — they always
+  //    spawn with `--yolo`/`--allow-all-tools` (see copilot.ts) — this gap only affects a Copilot
+  //    CLI session a human runs manually in the project outside the engine.
+  bakesPermissionAllowlist: boolean;
 }
 
 export const CLI_CAPABILITIES: Record<CliFramework, CliCapabilities> = {
-  claude: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true, effort: { supported: true, flag: '--effort' }, persistentChat: true, selfPause: true, partialDeltas: true, permissionGating: true, nativeAskBlocked: true, spawnTimeMcpConfig: true, imageAttachments: true, chatEditGateEnforced: true },
-  gemini: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true, effort: { supported: false }, persistentChat: false, selfPause: true, partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: false, imageAttachments: false, chatEditGateEnforced: false },
+  claude: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true, effort: { supported: true, flag: '--effort' }, persistentChat: true, selfPause: true, partialDeltas: true, permissionGating: true, nativeAskBlocked: true, spawnTimeMcpConfig: true, imageAttachments: true, chatEditGateEnforced: true, bakesPermissionAllowlist: true },
+  gemini: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true, effort: { supported: false }, persistentChat: false, selfPause: true, partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: false, imageAttachments: false, chatEditGateEnforced: false, bakesPermissionAllowlist: false },
   // FLUX-984: Copilot never auto-loads workspace .mcp.json in non-interactive (-p) mode — confirmed
   // live, no permission flag changes it. spawnTimeMcpConfig:true here means "copilot.ts explicitly
   // injects the event-horizon server via --additional-mcp-config", a different flag/JSON-shape than
   // Claude's --mcp-config but the same capability concept (B.6).
-  copilot: { resume: true, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false, effort: { supported: true, flag: '--effort' }, persistentChat: false, selfPause: true, partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: true, imageAttachments: false, chatEditGateEnforced: false },
+  copilot: { resume: true, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false, effort: { supported: true, flag: '--effort' }, persistentChat: false, selfPause: true, partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: true, imageAttachments: false, chatEditGateEnforced: false, bakesPermissionAllowlist: false },
 };
 
 // FLUX-905 (audit C.17): model-family name fragments per framework, for detecting whether a

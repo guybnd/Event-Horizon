@@ -16,7 +16,7 @@ import { projectTranscript } from './projection.js';
 import { extractTicket } from './extract.js';
 import { readCurationOps, getCurationOpsFile } from './curation-ops.js';
 import { createTask } from './task-store.js';
-import { proposeBoardRebase, resolveBoardRebase } from './board-rebase.js';
+import { proposeBoardRebase, resolveBoardRebase, RebaseValidationError } from './board-rebase.js';
 
 /**
  * FLUX-656 — the `extract` curation verb. Locks the invariants the epic rests on: extract is
@@ -182,16 +182,22 @@ describe('extract verb (FLUX-656)', () => {
     ]);
   });
 
-  it('promote without a seq range reports a clear error and creates nothing', async () => {
+  it('promote without a seq range is rejected at propose time and parks nothing', async () => {
     await seedBoard(3);
-    const batch = proposeBoardRebase(
-      [{ kind: 'promote', targets: ['__board__'], summary: 'no range' }],
-      null,
-    );
-    const resolved = await resolveBoardRebase(batch.id, [batch.items[0]!.id]);
-    expect(resolved!.results[0]!.ok).toBe(false);
-    expect(resolved!.results[0]!.message).toMatch(/fromSeq and toSeq are required/);
+    expect(() =>
+      proposeBoardRebase([{ kind: 'promote', targets: ['__board__'], summary: 'no range' }], null),
+    ).toThrow(RebaseValidationError);
+    expect(() =>
+      proposeBoardRebase([{ kind: 'promote', targets: ['__board__'], summary: 'no range' }], null),
+    ).toThrow(/needs fromSeq and toSeq/);
     expect(await readCurationOps()).toHaveLength(0);
+  });
+
+  it('fold without an `into` survivor is rejected at propose time and parks nothing', async () => {
+    await seedBoard(3);
+    expect(() =>
+      proposeBoardRebase([{ kind: 'fold', targets: ['FLUX-1'], summary: 'no survivor' }], null),
+    ).toThrow(/needs "into"/);
   });
 
   /**

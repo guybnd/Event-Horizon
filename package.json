@@ -1,6 +1,6 @@
 {
   "name": "event-horizon",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "private": true,
   "description": "An IDE for the agent era — a local-first, markdown-backed ticket board and orchestration layer for coding agents.",
   "keywords": [

@@ -49,7 +49,7 @@ import { requestApproval, resolveApproval, listPendingApprovals } from './permis
 import { requestAnswer, resolveAnswer, listPendingQuestions } from './ask-questions.js';
 import { isSafeStreamId } from './transcript.js';
 import { verifyConversation } from './session-binding.js';
-import { proposeBoardRebase, resolveBoardRebase, listPendingBoardRebases } from './board-rebase.js';
+import { proposeBoardRebase, resolveBoardRebase, listPendingBoardRebases, RebaseValidationError } from './board-rebase.js';
 import { buildTriageFragment } from './board-triage.js';
 import { shutdownSharedServers } from './shared-mcp-server.js';
 import { flushOpenPrompts } from './hitl-prompts.js';
@@ -415,8 +415,19 @@ app.post('/api/board/board-rebase', requireWorkspace, (req, res) => {
     res.status(400).json({ error: 'items[] is required' });
     return;
   }
-  const batch = proposeBoardRebase(items, conversationId);
-  res.status(201).json({ id: batch.id, count: batch.items.length });
+  // FLUX-1607: an item missing a field its `kind` requires (e.g. a "promote" with no
+  // fromSeq/toSeq) is rejected HERE, before anything is parked - the proposing agent gets the
+  // fix back in the same turn instead of a human discovering the failure later at apply time.
+  try {
+    const batch = proposeBoardRebase(items, conversationId);
+    res.status(201).json({ id: batch.id, count: batch.items.length });
+  } catch (err: unknown) {
+    if (err instanceof RebaseValidationError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
 });
 app.get('/api/board/board-rebase', requireWorkspace, (_req, res) => {
   res.json({ pending: listPendingBoardRebases() });

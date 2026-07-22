@@ -74,11 +74,53 @@ export interface RebaseItemResult {
 
 const pending = new Map<string, PendingBatch>();
 
-/** Park a proposed batch and broadcast it. Returns the assigned batch (with per-item ids). */
+/** Thrown by `proposeBoardRebase` when an item is missing a field its `kind` requires. Carries
+ *  the fix straight back to the proposing agent in the SAME turn (FLUX-1607) — before this, an
+ *  incomplete `promote` item (e.g. missing `fromSeq`/`toSeq`) parked successfully and only failed
+ *  once a human clicked "Apply approved" in the portal, by which point the proposing agent session
+ *  was long gone and had no way to act on the failure. */
+export class RebaseValidationError extends Error {}
+
+/** Per-kind required-field check, run BEFORE a batch is parked. Deliberately mirrors the checks
+ *  each verb executor below already runs at apply time — duplicated so the failure surfaces here,
+ *  at propose time, while the proposing agent can still read the message and retry with a fix. */
+function validateRebaseItem(item: Omit<RebaseItem, 'id'>, index: number): string | null {
+  const label = `item ${index} (${item.kind}: "${item.summary}")`;
+  switch (item.kind) {
+    case 'promote':
+      if (typeof item.fromSeq !== 'number' || typeof item.toSeq !== 'number') {
+        return `${label} needs fromSeq and toSeq — the inclusive seq range to carve out of the source stream (targets[0], default __board__). Read that stream's turns to find the range, then retry.`;
+      }
+      break;
+    case 'fold':
+      if (!item.into) return `${label} needs "into" — the survivor ticket the sources merge into.`;
+      if (item.targets.length === 0) return `${label} needs at least one source stream in targets.`;
+      break;
+    case 'status':
+      if (!item.targets[0]) return `${label} needs a target ticket.`;
+      if (!item.newStatus) return `${label} needs newStatus.`;
+      break;
+    case 'dispatch':
+      if (!item.targets[0]) return `${label} needs a target ticket.`;
+      break;
+    case 'archive':
+      if (item.targets.length === 0) return `${label} needs at least one target.`;
+      break;
+  }
+  return null;
+}
+
+/** Park a proposed batch and broadcast it. Returns the assigned batch (with per-item ids).
+ *  Throws `RebaseValidationError` (nothing parked) if any item is missing a field its `kind`
+ *  requires — see `validateRebaseItem`. */
 export function proposeBoardRebase(
   rawItems: Array<Omit<RebaseItem, 'id'>>,
   conversationId: string | null,
 ): PendingBatch {
+  const errors = rawItems.map((it, i) => validateRebaseItem(it, i)).filter((e): e is string => e !== null);
+  if (errors.length > 0) {
+    throw new RebaseValidationError(errors.join('; '));
+  }
   const id = randomUUID();
   const createdAt = new Date().toISOString();
   const items: RebaseItem[] = rawItems.map((it) => ({ ...it, id: randomUUID() }));

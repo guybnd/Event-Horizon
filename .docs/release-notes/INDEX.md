@@ -726,3 +726,9 @@
 - **FLUX-1583/1584/1585**: Grooming skill module final compression rules.
 - Sync watcher conflict-resolution git calls routed through the hardened git runner (timeout + tree-kill).
 - Reverted the FLUX-850 hard-gate on skip-permission sessions auto-advancing past Ready (#676).
+
+
+## Release v1.9.1 — 2026-07-23
+
+- Bake event-horizon MCP permission trust into workspace installs — a restrictive local Claude Code `dontAsk` permission default could silently deny every event-horizon MCP tool call from an unattended/orchestrator session; the installer now bakes an explicit allow rule into `.claude/settings.json` (and the Gemini-CLI equivalent, a `trust: true` MCP-entry field) at install time.
+- **FLUX-1607**: Validate board-rebase promote/fold/status/dispatch items at propose time — bad `promote`/`fold`/`status`/`dispatch` items are now rejected immediately in `proposeBoardRebase()` instead of failing silently until a human clicks "Apply approved".

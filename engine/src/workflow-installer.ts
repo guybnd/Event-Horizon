@@ -7,6 +7,7 @@ import { getEnginePort } from './packaged-mode.js';
 import { signConversation } from './session-binding.js';
 import { buildCoreSkillDocument } from './skill-core.js';
 import { pathsEqual } from './workspace.js';
+import { CLI_CAPABILITIES, type CliCapabilities } from './agents/types.js';
 
 export type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
 export type ResolvedFramework = Exclude<Framework, 'auto'>;
@@ -471,6 +472,20 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
   // Install MCP config for agent tool discovery
   await installMcpConfig(targetDir, sourceRoot, resolvedFramework);
 
+  // Gate on the bakesPermissionAllowlist capability (Claude Code today) rather than a
+  // framework literal — see CliCapabilities.bakesPermissionAllowlist / installClaudeSettingsPermissions
+  // for the incident this guards against. ResolvedFramework is wider than CLI_CAPABILITIES' key set
+  // (cursor/windsurf/cline/generic aren't runtime CLI adapters), hence the Partial cast.
+  const capabilities = (CLI_CAPABILITIES as Partial<Record<ResolvedFramework, CliCapabilities>>)[resolvedFramework];
+  if (capabilities?.bakesPermissionAllowlist) {
+    try {
+      await installClaudeSettingsPermissions(targetDir);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error(`[installer] Permission rule install failed (non-fatal): ${message}`);
+    }
+  }
+
   // Hard-override sweep (FLUX-882): after writing the current skill files, delete any orphaned
   // event-horizon* files a previous (pre-refactor) install left in the EH dirs — e.g. a skill
   // module renamed/removed in a newer release. Runs on EVERY install (force-independent); it is
@@ -584,6 +599,17 @@ export function buildGeminiMcpServerEntry() {
       'x-eh-conversation-id': '${EH_CONVERSATION_ID}',
       'x-eh-conversation-token': '${EH_CONVERSATION_TOKEN}',
     },
+    // Gemini CLI prompts to confirm every tool call from an UNtrusted MCP server —
+    // in a folder without an attached interactive terminal (an unattended/orchestrator session)
+    // that confirmation can never be answered, so the call is denied with no error surfaced
+    // anywhere but the agent's own transcript (the same silent-deny class as Claude Code's
+    // `dontAsk` mode this ticket also fixes — see installClaudeSettingsPermissions below). Gemini's
+    // own per-MCP-server `trust` field (confirmed in gemini-cli docs) is the exact per-server
+    // equivalent of that fix and needs no separate installer step: it's already part of the same
+    // entry object every Gemini/Antigravity install writes via installMcpConfig. Safe because this
+    // is EH's own first-party server, not third-party — the same trust boundary Claude's baked
+    // allow rule and Copilot's engine-side `--yolo`/`--allow-all-tools` dispatch already extend it.
+    trust: true,
   };
 }
 
@@ -702,4 +728,69 @@ export async function installMcpConfig(targetDir: string, sourceRoot: string, fr
   await fs.writeFile(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
 
   log.info(`[installer] MCP config installed: ${configPath}`);
+}
+
+/** Shape of a `.claude/settings.json`-style file — only the fields this installer reads/writes. */
+interface ClaudeSettingsFile {
+  permissions?: { allow?: string[]; [key: string]: unknown };
+  [key: string]: unknown;
+}
+
+/** The permission rule that unblocks the whole event-horizon MCP toolset in one entry — Claude
+ *  Code resolves a bare `mcp__<server>` rule as "allow every tool this server exposes" (same
+ *  scoping the full `mcp__event-horizon__<tool>` names use per-tool). */
+const EVENT_HORIZON_PERMISSION_RULE = 'mcp__event-horizon';
+
+/**
+ * A project's global Claude Code permission default can be `dontAsk` (or any other
+ * mode with no interactive fallback) — a background/orchestrator session then gets ungranted MCP
+ * tool calls SILENTLY DENIED instead of prompted, since there's no user to ask. Without an
+ * explicit allow rule, every event-horizon tool call (create_ticket, change_status, ...) fails
+ * closed the moment a project relies on such a mode, with no error surfaced beyond "call was
+ * denied by the current permission mode" in the agent's own transcript — nothing in the engine
+ * sees it. Bake the allow rule into the PROJECT's committed `.claude/settings.json` at install
+ * time (same trust tier as `.mcp.json`/the rules doc this installer already writes) so it isn't
+ * left to each user's personal global settings or an unattended session to work around.
+ *
+ * Read/merge-safe like `installMcpConfig`: never touches a file it can't safely parse as a JSON
+ * object, and only APPENDS the rule if absent — a user's own allow/deny/ask customizations are
+ * preserved untouched.
+ */
+async function installClaudeSettingsPermissions(targetDir: string): Promise<void> {
+  const settingsPath = path.join(targetDir, '.claude', 'settings.json');
+
+  let existing: ClaudeSettingsFile = {};
+  try {
+    const raw = await fs.readFile(settingsPath, 'utf-8');
+    try {
+      existing = JSON.parse(raw) as ClaudeSettingsFile;
+    } catch (parseErr: unknown) {
+      const message = parseErr instanceof Error ? parseErr.message : String(parseErr);
+      console.error(`[installer] ${settingsPath} is not valid JSON (${message}); leaving it UNTOUCHED and skipping the event-horizon permission rule.`);
+      return;
+    }
+  } catch (readErr: unknown) {
+    if ((readErr as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      const message = readErr instanceof Error ? readErr.message : String(readErr);
+      console.error(`[installer] Could not read ${settingsPath} (${message}); leaving it untouched and skipping the event-horizon permission rule.`);
+      return;
+    }
+    // ENOENT: no file yet — start from an empty settings object (legitimate fresh install).
+  }
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    console.error(`[installer] ${settingsPath} did not contain a JSON object; leaving it untouched and skipping the event-horizon permission rule.`);
+    return;
+  }
+
+  existing.permissions = existing.permissions && typeof existing.permissions === 'object' && !Array.isArray(existing.permissions)
+    ? existing.permissions
+    : {};
+  const allow = Array.isArray(existing.permissions.allow) ? existing.permissions.allow : [];
+  if (allow.includes(EVENT_HORIZON_PERMISSION_RULE)) return; // already present — no write needed
+
+  existing.permissions.allow = [...allow, EVENT_HORIZON_PERMISSION_RULE];
+
+  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+  await fs.writeFile(settingsPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+  log.info(`[installer] Event Horizon permission rule installed: ${settingsPath}`);
 }

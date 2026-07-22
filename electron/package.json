@@ -1,6 +1,6 @@
 {
   "name": "event-horizon-desktop",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "private": true,
   "description": "Event Horizon desktop app",
   "main": "main.js",

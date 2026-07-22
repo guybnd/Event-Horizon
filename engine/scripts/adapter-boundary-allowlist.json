@@ -7,6 +7,7 @@
     "engine/src/resume-or-dispatch.test.ts :: framework-literal-assign :: framework: 'claude'": 1,
     "engine/src/routes/tasks/debug.ts :: adapter-deep-import :: from '../../agents/claude-code.js'": 1,
     "engine/src/workflow-installer-core.test.ts :: framework-literal-assign :: framework: 'claude'": 2,
+    "engine/src/workflow-installer-permissions.test.ts :: framework-literal-assign :: framework: 'claude'": 5,
     "portal/src/components/OnboardingWizard.tsx :: framework-literal-eq :: === 'claude'": 1,
     "portal/src/components/pendingInteractions.test.ts :: framework-literal-assign :: framework: 'claude'": 1
   }
