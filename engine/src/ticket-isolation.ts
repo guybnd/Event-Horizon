@@ -1,10 +1,10 @@
 import { getWorkspace } from './workspace-context.js';
 import { createTicketBranch } from './branch-manager.js';
-import { createTaskWorktree, reclaimWorktrees } from './task-worktree.js';
+import { createTaskWorktree, reclaimOnCapAndRetry } from './task-worktree.js';
 import { updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { buildActivityEntry } from './history.js';
-import { isWorktreeReclaimable, isTicketTerminal } from './pr-cleanup.js';
+import { isWorktreeReclaimable, isTicketTerminal, describeWorktreeSlotHolders } from './pr-cleanup.js';
 import { getWorkspaceRoot } from './workspace.js';
 
 /**
@@ -77,7 +77,12 @@ export async function ensureTicketIsolation(
         getWorkspaceRoot()!,
         ticketId,
         branch!,
-        opts.baseBranch ? { baseBranch: opts.baseBranch } : {},
+        {
+          ...(opts.baseBranch ? { baseBranch: opts.baseBranch } : {}),
+          // FLUX-1617 (Gap 3): name each occupied slot's ticket + why reclaim didn't free it, so a
+          // `limit reached` failure below is actionable instead of a bare "N/N".
+          describeSlotHolders: () => describeWorktreeSlotHolders(getWorkspaceRoot()!),
+        },
       );
       // FLUX-1305: stamp a timestamped marker the reclaim sweep's zero-commit-branch backstop
       // (pr-cleanup.ts#isWorktreeReclaimableForSweep) checks before treating a never-committed
@@ -110,26 +115,22 @@ export async function ensureTicketIsolation(
       // hard backstop so a spawn never deadlocks inside the sweep window). Reclaim any
       // such clean, idle worktree (isWorktreeReclaimable skips live-session tickets) and
       // retry ONCE before giving up — so a legit new task gets an isolated worktree
-      // instead of silently failing to start.
-      if (/limit reached/i.test(wtErr instanceof Error ? wtErr.message : String(wtErr))) {
+      // instead of silently failing to start. FLUX-1617: shared with
+      // resolveTaskExecutionRoot's recreate-on-start path via reclaimOnCapAndRetry, so both
+      // self-heal identically instead of only fresh spawns.
+      try {
         // FLUX-1112: bypass the always-on Ready-worktree grace here — this is the LAST-RESORT
         // backstop when a spawn is genuinely blocked on the concurrency cap, so a legit new task
         // must never fail to start over a buffer meant to protect an ad hoc reviewer elsewhere.
-        const reclaimed = await reclaimWorktrees(
-          getWorkspaceRoot()!,
-          (id) => isWorktreeReclaimable(id, { honorReadyGrace: false }),
+        worktree = await reclaimOnCapAndRetry(wtErr, createWorktree, getWorkspaceRoot()!, {
+          isReclaimable: (id) => isWorktreeReclaimable(id, { honorReadyGrace: false }),
           // FLUX-1405: also detach a dirty worktree on a terminal ticket here — this is the
           // last-resort backstop for a spawn genuinely blocked on the cap, so a stray dirty
           // leftover (e.g. a Done ticket's stray package-lock.json) must not keep failing it.
-          { isTerminal: isTicketTerminal },
-        ).catch(() => [] as string[]);
-        if (reclaimed.length > 0) {
-          try {
-            worktree = await createWorktree();
-          } catch (retryErr: unknown) {
-            lastErr = retryErr;
-          }
-        }
+          isTerminal: isTicketTerminal,
+        });
+      } catch (retryErr: unknown) {
+        lastErr = retryErr;
       }
       if (!worktree) {
         // The branch exists, so this call still succeeds (a manual /branch caller

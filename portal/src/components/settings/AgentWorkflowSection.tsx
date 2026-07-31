@@ -1,8 +1,11 @@
 import { useState } from 'react';
-import { installWorkspaceSkill } from '../../api';
+import { installGlobalMcpServer, installWorkspaceSkill } from '../../api';
 import type { AppView } from '../../AppContext';
 import type { SkillStatusState } from './useSkillStatus';
 import { useNotify } from '../../hooks/useNotify';
+import { useConfirm } from '../../hooks/useConfirm';
+
+const GLOBAL_MCP_FRAMEWORKS = ['claude', 'gemini', 'cursor'] as const;
 
 interface AgentWorkflowSectionProps {
   targetFramework: string;
@@ -19,6 +22,11 @@ export function AgentWorkflowSection({ targetFramework, workspacePath, setView, 
   const [skillInstalling, setSkillInstalling] = useState(false);
   const [installOverride, setInstallOverride] = useState<{ skillInstalledPath: string; instructionsInstalledPath: string } | null>(null);
   const notify = useNotify();
+  const confirm = useConfirm();
+
+  const [globalMcpFramework, setGlobalMcpFramework] = useState<typeof GLOBAL_MCP_FRAMEWORKS[number]>('claude');
+  const [globalMcpInstalling, setGlobalMcpInstalling] = useState(false);
+  const [globalMcpResult, setGlobalMcpResult] = useState<{ framework: string; installedPath: string; permissionsPath?: string } | null>(null);
 
   const handleInstallSkill = async () => {
     setSkillInstalling(true);
@@ -44,6 +52,27 @@ export function AgentWorkflowSection({ targetFramework, workspacePath, setView, 
     } catch (error) {
       console.error(error);
       notify.info(command);
+    }
+  };
+
+  const handleInstallGlobalMcp = async () => {
+    const ok = await confirm({
+      title: `Install Event Horizon into ${globalMcpFramework}'s global MCP config?`,
+      body: `This writes to your global ${globalMcpFramework} config so every project this CLI opens gets the Event Horizon MCP server — not just this workspace.`,
+      confirmLabel: 'Install',
+      tone: 'danger',
+    });
+    if (!ok) return;
+    setGlobalMcpInstalling(true);
+    try {
+      const result = await installGlobalMcpServer(globalMcpFramework);
+      setGlobalMcpResult({ framework: result.framework, installedPath: result.installedPath, permissionsPath: result.permissionsPath });
+      notify.success(`Installed Event Horizon MCP into ${result.installedPath}${result.permissionsPath ? `\nGranted permissions in ${result.permissionsPath}` : ''}`);
+    } catch (error) {
+      console.error(error);
+      notify.error(error instanceof Error ? error.message : 'Failed to install global MCP config');
+    } finally {
+      setGlobalMcpInstalling(false);
     }
   };
 
@@ -141,6 +170,52 @@ export function AgentWorkflowSection({ targetFramework, workspacePath, setView, 
             </button>
           </div>
         </div>
+      </div>
+
+      <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+        <h4 className="text-sm font-bold text-gray-800 dark:text-gray-200">Global CLI install</h4>
+        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          Installs the Event Horizon MCP server into the CLI's global config, so every project that CLI opens gets it — not just this workspace. No per-repo install needed.
+        </p>
+        <div className="mt-4 flex items-end gap-3">
+          <div>
+            <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400" htmlFor="global-mcp-framework">Target CLI</label>
+            <select
+              id="global-mcp-framework"
+              value={globalMcpFramework}
+              onChange={(e) => setGlobalMcpFramework(e.target.value as typeof GLOBAL_MCP_FRAMEWORKS[number])}
+              className="mt-1 block rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 dark:border-white/10 dark:bg-black/20 dark:text-gray-300"
+            >
+              {GLOBAL_MCP_FRAMEWORKS.map((fw) => (
+                <option key={fw} value={fw}>{fw}</option>
+              ))}
+            </select>
+          </div>
+          <button
+            onClick={handleInstallGlobalMcp}
+            disabled={globalMcpInstalling}
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${globalMcpInstalling ? 'bg-gray-200 text-gray-400 dark:bg-white/10 dark:text-gray-500' : 'bg-primary text-white hover:bg-primary-hover'}`}
+          >
+            {globalMcpInstalling ? 'Installing…' : `Install into ${globalMcpFramework} global config`}
+          </button>
+        </div>
+        {globalMcpResult && (
+          <div className="mt-3 space-y-1 text-xs text-gray-600 dark:text-gray-300">
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Installed Path</span>
+              <div className="break-all">{globalMcpResult.installedPath}</div>
+            </div>
+            {globalMcpResult.permissionsPath && (
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Permissions Path</span>
+                <div className="break-all">{globalMcpResult.permissionsPath}</div>
+              </div>
+            )}
+          </div>
+        )}
+        <p className="mt-3 text-[11px] text-gray-400">
+          Written once — if the engine later restarts on a different port, this global entry goes stale. Re-run Install to refresh the connection.
+        </p>
       </div>
     </div>
   );

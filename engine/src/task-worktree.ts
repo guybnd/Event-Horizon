@@ -59,6 +59,12 @@ export interface TaskWorktreeOptions {
   linkDependencies?: boolean;
   /** Injectable for tests (FLUX-1207) — defaults to the real killDescendantsByPid. */
   reapDescendantsByPid?: (pid: number) => Promise<number[]>;
+  /** FLUX-1617 (Gap 3): best-effort holder-naming for the `limit reached` error message — resolves
+   *  to each occupied slot's ticket id and why it isn't reclaimable right now. Omit to keep the
+   *  bare message (this module has no workspace/pr-cleanup access of its own; a caller that has one
+   *  wires it in, e.g. via pr-cleanup.ts's `describeWorktreeSlotHolders`). Best-effort: a describer
+   *  failure never blocks the underlying limit error itself. */
+  describeSlotHolders?: () => Promise<Array<{ ticketId: string; reason: string }>>;
 }
 
 /**
@@ -454,9 +460,17 @@ export async function createTaskWorktree(
   // Concurrency cap — count existing task worktrees under .eh-worktrees.
   const taskCount = worktrees.filter((w) => isUnder(w.path, base) && existsSync(w.path)).length;
   if (taskCount >= maxWorktrees) {
+    // FLUX-1617 (Gap 3): name each occupied slot's ticket + why reclaim didn't free it, so the
+    // failure is actionable instead of a bare "N/N" (the incident: 2 of 4 slots belonged to Done
+    // tickets, invisible from this message alone). Best-effort — a describer failure must never
+    // hide the underlying limit error itself.
+    const holders = opts.describeSlotHolders ? await opts.describeSlotHolders().catch(() => []) : [];
+    const holderLines = holders.length > 0
+      ? '\n' + holders.map((h) => `  - ${h.ticketId} (${h.reason})`).join('\n')
+      : '';
     throw new Error(
       `Task worktree limit reached (${taskCount}/${maxWorktrees}). ` +
-        `Finish or abandon a task before starting another.`,
+        `Finish or abandon a task before starting another.${holderLines}`,
     );
   }
 
@@ -907,10 +921,60 @@ export async function pruneTaskWorktrees(
  * mid-resume — its adapter guard fails closed on the returned `workspaceRoot`
  * instead.
  */
+/**
+ * FLUX-1617 (Gap 1): reclaim-then-retry-once cap self-heal, factored out of
+ * `ensureTicketIsolation`'s original inline block (FLUX-1018/1031) so `resolveTaskExecutionRoot`'s
+ * recreate-on-start path gets the same self-heal a fresh spawn already had — this is the incident
+ * this ticket exists to fix: a Todo ticket whose worktree had vanished hit the concurrency cap and
+ * hard-failed even though 2 of the 4 slots belonged to Done tickets.
+ *
+ * Takes the reclaim predicate as a PARAMETER, mirroring {@link reclaimWorktrees} itself — pr-cleanup.ts
+ * (home of `isWorktreeReclaimable`/`isTicketTerminal`) already imports FROM this module, so a static
+ * import the other way would cycle. A caller that already depends on pr-cleanup.ts supplies its
+ * `isWorktreeReclaimable` (with `{ honorReadyGrace: false }` — this is a last-resort backstop, not
+ * the eager/graced sweep) and `isTicketTerminal`.
+ *
+ * On a genuine cap hit with something reclaimed, returns `make()`'s result (may itself throw, which
+ * propagates as-is). Otherwise — the error wasn't a cap hit, or nothing was reclaimable — re-throws
+ * `originalError` untouched, so callers keep a single catch path regardless of which branch ran.
+ */
+export async function reclaimOnCapAndRetry<T>(
+  originalError: unknown,
+  make: () => Promise<T>,
+  workspaceRoot: string,
+  reclaim: {
+    isReclaimable: (ticketId: string) => boolean | string | Promise<boolean | string>;
+    isTerminal?: (ticketId: string) => boolean | Promise<boolean>;
+  },
+): Promise<T> {
+  if (!/limit reached/i.test(originalError instanceof Error ? originalError.message : String(originalError))) {
+    throw originalError;
+  }
+  const reclaimed = await reclaimWorktrees(workspaceRoot, reclaim.isReclaimable, {
+    ...(reclaim.isTerminal ? { isTerminal: reclaim.isTerminal } : {}),
+  }).catch(() => [] as string[]);
+  if (reclaimed.length === 0) throw originalError;
+  return make();
+}
+
 export async function resolveTaskExecutionRoot(
   task: { id?: string; branch?: string } | undefined,
   workspaceRoot: string,
-  opts: { gitRunner?: GitRunner; create?: boolean; baseBranch?: string | undefined; maxWorktrees?: number } = {},
+  opts: {
+    gitRunner?: GitRunner;
+    create?: boolean;
+    baseBranch?: string | undefined;
+    maxWorktrees?: number;
+    /** FLUX-1617 (Gap 1): cap self-heal for the recreate-on-start path below, shared with
+     *  ensureTicketIsolation's fresh-spawn path via {@link reclaimOnCapAndRetry}. Omit to keep the
+     *  old fail-fast behavior (read-only/test callers) — a production spawn/resume caller should
+     *  always pass its `isWorktreeReclaimable`/`isTicketTerminal` here. */
+    isReclaimable?: (ticketId: string) => boolean | string | Promise<boolean | string>;
+    isTerminal?: (ticketId: string) => boolean | Promise<boolean>;
+    /** FLUX-1617 (Gap 3): forwarded into `createTaskWorktree` so a cap error this path wraps
+     *  already names its holders — see `TaskWorktreeOptions.describeSlotHolders`. */
+    describeSlotHolders?: () => Promise<Array<{ ticketId: string; reason: string }>>;
+  } = {},
 ): Promise<string> {
   const branch = task?.branch;
   if (!branch) return workspaceRoot;
@@ -933,8 +997,8 @@ export async function resolveTaskExecutionRoot(
   // than silently running the agent on master. Requires a ticket id to name it.
   const id = task?.id;
   if (!id) return workspaceRoot;
-  try {
-    return await createTaskWorktree(
+  const makeWorktree = () =>
+    createTaskWorktree(
       workspaceRoot,
       id,
       branch,
@@ -942,14 +1006,37 @@ export async function resolveTaskExecutionRoot(
         ...(opts.gitRunner ? { gitRunner: opts.gitRunner } : {}),
         ...(opts.baseBranch ? { baseBranch: opts.baseBranch } : {}),
         ...(opts.maxWorktrees != null ? { maxWorktrees: opts.maxWorktrees } : {}),
+        ...(opts.describeSlotHolders ? { describeSlotHolders: opts.describeSlotHolders } : {}),
       },
     );
-  } catch (err: unknown) {
-    throw new Error(
+  // Wraps whichever error is live at the throw site (the original cap hit, or the retry's own
+  // failure) — kept as a helper so BOTH throw sites below bind `cause` directly to their own
+  // catch-clause identifier rather than through a reassigned intermediate variable.
+  const wrapMissingError = (cause: unknown) =>
+    new Error(
       `Worktree for ${id} on branch '${branch}' is missing and could not be recreated ` +
-        `(${err instanceof Error ? err.message : err}) — refusing to run the agent on master.`,
-      { cause: err },
+        `(${cause instanceof Error ? cause.message : cause}) — refusing to run the agent on master.`,
+      { cause },
     );
+  try {
+    return await makeWorktree();
+  } catch (err: unknown) {
+    // FLUX-1617 (Gap 1): give this recreate-on-start path the same cap self-heal
+    // ensureTicketIsolation's fresh-spawn path already has (FLUX-1018/1031) — the exact incident this
+    // ticket fixes: a Todo ticket's worktree had vanished, recreation hit the cap, and this catch
+    // previously wrapped it straight into the fatal "missing and could not be recreated" error with
+    // no reclaim attempt at all, even though stale Done-ticket slots could have freed one.
+    if (opts.isReclaimable) {
+      try {
+        return await reclaimOnCapAndRetry(err, makeWorktree, workspaceRoot, {
+          isReclaimable: opts.isReclaimable,
+          ...(opts.isTerminal ? { isTerminal: opts.isTerminal } : {}),
+        });
+      } catch (retryErr: unknown) {
+        throw wrapMissingError(retryErr);
+      }
+    }
+    throw wrapMissingError(err);
   }
 }
 

@@ -1,9 +1,9 @@
 import { getWorkspace, type Workspace } from './workspace-context.js';
 import { log } from './log.js';
-import { findWorktreeForBranch, removeTaskWorktree, detachTaskWorktree, stashDirtyTree, unlinkWorktreeDependencies, reclaimWorktrees } from './task-worktree.js';
+import { findWorktreeForBranch, removeTaskWorktree, detachTaskWorktree, stashDirtyTree, unlinkWorktreeDependencies, reclaimWorktrees, listTaskWorktrees, ticketIdFromWorktreePath } from './task-worktree.js';
 import { getDefaultBranch, deleteTicketBranch, getPullRequestStatus, getTicketBranchStatus, getOpenPullRequestsWithBase } from './branch-manager.js';
 import { addNotification } from './notifications.js';
-import { stopAllSessionsForTask, getActiveSessionsForTask, isWithinReclaimGrace, RECLAIM_GRACE_MS } from './session-store.js';
+import { stopAllSessionsForTask, getActiveSessionsForTask, isWithinReclaimGrace, RECLAIM_GRACE_MS, isSessionStale } from './session-store.js';
 import { updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { getConfig } from './config.js';
@@ -160,6 +160,67 @@ export function isTicketTerminal(ticketId: string, ws: Workspace = getWorkspace(
   return !!t && TERMINAL_TICKET_STATUSES.has(t.status);
 }
 
+/** Human-readable reason for each {@link UnreclaimableReason} — FLUX-1617 Gap 3. */
+const UNRECLAIMABLE_LABEL: Record<UnreclaimableReason, string> = {
+  'unknown-ticket': 'ticket not found on the board',
+  'live-session': 'a session is still live on its branch',
+  'recent-activity': 'recently active — briefly protected from reclaim',
+  status: 'ticket status is not yet reclaimable (not Ready/terminal)',
+};
+
+/**
+ * Name every ticket currently holding a task worktree slot, with why {@link worktreeUnreclaimableReason}
+ * refused it — FLUX-1617 Gap 3. Meant to be handed into `createTaskWorktree`'s `describeSlotHolders`
+ * so a `Task worktree limit reached` error enumerates its holders instead of a bare `(N/N)` (the
+ * incident: 2 of 4 slots belonged to Done tickets, invisible from the bare message alone). Best-effort
+ * — a listing failure yields an empty list rather than blocking the caller's own error.
+ */
+export async function describeWorktreeSlotHolders(
+  workspaceRoot: string,
+  ws: Workspace = getWorkspace(),
+): Promise<Array<{ ticketId: string; reason: string }>> {
+  const worktrees = await listTaskWorktrees(workspaceRoot).catch(() => []);
+  const holders: Array<{ ticketId: string; reason: string }> = [];
+  for (const wt of worktrees) {
+    const ticketId = ticketIdFromWorktreePath(workspaceRoot, wt.path);
+    if (!ticketId) continue;
+    const unreclaimable = worktreeUnreclaimableReason(ticketId, {}, ws);
+    if (unreclaimable) {
+      holders.push({ ticketId, reason: UNRECLAIMABLE_LABEL[unreclaimable] });
+      continue;
+    }
+    // Reclaimable by status/session, yet still on disk — the only reason reclaimWorktrees would
+    // have skipped it is a dirty tree (uncommitted work reclaim never discards).
+    const { stdout } = await runGit(['status', '--porcelain'], { cwd: wt.path }).catch(() => ({ stdout: '' }));
+    holders.push({
+      ticketId,
+      reason: stdout.trim().length > 0 ? 'uncommitted changes (dirty tree) — reclaim left it alone' : 'idle — not yet reclaimed',
+    });
+  }
+  return holders;
+}
+
+/**
+ * FLUX-1617: ready-to-spread `resolveTaskExecutionRoot` opts wiring its Gap 1 cap self-heal + Gap 3
+ * holder-naming to THIS module's own reclaim/terminal/holder machinery. Every fresh-spawn/resume
+ * call site (the adapters' `startCliSession`, furnace-stoker's resume-worktree-recreate) spreads
+ * this in so a missing worktree self-heals identically to `ensureTicketIsolation`'s fresh-spawn path
+ * — `task-worktree.ts` itself cannot default to this (pr-cleanup.ts already imports FROM it).
+ */
+export function resolveExecutionRootReclaimOpts(workspaceRoot: string): {
+  isReclaimable: (ticketId: string) => boolean;
+  isTerminal: (ticketId: string) => boolean;
+  describeSlotHolders: () => Promise<Array<{ ticketId: string; reason: string }>>;
+} {
+  return {
+    // FLUX-1112: bypass the always-on Ready-worktree grace here — this is the LAST-RESORT backstop
+    // when a spawn/resume is genuinely blocked on the concurrency cap.
+    isReclaimable: (ticketId: string) => isWorktreeReclaimable(ticketId, { honorReadyGrace: false }),
+    isTerminal: isTicketTerminal,
+    describeSlotHolders: () => describeWorktreeSlotHolders(workspaceRoot),
+  };
+}
+
 /**
  * FLUX-1214 backstop: on top of the ordinary {@link worktreeUnreclaimableReason} gate, ALSO reclaim
  * a worktree whose ticket is refused solely for `'status'` (not Ready/terminal) when its branch
@@ -250,17 +311,34 @@ function hasRecentSessionActivity(t: CachedTicket, now: number = Date.now(), gra
 }
 
 /**
+ * Does ticket `ticketId` have an active session that still pins its worktree? True the instant
+ * ANY active session exists on a NON-terminal ticket (never yank live/in-flight work). For a
+ * TERMINAL ticket (Done/Released/Archived), a session stale past {@link STALE_SESSION_RECLAIM_MS}
+ * (FLUX-1617) no longer counts — only a fresh/active session still pins it. This is the fix for the
+ * "96h-stale chat session pins a Done ticket's slot forever" half of the incident: the ticket already
+ * reached a terminal status, so nobody is coming back to a session that's been silent for a day.
+ */
+function sessionsPinTicket(ticketId: string, ws: Workspace, now: number): boolean {
+  const sessions = getActiveSessionsForTask(ticketId);
+  if (sessions.length === 0) return false;
+  if (!isTicketTerminal(ticketId, ws)) return true;
+  return sessions.some((s) => !isSessionStale(s, now));
+}
+
+/**
  * Is any session live on `branch` — the directory-owning ticket's OR a joined sibling's
  * (any other ticket whose `branch` is this branch)? Branch-scoped so a ticket that Joined
  * the worktree's branch (the review-bug-fix ride-along) can't be reclaimed out from under.
- * Falls back to the owning-ticket-only check when the ticket carries no branch.
+ * Falls back to the owning-ticket-only check when the ticket carries no branch. Each ticket's
+ * pinning is evaluated on its OWN terminality (FLUX-1617) — a stale session is relaxed only for
+ * the specific ticket that is itself terminal, never widened to a non-terminal sibling.
  */
-function hasLiveSessionOnBranch(branch: string | undefined, ownerId: string, ws: Workspace): boolean {
-  if (getActiveSessionsForTask(ownerId).length > 0) return true;
+function hasLiveSessionOnBranch(branch: string | undefined, ownerId: string, ws: Workspace, now: number = Date.now()): boolean {
+  if (sessionsPinTicket(ownerId, ws, now)) return true;
   if (!branch) return false;
   for (const t of Object.values(ws.tasks) as CachedTicket[]) {
     if (t.id === ownerId || t.branch !== branch) continue;
-    if (getActiveSessionsForTask(t.id).length > 0) return true;
+    if (sessionsPinTicket(t.id, ws, now)) return true;
   }
   return false;
 }

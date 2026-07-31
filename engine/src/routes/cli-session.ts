@@ -13,6 +13,7 @@ import {
   getCliSessionSummaryForTask,
   getAllSessionSummariesForTask,
   getActiveSessionsForTask,
+  stopCliSession,
   getPreferredInputSessionId,
   getSessionGroup,
   checkPathConflicts,
@@ -1704,26 +1705,19 @@ router.post('/:id/cli-session/stop', async (req, res) => {
     return res.status(409).json({ error: 'CLI session is already finished', session: getCliSessionSummaryForTask(id) || null });
   }
 
-  let adapter;
   try {
-    adapter = getAdapter(session.framework);
+    getAdapter(session.framework);
   } catch {
     return res.status(400).json({ error: `Unsupported framework: ${session.framework}` });
   }
 
-  session.requestedStop = true;
-  session.status = 'cancelled';
-  session.endedAt = new Date().toISOString();
+  const label = session.label;
+  stopCliSession(sessionId);
   await updateTaskWithHistory(id, {
     updatedBy: 'Agent',
-    entries: [buildActivityEntry(`${session.label} session stopped.`, 'Agent', session.endedAt)],
+    entries: [buildActivityEntry(`${label} session stopped.`, 'Agent', session.endedAt!)],
   }, req.workspace);
-  try {
-    adapter.stop(session);
-    res.json({ session: getCliSessionSummaryForTask(id) });
-  } catch (error: unknown) {
-    res.status(500).json({ error: errorMessage(error, 'Failed to stop CLI session') });
-  }
+  res.json({ session: getCliSessionSummaryForTask(id) });
 });
 
 export default router;

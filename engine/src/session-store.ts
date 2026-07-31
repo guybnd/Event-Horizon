@@ -254,6 +254,33 @@ export function getActiveSessionsForTask(taskId: string): CliSessionRecord[] {
     .filter((s): s is CliSessionRecord => !!s && ['pending', 'running', 'waiting-input', 'scheduled'].includes(s.status));
 }
 
+/**
+ * Programmatic single-session stop (FLUX-1613): the only prior stop logic lived inline in the
+ * `cli-session.ts` stop route — this is that same sequence (mark cancelled, kill the process tree)
+ * factored out so a non-route caller (the plan gate's interrupt-and-revise path) can stop one
+ * in-flight session without going through HTTP. Kills via `killProcessTree(session.proc)` directly
+ * (like `stopAllCliSessions`/`stopCliSessionsForWorkspace` above), NOT via `getAdapter(...).stop()`
+ * — importing `./agents/index.js` here would be circular (agents/copilot.ts, claude-code.ts, and
+ * gemini.ts all import from this module). No-op returning false when the session doesn't exist or
+ * is already terminal (not in `ACTIVE_STATUSES`) — mirrors the route's "already finished" 409
+ * guard, just without a response.
+ */
+export function stopCliSession(sessionId: string): boolean {
+  const session = cliSessionsById.get(sessionId);
+  if (!session || !ACTIVE_STATUSES.has(session.status)) return false;
+  session.requestedStop = true;
+  session.status = 'cancelled';
+  session.endedAt = new Date().toISOString();
+  if (session.proc) {
+    try {
+      killProcessTree(session.proc);
+    } catch (error) {
+      console.warn(`Failed to stop CLI session ${sessionId}:`, error);
+    }
+  }
+  return true;
+}
+
 // Positions marking a session as a group SUBORDINATE — spawned to serve another session (a
 // supervisor delegate or a scatter-gather/relay step), never the thread the user is addressing.
 // 'standalone' is stripped at registration (cli-session.ts createPendingSession), so solo
@@ -1143,6 +1170,31 @@ export function armReclaimGrace(now: number = Date.now()): void {
 }
 export function isWithinReclaimGrace(now: number = Date.now()): boolean {
   return now < reclaimGraceUntil;
+}
+
+// ── Stale-session reclaim relaxation (FLUX-1617) ──────────────────────────────
+// How long a session may sit with zero output/input activity before it stops pinning a worktree
+// for reclaim purposes (pr-cleanup's worktreeUnreclaimableReason/hasLiveSessionOnBranch). Only
+// ever consulted for a session whose OWNING TICKET is already terminal (Done/Released/Archived) —
+// a stale session on a still-open ticket keeps pinning its worktree regardless (see
+// hasLiveSessionOnBranch's caller-side terminal check). Deliberately generous (24h): this only
+// frees a slot a long-dead session (e.g. a chat/agent session stuck in `waiting-input` for days)
+// would otherwise hog forever on a ticket nobody is coming back to.
+export const STALE_SESSION_RECLAIM_MS = 24 * 60 * 60_000;
+
+/**
+ * Is `session`'s last known activity older than `thresholdMs`? Mirrors `reapHungSilentSpawn`'s
+ * `lastOutputAt ?? lastInputAt ?? startedAt` derivation. A session with no parseable timestamp at
+ * all fails safe (`false` — not stale) rather than let a bookkeeping gap free a slot it shouldn't.
+ */
+export function isSessionStale(
+  session: Pick<CliSessionRecord, 'lastOutputAt' | 'lastInputAt' | 'startedAt'>,
+  now: number = Date.now(),
+  thresholdMs: number = STALE_SESSION_RECLAIM_MS,
+): boolean {
+  const lastActivity = Date.parse(session.lastOutputAt ?? session.lastInputAt ?? session.startedAt) || 0;
+  if (!lastActivity) return false;
+  return now - lastActivity >= thresholdMs;
 }
 
 // Test-only: reset the stub/grace module state between cases.

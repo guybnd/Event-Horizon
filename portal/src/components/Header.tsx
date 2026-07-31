@@ -43,17 +43,20 @@ const NavItem = memo(function NavItem({
 }) {
   const isActive = view === target;
   const tint = NAV_TINTS[target];
+  // FLUX-1619: fixed-width slot per item — the label used to reveal by growing sideways and
+  // shoving every sibling to the right. It now reveals stacked under the icon (height only), so
+  // no button ever moves its own edges or a neighbour's position.
   return (
     <button
       onClick={() => onClick(target)}
-      className={`group flex items-center py-1.5 rounded-lg text-[13px] font-semibold transition-all duration-200 cursor-pointer overflow-hidden active:scale-95 ${isActive ? 'shadow-sm px-3' : 'px-2 opacity-70 hover:opacity-100 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]'}`}
+      className={`group flex w-16 shrink-0 flex-col items-center justify-center gap-0.5 overflow-hidden rounded-lg py-1.5 text-[13px] font-semibold transition-all duration-200 cursor-pointer active:scale-95 ${isActive ? 'shadow-sm' : 'opacity-70 hover:opacity-100 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]'}`}
       style={isActive
         ? { background: `color-mix(in srgb, ${tint} 16%, transparent)`, color: tint, boxShadow: '0 1px 3px var(--eh-shadow-color)' }
         : { color: tint }}
     >
       <span className="shrink-0">{icon}</span>
       <span
-        className={`whitespace-nowrap transition-all duration-200 overflow-hidden ${isActive ? 'max-w-[80px] opacity-100 ml-2' : 'max-w-0 opacity-0 group-hover:max-w-[80px] group-hover:opacity-100 group-hover:ml-2'}`}
+        className={`whitespace-nowrap overflow-hidden text-[10px] leading-none transition-all duration-200 ${isActive ? 'max-h-[12px] opacity-100' : 'max-h-0 opacity-0 group-hover:max-h-[12px] group-hover:opacity-100 group-focus-visible:max-h-[12px] group-focus-visible:opacity-100'}`}
       >
         {label}
       </span>
@@ -243,7 +246,7 @@ export function Header({ onToggleTerminal, terminalOpen }: { onToggleTerminal?: 
             <NavItem view={view} target="changes" icon={<GitCompare className="w-4 h-4" />} label="Changes" onClick={handleSetView} />
             <NavItem view={view} target="epics" icon={<Target className="w-4 h-4" />} label="Epics" onClick={handleSetView} />
             <NavItem view={view} target="releases" icon={<Tag className="w-4 h-4" />} label="Releases" onClick={handleSetView} />
-            <NavItem view={view} target="token-costs" icon={<Coins className="w-4 h-4" />} label="Token Costs" onClick={handleSetView} />
+            <NavItem view={view} target="token-costs" icon={<Coins className="w-4 h-4" />} label="Costs" onClick={handleSetView} />
             <NavItem view={view} target="docs" icon={<FileText className="w-4 h-4" />} label="Docs" onClick={handleSetView} />
             <NavItem view={view} target="workflows" icon={<Workflow className="w-4 h-4" />} label="Workflows" onClick={handleSetView} />
             <NavItem view={view} target="settings" icon={<SettingsIcon className="w-4 h-4" />} label="Settings" onClick={handleSetView} />

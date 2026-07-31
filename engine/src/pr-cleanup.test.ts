@@ -20,6 +20,7 @@ import {
   rehydrateSessionStubs,
   armReclaimGrace,
   __resetSessionStubStateForTests,
+  STALE_SESSION_RECLAIM_MS,
 } from './session-store.js';
 import { rehydrateTemper, isTempering, __resetTemperForTests } from './temper.js';
 import type { CliSessionRecord } from './agents/types.js';
@@ -141,6 +142,19 @@ function addLiveSession(taskId: string, sessionId: string): void {
   registerSession(taskId, sessionId);
 }
 
+/** Register an active session with an explicit last-activity timestamp, for FLUX-1617's
+ *  stale-session staleness checks (isSessionStale reads lastOutputAt ?? lastInputAt ?? startedAt). */
+function addSessionWithActivity(taskId: string, sessionId: string, lastOutputAt: string): void {
+  cliSessionsById.set(sessionId, {
+    id: sessionId,
+    taskId,
+    status: 'waiting-input',
+    startedAt: lastOutputAt,
+    lastOutputAt,
+  } as CliSessionRecord);
+  registerSession(taskId, sessionId);
+}
+
 /** Commit a change on a task branch's worktree (so it has commits ahead, like a real Ready branch). */
 async function commitInWorktree(wt: string, file: string): Promise<void> {
   await gitC(wt, ['config', 'user.email', 'test@test.com']);
@@ -205,6 +219,46 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
       getWorkspace().tasks['FLUX-2'] = { id: 'FLUX-2', status: 'In Progress', branch: 'flux/two' };
       addLiveSession('FLUX-2', 'sess-2');
       expect(isWorktreeReclaimable('FLUX-1')).toBe(true);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // FLUX-1617 Gap 2 — a session idle past STALE_SESSION_RECLAIM_MS no longer pins a worktree
+  // reclaim-wise, but ONLY when the owning ticket is already terminal (Done/Released/Archived).
+  // A stale session on a still-open ticket, and any fresh/active session regardless of status,
+  // must still pin — this only frees a slot a long-dead chat/agent session would otherwise hog
+  // forever on a ticket nobody is coming back to.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('stale-session reclaim relaxation (FLUX-1617 Gap 2)', () => {
+    const staleAt = () => new Date(Date.now() - STALE_SESSION_RECLAIM_MS - 60_000).toISOString();
+    const freshAt = () => new Date().toISOString();
+
+    it('is reclaimable when a TERMINAL ticket has only a stale session', () => {
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Done' };
+      addSessionWithActivity('FLUX-1', 'sess-1', staleAt());
+      expect(isWorktreeReclaimable('FLUX-1')).toBe(true);
+    });
+
+    it('is NOT reclaimable when a NON-terminal ticket has only a stale session', () => {
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'In Progress' };
+      addSessionWithActivity('FLUX-1', 'sess-1', staleAt());
+      expect(isWorktreeReclaimable('FLUX-1')).toBe(false);
+    });
+
+    it('is NOT reclaimable when a TERMINAL ticket has a fresh/active session', () => {
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Done' };
+      addSessionWithActivity('FLUX-1', 'sess-1', freshAt());
+      expect(isWorktreeReclaimable('FLUX-1')).toBe(false);
+    });
+
+    it('never widens relaxation to a NON-terminal branch-sibling (stale owner, live sibling)', () => {
+      // Owner is terminal with only a stale session (reclaimable on its own), but a JOINED
+      // non-terminal sibling on the same branch has a stale session too — the sibling's own
+      // ticket is non-terminal, so its session must still pin the shared worktree.
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Done', branch: 'flux/shared' };
+      getWorkspace().tasks['FLUX-2'] = { id: 'FLUX-2', status: 'In Progress', branch: 'flux/shared' };
+      addSessionWithActivity('FLUX-2', 'sess-2', staleAt());
+      expect(isWorktreeReclaimable('FLUX-1')).toBe(false);
     });
   });
 

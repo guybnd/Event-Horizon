@@ -820,6 +820,19 @@ export async function installWorkspaceSkill(framework: string = 'auto'): Promise
   return res.json();
 }
 
+export async function installGlobalMcpServer(framework: string = 'claude'): Promise<{ success: boolean; framework: string; installedPath: string; permissionsPath?: string }> {
+  const res = await ehFetch(`/skill/install-global-mcp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ framework }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to install global MCP config');
+  }
+  return res.json();
+}
+
 export const saveConfig = async (config: Config): Promise<Config> => {
   const response = await ehFetch(`/config`, {
     method: 'PUT',
@@ -969,14 +982,17 @@ export async function startPlanReview(taskId: string): Promise<{ ok: boolean; me
  *  grooming revise session, and registers it with the plan-gate runner so the revision is
  *  automatically re-reviewed. Replaces the old two-step (dispatch session, then a follow-up PUT to
  *  clear the verdict) that could strand a stale changes-requested card when the second call failed. */
-export async function startPlanRevise(taskId: string, opts: { notes?: string; user?: string } = {}): Promise<{ ok: boolean; message: string }> {
+export async function startPlanRevise(taskId: string, opts: { notes?: string; user?: string; interrupt?: boolean } = {}): Promise<{ ok: boolean; message?: string; reason?: string }> {
   const res = await ehFetch(`/tasks/${taskId}/plan-review/revise`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(opts),
   });
   const payload = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(payload.error || 'Failed to send the plan for re-grooming');
+  if (!res.ok) {
+    if (res.status === 409) return { ok: false, reason: payload.reason, message: payload.error };
+    throw new Error(payload.error || 'Failed to send the plan for re-grooming');
+  }
   return payload;
 }
 

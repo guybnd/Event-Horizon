@@ -43,6 +43,7 @@ import {
   checkPathConflicts,
   validatePatternSupport,
   stopAllSessionsForTask,
+  stopCliSession,
   reapStaleParkedSessions,
   reconcileDeadSessions,
   getActiveSessionCount,
@@ -694,6 +695,35 @@ describe('session-store', () => {
 
       stopAllSessionsForTask('FLUX-1', 'test');
       expect(sessDone.status).toBe('completed');
+    });
+  });
+
+  // FLUX-1613: the single-session stop helper extracted out of the cli-session.ts stop route, so a
+  // non-route caller (the plan gate's interrupt-and-revise path) can stop one in-flight session
+  // programmatically.
+  describe('stopCliSession (FLUX-1613)', () => {
+    it('marks the session cancelled and sets endedAt', () => {
+      const sess = createMockSession({ id: 'sess-a', taskId: 'FLUX-1', status: 'running' });
+      cliSessionsById.set('sess-a', sess);
+
+      const result = stopCliSession('sess-a');
+
+      expect(result).toBe(true);
+      expect(sess.status).toBe('cancelled');
+      expect(sess.requestedStop).toBe(true);
+      expect(sess.endedAt).toBeDefined();
+    });
+
+    it('is a no-op returning false when the session id is unknown', () => {
+      expect(stopCliSession('does-not-exist')).toBe(false);
+    });
+
+    it('is a no-op returning false when the session is already terminal', () => {
+      const sess = createMockSession({ id: 'sess-done', taskId: 'FLUX-1', status: 'completed' });
+      cliSessionsById.set('sess-done', sess);
+
+      expect(stopCliSession('sess-done')).toBe(false);
+      expect(sess.status).toBe('completed');
     });
   });
 

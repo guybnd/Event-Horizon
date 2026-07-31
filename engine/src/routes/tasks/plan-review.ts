@@ -37,10 +37,11 @@ router.post('/:id/plan-review/start', async (req, res) => {
 router.post('/:id/plan-review/revise', async (req, res) => {
   const { id } = req.params;
   if (!getWorkspace().tasks[id]) return res.status(404).json({ error: `Ticket ${id} not found` });
-  const { notes, user } = (req.body ?? {}) as { notes?: unknown; user?: unknown };
+  const { notes, user, interrupt } = (req.body ?? {}) as { notes?: unknown; user?: unknown; interrupt?: unknown };
   const result = await startPlanReviseNow(id, {
     ...(typeof notes === 'string' ? { notes } : {}),
     ...(typeof user === 'string' ? { user } : {}),
+    ...(typeof interrupt === 'boolean' ? { interrupt } : {}),
   });
   if (!result.ok) return res.status(planGateStatusFor(result.reason)).json({ error: result.message, reason: result.reason });
   res.json({ ok: true, message: result.message });

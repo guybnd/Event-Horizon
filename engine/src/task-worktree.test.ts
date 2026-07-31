@@ -644,6 +644,37 @@ describe('task-worktree', () => {
       ).rejects.toThrow(/limit reached/i);
     });
 
+    // FLUX-1617 Gap 3: a bare "(N/N)" names no holders, so a caller with no describer keeps the
+    // old message — but a caller that supplies one gets an actionable, per-slot breakdown.
+    it('keeps the bare limit message when no describer is supplied', async () => {
+      await createTaskWorktree(repo, 'FLUX-1', 'flux/a', { maxWorktrees: 1 });
+      await expect(createTaskWorktree(repo, 'FLUX-2', 'flux/b', { maxWorktrees: 1 })).rejects.toThrow(
+        /^Task worktree limit reached \(1\/1\)\. Finish or abandon a task before starting another\.$/,
+      );
+    });
+
+    it('enumerates slot holders in the limit-reached error when a describer is supplied', async () => {
+      await createTaskWorktree(repo, 'FLUX-1', 'flux/a', { maxWorktrees: 1 });
+      await expect(
+        createTaskWorktree(repo, 'FLUX-2', 'flux/b', {
+          maxWorktrees: 1,
+          describeSlotHolders: async () => [{ ticketId: 'FLUX-1', reason: 'ticket status is not yet reclaimable (not Ready/terminal)' }],
+        }),
+      ).rejects.toThrow(/limit reached \(1\/1\).*FLUX-1 \(ticket status is not yet reclaimable/s);
+    });
+
+    it('does not let a describer failure hide the underlying limit error', async () => {
+      await createTaskWorktree(repo, 'FLUX-1', 'flux/a', { maxWorktrees: 1 });
+      await expect(
+        createTaskWorktree(repo, 'FLUX-2', 'flux/b', {
+          maxWorktrees: 1,
+          describeSlotHolders: async () => {
+            throw new Error('describer boom');
+          },
+        }),
+      ).rejects.toThrow(/limit reached \(1\/1\)/);
+    });
+
     it('does not count a manually-deleted (unpruned) worktree toward the cap', async () => {
       const a = await createTaskWorktree(repo, 'FLUX-1', 'flux/a', { maxWorktrees: 2 });
       await createTaskWorktree(repo, 'FLUX-2', 'flux/b', { maxWorktrees: 2 });
@@ -1106,6 +1137,53 @@ describe('task-worktree', () => {
       await expect(
         resolveTaskExecutionRoot({ id: 'FLUX-5', branch: 'flux/FLUX-5' }, repo, { maxWorktrees: 1 }),
       ).rejects.toThrow(/missing and could not be recreated|refusing to run the agent on master/i);
+    });
+
+    // FLUX-1617 Gap 1: the recreate-on-start path gets the SAME cap self-heal a fresh spawn
+    // already had via ensureTicketIsolation (FLUX-1018/1031) — mirrors
+    // ticket-isolation.test.ts's "self-heals a full cap" case at this layer. This is the exact
+    // incident the ticket fixes: a ticket's worktree had vanished, recreation hit the cap, and
+    // without `isReclaimable` wired in this used to hard-fail even though a stale terminal slot
+    // could have freed one.
+    it('self-heals a full cap by reclaiming a stale terminal worktree, then retries once', async () => {
+      await createTaskWorktree(repo, 'FLUX-10', 'flux/FLUX-10', { maxWorktrees: 1 });
+
+      const root = await resolveTaskExecutionRoot({ id: 'FLUX-11', branch: 'flux/FLUX-11' }, repo, {
+        maxWorktrees: 1,
+        isReclaimable: (id: string) => id === 'FLUX-10',
+        isTerminal: () => true,
+      });
+
+      expect(existsSync(root)).toBe(true);
+      expect(sameDir(root, taskWorktreeDir(repo, 'FLUX-11'))).toBe(true);
+      expect(await currentBranch(root)).toBe('flux/FLUX-11');
+      // FLUX-10's stale worktree was reclaimed to make room — only FLUX-11 remains.
+      expect(await listTaskWorktrees(repo)).toHaveLength(1);
+    });
+
+    // Without a reclaimable slot, the cap self-heal has nothing to reclaim and still fails closed
+    // — proves `isReclaimable` is consulted (not a blanket bypass of the cap).
+    it('still throws when isReclaimable is wired in but nothing is actually reclaimable', async () => {
+      await createTaskWorktree(repo, 'FLUX-12', 'flux/FLUX-12', { maxWorktrees: 1 });
+      await expect(
+        resolveTaskExecutionRoot({ id: 'FLUX-13', branch: 'flux/FLUX-13' }, repo, {
+          maxWorktrees: 1,
+          isReclaimable: () => false,
+          isTerminal: () => false,
+        }),
+      ).rejects.toThrow(/missing and could not be recreated|refusing to run the agent on master/i);
+    });
+
+    // FLUX-1617 Gap 3: the same cap error this path wraps into "missing and could not be
+    // recreated" should already carry the holder breakdown when a describer is supplied.
+    it('carries the Gap-3 holder breakdown through the "missing and could not be recreated" wrapper', async () => {
+      await createTaskWorktree(repo, 'FLUX-14', 'flux/FLUX-14', { maxWorktrees: 1 });
+      await expect(
+        resolveTaskExecutionRoot({ id: 'FLUX-15', branch: 'flux/FLUX-15' }, repo, {
+          maxWorktrees: 1,
+          describeSlotHolders: async () => [{ ticketId: 'FLUX-14', reason: 'a session is still live on its branch' }],
+        }),
+      ).rejects.toThrow(/FLUX-14 \(a session is still live on its branch\)/);
     });
 
     // FLUX-167 follow-up: a branch checked out in the MAIN checkout is the

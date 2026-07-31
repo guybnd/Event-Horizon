@@ -256,6 +256,7 @@ From [`routes/skill.ts`](../../../engine/src/routes/skill.ts).
 |--------|------|---------|
 | GET | `/api/skill/status` | Per-framework install status and staleness. |
 | POST | `/api/skill/install` | Install the workflow skill + MCP config for the chosen framework. Body: `{ framework: 'auto' \| 'claude' \| 'copilot' \| 'gemini' \| 'cursor' \| 'windsurf' \| 'generic', force? }`. |
+| POST | `/api/skill/install-global-mcp` | FLUX-1616: write the `event-horizon` MCP entry into the CLI's user-**global** config (`~/.claude.json`, `~/.gemini/settings.json`, `~/.cursor/mcp.json`) instead of the project-local one, so every project that CLI opens gets the board's tools. Body: `{ framework: 'auto' \| 'claude' \| 'gemini' \| 'cursor' }` — `'auto'` resolves against the current workspace like `/install` does; `copilot`/`windsurf`/`cline`/`generic` are rejected with 400 (no supported global config surface this release). For `claude`, also merges the `mcp__event-horizon` allow rule into `~/.claude/settings.json`. Returns `{ success, framework, installedPath, permissionsPath? }`. |
 
 ## Workflows (`/api/workflows`)
 

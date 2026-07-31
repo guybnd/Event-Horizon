@@ -253,8 +253,8 @@ export function planTldr(body: string | undefined | null): string | null {
  * second call could fail silently and strand a stale card.
  */
 // eslint-disable-next-line react-refresh/only-export-components -- action helper colocated with the pending-interactions model it operates on (FLUX-1303); shared with the AttentionDock/chat-card surfaces via PlanReviewActions.
-export async function revisePlan(taskId: string, currentUser: string, notes?: string): Promise<void> {
-  await startPlanRevise(taskId, { ...(notes?.trim() ? { notes: notes.trim() } : {}), user: currentUser });
+export async function revisePlan(taskId: string, currentUser: string, notes?: string, interrupt?: boolean): Promise<{ ok: boolean; reason?: string; message?: string }> {
+  return startPlanRevise(taskId, { ...(notes?.trim() ? { notes: notes.trim() } : {}), user: currentUser, ...(interrupt ? { interrupt: true } : {}) });
 }
 
 /** FLUX-1303/FLUX-1369: the one "Approve → Todo" update shape — status + verdict clear + history —
@@ -738,7 +738,7 @@ export function PlanReviewActions({ task, onOpenFull, openLabel, onSetAside, set
   const changesRequested = task.planReviewState === 'changes-requested';
   const notesRequired = !changesRequested;
 
-  async function run(action: () => Promise<void>, label: string) {
+  async function run(action: () => Promise<unknown>, label: string) {
     if (busy) return;
     setBusy(true);
     setError(null);

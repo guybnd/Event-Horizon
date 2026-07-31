@@ -41,7 +41,7 @@ import { ActivityPanel } from '../ActivityPanel';
 import { Button } from '../ui/Button';
 import { ParseErrorBanner } from '../ParseErrorBanner';
 import { useAttentionAck, usePlanReviewDockDismiss, deriveDockLabel, type AttentionTab } from './attentionAck';
-import { DOCK_REVEAL_LABEL, DOCK_ICON_SLOT } from '../dockReveal';
+import { DOCK_ICON_SLOT, DockTooltip } from '../dockReveal';
 
 /**
  * FLUX-898: the unified, dock-anchored attention surface.
@@ -614,7 +614,7 @@ export function AttentionDock() {
         <span className={DOCK_ICON_SLOT}>
           <LabelIcon className={`h-4 w-4 flex-shrink-0 ${tone ? 'text-amber-500' : ''}`} />
         </span>
-        <span className={`${DOCK_REVEAL_LABEL} text-xs font-semibold leading-none tracking-tight`}>{label.label}</span>
+        <DockTooltip label={label.label} />
         {label.count != null && (
           <span
             className={`absolute -right-1.5 -top-1.5 flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-bold leading-none text-white shadow ring-2 ring-[var(--eh-base)] ${tone ? 'bg-[var(--eh-state-attention)]' : 'bg-[var(--eh-state-working)]'}`}

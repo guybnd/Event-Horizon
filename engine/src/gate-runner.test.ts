@@ -519,6 +519,60 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
     });
   });
 
+  // ── FLUX-1613: startPlanReviseNow's opt-in `interrupt` — kills the in-flight review/revise
+  // session instead of refusing on `already-running`, so sending plan feedback mid-turn doesn't
+  // silently drop (the portal side of this ticket wires the opt-in from the composer). ──────────
+
+  describe('startPlanReviseNow interrupt (FLUX-1613)', () => {
+    it('happy path: stops the in-flight session, tears down the old run, and dispatches the revise', async () => {
+      seedGrooming('INT-1', { planReviewState: 'changes-requested' });
+      const first = await startPlanReviseNow('INT-1', { user: 'Guy', notes: 'first pass' });
+      expect(first.ok).toBe(true);
+      const firstSid = `sess-${sessionSeq}`;
+      putSession(firstSid, 'grooming', 'running');
+      (cliSessionsById.get(firstSid) as unknown as { framework: string }).framework = 'claude';
+
+      dispatchSession.mockClear();
+      const second = await startPlanReviseNow('INT-1', { user: 'Guy', interrupt: true, notes: 'actually do this instead' });
+      expect(second.ok).toBe(true);
+      // the first (interrupted) session was stopped, not left running
+      expect(cliSessionsById.get(firstSid)?.status).toBe('cancelled');
+      // the revise proceeded — a fresh session dispatched with the new notes
+      expect(dispatchSession).toHaveBeenCalledTimes(1);
+      const [ticketId, phase, opts] = dispatchSession.mock.calls[0]!;
+      expect(ticketId).toBe('INT-1');
+      expect(phase).toBe('grooming');
+      expect((opts as { focusComment: string }).focusComment).toContain('actually do this instead');
+      expect(isGateRunning('INT-1')).toBe(true);
+    });
+
+    it('the wrong-status race still refuses as-is even with interrupt:true (ticket already left Grooming)', async () => {
+      getWorkspace().tasks['INT-2'] = { id: 'INT-2', status: 'Todo', title: 'INT-2' };
+      const res = await startPlanReviseNow('INT-2', { user: 'Guy', interrupt: true, notes: 'x' });
+      expect(res.ok).toBe(false);
+      expect(res.reason).toBe('wrong-status');
+    });
+
+    it('backward compat: interrupt absent or false leaves the in-flight session running and still 409s already-running', async () => {
+      seedGrooming('INT-3', { planReviewState: 'changes-requested' });
+      await startPlanReviseNow('INT-3', { user: 'Guy', notes: 'first' });
+      const sid = `sess-${sessionSeq}`;
+      putSession(sid, 'grooming', 'running');
+      dispatchSession.mockClear();
+
+      const withoutFlag = await startPlanReviseNow('INT-3', { user: 'Guy', notes: 'second' });
+      expect(withoutFlag.ok).toBe(false);
+      expect(withoutFlag.reason).toBe('already-running');
+      expect(cliSessionsById.get(sid)?.status).toBe('running');
+      expect(dispatchSession).not.toHaveBeenCalled();
+
+      const explicitFalse = await startPlanReviseNow('INT-3', { user: 'Guy', notes: 'third', interrupt: false });
+      expect(explicitFalse.ok).toBe(false);
+      expect(explicitFalse.reason).toBe('already-running');
+      expect(cliSessionsById.get(sid)?.status).toBe('running');
+    });
+  });
+
   // ── FLUX-1303: mid-run safety — runs stop when the ticket leaves Grooming; restarts resume the right phase ──
 
   it('stops a run when the ticket leaves Grooming mid-flight instead of re-reviewing a Todo ticket', async () => {

@@ -87,6 +87,15 @@ vi.mock('./task-worktree.js', () => ({
   resolveResumeExecutionRoot: vi.fn().mockResolvedValue('/tmp/test-repo'),
   assertIsolatedSpawnRoot: vi.fn(),
 }));
+// FLUX-1617: each adapter now imports pr-cleanup.js's resolveExecutionRootReclaimOpts to wire the
+// Gap 1/3 cap self-heal into resolveTaskExecutionRoot (itself fully mocked above, so the opts this
+// returns are never actually consulted here) — stub it wholesale so the real pr-cleanup.js module
+// isn't pulled in (it would in turn load temper.js -> furnace-stoker.ts for real, which reads
+// DEFAULT_MAX_TASK_WORKTREES off the ALSO-mocked task-worktree.js above and crashes on the missing
+// export).
+vi.mock('./pr-cleanup.js', () => ({
+  resolveExecutionRootReclaimOpts: vi.fn(() => ({})),
+}));
 vi.mock('./group.js', () => ({ buildMemberScopeArgs: vi.fn(() => []) }));
 vi.mock('./group-member-worktree.js', () => ({ buildGroupDocsScopeArg: vi.fn(() => []) }));
 vi.mock('./workflow-installer.js', () => ({

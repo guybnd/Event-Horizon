@@ -1,6 +1,7 @@
 import { log } from './log.js';
 import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { getModuleMcpServers } from './modules.js';
 import { getEnginePort } from './packaged-mode.js';
@@ -76,7 +77,7 @@ export interface WorkflowInstallResult {
   instructionsInstalledPath?: string | undefined;
 }
 
-function resolveFramework(targetDir: string, requested: Framework): ResolvedFramework {
+export function resolveFramework(targetDir: string, requested: Framework): ResolvedFramework {
   if (requested !== 'auto') {
     return requested;
   }
@@ -479,7 +480,7 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
   const capabilities = (CLI_CAPABILITIES as Partial<Record<ResolvedFramework, CliCapabilities>>)[resolvedFramework];
   if (capabilities?.bakesPermissionAllowlist) {
     try {
-      await installClaudeSettingsPermissions(targetDir);
+      await installClaudeSettingsPermissions(path.join(targetDir, '.claude', 'settings.json'));
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       log.error(`[installer] Permission rule install failed (non-fatal): ${message}`);
@@ -526,6 +527,23 @@ function mcpConfigPathFor(targetDir: string, framework: ResolvedFramework): stri
     case 'generic':
     default:
       return path.join(targetDir, '.mcp.json');
+  }
+}
+
+/** Home-dir-based global MCP config path for a framework's user-scoped (not project-scoped) config
+ *  file. Returns `null` for frameworks with no clean, user-writable global MCP config this release
+ *  supports (copilot never gets a global write by design — see installGlobalMcpConfig; antigravity/
+ *  cline/windsurf/generic are deferred). */
+export function globalMcpConfigPathFor(framework: ResolvedFramework): string | null {
+  switch (framework) {
+    case 'claude':
+      return path.join(os.homedir(), '.claude.json');
+    case 'gemini':
+      return path.join(os.homedir(), '.gemini', 'settings.json');
+    case 'cursor':
+      return path.join(os.homedir(), '.cursor', 'mcp.json');
+    default:
+      return null;
   }
 }
 
@@ -656,9 +674,15 @@ async function isLiveSiblingEngineForWorkspace(port: number, workspaceRoot: stri
   }
 }
 
-// Exported for gemini-conversation-headers.test.ts (FLUX-1222) — not part of the public API.
-export async function installMcpConfig(targetDir: string, sourceRoot: string, framework: ResolvedFramework): Promise<void> {
-  const configPath = mcpConfigPathFor(targetDir, framework);
+/**
+ * Merge-safe core of an `event-horizon` MCP entry write: picks the right entry shape for
+ * `framework`, reads+parses `configPath` safely (ENOENT → fresh `{}`; malformed/non-object →
+ * leave the file UNTOUCHED and bail without writing), sets `mcpServers['event-horizon']`, and
+ * writes back. Shared by the project-scoped `installMcpConfig` (which wraps this with the
+ * FLUX-1572 live-sibling probe and the module-server merge, both workspace-scoped concepts) and
+ * the global-config installer (`installGlobalMcpConfig`), which has neither.
+ */
+export async function writeMcpEntryToConfig(configPath: string, framework: ResolvedFramework): Promise<void> {
   // Gemini/antigravity read `.gemini/settings.json` with Gemini CLI's own MCP schema — every other
   // framework gets the `.mcp.json`-style Claude shape (FLUX-1222).
   const serverEntry = framework === 'gemini' || framework === 'antigravity'
@@ -694,19 +718,39 @@ export async function installMcpConfig(targetDir: string, sourceRoot: string, fr
     return;
   }
   existing.mcpServers = existing.mcpServers || {};
+  existing.mcpServers['event-horizon'] = serverEntry;
+
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await fs.writeFile(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+
+  log.info(`[installer] MCP config installed: ${configPath}`);
+}
+
+// Exported for gemini-conversation-headers.test.ts (FLUX-1222) — not part of the public API.
+export async function installMcpConfig(targetDir: string, sourceRoot: string, framework: ResolvedFramework): Promise<void> {
+  const configPath = mcpConfigPathFor(targetDir, framework);
 
   // FLUX-1572: before stamping our own port over whatever `event-horizon` entry is already there,
   // check whether that entry still points at a DIFFERENT engine that is alive and bound to this
   // exact workspace right now. If so, this install run is the interloper (a second engine that
   // just bound the same workspace another instance already serves) — leave the file untouched
   // instead of severing the healthy sibling's MCP endpoint out from under any session it dispatches.
-  const priorPort = extractEnginePortFromMcpEntry(existing.mcpServers['event-horizon']);
-  if (priorPort != null && priorPort !== getEnginePort() && await isLiveSiblingEngineForWorkspace(priorPort, targetDir)) {
-    log.warn(`[installer] ${configPath} already points at a LIVE Event Horizon engine (port ${priorPort}) serving this exact workspace — leaving the event-horizon MCP entry untouched instead of overwriting it with this engine's port ${getEnginePort()}. This usually means two engine instances are bound to the same workspace; only one should own it.`);
-    return;
+  let existingForProbe: McpConfigFile | null = null;
+  try {
+    existingForProbe = JSON.parse(await fs.readFile(configPath, 'utf-8')) as McpConfigFile;
+  } catch {
+    // ENOENT or malformed — writeMcpEntryToConfig below re-derives the same outcome (fresh {} or
+    // bail-without-writing); the probe simply has nothing to check against.
+  }
+  if (existingForProbe && typeof existingForProbe === 'object' && !Array.isArray(existingForProbe)) {
+    const priorPort = extractEnginePortFromMcpEntry(existingForProbe.mcpServers?.['event-horizon']);
+    if (priorPort != null && priorPort !== getEnginePort() && await isLiveSiblingEngineForWorkspace(priorPort, targetDir)) {
+      log.warn(`[installer] ${configPath} already points at a LIVE Event Horizon engine (port ${priorPort}) serving this exact workspace — leaving the event-horizon MCP entry untouched instead of overwriting it with this engine's port ${getEnginePort()}. This usually means two engine instances are bound to the same workspace; only one should own it.`);
+      return;
+    }
   }
 
-  existing.mcpServers['event-horizon'] = serverEntry;
+  await writeMcpEntryToConfig(configPath, framework);
 
   // Merge module MCP servers (phase-independent at install time — phase gating happens at prompt/session time)
   // FLUX-955 (C.15): pass the install target framework so Serena's `--context` is tuned for it (falls
@@ -715,19 +759,27 @@ export async function installMcpConfig(targetDir: string, sourceRoot: string, fr
   if (Object.keys(moduleServers).length > 0) {
     log.info('[installer] Note: module MCP server paths are resolved against the current flux directory. If you later run "Migrate to orphan mode", re-run the installer to refresh module paths in .mcp.json.');
   }
-  for (const [id, server] of Object.entries(moduleServers)) {
-    // Only write a module server when it's ABSENT — never clobber a user-customized entry.
-    // This runs on every workspace activation (engine start), so an unconditional overwrite
-    // kept reverting a pinned shared entry (e.g. serena → {type:'http', url:…}) back to the
-    // module's stdio default, forcing endless re-commits (FLUX-600). Newly-enabled modules with
-    // no existing entry are still installed on first run.
-    if (!(id in existing.mcpServers)) existing.mcpServers[id] = server;
+  if (Object.keys(moduleServers).length > 0) {
+    let existing: McpConfigFile;
+    try {
+      existing = JSON.parse(await fs.readFile(configPath, 'utf-8')) as McpConfigFile;
+    } catch {
+      return; // writeMcpEntryToConfig didn't write (or the file vanished) — nothing to merge into.
+    }
+    if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+      return; // non-object — writeMcpEntryToConfig bailed for the same reason; nothing to merge into.
+    }
+    existing.mcpServers = existing.mcpServers || {};
+    for (const [id, server] of Object.entries(moduleServers)) {
+      // Only write a module server when it's ABSENT — never clobber a user-customized entry.
+      // This runs on every workspace activation (engine start), so an unconditional overwrite
+      // kept reverting a pinned shared entry (e.g. serena → {type:'http', url:…}) back to the
+      // module's stdio default, forcing endless re-commits (FLUX-600). Newly-enabled modules with
+      // no existing entry are still installed on first run.
+      if (!(id in existing.mcpServers)) existing.mcpServers[id] = server;
+    }
+    await fs.writeFile(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
   }
-
-  await fs.mkdir(path.dirname(configPath), { recursive: true });
-  await fs.writeFile(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
-
-  log.info(`[installer] MCP config installed: ${configPath}`);
 }
 
 /** Shape of a `.claude/settings.json`-style file — only the fields this installer reads/writes. */
@@ -756,9 +808,7 @@ const EVENT_HORIZON_PERMISSION_RULE = 'mcp__event-horizon';
  * object, and only APPENDS the rule if absent — a user's own allow/deny/ask customizations are
  * preserved untouched.
  */
-async function installClaudeSettingsPermissions(targetDir: string): Promise<void> {
-  const settingsPath = path.join(targetDir, '.claude', 'settings.json');
-
+async function installClaudeSettingsPermissions(settingsPath: string): Promise<void> {
   let existing: ClaudeSettingsFile = {};
   try {
     const raw = await fs.readFile(settingsPath, 'utf-8');
@@ -793,4 +843,37 @@ async function installClaudeSettingsPermissions(targetDir: string): Promise<void
   await fs.mkdir(path.dirname(settingsPath), { recursive: true });
   await fs.writeFile(settingsPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
   log.info(`[installer] Event Horizon permission rule installed: ${settingsPath}`);
+}
+
+// ─── Global MCP Config Installation (FLUX-1616) ──────────────────────────────
+
+export interface InstallGlobalMcpResult {
+  installedPath: string;
+  permissionsPath?: string;
+}
+
+/**
+ * Writes the `event-horizon` MCP entry into `framework`'s user-scoped GLOBAL config file (not the
+ * per-project one `installMcpConfig` writes), so every project the CLI opens gets the board's
+ * tools without a per-repo install. Reuses `writeMcpEntryToConfig` — same merge-safe contract, no
+ * module-server merge and no FLUX-1572 sibling probe (both workspace-scoped concepts that don't
+ * apply to a single shared global file). For claude, also bakes the `mcp__event-horizon` allow
+ * rule into the user's global `~/.claude/settings.json` (installClaudeSettingsPermissions),
+ * mirroring what the project install bakes into the project's `.claude/settings.json`.
+ */
+export async function installGlobalMcpConfig(framework: ResolvedFramework): Promise<InstallGlobalMcpResult> {
+  const installedPath = globalMcpConfigPathFor(framework);
+  if (!installedPath) {
+    throw new Error(`Global MCP install is not supported for framework: ${framework}`);
+  }
+
+  await writeMcpEntryToConfig(installedPath, framework);
+
+  if (framework === 'claude') {
+    const permissionsPath = path.join(os.homedir(), '.claude', 'settings.json');
+    await installClaudeSettingsPermissions(permissionsPath);
+    return { installedPath, permissionsPath };
+  }
+
+  return { installedPath };
 }

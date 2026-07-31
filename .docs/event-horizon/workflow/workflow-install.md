@@ -32,6 +32,20 @@ Event Horizon installs agent-facing workflow assets into a target repository so 
 -   From the CLI with `npm.cmd run install-skill -- --target <repo> --framework <copilot|cursor|cline|windsurf|claude|gemini|generic|auto>`.
     
 
+## Global CLI install (FLUX-1616)
+
+Everything above is **workspace-scoped** — it writes into the current repo (`.mcp.json` etc.). Settings → Agents also has a separate **"Global CLI install"** control that writes just the `event-horizon` MCP entry (not the skill files) into the CLI's user-**global** config instead, so every project that CLI opens gets the board's tools without a per-repo install:
+
+| Framework | Global MCP config file |
+|-----------|-------------------------|
+| Claude Code | `~/.claude.json` (+ the `mcp__event-horizon` allow rule merged into `~/.claude/settings.json`) |
+| Gemini | `~/.gemini/settings.json` |
+| Cursor | `~/.cursor/mcp.json` |
+
+Copilot/Windsurf/Cline/Generic are not supported for global install (no clean user-writable global MCP surface, or — for Copilot — the engine deliberately never writes `~/.copilot` global state). The write is merge-safe (never clobbers unrelated `mcpServers` entries, never touches a file it can't parse as JSON) and gated behind an explicit confirm in the UI. Backing endpoint: `POST /api/skill/install-global-mcp` (see [rest-api.md](../reference/rest-api.md)); installer functions: `globalMcpConfigPathFor`/`installGlobalMcpConfig` in [`workflow-installer.ts`](../../../engine/src/workflow-installer.ts).
+
+**Caveat:** unlike the workspace `.mcp.json` (rewritten on every engine start, so a port change self-heals), a global entry is written **once** and does not auto-refresh — if the engine later restarts on a different port, re-run Install to pick up the new port.
+
 ## Settings-driven workflow controls
 
 -   The Settings screen also shows the current workflow source paths, installed target paths, and a framework selector to choose your IDE/agent target (e.g. Cursor vs GitHub Copilot).

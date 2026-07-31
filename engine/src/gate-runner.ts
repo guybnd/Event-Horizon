@@ -39,7 +39,7 @@ import { nextColumnAfter, getConfig } from './config.js';
 import { updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { generateNeedsActionNotification, generatePlanAutoApprovedNotification } from './notifications.js';
-import { cliSessionsById, getActiveSessionsForTaskInWorkspace } from './session-store.js';
+import { cliSessionsById, getActiveSessionsForTaskInWorkspace, stopCliSession } from './session-store.js';
 import { isActiveTicketState, DEFAULT_RETRY_CAP, type BatchTicket, type FurnacePhase } from './models/furnace.js';
 import { planBodyHash, planGateModeForRevise, resolveGateValue, resolvePlanReviewDepth, type PlanReviewDepth } from './models/gate-policy.js';
 import { planLint, formatLintFindings } from './models/plan-lint.js';
@@ -698,11 +698,25 @@ export async function startPlanGateNow(
  */
 export async function startPlanReviseNow(
   ticketId: string,
-  opts: { notes?: string; user?: string } = {},
+  opts: { notes?: string; user?: string; interrupt?: boolean } = {},
 ): Promise<{ ok: boolean; message: string; reason?: 'not-found' | 'wrong-status' | 'already-running' | 'furnace-owned' | 'notes-required' | 'persist-failed' }> {
   const ws = getWorkspace();
   const refusal = planGateStartRefusal(ticketId, 'revise', ws);
-  if (refusal) return refusal;
+  if (refusal) {
+    if (!(opts.interrupt && refusal.reason === 'already-running')) return refusal;
+    // FLUX-1613: caller explicitly opted into interrupting the in-flight review pass instead of
+    // refusing on `already-running` — stop its session BEFORE tearing down the registry entry via
+    // `stopGateRun` (that only deletes the entry/clears fields, it does NOT stop the process), or the
+    // still-running review could post a late verdict that clobbers this revise. `currentSessionId` can
+    // be undefined in the narrow window where the in-flight run is still `starting` (spawnGate hasn't
+    // assigned it yet) — skip the stop rather than throw in that case; any other refusal reason
+    // (wrong-status/furnace-owned/notes-required) is returned as-is above, unaffected by interrupt.
+    const inFlight = getEntry(ticketId, ws);
+    if (inFlight?.ticket.currentSessionId) {
+      stopCliSession(inFlight.ticket.currentSessionId);
+    }
+    await stopGateRun(inFlight?.spec ?? PLAN_GATE_SPEC, ticketId, ws);
+  }
   const task = ws.tasks[ticketId]!;
 
   const spec = PLAN_GATE_SPEC;

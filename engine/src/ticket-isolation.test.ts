@@ -7,11 +7,42 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // (hoist-safe) and the test configures them via the imported binding + vi.mocked (mirrors
 // board-reprime.test.ts).
 vi.mock('./branch-manager.js', () => ({ createTicketBranch: vi.fn() }));
-vi.mock('./task-worktree.js', () => ({ createTaskWorktree: vi.fn(), reclaimWorktrees: vi.fn(async () => []) }));
+// FLUX-1617: reclaimOnCapAndRetry moved the cap-reclaim-then-retry-once logic into task-worktree.js
+// itself (shared with resolveTaskExecutionRoot) — this mock re-implements its small, pure contract
+// (regex-check the error, call the mocked reclaimWorktrees, retry `make` once if something reclaimed)
+// against the ALSO-mocked reclaimWorktrees below, so this suite keeps exercising ticket-isolation's
+// own wiring without pulling in task-worktree.js's real git-backed implementation. Real coverage of
+// reclaimOnCapAndRetry itself (against a real repo) lives in task-worktree.test.ts.
+const { mockReclaimWorktrees } = vi.hoisted(() => ({
+  mockReclaimWorktrees: vi.fn(async (_workspaceRoot: string, _isReclaimable: unknown, _opts?: unknown) => [] as string[]),
+}));
+vi.mock('./task-worktree.js', () => ({
+  createTaskWorktree: vi.fn(),
+  reclaimWorktrees: mockReclaimWorktrees,
+  reclaimOnCapAndRetry: vi.fn(async (
+    originalError: unknown,
+    make: () => Promise<unknown>,
+    workspaceRoot: string,
+    reclaim: { isReclaimable: (id: string) => unknown; isTerminal?: (id: string) => unknown },
+  ) => {
+    if (!/limit reached/i.test(originalError instanceof Error ? originalError.message : String(originalError))) {
+      throw originalError;
+    }
+    const reclaimed = await mockReclaimWorktrees(workspaceRoot, reclaim.isReclaimable, { isTerminal: reclaim.isTerminal }).catch(() => []);
+    if (!reclaimed || reclaimed.length === 0) throw originalError;
+    return make();
+  }),
+}));
 // FLUX-1031: ticket-isolation now sources its reclaimability predicate from pr-cleanup. Stub it so
 // this unit test doesn't pull in pr-cleanup's whole graph; the under-pressure test mocks
 // reclaimWorktrees anyway, so the predicate body is never exercised here.
-vi.mock('./pr-cleanup.js', () => ({ isWorktreeReclaimable: vi.fn(() => true), isTicketTerminal: vi.fn(() => false) }));
+vi.mock('./pr-cleanup.js', () => ({
+  isWorktreeReclaimable: vi.fn(() => true),
+  isTicketTerminal: vi.fn(() => false),
+  // FLUX-1617 Gap 3: only referenced as a value handed to createTaskWorktree's opts here — never
+  // invoked in this suite (that only happens on a real cap-reached throw, which stays mocked out).
+  describeWorktreeSlotHolders: vi.fn(async () => []),
+}));
 vi.mock('./task-store.js', () => ({ updateTaskWithHistory: vi.fn(async () => {}) }));
 vi.mock('./events.js', () => ({ broadcastEvent: vi.fn() }));
 vi.mock('./history.js', () => ({

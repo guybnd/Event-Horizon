@@ -6,6 +6,7 @@ import { getConfig } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentSessionEntry, lastAssistantText } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, estimateCostUSD } from '../task-store.js';
 import { resolveTaskExecutionRoot, resolveResumeExecutionRoot, assertIsolatedSpawnRoot } from '../task-worktree.js';
+import { resolveExecutionRootReclaimOpts } from '../pr-cleanup.js';
 import { getWorkspaceRoot } from '../workspace.js';
 import { notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart, getPendingCombiner } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
@@ -1195,7 +1196,8 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
   const label = session.label;
   const id = session.taskId;
   // FLUX-519: run the agent in this task's worktree when one exists (else engine root).
-  const executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot);
+  // FLUX-1617: self-heal a missing worktree by reclaiming a stale slot before failing (Gap 1).
+  const executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot, resolveExecutionRootReclaimOpts(workspaceRoot));
   session.executionRoot = executionRoot;
 
   // FLUX-1018 / FLUX-1028: fail closed on the fresh-spawn path (shared helper —

@@ -76,7 +76,7 @@ import {
 import { DEFAULT_MAX_TASK_WORKTREES, listTaskWorktrees, ticketIdFromWorktreePath, isRegisteredWorktree, resolveTaskExecutionRoot } from './task-worktree.js';
 import { requireWorkspaceRoot, getWorkspaceRoot } from './workspace.js';
 import { postPrReview } from './branch-manager.js';
-import { reclaimReadyWorktrees, worktreeUnreclaimableReason, type UnreclaimableReason } from './pr-cleanup.js';
+import { reclaimReadyWorktrees, worktreeUnreclaimableReason, resolveExecutionRootReclaimOpts, type UnreclaimableReason } from './pr-cleanup.js';
 import { runGit } from './git-exec.js';
 
 const STOKE_INTERVAL_MS = 5_000;
@@ -626,7 +626,11 @@ async function findResumeCandidate(ticketId: string, phase: FurnacePhase | 'groo
       const registered = await isRegisteredWorktree(workspaceRoot, candidate.executionRoot);
       if (!registered) {
         try {
-          candidate.executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot, { create: true });
+          // FLUX-1617: self-heal a missing worktree by reclaiming a stale slot before failing (Gap 1).
+          candidate.executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot, {
+            create: true,
+            ...resolveExecutionRootReclaimOpts(workspaceRoot),
+          });
           worktreeRecreated = true;
         } catch (e: unknown) {
           log.warn(`[furnace] resume worktree recreate for ${ticketId} failed, falling back to cold spawn: ${e instanceof Error ? e.message : String(e)}`);

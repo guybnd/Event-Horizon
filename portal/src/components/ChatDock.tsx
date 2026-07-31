@@ -34,11 +34,12 @@ import { useDock, MIN_SIDEVIEW_WIDTH, MAX_SIDEVIEW_WIDTH, DEFAULT_SIDEVIEW_WIDTH
 import { useTicketSideView } from '../hooks/useTicketSideView';
 import { useUnsavedChangesGuard } from '../hooks/useUnsavedChangesGuard';
 import { useConfirm } from '../hooks/useConfirm';
+import { useNotify } from '../hooks/useNotify';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { fireDesktopNotification } from '../hooks/useDesktopNotifications';
 import { getStatusTint, getStatusColorClass } from '../statusStyles';
 import { DISPATCH_PHASE_ICON } from '../lib/dispatch';
-import { DOCK_REVEAL_LABEL, DOCK_ICON_SLOT } from './dockReveal';
+import { DOCK_ICON_SLOT, DockTooltip } from './dockReveal';
 import { getRequireInputStatus } from '../workflow';
 import { BOARD_CONVERSATION_ID, FURNACE_CONVERSATION_ID, createTask, updateTask, fetchTaskCliSession, fetchTaskTranscript, stopTaskCliSession, clearTaskTranscript, fetchBranchStatus, fetchTriageSignals, type BranchStatus } from '../api';
 import { setTranscript } from '../transcriptCache';
@@ -786,12 +787,12 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
           disabled={creatingScratch}
           aria-label="New scratch chat"
           title="New scratch chat"
-          className="eh-border group flex h-9 flex-shrink-0 items-center rounded-lg border bg-[var(--eh-input-bg)] text-xs font-medium text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] disabled:cursor-not-allowed disabled:opacity-60 dark:hover:bg-white/5"
+          className="eh-border group relative flex h-9 flex-shrink-0 items-center rounded-lg border bg-[var(--eh-input-bg)] text-xs font-medium text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] disabled:cursor-not-allowed disabled:opacity-60 dark:hover:bg-white/5"
         >
           <span className={DOCK_ICON_SLOT}>
             {creatingScratch ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <NotebookPen className="h-3.5 w-3.5" />}
           </span>
-          <span className={DOCK_REVEAL_LABEL}>New Scratch</span>
+          <DockTooltip label="New Scratch" />
         </button>
 
         {/* FLUX-1035 / FLUX-1209 / FLUX-1212: the Furnace icon — a small square button pinned right of
@@ -831,7 +832,9 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
               <span className={DOCK_ICON_SLOT}>
                 <Flame className={`h-4 w-4 ${!furnaceOpen && furnaceBurning ? 'animate-pulse' : ''}`} />
               </span>
-              <span className={DOCK_REVEAL_LABEL}>Furnace</span>
+              {/* FLUX-1619: no inline label reveal here — hovering the wrapper already opens the
+                  richer action flyout below (onMouseEnter above), which serves as this button's
+                  label without ever resizing the button itself. */}
               {/* Corner badges are direct children of the button (never an inner slot) so they
                   anchor to its true box and track the edge as the label reveals — FLUX-1281 rev-5. */}
               {!furnaceOpen && furnaceBurning && (
@@ -1291,12 +1294,11 @@ function ChatTab({
           current activity stays available on hover (tooltip). FLUX-1281: the orchestrator joins
           the dock bar's icon-first pattern — its label collapses at rest and reveals on
           hover/focus-visible (the aria-label/tooltip always carry 'Orchestrator'). */}
+      {/* FLUX-1619: the orchestrator's label used to reveal by growing the button sideways,
+          shoving every dock-cluster sibling to the right. It's icon-only now; identity is carried
+          by the floating DockTooltip below instead, so the tab never resizes. */}
       <span className="flex min-w-0 items-baseline gap-1.5">
-        {orchestrator ? (
-          <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-semibold leading-none tracking-tight opacity-0 transition-all duration-200 group-hover:max-w-[130px] group-hover:pl-1.5 group-hover:opacity-100 group-focus-visible:max-w-[130px] group-focus-visible:pl-1.5 group-focus-visible:opacity-100">
-            {label}
-          </span>
-        ) : (
+        {!orchestrator && (
           <span className="flex-shrink-0 text-xs font-semibold leading-none tracking-tight">
             {compactId ? short : id}
           </span>
@@ -1308,6 +1310,7 @@ function ChatTab({
         )}
         {working && <ThinkingDots />}
       </span>
+      {orchestrator && <DockTooltip label={label ?? 'Orchestrator'} />}
 
       {/* Windows-style indicator bar: a full underline when this window is open (focused), a
           short running pill while it works in the background. On the orchestrator's colored
@@ -2812,12 +2815,41 @@ const ChatWindow = memo(function ChatWindow({
   // session absorbed the user's annotations and self-approved its own edit). `false` for the
   // orchestrator/Furnace windows (`task` is undefined there — this gate is per-ticket only).
   const planGateOwnsInput = !!task && isPlanGateInFlight(task);
-  const dispatchAsRevise = useCallback((text: string) => {
-    if (!task) return;
-    revisePlan(task.id, currentUser, text).catch((err) => {
+  const notify = useNotify();
+  // FLUX-1613: brief transitional state while an interrupt-and-resend revise is in flight, so the
+  // user sees SOMETHING happen instead of the feedback silently vanishing behind the composer's
+  // immediate clear. Auto-clears a couple seconds after a successful dispatch — by then the plan
+  // strip's own `revising…` state (driven by `working`) has taken over.
+  const [reviseStatus, setReviseStatus] = useState<{ phase: 'interrupting' | 'delivered' } | null>(null);
+  const dispatchAsRevise = useCallback(async (text: string) => {
+    if (!task) return { ok: false as const };
+    setReviseStatus({ phase: 'interrupting' });
+    try {
+      const outcome = await revisePlan(task.id, currentUser, text, true);
+      if (outcome.ok) {
+        setReviseStatus({ phase: 'delivered' });
+        window.setTimeout(() => setReviseStatus((s) => (s?.phase === 'delivered' ? null : s)), 2500);
+        return outcome;
+      }
+      setReviseStatus(null);
+      // FLUX-1613: onDraftChange restores the text the composer already cleared on submit — see
+      // `Composer`'s `setValue('')` in ChatView.tsx, which fires synchronously regardless of outcome.
+      onDraftChange(id, text);
+      if (outcome.reason === 'wrong-status') {
+        notify.error('The review already finished and approved this plan — re-send to revise the approved plan.');
+      } else {
+        notify.error(outcome.message || 'Failed to send the plan for re-grooming.');
+      }
+      return outcome;
+    } catch (err) {
+      setReviseStatus(null);
+      onDraftChange(id, text);
+      const message = err instanceof Error ? err.message : 'Failed to send the plan for re-grooming.';
+      notify.error(message);
       console.error(`Failed to route chat input to a plan revise for ${task.id}:`, err);
-    });
-  }, [task, currentUser]);
+      return { ok: false as const, message };
+    }
+  }, [task, currentUser, id, onDraftChange, notify]);
 
   // The chat surface itself is identical for orchestrator + ticket windows; only the surrounding
   // chrome (metadata bar, diff panel, sideview) differs, so it's built once and reused in both
@@ -2825,20 +2857,23 @@ const ChatWindow = memo(function ChatWindow({
   // FLUX-1339: route text into THIS chat — enqueue behind a live turn (FIFO), else send straight
   // away. Shared by the sideview, the plan panel, and the close-guard's "Send now".
   const routeToChat = (text: string) => {
-    if (planGateOwnsInput) { dispatchAsRevise(text); return; }
+    if (planGateOwnsInput) { void dispatchAsRevise(text); return; }
     if (working || chat.busy) chat.enqueue(text);
     else void chat.send(text);
   };
 
-  // FLUX-1585: the composer's own Send/Enqueue wrap the same gate — a plain typed chat message is
-  // "mid-gate user input" exactly as much as a routed annotation is (AC #3). `handleSend` keeps
-  // `chat.send`'s Promise return so the composer's busy/error handling is unaffected either way.
+  // FLUX-1585/FLUX-1613: the composer's own Send/Enqueue wrap the same gate — a plain typed chat
+  // message is "mid-gate user input" exactly as much as a routed annotation is (AC #3). `handleSend`
+  // now awaits the real interrupt-and-resend outcome (instead of a bare `Promise.resolve()`) so a
+  // genuine failure isn't falsely reported as delivered — `dispatchAsRevise` itself surfaces the
+  // failure (toast + restored draft) and never rejects, so this stays `Promise<void>` like the
+  // plain `chat.send` path.
   const handleSend = useCallback((text: string, opts?: ChatSendOptions) => {
-    if (planGateOwnsInput) { dispatchAsRevise(text); return Promise.resolve(); }
+    if (planGateOwnsInput) return dispatchAsRevise(text).then(() => undefined);
     return chat.send(text, opts);
   }, [planGateOwnsInput, dispatchAsRevise, chat]);
   const handleEnqueue = useCallback((text: string, opts?: ChatSendOptions) => {
-    if (planGateOwnsInput) { dispatchAsRevise(text); return; }
+    if (planGateOwnsInput) { void dispatchAsRevise(text); return; }
     chat.enqueue(text, opts);
   }, [planGateOwnsInput, dispatchAsRevise, chat]);
 
@@ -2858,6 +2893,30 @@ const ChatWindow = memo(function ChatWindow({
     if (planReviewDraftCount(id) > 0) { setCloseGuard(true); return; }
     onClose(id);
   };
+
+  // FLUX-1613: "interrupting the running review…" → "delivered" transitional banner for a mid-review
+  // plan-gate send, pinned above the composer via the `awaitingInputBanner` slot (see artifact rev 2).
+  const reviseStatusBanner = reviseStatus ? (
+    <div
+      className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[12px] ${
+        reviseStatus.phase === 'delivered'
+          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+          : 'border-primary/30 bg-primary/5 text-[var(--eh-text-secondary)]'
+      }`}
+    >
+      {reviseStatus.phase === 'interrupting' ? (
+        <>
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+          Interrupting the running review…
+        </>
+      ) : (
+        <>
+          <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+          Delivered — re-grooming with your feedback
+        </>
+      )}
+    </div>
+  ) : undefined;
 
   // FLUX-1339: the minimized plan-review strip — pinned above the composer while the floating panel
   // is collapsed. Shows the unsent-note count + live agent status (revising / waiting / idle), all
@@ -2940,7 +2999,7 @@ const ChatWindow = memo(function ChatWindow({
       onDequeue={chat.dequeue}
       onStop={chat.stop}
       onUploadImage={chat.uploadImage}
-      awaitingInputBanner={isRequireInput && task ? <ChatRequireInputBanner task={task} /> : undefined}
+      awaitingInputBanner={reviseStatusBanner ?? (isRequireInput && task ? <ChatRequireInputBanner task={task} /> : undefined)}
       coldResumeChoice={coldResumeChoice}
       questionPicker={<ChatPendingInteractions conversationId={id} />}
       answerPrompt={answerPrompt}
