@@ -51,6 +51,7 @@ export function SyncStatusIndicator() {
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [resetInFlight, setResetInFlight] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
+  const [recoveryNotice, setRecoveryNotice] = useState<{ path: string; count: number } | null>(null);
   // FLUX-895: which remediation command was just copied (for transient ✓ feedback).
   const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(Date.now());
@@ -377,7 +378,8 @@ export function SyncStatusIndicator() {
     setResetInFlight(true);
     setResetError(null);
     try {
-      await api.resetToRemote();
+      const result = await api.resetToRemote();
+      if (result.recoveryPath) setRecoveryNotice({ path: result.recoveryPath, count: result.recoveryCount });
       setShowDivergedPanel(false);
       setConfirmingReset(false);
     } catch (err) {
@@ -526,6 +528,24 @@ export function SyncStatusIndicator() {
           onResolve={handleResolve}
           onClose={() => setShowConflictModal(false)}
         />,
+        document.body
+      )}
+
+      {recoveryNotice && createPortal(
+        <div className="fixed bottom-4 right-4 z-[10000] max-w-lg rounded-lg border border-amber-300 bg-amber-50 p-4 shadow-xl dark:border-amber-500/40 dark:bg-gray-800">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="h-5 w-5 shrink-0 text-amber-700 dark:text-amber-300" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Local sidecars were saved before reset</p>
+              <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">{recoveryNotice.count} version reference{recoveryNotice.count === 1 ? '' : 's'}: <code className="break-all">{recoveryNotice.path}</code></p>
+              <div className="mt-3 flex gap-2">
+                <button className="rounded bg-amber-700 px-2 py-1 text-xs font-medium text-white" onClick={() => void navigator.clipboard.writeText(recoveryNotice.path)}>Copy path</button>
+                <button className="rounded px-2 py-1 text-xs font-medium text-gray-700 dark:text-gray-200" onClick={() => setRecoveryNotice(null)}>Dismiss</button>
+              </div>
+            </div>
+            <button className="text-gray-500" aria-label="Dismiss recovery notice" onClick={() => setRecoveryNotice(null)}><X className="h-4 w-4" /></button>
+          </div>
+        </div>,
         document.body
       )}
 

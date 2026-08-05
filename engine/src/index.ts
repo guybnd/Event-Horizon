@@ -37,7 +37,10 @@ import { loadAppSettings, getCliWorkspace, resolvePortalDist, autoRegisterWorksp
 import { isPkg, isSea, isPackaged, ensureSeaAssetsExtracted, getSeaAsset, setEnginePort } from './packaged-mode.js';
 import { resolveShellPathAtStartup } from './shell-path.js';
 import { migrateFromLegacy } from './global-settings.js';
-import { activateWorkspace } from './task-store.js';
+import { activateWorkspace, updateTaskWithHistory } from './task-store.js';
+import { buildActivityEntry } from './history.js';
+import { setHoldHistoryWriter, sweepHolds, clearAllHolds, forceKillHeldSubtree, syncHoldStubs } from './background-process-holds.js';
+import { resolveWorkspaceByRoot } from './workspace-context.js';
 // FLUX-705: statically imported so the in-process HTTP MCP mount runs on THIS engine's
 // task-store (shared getWorkspaceRoot()/getWorkspace().tasks/watchers). Bundling them together is what
 // makes the MCP tools and the engine one instance — in the packaged SEA build the old
@@ -449,6 +452,32 @@ let ghAuthAvailable: boolean | null = null;
 // gh process churn — branch tickets in review are few.
 const PR_RECONCILE_INTERVAL_MS = 90_000;
 
+// FLUX-1645: AC6 requires expiry enforced "no later than the next one-minute sweep" — strictly
+// under PR_RECONCILE_INTERVAL_MS, so this runs on its own, tighter, unref'd interval rather than
+// riding the 90s tick above (which still separately persists holds to disk via syncHoldStubs).
+const BACKGROUND_HOLD_SWEEP_INTERVAL_MS = 60_000;
+
+// FLUX-1645: register the ticket-history writer background-process-holds.ts needs for AC9
+// (create/renew/release write their own wording directly in mcp-server.ts; this covers every
+// OTHER module's forced-clear/expiry/stale-clear outcome) — the injected-launcher pattern avoids
+// a background-process-holds.ts -> task-store.ts -> background-process-holds.ts import cycle
+// (task-store.ts's terminal-transition hook calls INTO background-process-holds.ts).
+setHoldHistoryWriter((workspaceRoot, taskId, message) => {
+  const ws = workspaceRoot ? resolveWorkspaceByRoot(workspaceRoot) : getDefaultWorkspace();
+  if (!ws) return;
+  runWithWorkspace(ws, () => {
+    updateTaskWithHistory(taskId, {
+      entries: [buildActivityEntry(message, 'Agent', new Date().toISOString())],
+      updatedBy: 'Agent',
+    }, ws).catch(() => {});
+  });
+});
+
+const holdSweepTimer = setInterval(() => {
+  sweepHolds(Date.now(), { kill: forceKillHeldSubtree }).catch((err) => console.error('[background-process-holds] sweep failed', err));
+}, BACKGROUND_HOLD_SWEEP_INTERVAL_MS);
+holdSweepTimer.unref();
+
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', workspace: getWorkspaceRoot(), ghAuthAvailable });
 });
@@ -751,6 +780,8 @@ async function startServer() {
             // below — reclaim reads the in-memory map, this just keeps the disk mirror ≤ one tick
             // stale for the NEXT restart.
             runWithWorkspace(ws, () => syncActiveSessionStubs(workspaceRoot, defaultWorkspaceRoot)),
+            // FLUX-1645: same restart-durability refresh for background-process holds.
+            runWithWorkspace(ws, () => syncHoldStubs(workspaceRoot)),
             // FLUX-1031: proactively free task-worktree slots held by tickets resting at Ready
             // (or terminal) with no live session, so the board-wide pool doesn't exhaust while
             // PRs await review. Independent of gh — reclamation is a local git/worktree op — so
@@ -846,6 +877,11 @@ async function startServer() {
 async function gracefulShutdown(signal: string) {
   destroyAllTerminalSessions();
   stopAllCliSessions(signal);
+  // FLUX-1645: belt-and-suspenders — stopAllCliSessions already clears every ACTIVE session's own
+  // holds, but this catches anything left registered (e.g. a hold whose session record was already
+  // gone) so nothing survives a deliberate shutdown. Holds are explicitly NOT promised across a
+  // deliberate shutdown (only across an unclean restart, via the persisted stub rehydrate).
+  for (const hold of clearAllHolds(signal)) forceKillHeldSubtree(hold);
   stopEventLoopMonitor();
   shutdownSharedServers();
   // FLUX-863: persist() in hitl-prompts is async + coalesced (FLUX-854), so on

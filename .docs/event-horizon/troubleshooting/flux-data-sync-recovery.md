@@ -50,13 +50,21 @@ The deliberate "my local board state is disposable — just match remote" action
    is lost, it's just no longer on the branch tip.
 2. Fetches `origin/flux-data`, aborts any in-progress merge, and hard-resets `.flux-store` to
    match it.
-3. Cleans up stray untracked leftovers from the aborted merge (gitignored local-only files like
+3. Before reset, saves every endangered engine-owned sidecar source (`HEAD`, index, worktree, and
+   untracked) to a content-addressed manifest beside `.flux-store`. Sources remain separate even
+   when one path has different staged and unstaged bytes; the portal and CLI print the recovery
+   directory when references were retained.
+4. Cleans up stray untracked leftovers from the aborted merge (gitignored local-only files like
    `config.json`/`read-state.json` are never touched — `git clean -fd` respects `.gitignore`).
-4. Re-runs the same idempotent post-attach steps every other attach path runs, so the tree is
-   left consistent.
+5. Leaves `HEAD` exactly at `origin/flux-data` with an empty porcelain status. Startup/attach owns
+   any later scaffolding repair; reset itself never creates a follow-up commit.
 
 Recovering the discarded local state, if you need it: `git -C .flux-store checkout
 flux-data-backup-<ts>` (or cherry-pick specific commits off that tag).
+
+`memory/**` is deliberately outside this guarantee: Basic Memory is an external process and cannot
+join the engine's in-process cutoff. Its existing Git-clean behavior is unchanged and it is not
+listed in the recovery manifest.
 
 ### Option A — one-click, from the portal
 

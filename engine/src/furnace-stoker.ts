@@ -1990,6 +1990,7 @@ export interface FurnaceSlotHolder {
 const UNRECLAIMABLE_LABEL: Record<UnreclaimableReason, string> = {
   'unknown-ticket': 'ticket not found on the board',
   'live-session': 'a session is still live on its branch',
+  'background-process-hold': 'a background-process hold protects this worktree/branch',
   'recent-activity': 'recently active — briefly protected from reclaim',
   status: 'ticket status is not yet reclaimable (not Ready/terminal)',
 };

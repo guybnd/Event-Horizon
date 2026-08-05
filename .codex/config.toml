@@ -1,0 +1,29 @@
+[mcp_servers.basic-memory]
+command = "uvx"
+args = [
+    "basic-memory",
+    "mcp",
+]
+
+[mcp_servers.context7]
+command = "npx"
+args = [
+    "-y",
+    "@upstash/context7-mcp",
+]
+
+[mcp_servers.event-horizon]
+url = "http://127.0.0.1:3067/mcp"
+
+[mcp_servers.serena]
+command = "serena"
+args = [
+    "start-mcp-server",
+    "--context",
+    "claude-code",
+    "--project-from-cwd",
+    "--open-web-dashboard",
+    "False",
+    "--enable-gui-log-window",
+    "False",
+]

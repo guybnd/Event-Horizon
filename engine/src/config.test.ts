@@ -99,6 +99,7 @@ describe('loadConfig — model-policy migration (FLUX-1373)', () => {
     expect(getConfig().integrations.claudeCode.tiers).toEqual(INTEGRATION_TIER_DEFAULTS.claudeCode);
     expect(getConfig().integrations.geminiCli.tiers).toEqual(INTEGRATION_TIER_DEFAULTS.geminiCli);
     expect(getConfig().integrations.copilotCli.tiers).toEqual(INTEGRATION_TIER_DEFAULTS.copilotCli);
+    expect(getConfig().integrations.codexCli.tiers).toEqual(INTEGRATION_TIER_DEFAULTS.codexCli);
     expect(getConfig().modelPolicy).toEqual({ preset: 'balanced', assignments: MODEL_POLICY_PRESETS.balanced });
     expect(getConfig().modelPolicyMigrated).toBe(true);
 
@@ -121,6 +122,7 @@ describe('loadConfig — model-policy migration (FLUX-1373)', () => {
     // Empty legacy fields fall back to the shipped defaults, not empty strings.
     expect(getConfig().integrations.geminiCli.tiers).toEqual(INTEGRATION_TIER_DEFAULTS.geminiCli);
     expect(getConfig().integrations.copilotCli.tiers).toEqual(INTEGRATION_TIER_DEFAULTS.copilotCli);
+    expect(getConfig().integrations.codexCli.tiers).toEqual(INTEGRATION_TIER_DEFAULTS.codexCli);
     // Legacy fields are dropped from the persisted shape going forward.
     expect(getConfig().integrations.claudeCode.groomingModel).toBeUndefined();
     expect(getConfig().integrations.claudeCode.implementationModel).toBeUndefined();

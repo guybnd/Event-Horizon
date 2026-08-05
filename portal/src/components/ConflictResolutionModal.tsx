@@ -102,6 +102,7 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
   const [confirmingDiscardAll, setConfirmingDiscardAll] = useState(false);
   const [discardAllInFlight, setDiscardAllInFlight] = useState(false);
   const [discardAllError, setDiscardAllError] = useState<string | null>(null);
+  const [discardRecoveryPath, setDiscardRecoveryPath] = useState<string | null>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousActiveElement = useRef<HTMLElement | null>(null);
@@ -182,8 +183,12 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
     setDiscardAllInFlight(true);
     setDiscardAllError(null);
     try {
-      await resetToRemote();
-      onClose();
+      const result = await resetToRemote();
+      if (result.recoveryPath) {
+        setDiscardRecoveryPath(result.recoveryPath);
+      } else {
+        onClose();
+      }
     } catch (err) {
       setDiscardAllError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -239,6 +244,13 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
           <div className="rounded-lg border border-orange-200 dark:border-orange-500/30 bg-orange-50 dark:bg-orange-500/10 p-3 space-y-2">
             {discardAllError && (
               <p className="text-sm text-red-600 dark:text-red-400 break-words">{discardAllError}</p>
+            )}
+            {discardRecoveryPath && (
+              <div className="rounded border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+                Sidecar recovery: <code className="break-all">{discardRecoveryPath}</code>
+                <button className="ml-2 underline" onClick={() => void navigator.clipboard.writeText(discardRecoveryPath)}>Copy path</button>
+                <button className="ml-2 underline" onClick={onClose}>Dismiss</button>
+              </div>
             )}
             {!confirmingDiscardAll ? (
               <div className="flex items-center justify-between gap-3">

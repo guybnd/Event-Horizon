@@ -14,6 +14,7 @@ import { emitOperationEvent, type OperationOutcome } from '../operation-telemetr
 import { appendTranscriptLine, appendTranscriptEvent } from '../transcript.js';
 import type { DispatchLifecycle } from '../projection.js';
 import { killProcessTree } from '../kill-process-tree.js';
+import { getExemptPidsForSession, clearHoldsForSession } from '../background-process-holds.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked, flagIfUnarmedWaitPromise, leadUnarmedWaitMessage, narratesUnarmedWaitPromise, raiseNeedsAction, wouldPark } from '../parked-ticket.js';
 import { buildMemberScopeArgs } from '../group.js';
@@ -133,18 +134,18 @@ export async function ensureSharedServersForRoot(projectPath: string, phase?: st
  * defaults to) the `http` transport — a legacy stdio entry already gets correct per-session env
  * via ordinary child-process inheritance and needs no override here.
  */
-function eventHorizonSpawnOverride(conversationId?: string, workspaceRoot?: string): Record<string, McpServerConfig> {
-  if (!conversationId && !workspaceRoot) return {};
+function eventHorizonSpawnOverride(conversationId?: string, workspaceRoot?: string, sessionId?: string): Record<string, McpServerConfig> {
+  if (!conversationId && !workspaceRoot && !sessionId) return {};
   const base = getWorkspaceMcpServers()['event-horizon'];
   if (base && base.type !== 'http') return {}; // stdio (or another transport) — already routed via env inheritance
   // buildMcpServerEntry is the canonical {type, url, alwaysLoad} builder (also used by the
   // installer to write the static workspace .mcp.json this `base` comes from) — reuse it so the
   // URL/port stay correct even if `base` is stale or absent, and layer the header override on top.
-  return { 'event-horizon': { ...(base ?? {}), ...buildMcpServerEntry(conversationId, workspaceRoot) } };
+  return { 'event-horizon': { ...(base ?? {}), ...buildMcpServerEntry(conversationId, workspaceRoot, sessionId) } };
 }
 
-function buildModuleMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string, conversationId?: string, workspaceRoot?: string): string[] {
-  const filtered = { ...buildModuleServerMap(phase, tags, projectPath), ...eventHorizonSpawnOverride(conversationId, workspaceRoot) };
+function buildModuleMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string, conversationId?: string, workspaceRoot?: string, sessionId?: string): string[] {
+  const filtered = { ...buildModuleServerMap(phase, tags, projectPath), ...eventHorizonSpawnOverride(conversationId, workspaceRoot, sessionId) };
   if (Object.keys(filtered).length === 0) return [];
   return ['--mcp-config', JSON.stringify({ mcpServers: filtered })];
 }
@@ -175,10 +176,10 @@ export function filterMcpServersByPhase(
   return out;
 }
 
-export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string, conversationId?: string, workspaceRoot?: string): string[] {
+export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string, conversationId?: string, workspaceRoot?: string, sessionId?: string): string[] {
   const serverPhases = getConfig().mcpServerPhases as Record<string, string[]> | undefined;
   const hasProfiles = !!serverPhases && typeof serverPhases === 'object' && Object.keys(serverPhases).length > 0;
-  if (!hasProfiles) return buildModuleMcpConfigArgs(phase, tags, projectPath, conversationId, workspaceRoot);
+  if (!hasProfiles) return buildModuleMcpConfigArgs(phase, tags, projectPath, conversationId, workspaceRoot, sessionId);
 
   const merged: Record<string, McpServerConfig> = { ...getWorkspaceMcpServers() };
   for (const [id, cfg] of Object.entries(buildModuleServerMap(phase, tags, projectPath))) {
@@ -192,7 +193,7 @@ export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], project
     // Fail open to merge mode rather than spawn an agent that can't manage the
     // ticket. (Review finding alongside FLUX-490.)
     console.warn('[mcp] strict profile would omit event-horizon — falling back to merge mode');
-    return buildModuleMcpConfigArgs(phase, tags, projectPath, conversationId, workspaceRoot);
+    return buildModuleMcpConfigArgs(phase, tags, projectPath, conversationId, workspaceRoot, sessionId);
   }
   if (Object.keys(filtered).length === 0) return [];
   // FLUX-604: keep the agent's OWN ticket tools loaded directly — no tool-search
@@ -201,6 +202,8 @@ export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], project
   // conversationId as HTTP headers so its HITL prompts route to its own ticket.
   // FLUX-1448: and its workspaceRoot as x-eh-workspace, so the MCP per-connection binding
   // resolves the same board as the rest of this session (see buildMcpServerEntry).
+  // FLUX-1645: and its own sessionId as a second signed pair, so hold_background_process/
+  // release_background_process can trust WHICH session is calling, not just which ticket.
   if (filtered['event-horizon']) {
     const headers: Record<string, string> = {};
     if (conversationId) {
@@ -208,6 +211,10 @@ export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], project
       headers['x-eh-conversation-token'] = signConversation(conversationId);
     }
     if (workspaceRoot) headers['x-eh-workspace'] = workspaceRoot;
+    if (sessionId) {
+      headers['x-eh-session-id'] = sessionId;
+      headers['x-eh-session-token'] = signConversation(sessionId);
+    }
     filtered['event-horizon'] = {
       ...filtered['event-horizon'],
       alwaysLoad: true,
@@ -1255,7 +1262,7 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
     // Member worktree: add local .flux-group/ so the agent reads shared group docs (FLUX-422).
     ...buildGroupDocsScopeArg(workspaceRoot),
     // Inject enabled module MCP servers dynamically (phase+tag gated, skips errored probes).
-    ...(framework === 'claude' ? buildSpawnMcpConfigArgs(session.phase, sessionTags, executionRoot, id, workspaceRoot) : []),
+    ...(framework === 'claude' ? buildSpawnMcpConfigArgs(session.phase, sessionTags, executionRoot, id, workspaceRoot, session.id) : []),
   ];
 
   const effortCap = CLI_CAPABILITIES[framework].effort;
@@ -1292,7 +1299,7 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
     log.info(`[${id}] Prompt length: ${initialPrompt.length} chars`);
     proc = spawn(exePath, claudeArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv('claude', id),
+      env: cleanChildEnv('claude', id, session.id),
       stdio: 'pipe',
       windowsHide: true,
     });
@@ -1302,13 +1309,13 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
     const darwinExePath = await resolveClaudeBinaryPathDarwin(binaryName);
     proc = spawn(darwinExePath ?? binaryName, claudeArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv('claude', id),
+      env: cleanChildEnv('claude', id, session.id),
       stdio: 'pipe',
     });
   } else {
     proc = spawn(binaryName, claudeArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv('claude', id),
+      env: cleanChildEnv('claude', id, session.id),
       stdio: 'pipe',
     });
   }
@@ -1447,8 +1454,11 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
 
   proc.on('exit', async (code, signal) => {
     // FLUX-1207: best-effort reap of any orphaned descendants (e.g. a Bash-tool-launched vitest
-    // run) on every exit, not only engine-initiated stop().
-    killProcessTree(proc, undefined, { label: id });
+    // run) on every exit, not only engine-initiated stop(). FLUX-1645: an ORDINARY exit (this is
+    // not requestedStop — that path force-clears in stop() below and never passes exemptions)
+    // spares any pid this exact session holds, so a still-running background build survives the
+    // pause while every other descendant is reaped exactly as before.
+    killProcessTree(proc, undefined, { label: id, exemptPids: getExemptPidsForSession(session.id) });
     if (!telemetryEmitted) {
       telemetryEmitted = true;
       const spawnEndedAt = Date.now();
@@ -1597,6 +1607,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   stop(session: CliSessionRecord): void {
+    // FLUX-1645: explicit Stop always wins the race against a hold (AC7) — force-clear the
+    // registry FIRST (no exemptions are ever passed below, so the existing tree-kill already
+    // reaches a held pid same as any other descendant; this only stops the lease from lingering
+    // as a phantom entry — the AC9 activity entry is logged by clearHoldsForSession itself).
+    clearHoldsForSession(session.id);
     // Tree-kill so the agent's MCP servers (serena, context7, …) are reaped too, not orphaned —
     // the stale-node-process leak. See kill-process-tree.ts.
     killProcessTree(session.proc);
@@ -1711,7 +1726,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   // this is the first turn in a freshly-created worktree).
   const resumeTags = Array.isArray(task?.tags) ? task.tags : undefined;
   await ensureSharedServersForRoot(executionRoot, session.phase, resumeTags);
-  const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, resumeTags, executionRoot, id, workspaceRoot);
+  const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, resumeTags, executionRoot, id, workspaceRoot, session.id);
   const meArgs = modelEffortArgs(session);
   stampDisallowedEhTools(session);
   // FLUX-691: `--include-partial-messages` → token-by-token live streaming on the resume/send path.
@@ -1739,7 +1754,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     log.info(`[${id}] Windows reply spawn: ${exePath} --resume ${session.resumeSessionId || '(new)'}`);
     replyProc = spawn(exePath, resumeArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv('claude', id),
+      env: cleanChildEnv('claude', id, session.id),
       stdio: 'pipe',
       windowsHide: true,
     });
@@ -1748,14 +1763,14 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     const darwinExePath = await resolveClaudeBinaryPathDarwin(binaryName);
     replyProc = spawn(darwinExePath ?? binaryName, resumeArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv('claude', id),
+      env: cleanChildEnv('claude', id, session.id),
       stdio: 'pipe',
       windowsHide: true,
     });
   } else {
     replyProc = spawn(binaryName, resumeArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv('claude', id),
+      env: cleanChildEnv('claude', id, session.id),
       stdio: 'pipe',
       windowsHide: true,
     });
@@ -1831,8 +1846,9 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
 
   replyProc.on('exit', async (code, signal) => {
     // FLUX-1207: best-effort reap of any orphaned descendants (e.g. a Bash-tool-launched vitest
-    // run) on every exit, not only engine-initiated stop().
-    killProcessTree(replyProc, undefined, { label: id });
+    // run) on every exit, not only engine-initiated stop(). FLUX-1645: spare this session's own
+    // held pids on an ordinary exit — see the matching comment on the initial-spawn handler above.
+    killProcessTree(replyProc, undefined, { label: id, exemptPids: getExemptPidsForSession(session.id) });
     // FLUX-1204: mirror the initial-spawn path — guard raiseNeedsAction below on whether THIS
     // handler is the first to observe the outcome, so a spurious 'error' that already fired (and
     // raised needsAction) can't be double-counted by a subsequent non-zero/signalled 'exit'.

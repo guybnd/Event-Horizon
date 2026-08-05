@@ -174,6 +174,8 @@ Coverage (list, get, frontmatter-stripping, fallback-free grounding, completion 
 | [`publish_artifact`](#publish_artifact) | Mutation | yes |
 | [`finish_ticket`](#finish_ticket) | Lifecycle (atomic) | yes |
 | [`branch`](#branch) | Branch | yes (delete) |
+| [`hold_background_process`](#hold_background_process) | Background-process hold | yes |
+| [`release_background_process`](#release_background_process) | Background-process hold | yes |
 | [`delegate`](#delegate) | Delegation | — |
 | [`permission_prompt`](#permission_prompt) | Internal (gating) | — |
 | [`ask_user_question`](#ask_user_question) | Interaction (blocking) | — |
@@ -615,6 +617,8 @@ Append a note to a ticket's history. One tool dispatched by `type` (FLUX-882 —
 
 ### `publish_artifact`
 
+**FLUX-1643 concurrency rule:** publication is serialized per active store and ticket across revision allocation and pointer/history recording; on-disk revision files are exclusive-created, so concurrent local calls cannot overwrite one another. CAS recovery retains canonical sidecar bytes externally before reset; recovery is not an artifact revision and is never published automatically.
+
 Publish a self-contained HTML **artifact** (FLUX-873) so the user reasons against a concrete rendering instead of imagining it from prose. It spans **both lifecycle ends** — not grooming-only: at plan time a **grooming artifact** (mockup / architecture-flow diagram / interactive prototype), and at `Ready` a **visual recap** of the implementation diff (touched-file tree + key diff hunks + plain-language summary — FLUX-976). The tool is **not status-gated**; it accepts any `ticketId` at any point in the lifecycle. Whether to emit is an **agent heuristic** (no tag gate): emit for UI/UX, architecture, or "shape of the thing" work; skip bug fixes / XS-S / backend plumbing; default OFF when unsure. The grooming skill and the implementation skill's "Visual Recap Artifact" section carry the full heuristics; a recap tags its `title`/`note` with "recap" so the portal labels the panel accordingly. The orchestrator skill's Rich Artifacts → **Craft** subsection (FLUX-1398) carries the quality rules — viewport fidelity, real test data, options-with-recommendation, measured claims, and minimal, annotation-driven revisions.
 
 Each call is a **new revision** (history is kept — never an overwrite). The HTML is stored in a traversal-guarded sidecar at `.flux/artifacts/{ID}/{rev}.html` (never inlined in the body) and a revision-keyed pointer (`artifacts: { latest, revisions[] }`) is written to the ticket frontmatter. The tool broadcasts `taskUpdated` + `artifactReady { ticketId, rev }` over SSE, and the portal renders the artifact in a sandboxed iframe via [`GET /api/tasks/:id/artifact`](rest-api.md).
@@ -682,6 +686,51 @@ Manage the git branch for a ticket. One tool dispatched by `action` (FLUX-882 �
 > **Worktree teardown on finish:** `finish_ticket` stops the session and tears the ticket's worktree down (via detach) after the work is committed and the PR merged. If the worktree still has **uncommitted** changes, they are surfaced onto master and noted on the ticket, never discarded. The manual `POST /:id/worktree/detach` escape hatch behaves the same.
 
 > **Subtasks (FLUX-882):** the old `create_subtask` tool is gone — create a subtask with [`create_ticket`](#create_ticket) passing `parentId`. Same atomic parent-link behavior (child created with `skipBroadcast`, TOCTOU-safe link into the parent's `subtasks` array, then `taskCreated { id, parentId }` broadcast).
+
+---
+
+## Background-process hold tools (FLUX-1645)
+
+Windows-only. Let an agent-declared, explicitly verified background process (a build/test run the agent started) survive an ORDINARY session exit — the engine tree-kills every descendant of a session the instant its turn ends by default (FLUX-1207), which would otherwise also kill a still-useful build. A hold carves out a narrow, TTL-bounded exception for one named process (plus its own subtree); everything else the session spawned still dies immediately, and an explicit Stop, a terminal ticket transition, a branch/worktree deletion, or engine shutdown all still force-kill a held process and clear its lease. Implementation: [`background-process-holds.ts`](../../../engine/src/background-process-holds.ts) (the registry + persistence), [`kill-process-tree.ts`](../../../engine/src/kill-process-tree.ts) (the exemption-aware reaper).
+
+### `hold_background_process`
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `ticketId` | string | yes | Must be the calling session's own ticket. |
+| `pid` | number | yes | Live PID to protect — must be a verified descendant of the calling session's own root process. |
+| `reason` | string | yes | 1–300 chars — what is running and why it must survive. |
+| `ttlMinutes` | number | no | Default 30, range 1–120. Re-holding the same `pid` renews the deadline and `reason` instead of erroring. |
+
+**Output:** `structuredContent`: `{ pid, sessionId, reason, expiresAt, renewed }` — `expiresAt` is an absolute ISO-8601 timestamp.
+
+**Authorization (the crux of this tool):** authorized by a signed binding to the exact live CLI session — a second `x-eh-session-id`/`x-eh-session-token` header pair (HMAC-signed at spawn, alongside the existing per-ticket `x-eh-conversation-id`/`x-eh-conversation-token` pair from FLUX-1213), verified against the same workspace-private secret as [`session-binding.ts`](../../../engine/src/session-binding.ts). An agent-supplied `sessionId` argument is never trusted — there is no such input; the session identity is read from the connection's own signed binding. This means two parallel sessions on the same ticket can never hold or release each other's processes.
+
+**Rejected (never changes reap behavior — a rejection means nothing was protected):**
+- non-Windows platform,
+- no verified session bound to the connection, or the bound session doesn't belong to `ticketId`,
+- the bound session is terminal, or `ticketId`'s ticket status is terminal (Done/Released/Archived),
+- `pid` is the engine's own process, the session's own root process, dead, or not a live descendant of the session's root process (arbitrary/cross-session PID),
+- `pid` overlaps (is a live ancestor or descendant of) an existing hold in the same workspace — independent sibling holds coexist fine,
+- `pid` is already held by a **different** session (only that session may renew or release it).
+
+**On success:** appends one ticket activity (create or renew) and broadcasts `taskUpdated`.
+
+```jsonc
+// example call
+{ "tool": "hold_background_process", "input": { "ticketId": "FLUX-42", "pid": 48212, "reason": "npm run build, ~8 min", "ttlMinutes": 15 } }
+```
+
+### `release_background_process`
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `ticketId` | string | yes | Ticket the hold was registered against. |
+| `pid` | number | yes | PID whose hold to release. |
+
+**Output:** plain text confirmation. Owner-only (the releasing session must be the one that created the hold — a mismatch is `invalid_state`) and **idempotent**: releasing a pid with no active hold (already released, expired, or force-cleared) returns a success-shaped text result, not an error — never kills the process.
+
+> **Lifecycle summary:** a hold clears (without killing) on release or on its own TTL expiry with a stale liveness/fingerprint check (the engine re-verifies the pid is still the SAME process — a PID-reuse fingerprint mismatch clears the stale lease silently, never signaling a reused pid). A hold clears AND force-kills the subtree on: TTL expiry with a live, fingerprint-matching process; an explicit session Stop; the ticket reaching a configured terminal status; the branch/worktree being explicitly deleted/detached; or graceful engine shutdown. A live hold also protects its session's resolved worktree/branch from the reclaim sweep, prune, repair-retry, and lock-holder reaping (deferred, not overridden, by those proactive paths) until it clears. Every one of these outcomes appends exactly one ticket activity. Lease state is workspace-local (persisted under `.flux/process-holds/`, gitignored) and survives an unclean engine restart — but is NOT promised to survive a deliberate shutdown.
 
 ---
 

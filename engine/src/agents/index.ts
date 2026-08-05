@@ -2,16 +2,19 @@ import type { AgentAdapter, CliFramework } from './types.js';
 import { ClaudeCodeAdapter } from './claude-code.js';
 import { CopilotAdapter } from './copilot.js';
 import { GeminiAdapter } from './gemini.js';
+import { CodexAdapter } from './codex.js';
 import type { BoardAdapter } from './board.js';
 import { claudeBoardAdapter } from './claude-board.js';
 import { copilotBoardAdapter } from './copilot-board.js';
 import { geminiBoardAdapter } from './gemini-board.js';
+import { codexBoardAdapter } from './codex-board.js';
 import { getConfig } from '../config.js';
 
 const registry: Map<string, AgentAdapter> = new Map([
   ['claude', new ClaudeCodeAdapter()],
   ['copilot', new CopilotAdapter()],
   ['gemini', new GeminiAdapter()],
+  ['codex', new CodexAdapter()],
 ]);
 
 export function getAdapter(agentType: string): AgentAdapter {
@@ -56,6 +59,7 @@ const BOARD_ADAPTERS: Record<CliFramework, BoardAdapter> = {
   claude: claudeBoardAdapter,
   copilot: copilotBoardAdapter,
   gemini: geminiBoardAdapter,
+  codex: codexBoardAdapter,
 };
 
 // `framework` is fixed for a board session's life (resumeSessionId is CLI-specific — switching

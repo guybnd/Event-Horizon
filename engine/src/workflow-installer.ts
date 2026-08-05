@@ -10,7 +10,7 @@ import { buildCoreSkillDocument } from './skill-core.js';
 import { pathsEqual } from './workspace.js';
 import { CLI_CAPABILITIES, type CliCapabilities } from './agents/types.js';
 
-export type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
+export type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'codex' | 'generic';
 export type ResolvedFramework = Exclude<Framework, 'auto'>;
 
 export const EVENT_HORIZON_INSTRUCTIONS_START = '<!-- EVENT_HORIZON_MANAGED_INSTRUCTIONS:START -->';
@@ -32,6 +32,10 @@ const SKILL_INSTALL_STRATEGY: Record<ResolvedFramework, 'modular' | 'core' | 'co
   antigravity: 'concatenated',
   cursor: 'concatenated',
   windsurf: 'concatenated',
+  // FLUX-1625: no engine-driven agent-spawn injection path for Codex (buildInitialPrompt's
+  // phaseSkillModule injection is gated to 'claude' only) — needs everything statically installed,
+  // same as gemini/cursor/generic.
+  codex: 'concatenated',
   generic: 'concatenated',
 };
 
@@ -129,6 +133,8 @@ function skillDestinationFor(targetDir: string, framework: ResolvedFramework): s
       return path.join(targetDir, '.windsurf', 'rules', 'event-horizon.md');
     case 'claude':
       return path.join(targetDir, '.claude', 'rules', 'event-horizon.md');
+    case 'codex':
+      return path.join(targetDir, '.codex', 'skills', 'event-horizon.md');
     case 'generic':
     default:
       return path.join(targetDir, '.event-horizon', 'skills', 'event-horizon.md');
@@ -162,6 +168,12 @@ function instructionsDestinationFor(targetDir: string, framework: ResolvedFramew
       return path.join(targetDir, '.windsurfrules');
     case 'claude':
       return path.join(targetDir, '.clauderc');
+    // FLUX-1625: AGENTS.md is Codex CLI's documented persistent project-instructions file — unlike
+    // the other instructionsDestinationFor targets, this one is NOT independently live-probed
+    // (Phase 0 focused on the runtime adapter, not the installer), but AGENTS.md is a stable,
+    // widely-documented Codex convention.
+    case 'codex':
+      return path.join(targetDir, 'AGENTS.md');
     default:
       return undefined;
   }
@@ -170,7 +182,7 @@ function instructionsDestinationFor(targetDir: string, framework: ResolvedFramew
 // Every concrete (non-'auto') framework EH can install skills for. `gemini` precedes `antigravity`
 // so it wins the dedupe for their shared `.gemini/skills/event-horizon.md` target (the common label).
 const ALL_RESOLVED_FRAMEWORKS: readonly ResolvedFramework[] = [
-  'copilot', 'gemini', 'antigravity', 'cursor', 'cline', 'windsurf', 'claude', 'generic',
+  'copilot', 'gemini', 'antigravity', 'cursor', 'cline', 'windsurf', 'claude', 'codex', 'generic',
 ];
 
 /** True when EH has ALREADY installed its skill file(s) for `framework` in `targetDir`. */
@@ -522,6 +534,14 @@ function mcpConfigPathFor(targetDir: string, framework: ResolvedFramework): stri
       return path.join(targetDir, '.cline', 'mcp.json');
     case 'windsurf':
       return path.join(targetDir, '.windsurf', 'mcp.json');
+    // FLUX-1625: codex-cli's actual project-level MCP config format is unconfirmed (likely a TOML
+    // `.codex/config.toml`, not this JSON `.mcp.json` shape) — Phase 0 only probed the per-spawn
+    // `-c mcp_servers.X.url=…` override codex.ts uses at runtime (spawnTimeMcpConfig:true), which is
+    // what engine-DISPATCHED Codex sessions actually rely on. Falling through to the JSON default
+    // here is a harmless no-op for codex today (an inert file it doesn't read) rather than a
+    // guessed-wrong TOML writer — same "don't write a guessed format" call as
+    // CliCapabilities.bakesPermissionAllowlist's copilot precedent.
+    case 'codex':
     case 'copilot':
     case 'claude':
     case 'generic':
@@ -547,7 +567,7 @@ export function globalMcpConfigPathFor(framework: ResolvedFramework): string | n
   }
 }
 
-export function buildMcpServerEntry(conversationId?: string, workspaceRoot?: string) {
+export function buildMcpServerEntry(conversationId?: string, workspaceRoot?: string, sessionId?: string) {
   // FLUX-645: the engine serves the MCP server in-process over loopback HTTP, so the entry is
   // location-independent — no relative path, no --workspace, no worktree path. Every session
   // (main checkout or `.eh-worktrees/*` worktree) points at this one URL and shares the running
@@ -571,12 +591,23 @@ export function buildMcpServerEntry(conversationId?: string, workspaceRoot?: str
   // `handleMcpHttpRequest` resolves against the S1 registry (`getWorkspaceByRoot`). This is the
   // board/registry root (`getWorkspace().root`), NOT a worktree/execution path — the two differ
   // for any worktree-isolated session, and the registry only keys on the former.
+  //
+  // FLUX-1645: `sessionId`, when passed, carries this exact CliSessionRecord.id (NOT the ticket
+  // id `conversationId` already carries) as a second signed pair — `hold_background_process`/
+  // `release_background_process` need to trust WHICH LIVE SESSION is calling, not just which
+  // ticket, since two sessions can run on the same ticket. Signed with the same generic
+  // HMAC(workspace-secret, id) `signConversation` — it has no ticket-specific semantics, so
+  // reusing it for a session id is exactly as sound as for a conversation id.
   const headers: Record<string, string> = {};
   if (conversationId) {
     headers['x-eh-conversation-id'] = conversationId;
     headers['x-eh-conversation-token'] = signConversation(conversationId);
   }
   if (workspaceRoot) headers['x-eh-workspace'] = workspaceRoot;
+  if (sessionId) {
+    headers['x-eh-session-id'] = sessionId;
+    headers['x-eh-session-token'] = signConversation(sessionId);
+  }
   return {
     type: 'http',
     url: `http://127.0.0.1:${getEnginePort()}/mcp`,
@@ -616,6 +647,11 @@ export function buildGeminiMcpServerEntry() {
     headers: {
       'x-eh-conversation-id': '${EH_CONVERSATION_ID}',
       'x-eh-conversation-token': '${EH_CONVERSATION_TOKEN}',
+      // FLUX-1645: same placeholder-resolution trick as the conversation pair above — cleanChildEnv
+      // sets EH_SESSION_ID/EH_SESSION_TOKEN on every spawn, so each session's own process resolves
+      // these to its own signed session identity.
+      'x-eh-session-id': '${EH_SESSION_ID}',
+      'x-eh-session-token': '${EH_SESSION_TOKEN}',
     },
     // Gemini CLI prompts to confirm every tool call from an UNtrusted MCP server —
     // in a folder without an attached interactive terminal (an unattended/orchestrator session)
@@ -869,7 +905,12 @@ export async function installGlobalMcpConfig(framework: ResolvedFramework): Prom
 
   await writeMcpEntryToConfig(installedPath, framework);
 
-  if (framework === 'claude') {
+  // Gate on the bakesPermissionAllowlist capability (Claude Code today) rather than a framework
+  // literal — same adapter-boundary rule as the project install above. The `.claude` path inside
+  // the gate is deliberate: installClaudeSettingsPermissions is claude-specific by construction,
+  // so a future framework with this capability needs its own settings-path accessor here.
+  const capabilities = (CLI_CAPABILITIES as Partial<Record<ResolvedFramework, CliCapabilities>>)[framework];
+  if (capabilities?.bakesPermissionAllowlist) {
     const permissionsPath = path.join(os.homedir(), '.claude', 'settings.json');
     await installClaudeSettingsPermissions(permissionsPath);
     return { installedPath, permissionsPath };

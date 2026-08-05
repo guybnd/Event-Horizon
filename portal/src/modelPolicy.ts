@@ -69,6 +69,9 @@ export const DEFAULT_TIER_MODELS: Record<CliFramework, TierModels> = {
   claude: { smart: 'opus', efficient: 'sonnet', cheap: 'haiku' },
   gemini: { smart: 'gemini-2.5-pro', efficient: 'gemini-2.5-flash', cheap: 'gemini-2.5-flash-lite' },
   copilot: { smart: 'gpt-5', efficient: 'gpt-5-mini', cheap: 'gpt-4.1' },
+  // FLUX-1625: unprobed against codex-cli's actual model catalog — mirrors engine config.ts's
+  // INTEGRATION_TIER_DEFAULTS.codexCli, same caveat.
+  codex: { smart: 'gpt-5-codex', efficient: 'gpt-5', cheap: 'gpt-5-mini' },
 };
 
 export const EMPTY_TIER_MODELS: TierModels = { smart: '', efficient: '', cheap: '' };

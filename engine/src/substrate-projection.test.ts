@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { setWorkspaceRoot } from './workspace.js';
+import { taskWorktreeDir } from './task-worktree.js';
 import {
   appendTranscriptEvent,
   appendTranscriptLine,
@@ -233,6 +234,24 @@ describe('substrate vs projection (FLUX-658)', () => {
     ]);
   });
 
+  it('projectTranscript renders a normalized Codex assistant event via the Claude-shaped branch (FLUX-1637)', () => {
+    // Codex's raw item.completed/agent_message events have no matching projection.ts branch, so
+    // codex.ts (attachStdoutProcessing) normalizes a completed agent_message into this canonical
+    // Claude-shaped event before teeing it — projection.ts stays framework-agnostic (no 4th per-CLI
+    // branch). This locks that the normalized shape round-trips through the SAME branch Claude uses.
+    const stream = 'CDX';
+    const raws = [
+      { type: 'user', text: 'go', timestamp: 'T1' },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'hi from codex' }] } },
+    ];
+    const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: 'TENV', role: 'unknown', raw }));
+
+    expect(projectTranscript(turns)).toEqual([
+      { role: 'user', text: 'go', ts: 'T1', seq: 0 },
+      { role: 'assistant', text: 'hi from codex', ts: 'TENV', seq: 1 },
+    ]);
+  });
+
   it('projectTranscript renders a resume-preamble as a system context-update note row (FLUX-745)', () => {
     const stream = 'RP';
     const raws = [
@@ -403,6 +422,64 @@ describe('substrate vs projection (FLUX-658)', () => {
       { role: 'tool', text: 'Edit · a.ts', ts: '', seq: 0, added: 1, removed: 1, tool: 'Edit', path: 'a.ts' },
       { role: 'tool', text: 'Write · b.ts', ts: '', seq: 0, added: 3, removed: 0, tool: 'Write', path: 'b.ts' },
       { role: 'tool', text: 'MultiEdit · c.ts', ts: '', seq: 0, added: 2, removed: 1, tool: 'MultiEdit', path: 'c.ts' },
+    ]);
+  });
+
+  it('projectTranscript relativizes an edit path under a same-ticket `-r2` recovery worktree (FLUX-1644)', () => {
+    const stream = freshStream();
+    // FLUX-1644: a task can be running from a `-r<N>` recovery worktree instead of the canonical
+    // `<repo>-<taskId>` dir. A path under `<repo>-<taskId>-r2` still relativizes correctly, because
+    // reversing its worktree-dir segment (`ticketIdFromWorktreePath`) yields THIS transcript's own
+    // taskId (the streamId here doubles as the taskId, exactly like the canonical FLUX-688 case above).
+    const recoveryWorktree = `${taskWorktreeDir(root, stream)}-r2`;
+    const editFile = path.join(recoveryWorktree, 'a.ts');
+    const raws = [
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', name: 'Edit', input: { file_path: editFile, old_string: 'a\nb\nc', new_string: 'a\nB\nc' } },
+          ],
+        },
+      },
+    ];
+    const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: '', role: 'assistant', raw }));
+
+    const msgs = projectTranscript(turns);
+    expect(msgs).toEqual([
+      { role: 'tool', text: 'Edit · a.ts', ts: '', seq: 0, added: 1, removed: 1, tool: 'Edit', path: 'a.ts' },
+    ]);
+  });
+
+  it('projectTranscript does NOT relativize an edit path under a DIFFERENT ticket\'s worktree (FLUX-1644)', () => {
+    const stream = freshStream(); // this transcript's own taskId
+    const otherTaskId = `${stream}-OTHER`;
+    // Neither a canonical nor a `-r2` sibling worktree belonging to a DIFFERENT ticket is ever
+    // trusted as a root — ticketIdFromWorktreePath on that dir reverses to `otherTaskId`, not the
+    // transcript's own `stream`, so it must fall back to whatever "path outside any root" already
+    // resolves to (matching the FLUX-671/unparseable-line-style fallback: no `tool`/`path` fields,
+    // and the label keeps the raw string, mirroring the existing "path outside any root" behavior).
+    const otherCanonical = path.join(taskWorktreeDir(root, otherTaskId), 'a.ts');
+    const otherRecovery = path.join(`${taskWorktreeDir(root, otherTaskId)}-r2`, 'b.ts');
+    const raws = [
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', name: 'Edit', input: { file_path: otherCanonical, old_string: 'a\nb\nc', new_string: 'a\nB\nc' } },
+            { type: 'tool_use', name: 'Edit', input: { file_path: otherRecovery, old_string: 'a\nb\nc', new_string: 'a\nB\nc' } },
+          ],
+        },
+      },
+    ];
+    const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: '', role: 'assistant', raw }));
+
+    const msgs = projectTranscript(turns);
+    // Neither row resolves a repo-relative path — no `tool`/`path` fields, same as any edit whose
+    // absolute path sits outside every trusted root.
+    expect(msgs).toEqual([
+      { role: 'tool', text: `Edit · ${otherCanonical.replace(/\s+/g, ' ').slice(0, 48)}`, ts: '', seq: 0, added: 1, removed: 1 },
+      { role: 'tool', text: `Edit · ${otherRecovery.replace(/\s+/g, ' ').slice(0, 48)}`, ts: '', seq: 0, added: 1, removed: 1 },
     ]);
   });
 

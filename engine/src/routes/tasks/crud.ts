@@ -13,7 +13,7 @@ import { getWorkspaceRoot } from '../../workspace.js';
 import { normalizeHistoryEntries } from '../../history.js';
 import { serializeTaskForApi, serializeTaskForAgent, serializeTaskForList, atomicWriteFile, createTask, getTerminalStatuses, subtaskIds } from '../../task-store.js';
 import { stopAllSessionsForTask, reconcileDeadSessions } from '../../session-store.js';
-import { detachTaskWorktree, taskWorktreeDir } from '../../task-worktree.js';
+import { detachTaskWorktree, resolveTaskWorktreePath } from '../../task-worktree.js';
 import { broadcastEvent, getTasksVersion } from '../../events.js';
 import { errorMessage, reqWorkspace } from './helpers.js';
 import type { HistoryEntry } from './helpers.js';
@@ -214,10 +214,10 @@ router.delete('/:id', async (req, res) => {
     // Tear down the ticket's dedicated worktree first so deleting the ticket doesn't orphan
     // it (FLUX-577). Abandon path (applyToMain:false): uncommitted work is preserved as a
     // recoverable stash ref, NOT applied to master. Only this ticket's own worktree is
-    // touched (taskWorktreeDir by id) — a shared/joined worktree another ticket holds is
-    // left alone. Best-effort: a teardown failure must not block the delete.
+    // touched (resolveTaskWorktreePath by id, FLUX-1644) — a shared/joined worktree another
+    // ticket holds is left alone. Best-effort: a teardown failure must not block the delete.
     if (task.branch) {
-      const wtPath = taskWorktreeDir(getWorkspaceRoot()!, id);
+      const wtPath = await resolveTaskWorktreePath(getWorkspaceRoot()!, id);
       if (existsSync(wtPath)) {
         stopAllSessionsForTask(id, 'Deleting ticket — detaching worktree');
         await detachTaskWorktree(getWorkspaceRoot()!, wtPath, { ticketId: id, applyToMain: false }).catch((e) => {

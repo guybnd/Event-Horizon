@@ -18,6 +18,11 @@ const { mockReclaimWorktrees } = vi.hoisted(() => ({
 }));
 vi.mock('./task-worktree.js', () => ({
   createTaskWorktree: vi.fn(),
+  // FLUX-1644: ticket-isolation compares createTaskWorktree's return against this to decide
+  // whether to enrich the worktree-created marker with a recovery-suffix path — mirror the real
+  // `<repo>-<ticketId>` shape closely enough (`/fake/.eh-worktrees/<ticketId>`) that it matches the
+  // `/fake/.eh-worktrees/<ticketId>` values these tests mock createTaskWorktree to resolve with.
+  taskWorktreeDir: vi.fn((_workspaceRoot: string, ticketId: string) => `/fake/.eh-worktrees/${ticketId}`),
   reclaimWorktrees: mockReclaimWorktrees,
   reclaimOnCapAndRetry: vi.fn(async (
     originalError: unknown,
@@ -143,6 +148,45 @@ describe('ensureTicketIsolation (FLUX-845 chokepoint, FLUX-852 hardening)', () =
         entries: [expect.objectContaining({ type: 'activity', event: 'worktree-created' })],
       }),
     );
+  });
+
+  it('names the actual recovery worktree path in the marker when it differs from the canonical dir (FLUX-1644)', async () => {
+    // createTaskWorktree resolved a `-r2` recovery worktree because the canonical
+    // `/fake/.eh-worktrees/FLUX-9` dir was an unrepairable leftover — the marker must name the
+    // ACTUAL path the agent will run in, not the canonical one nobody landed in.
+    cache['FLUX-9'] = { id: 'FLUX-9', title: 'Recovery path check' };
+    vi.mocked(createTicketBranch).mockResolvedValue('flux/FLUX-9-recovery-path-check');
+    vi.mocked(createTaskWorktree).mockResolvedValue('/fake/.eh-worktrees/FLUX-9-r2');
+
+    const res = await ensureTicketIsolation('FLUX-9', { worktree: true });
+
+    expect(res.worktree).toBe('/fake/.eh-worktrees/FLUX-9-r2');
+    expect(updateTaskWithHistory).toHaveBeenCalledWith(
+      'FLUX-9',
+      expect.objectContaining({
+        entries: [
+          expect.objectContaining({
+            type: 'activity',
+            event: 'worktree-created',
+            comment: expect.stringContaining('/fake/.eh-worktrees/FLUX-9-r2'),
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('does not fail isolation when the best-effort worktree-created marker write rejects (FLUX-1644)', async () => {
+    // Use a ticket fixture with an already-set branch so createTicketBranch/the branch-field
+    // updateTaskWithHistory write is skipped entirely — mockRejectedValueOnce below then targets
+    // ONLY the worktree-created marker write (the sole updateTaskWithHistory call in this run).
+    cache['FLUX-10'] = { id: 'FLUX-10', title: 'Marker write fails', branch: 'flux/FLUX-10-marker-write-fails' };
+    vi.mocked(createTaskWorktree).mockResolvedValue('/fake/.eh-worktrees/FLUX-10');
+    vi.mocked(updateTaskWithHistory).mockRejectedValueOnce(new Error('disk full'));
+
+    const res = await ensureTicketIsolation('FLUX-10', { worktree: true });
+
+    expect(res.worktree).toBe('/fake/.eh-worktrees/FLUX-10');
+    expect(res.worktreeError).toBeUndefined();
   });
 
   it('is non-fatal when the worktree fails: returns the branch + worktreeError and records history', async () => {

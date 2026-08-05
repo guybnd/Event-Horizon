@@ -5,7 +5,7 @@ order: 6
 
 # Agent Integrations
 
-Event Horizon integrates with three AI coding CLI frameworks. Each can be launched directly from a ticket card in the portal, with full session tracking, live progress streaming, and cost monitoring.
+Event Horizon integrates with four AI coding CLI frameworks. Each can be launched directly from a ticket card in the portal, with full session tracking, live progress streaming, and cost monitoring.
 
 ---
 
@@ -16,8 +16,9 @@ Event Horizon integrates with three AI coding CLI frameworks. Each can be launch
 | **Claude Code** | `claude` | Fully supported | `npm install -g @anthropic-ai/claude-code` |
 | **Gemini CLI** | `gemini` | Fully supported | `npm install -g @google/gemini-cli` |
 | **Copilot CLI** | `copilot` | Fully supported | `npm install -g @github/copilot` |
+| **Codex CLI** | `codex` | Fully supported | `npm install -g @openai/codex` |
 
-All three frameworks plug in through the same `AgentAdapter` interface. To add a fourth framework, or to understand exactly how the engine drives a CLI, see [[Agent Adapter Contract]].
+All four frameworks plug in through the same `AgentAdapter` interface. To add a fifth framework, or to understand exactly how the engine drives a CLI, see [[Agent Adapter Contract]].
 
 ---
 
@@ -40,6 +41,12 @@ All three frameworks plug in through the same `AgentAdapter` interface. To add a
 1. Install: `npm install -g @github/copilot`
 2. Authenticate: Ensure you're logged in via `gh auth login` (requires GitHub Copilot subscription)
 3. Verify: `copilot -p "say hello" --output-format json` should produce JSONL output
+
+### Codex CLI
+
+1. Install: `npm install -g @openai/codex`
+2. Authenticate: Run `codex` once to log in with your OpenAI account
+3. Verify: `codex exec "say hello" --json` should produce JSONL output
 
 ---
 
@@ -247,8 +254,8 @@ The session store enforces file-lock conventions: if a session declares `lockedP
 
 The CLI binary must be on your system PATH. Verify with:
 
-- Windows: `where claude` / `where gemini` / `where copilot`
-- macOS/Linux: `which claude` / `which gemini` / `which copilot`
+- Windows: `where claude` / `where gemini` / `where copilot` / `where codex`
+- macOS/Linux: `which claude` / `which gemini` / `which copilot` / `which codex`
 
 ### Copilot: "path with spaces" errors on Windows
 
@@ -265,6 +272,7 @@ Event Horizon handles this internally by spawning `node` directly with the Copil
 - Claude: Reports exact tokens — cost should populate automatically
 - Gemini: Reports exact tokens — cost should populate automatically  
 - Copilot: Does not currently report token counts in JSON output; cost tracking is limited
+- Codex: Reports exact tokens, but no direct cost figure in its usage payload — cost is estimated from `model-pricing.md`
 
 ---
 

@@ -46,9 +46,11 @@ import {
   stopCliSession,
   reapStaleParkedSessions,
   reconcileDeadSessions,
+  getAllActiveSessions,
   getActiveSessionCount,
   getLiveProcessSessionCount,
   getLiveProcessSessionCountForWorkspace,
+  STALE_SESSION_RECLAIM_MS,
   stopCliSessionsForWorkspace,
   sessionBelongsToWorkspaceRoot,
   syncActiveSessionStubs,
@@ -891,6 +893,58 @@ describe('getLiveProcessSessionCount vs getActiveSessionCount (FLUX-1338)', () =
   });
 });
 
+// FLUX-1636 Fix B — reconciling the three divergent "active" predicates. `getAllActiveSessions`/
+// `getActiveSessionCount` now (a) include `scheduled` like `ACTIVE_STATUSES`/`getActiveSessionsForTask`
+// already did, and (b) exclude a `waiting-input` session once it goes STALE (isSessionStale,
+// STALE_SESSION_RECLAIM_MS) — the fix for the observed symptom: 33 phantom stubs, oldest 12 days,
+// inflating `get_board_state`/the portal badge to a double-digit count with nothing running.
+describe('getAllActiveSessions / getActiveSessionCount staleness exclusion (FLUX-1636 Fix B)', () => {
+  const staleAt = () => new Date(Date.now() - STALE_SESSION_RECLAIM_MS - 60_000).toISOString();
+  const freshAt = () => new Date().toISOString();
+
+  beforeEach(() => {
+    cliSessionsById.clear();
+    cliSessionsByTaskId.clear();
+  });
+
+  it('does NOT count a STALE proc-less waiting-input session — the phantom-stub bug', () => {
+    const stale = createMockSession({ id: 'sess-stale', status: 'waiting-input', startedAt: staleAt(), lastOutputAt: staleAt() });
+    cliSessionsById.set(stale.id, stale);
+    expect(getAllActiveSessions()).toHaveLength(0);
+    expect(getActiveSessionCount()).toBe(0);
+  });
+
+  it('still counts a FRESH proc-less waiting-input session — a resting mid-conversation is not a phantom', () => {
+    const fresh = createMockSession({ id: 'sess-fresh', status: 'waiting-input', startedAt: freshAt(), lastOutputAt: freshAt() });
+    cliSessionsById.set(fresh.id, fresh);
+    expect(getAllActiveSessions()).toHaveLength(1);
+    expect(getActiveSessionCount()).toBe(1);
+  });
+
+  it('a board with only stale phantoms reports 0 active — matches the acceptance criterion', () => {
+    for (let i = 0; i < 3; i++) {
+      const s = createMockSession({ id: `sess-phantom-${i}`, status: 'waiting-input', startedAt: staleAt(), lastOutputAt: staleAt() });
+      cliSessionsById.set(s.id, s);
+    }
+    expect(getActiveSessionCount()).toBe(0);
+  });
+
+  it('counts a scheduled (sleeping) session — reconciled with ACTIVE_STATUSES/getActiveSessionsForTask', () => {
+    const scheduled = createMockSession({ id: 'sess-sched', status: 'scheduled', wakeAt: new Date(Date.now() + 60_000).toISOString() });
+    cliSessionsById.set(scheduled.id, scheduled);
+    expect(getActiveSessionCount()).toBe(1);
+  });
+
+  it('getActiveSessionCount never diverges from getAllActiveSessions().length (single source of truth)', () => {
+    const live = createMockSession({ id: 'sess-a', status: 'running' });
+    const staleWaiting = createMockSession({ id: 'sess-b', status: 'waiting-input', startedAt: staleAt(), lastOutputAt: staleAt() });
+    const freshWaiting = createMockSession({ id: 'sess-c', status: 'waiting-input', startedAt: freshAt(), lastOutputAt: freshAt() });
+    for (const s of [live, staleWaiting, freshWaiting]) cliSessionsById.set(s.id, s);
+    expect(getActiveSessionCount()).toBe(getAllActiveSessions().length);
+    expect(getActiveSessionCount()).toBe(2); // live + fresh waiting; stale waiting excluded
+  });
+});
+
 // FLUX-1531 (multi-workspace S13): sessions tag their owning workspace root at spawn; the switch
 // guard's count/stop must be scoped per-board instead of engine-wide.
 describe('workspace-scoped session count/stop (FLUX-1531)', () => {
@@ -1070,5 +1124,87 @@ describe('active-session stub sync/rehydrate — two-board isolation (FLUX-1556)
 
     expect(await readStubFiles(rootA)).toEqual(['sess-a.json']);
     expect(await readStubFiles(rootB)).toEqual([]); // never touched B's (nonexistent) dir
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // FLUX-1636 Fix A1/A2 — reproduces the observed symptom directly: a board that never rehydrates
+  // in THIS engine process leaves pre-FLUX-1556 residue on disk forever (syncActiveSessionStubs's
+  // own prune only runs for a board that HAS rehydrated). `rehydrateSessionStubs` now prunes on its
+  // own unconditional pass: a tagged stub (Fix A2) is foreign if its workspaceRoot doesn't match;
+  // an untagged legacy stub is foreign if its taskId isn't a real ticket on this board.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('rehydrate-time foreign-stub pruning (FLUX-1636 Fix A1/A2)', () => {
+    it('prunes a legacy/untagged stub whose taskId belongs to another board — the byte-identical residue bug', async () => {
+      // boardA has a real ticket FLUX-A; boardB does not. A legacy stub (no workspaceRoot tag,
+      // written before Fix A2 existed) for FLUX-A is sitting in board B's own dir — e.g. copied in,
+      // or written back when the stub path was still unscoped (pre-FLUX-1556).
+      boardA.tasks['FLUX-A'] = { id: 'FLUX-A', status: 'Ready' };
+      await fsp.mkdir(stubsDirFor(rootB), { recursive: true });
+      await fsp.writeFile(
+        path.join(stubsDirFor(rootB), 'foreign.json'),
+        JSON.stringify({ id: 'foreign', taskId: 'FLUX-A', status: 'waiting-input', startedAt: new Date().toISOString() }),
+        'utf-8',
+      );
+
+      const count = await runWithWorkspace(boardB, () => rehydrateSessionStubs());
+
+      expect(count).toBe(0);
+      expect(cliSessionsById.has('foreign')).toBe(false); // never loaded — H4 (board-state leak) can't see it either
+      expect(await readStubFiles(rootB)).toEqual([]); // pruned from disk — the residue stops being frozen forever
+    });
+
+    it('rehydrates a legacy/untagged stub whose taskId IS a real ticket on this board (backward compatible)', async () => {
+      boardA.tasks['FLUX-A'] = { id: 'FLUX-A', status: 'Ready' };
+      await fsp.mkdir(stubsDirFor(rootA), { recursive: true });
+      await fsp.writeFile(
+        path.join(stubsDirFor(rootA), 'legacy.json'),
+        JSON.stringify({ id: 'legacy', taskId: 'FLUX-A', status: 'waiting-input', startedAt: new Date().toISOString() }),
+        'utf-8',
+      );
+
+      const count = await runWithWorkspace(boardA, () => rehydrateSessionStubs());
+
+      expect(count).toBe(1);
+      expect(cliSessionsById.get('legacy')?.taskId).toBe('FLUX-A');
+      expect(await readStubFiles(rootA)).toEqual(['legacy.json']); // kept, not pruned
+    });
+
+    it('prunes a TAGGED stub whose workspaceRoot points at a different board, even if its taskId happens to exist here too', async () => {
+      // Both boards happen to have a ticket called FLUX-SHARED (same-prefix collision, H3/H5's
+      // premise) — the tag, not ticket existence, must decide ownership once Fix A2 has tagged it.
+      boardA.tasks['FLUX-SHARED'] = { id: 'FLUX-SHARED', status: 'Ready' };
+      boardB.tasks['FLUX-SHARED'] = { id: 'FLUX-SHARED', status: 'Ready' };
+      await fsp.mkdir(stubsDirFor(rootB), { recursive: true });
+      await fsp.writeFile(
+        path.join(stubsDirFor(rootB), 'tagged-for-a.json'),
+        JSON.stringify({ id: 'tagged-for-a', taskId: 'FLUX-SHARED', status: 'waiting-input', startedAt: new Date().toISOString(), workspaceRoot: rootA }),
+        'utf-8',
+      );
+
+      const count = await runWithWorkspace(boardB, () => rehydrateSessionStubs());
+
+      expect(count).toBe(0);
+      expect(cliSessionsById.has('tagged-for-a')).toBe(false);
+      expect(await readStubFiles(rootB)).toEqual([]);
+    });
+
+    it('round-trips a freshly-written (Fix A2 tagged) stub through sync → restart → rehydrate without cross-board leakage', async () => {
+      boardA.tasks['FLUX-A'] = { id: 'FLUX-A', status: 'Ready' };
+      boardB.tasks['FLUX-B'] = { id: 'FLUX-B', status: 'Ready' };
+      cliSessionsById.set('sess-a', createMockSession({ id: 'sess-a', taskId: 'FLUX-A', status: 'waiting-input', workspaceRoot: rootA }));
+      registerSession('FLUX-A', 'sess-a');
+      await runWithWorkspace(boardA, () => rehydrateSessionStubs());
+      await runWithWorkspace(boardA, () => syncActiveSessionStubs(rootA, rootA));
+
+      // Simulate a restart: wipe the in-memory map, then rehydrate BOTH boards from disk.
+      cliSessionsById.clear();
+      cliSessionsByTaskId.clear();
+      __resetSessionStubStateForTests();
+      await runWithWorkspace(boardA, () => rehydrateSessionStubs());
+      await runWithWorkspace(boardB, () => rehydrateSessionStubs());
+
+      expect(cliSessionsById.get('sess-a')?.workspaceRoot).toBe(rootA); // tag survived the round-trip
+      expect(await readStubFiles(rootB)).toEqual([]); // never leaked into board B's dir
+    });
   });
 });

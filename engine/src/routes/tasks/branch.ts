@@ -8,7 +8,7 @@ import { getConfig } from '../../config.js';
 import { updateTaskWithHistory } from '../../task-store.js';
 import { stopAllSessionsForTask } from '../../session-store.js';
 import { getTicketBranchStatus, deleteTicketBranch } from '../../branch-manager.js';
-import { detachTaskWorktree, taskWorktreeDir, listTaskWorktrees, listLocalBranches } from '../../task-worktree.js';
+import { detachTaskWorktree, resolveTaskWorktreePath, listTaskWorktrees, listLocalBranches } from '../../task-worktree.js';
 import { ensureTicketIsolation } from '../../ticket-isolation.js';
 import { errorMessage, reqWorkspace } from './helpers.js';
 import type { TaskRecord } from './helpers.js';
@@ -68,7 +68,9 @@ router.get('/:id/branch', async (req, res) => {
 
   const name: string | undefined = task.branch;
   // FLUX-521: report whether a dedicated worktree exists (drives the portal detach control).
-  const wtPath = taskWorktreeDir(getWorkspaceRoot()!, id);
+  // FLUX-1644: resolve to the registered recovery worktree (`-r2`, ...) when the canonical husk
+  // is unrepairable, rather than always reporting the canonical path.
+  const wtPath = await resolveTaskWorktreePath(getWorkspaceRoot()!, id);
   const worktree = existsSync(wtPath) ? wtPath : null;
   if (!name) return res.json({ name: null, exists: false, aheadCount: 0, behindCount: 0, worktree });
 
@@ -94,7 +96,7 @@ router.delete('/:id/branch', async (req, res) => {
     // FLUX-521: a worktree holds the branch checked out — stop the session (release
     // the cwd lock) and detach before delete. This is an ABANDON, so uncommitted work
     // is preserved as a stash ref but NOT applied onto master.
-    const wtPath = taskWorktreeDir(getWorkspaceRoot()!, id);
+    const wtPath = await resolveTaskWorktreePath(getWorkspaceRoot()!, id);
     if (existsSync(wtPath)) {
       stopAllSessionsForTask(id, 'Deleting branch — detaching worktree');
       await detachTaskWorktree(getWorkspaceRoot()!, wtPath, { ticketId: id, applyToMain: false });

@@ -9,6 +9,7 @@ import { buildGitSyncEnv, classifyGitError, GIT_SYNC_TIMEOUT_MS } from './git-sy
 import { addOrphanWorktree, isWorktreeOnBranch } from './git-worktree.js';
 import { reportDivergedStatus, clearSyncStateAfterForceReset, withSyncLock, SUPPORTED_SYNC_PROTOCOL, SYNC_PROTOCOL_MARKER_FILE } from './sync-watcher.js';
 import { BOOT_INDEX_FILE } from './boot-index.js';
+import { captureCanonicalSidecars } from './sync-sidecar-preservation.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -623,6 +624,10 @@ export interface ForceResetResult {
   newHead: string;
   /** Files that differ between the discarded HEAD and the new (remote) HEAD, if any. */
   changedFiles: string[];
+  /** External, fsynced manifest holding endangered canonical sidecar versions. */
+  recoveryPath: string | null;
+  /** Number of separately-addressable source references in recoveryPath. */
+  recoveryCount: number;
 }
 
 /**
@@ -651,6 +656,9 @@ export async function forceResetToRemote(storeDir: string): Promise<ForceResetRe
     }
 
     await git(storeDir, ['fetch', 'origin', 'flux-data']);
+    // Capture after fetch establishes the replacement ref but before reset/clean can destroy
+    // local bytes. The sibling recovery directory cannot be removed by those Git operations.
+    const recovery = await captureCanonicalSidecars(storeDir);
     // There may be no merge in progress — mirror the swallowed `merge --abort` calls already
     // used elsewhere in the sync stack (sync-watcher.ts).
     await git(storeDir, ['merge', '--abort']).catch(() => {});
@@ -660,17 +668,16 @@ export async function forceResetToRemote(storeDir: string): Promise<ForceResetRe
     // files (config.json, read-state.json, session-binding-secret, ...) are left untouched.
     await git(storeDir, ['clean', '-fd']);
 
-    // Re-run the same idempotent post-attach steps every other attach path runs, so the fresh
-    // tree is consistent regardless of what the remote's state looked like. On an
-    // already-migrated store this is a no-op; on an older/partial one it can add a
-    // self-healing commit on top of the reset — so newHead is captured AFTER these run, to
-    // reflect the tree's true final state rather than the mid-reset one.
-    await scaffoldModuleDirs(storeDir, MEMORY_GITIGNORE_DIRS);
-    await excludeLocalConfigFromSync(storeDir);
-    await ensureUnionMergeAttributes(storeDir);
-    await ensureSyncProtocolMarker(storeDir);
-
+    // Post-attach scaffolding (scaffoldModuleDirs/excludeLocalConfigFromSync/etc.) is deliberately
+    // NOT re-run here — normal attach/startup paths own that repair. newHead must equal
+    // origin/flux-data exactly (checked just below); a self-healing commit on top of the reset
+    // would violate that invariant, so this path guarantees remote-exact HEAD instead.
     const newHead = await git(storeDir, ['rev-parse', 'HEAD']).then((r) => r.stdout.trim()).catch(() => '');
+    const expectedHead = await git(storeDir, ['rev-parse', 'origin/flux-data']).then((r) => r.stdout.trim()).catch(() => '');
+    const { stdout: porcelain } = await git(storeDir, ['status', '--porcelain']);
+    if (newHead !== expectedHead || porcelain.trim()) {
+      throw new Error('Force reset did not leave an exact clean origin/flux-data worktree');
+    }
 
     let changedFiles: string[] = [];
     if (oldHead && newHead && oldHead !== newHead) {
@@ -680,6 +687,13 @@ export async function forceResetToRemote(storeDir: string): Promise<ForceResetRe
     }
 
     clearSyncStateAfterForceReset();
-    return { backupRef, oldHead, newHead, changedFiles };
+    return {
+      backupRef,
+      oldHead,
+      newHead,
+      changedFiles,
+      recoveryPath: recovery.referenceCount > 0 ? recovery.recoveryDir : null,
+      recoveryCount: recovery.referenceCount,
+    };
   });
 }

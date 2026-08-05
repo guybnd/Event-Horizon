@@ -1,6 +1,6 @@
 import { getWorkspace } from './workspace-context.js';
 import { createTicketBranch } from './branch-manager.js';
-import { createTaskWorktree, reclaimOnCapAndRetry } from './task-worktree.js';
+import { createTaskWorktree, reclaimOnCapAndRetry, taskWorktreeDir } from './task-worktree.js';
 import { updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { buildActivityEntry } from './history.js';
@@ -90,10 +90,18 @@ export async function ensureTicketIsolation(
       // never registers a live EH session for the ticket — reads as idle and gets swept on the
       // very next ~90s reconcile tick, before the caller even starts editing. Best-effort: a write
       // failure must not fail worktree creation itself.
+      // FLUX-1644: `wt` can be a `-r<N>` recovery worktree rather than the canonical path when the
+      // canonical directory was an unrepairable husk — name the actual returned path so the next
+      // reader isn't sent looking at a canonical dir that isn't where the work landed.
+      const canonicalPath = taskWorktreeDir(getWorkspaceRoot()!, ticketId);
+      const message =
+        wt === canonicalPath
+          ? `Created worktree for branch ${branch}`
+          : `Created worktree for branch ${branch} at ${wt} (canonical worktree directory was an unrepairable leftover)`;
       await updateTaskWithHistory(ticketId, {
         updatedBy,
         entries: [
-          buildActivityEntry(`Created worktree for branch ${branch}`, updatedBy, new Date().toISOString(), {
+          buildActivityEntry(message, updatedBy, new Date().toISOString(), {
             event: 'worktree-created',
           }),
         ],

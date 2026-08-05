@@ -63,6 +63,35 @@ export const ARTIFACT_CSP = [
 // Ticket ids are used as a path segment — keep them to a safe charset so a crafted id can never
 // escape the artifacts root (defense-in-depth alongside isPathInsideRoot below).
 const SAFE_TICKET_ID_RE = /^[A-Za-z0-9._-]+$/;
+// Revision allocation and exclusive creation must be one local transaction.  Pointer/history
+// persistence is owned by the caller, but no two same-engine writers may ever choose/overwrite
+// the same on-disk revision while that transaction is being assembled.
+const publicationTails = new Map<string, Promise<void>>();
+
+async function withPublicationMutex<T>(key: string, action: () => Promise<T>): Promise<T> {
+  const previous = publicationTails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.then(() => mine);
+  publicationTails.set(key, tail);
+  await previous;
+  try {
+    return await action();
+  } finally {
+    release();
+    if (publicationTails.get(key) === tail) publicationTails.delete(key);
+  }
+}
+
+/**
+ * Serialize the complete publication transaction for one ticket. Callers that also persist the
+ * frontmatter pointer must use this wrapper so a second publisher cannot read an old pointer
+ * between file allocation and history publication.
+ */
+export function withArtifactPublication<T>(ticketId: string, action: () => Promise<T>): Promise<T> {
+  if (!isSafeTicketId(ticketId)) return Promise.reject(new Error(`Unsafe ticket id: ${ticketId}`));
+  return withPublicationMutex(`${getArtifactsRoot()}::${ticketId}`, action);
+}
 
 export function isSafeTicketId(id: unknown): id is string {
   return typeof id === 'string' && id !== '.' && id !== '..' && SAFE_TICKET_ID_RE.test(id);
@@ -122,31 +151,45 @@ export async function writeArtifactRevision(
   existing: ArtifactPointer | undefined,
 ): Promise<{ rev: number; pointer: ArtifactPointer; bytes: number }> {
   if (!isSafeTicketId(ticketId)) throw new Error(`Unsafe ticket id: ${ticketId}`);
+  return withArtifactPublication(ticketId, () => writeArtifactRevisionInPublication(ticketId, html, meta, existing));
+}
 
-  const onDisk = await listArtifactRevisionsOnDisk(ticketId);
-  const maxOnDisk = onDisk.length > 0 ? onDisk[onDisk.length - 1]! : 0;
-  const maxPointer = existing?.latest ?? 0;
-  const rev = Math.max(maxOnDisk, maxPointer) + 1;
-
-  const filePath = getArtifactFilePath(ticketId, rev);
-  if (!isPathInsideRoot(getArtifactsRoot(), filePath)) {
-    throw new Error('Resolved artifact path escapes the artifacts root');
-  }
-
-  await fs.mkdir(getTicketArtifactsDir(ticketId), { recursive: true });
-  const bytes = Buffer.byteLength(html, 'utf-8');
-  await fs.writeFile(filePath, html, 'utf-8');
-
-  const revision: ArtifactRevision = {
-    rev,
-    createdAt: new Date().toISOString(),
-    bytes,
-    ...(meta.title ? { title: meta.title } : {}),
-    ...(meta.note ? { note: meta.note } : {}),
-  };
-  const priorRevisions = Array.isArray(existing?.revisions) ? existing!.revisions : [];
-  const pointer: ArtifactPointer = { latest: rev, revisions: [...priorRevisions, revision] };
-  return { rev, pointer, bytes };
+/**
+ * Allocate and write one revision while the caller already owns {@link withArtifactPublication}.
+ * This is intentionally exported for the MCP transaction, which must keep its journal/pointer
+ * update inside the same lock as allocation.
+ */
+export async function writeArtifactRevisionInPublication(
+  ticketId: string,
+  html: string,
+  meta: { title?: string | undefined; note?: string | undefined },
+  existing: ArtifactPointer | undefined,
+): Promise<{ rev: number; pointer: ArtifactPointer; bytes: number }> {
+  const root = getArtifactsRoot();
+    await fs.mkdir(getTicketArtifactsDir(ticketId), { recursive: true });
+    const bytes = Buffer.byteLength(html, 'utf-8');
+    let rev = Math.max(existing?.latest ?? 0, ...(await listArtifactRevisionsOnDisk(ticketId)), 0) + 1;
+    while (true) {
+      const filePath = getArtifactFilePath(ticketId, rev);
+      if (!isPathInsideRoot(root, filePath)) throw new Error('Resolved artifact path escapes the artifacts root');
+      try {
+        await fs.writeFile(filePath, html, { encoding: 'utf-8', flag: 'wx' });
+        break;
+      } catch (error: unknown) {
+        if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST')) throw error;
+        rev++;
+      }
+    }
+    const revision: ArtifactRevision = {
+      rev,
+      createdAt: new Date().toISOString(),
+      bytes,
+      ...(meta.title ? { title: meta.title } : {}),
+      ...(meta.note ? { note: meta.note } : {}),
+    };
+    const priorRevisions = Array.isArray(existing?.revisions) ? existing!.revisions : [];
+    const pointer: ArtifactPointer = { latest: rev, revisions: [...priorRevisions, revision] };
+    return { rev, pointer, bytes };
 }
 
 /**

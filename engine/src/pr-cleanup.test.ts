@@ -1,4 +1,4 @@
-import { getWorkspace } from './workspace-context.js';
+import { getWorkspace, openWorkspace, closeWorkspace, type Workspace } from './workspace-context.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -21,6 +21,7 @@ import {
   armReclaimGrace,
   __resetSessionStubStateForTests,
   STALE_SESSION_RECLAIM_MS,
+  NON_TERMINAL_STALE_RECLAIM_MS,
 } from './session-store.js';
 import { rehydrateTemper, isTempering, __resetTemperForTests } from './temper.js';
 import type { CliSessionRecord } from './agents/types.js';
@@ -259,6 +260,74 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
       getWorkspace().tasks['FLUX-2'] = { id: 'FLUX-2', status: 'In Progress', branch: 'flux/shared' };
       addSessionWithActivity('FLUX-2', 'sess-2', staleAt());
       expect(isWorktreeReclaimable('FLUX-1')).toBe(false);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // FLUX-1636 Fix C — before this, ANY active session unconditionally pinned a NON-terminal
+  // ticket's worktree forever (`sessionsPinTicket`'s `if (!isTicketTerminal(...)) return true`
+  // short-circuit) — exactly how a days-old phantom `waiting-input` stub (never reaped; see
+  // session-store's getAllActiveSessions) could pin a slot indefinitely. Non-terminal tickets are
+  // now staleness-gated too, on the far more generous NON_TERMINAL_STALE_RECLAIM_MS (7d) threshold
+  // — long enough that live work (a multi-day gap: a weekend, a vacation) is never yanked, per the
+  // regression guard below.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('non-terminal staleness gate on worktree pinning (FLUX-1636 Fix C)', () => {
+    const nonTerminalStaleAt = () => new Date(Date.now() - NON_TERMINAL_STALE_RECLAIM_MS - 60_000).toISOString();
+    // Within STALE_SESSION_RECLAIM_MS (24h) of terminal-staleness but nowhere near the 7-day
+    // non-terminal threshold — the multi-day-gap case the generous threshold exists to protect.
+    const multiDayGapAt = () => new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString();
+
+    // Status 'Ready' (not 'In Progress'): the ordinary status gate alone already permits reclaim
+    // for Ready tickets, so these isolate the live-session/staleness gate specifically — the thing
+    // Fix C changes. (A NON-Ready, non-terminal status like 'In Progress' would return
+    // unreclaimable regardless of session staleness, via the separate `'status'` gate, and so
+    // couldn't distinguish "fixed" from "not fixed".)
+    it('is reclaimable when a NON-terminal Ready ticket has only a session stale past the 7-day threshold', () => {
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready' };
+      addSessionWithActivity('FLUX-1', 'sess-1', nonTerminalStaleAt());
+      expect(isWorktreeReclaimable('FLUX-1')).toBe(true);
+    });
+
+    it('regression guard: a multi-day gap (weekend/vacation) on a NON-terminal Ready ticket never yanks live work', () => {
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready' };
+      addSessionWithActivity('FLUX-1', 'sess-1', multiDayGapAt());
+      expect(isWorktreeReclaimable('FLUX-1')).toBe(false);
+    });
+
+    it('a fresh session on a NON-terminal Ready ticket still pins, as before', () => {
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready' };
+      addSessionWithActivity('FLUX-1', 'sess-1', new Date().toISOString());
+      expect(isWorktreeReclaimable('FLUX-1')).toBe(false);
+    });
+  });
+
+  // FLUX-1636 H5/Fix C: `sessionsPinTicket` switched from the bare `getActiveSessionsForTask` to
+  // `getActiveSessionsForTaskInWorkspace` — two boards sharing a same-id ticket (both use the
+  // `FLUX-` prefix) must each see only their OWN session, never adopt the other board's.
+  describe('sessionsPinTicket is workspace-scoped, not bare-ticket-id (FLUX-1636 H5/Fix C)', () => {
+    let rootB: string;
+    let boardB: Workspace;
+
+    beforeEach(async () => {
+      rootB = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-pr-cleanup-b-'));
+      boardB = openWorkspace(rootB);
+    });
+    afterEach(async () => {
+      if (boardB.root) await closeWorkspace(boardB.root);
+      await fs.rm(rootB, { recursive: true, force: true }).catch(() => {});
+    });
+
+    it('a live session tagged to board B does not pin board A\'s same-id ticket', () => {
+      getWorkspace().tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready' };
+      boardB.tasks['FLUX-1'] = { id: 'FLUX-1', status: 'Ready' };
+      cliSessionsById.set('sess-b', { id: 'sess-b', taskId: 'FLUX-1', status: 'running', workspaceRoot: boardB.root } as CliSessionRecord);
+      registerSession('FLUX-1', 'sess-b');
+
+      // Board A's FLUX-1 sees no session of its own → reclaimable.
+      expect(isWorktreeReclaimable('FLUX-1', {}, getWorkspace())).toBe(true);
+      // Board B's OWN FLUX-1 is genuinely pinned by its own live session.
+      expect(isWorktreeReclaimable('FLUX-1', {}, boardB)).toBe(false);
     });
   });
 

@@ -257,6 +257,118 @@ export function runGit(args: string[], opts?: GitExecOptions): Promise<GitExecRe
   return runHardened('git', args, opts);
 }
 
+/**
+ * Binary-safe variant of runGit() for reading raw blob bytes (`git show`/`cat-file`) — e.g. a
+ * committed/staged asset that isn't valid UTF-8. runGit()/runHardened() always `setEncoding('utf8')`
+ * on the child's stdout, which is lossy (invalid byte sequences become U+FFFD) for anything that
+ * isn't text; this collects stdout as raw Buffer chunks instead, so the returned bytes are exactly
+ * what Git wrote, never decoded/re-encoded. stderr is still decoded utf8 (Git's own error text is
+ * always text). Same timeout/tree-kill/telemetry hardening as runHardened() (FLUX-1643 review).
+ */
+export async function runGitBinary(args: string[], opts: GitExecOptions = {}): Promise<Buffer> {
+  const timeoutMs = opts.timeoutMs ?? GIT_SYNC_TIMEOUT_MS;
+  const maxBuffer = opts.maxBuffer ?? DEFAULT_MAX_BUFFER;
+  const env = opts.env ?? await buildGitSyncEnv(opts.cwd);
+  const startedAt = Date.now();
+
+  return await new Promise<Buffer>((resolve, reject) => {
+    let settled = false;
+    let timedOut = false;
+    let aborted = false;
+    let maxBufferExceeded = false;
+    let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const child = spawn('git', args, { cwd: opts.cwd, env, windowsHide: true, detached: DETACHED });
+
+    const stdoutChunks: Buffer[] = [];
+    let stderr = '';
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    // Deliberately no setEncoding on stdout — chunks stay raw Buffers.
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > maxBuffer) { maxBufferExceeded = true; killTree(); return; }
+      stdoutChunks.push(chunk);
+    });
+    child.stderr?.setEncoding('utf8');
+    child.stderr?.on('data', (chunk: string) => {
+      stderrBytes += Buffer.byteLength(chunk);
+      if (stderrBytes > maxBuffer) { maxBufferExceeded = true; killTree(); return; }
+      stderr += chunk;
+    });
+
+    child.on('error', (err: Error & { stderr?: string }) => {
+      err.stderr = redactArg(stderr);
+      finish('error', err, null, null, err.message);
+    });
+
+    child.on('close', (code) => {
+      if (timedOut) {
+        finish('timeout', new Error(redactArg(`git ${args.join(' ')} timed out after ${timeoutMs}ms`)), null, null, 'timeout');
+        return;
+      }
+      if (aborted) {
+        finish('aborted', new Error(redactArg(`git ${args.join(' ')} aborted`)), null, null, 'aborted');
+        return;
+      }
+      if (maxBufferExceeded) {
+        finish('error', new Error(redactArg(`git ${args.join(' ')} exceeded maxBuffer of ${maxBuffer} bytes`)), null, null, 'maxBuffer exceeded');
+        return;
+      }
+      if (code !== 0) {
+        const err = new Error(redactArg(`Command failed: git ${args.join(' ')}\n${stderr}`)) as Error & { code?: number | null; stderr?: string };
+        err.code = code;
+        err.stderr = redactArg(stderr);
+        finish('error', err, null, typeof code === 'number' ? code : null, redactArg(stderr.trim().slice(0, 200)) || err.message);
+        return;
+      }
+      finish('ok', null, Buffer.concat(stdoutChunks), 0);
+    });
+
+    if (opts.signal) {
+      if (opts.signal.aborted) onAbort();
+      else opts.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      killTree();
+    }, timeoutMs);
+    timeoutTimer.unref?.();
+
+    function finish(
+      outcome: GitExecOutcome,
+      err: Error | null,
+      result: Buffer | null,
+      code: number | null,
+      reason?: string,
+    ): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      if (sigkillTimer) clearTimeout(sigkillTimer);
+      if (opts.signal) opts.signal.removeEventListener('abort', onAbort);
+      emit({ file: 'git', args: args.map(redactArg), cwd: opts.cwd, startedAt, durationMs: Date.now() - startedAt, outcome, code, reason });
+      if (err) reject(err); else resolve(result as Buffer);
+    }
+
+    let killing = false;
+    function killTree(): void {
+      if (killing) return;
+      killing = true;
+      killProcessTree(child, 'SIGTERM', { group: DETACHED });
+      sigkillTimer = setTimeout(() => killProcessTree(child, 'SIGKILL', { group: DETACHED }), SIGKILL_GRACE_MS);
+      sigkillTimer.unref?.();
+    }
+
+    function onAbort(): void {
+      if (settled) return;
+      aborted = true;
+      killTree();
+    }
+  });
+}
+
 /** Run `gh` with the hardened guarantees above. The ONLY sanctioned way to spawn gh in the engine. */
 export function runGh(args: string[], opts?: GitExecOptions): Promise<GitExecResult> {
   return runHardened('gh', args, opts);

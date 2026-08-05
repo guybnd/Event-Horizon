@@ -32,7 +32,7 @@ export interface SendInputOptions {
 }
 
 export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'scheduled' | 'completed' | 'failed' | 'cancelled';
-export type CliFramework = 'claude' | 'copilot' | 'gemini';
+export type CliFramework = 'claude' | 'copilot' | 'gemini' | 'codex';
 export type ExecutionPattern = 'relay' | 'scatter-gather' | 'supervisor';
 export type PatternPosition = 'lead' | 'assistant' | 'combiner' | 'step' | 'standalone';
 export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize' | 'chat' | 'fast-path' | 'batch-grooming';
@@ -78,9 +78,14 @@ export interface CliCapabilities {
   toolGating: boolean;
   structuredOutput: boolean;
   // A.8 (FLUX-900): folded in from the per-adapter PROVIDER_CAPABILITIES tables, which
-  // disagreed with each other. `flag` is the CLI literal (e.g. '--effort') and is only
-  // meaningful when `supported` is true. Each value preserves the adapter's live behavior.
-  effort: { supported: boolean; flag?: string };
+  // disagreed with each other. `flag` is a BARE CLI literal (e.g. '--effort') that a generic
+  // caller may safely do `args.push(flag, level)` with — it is only meaningful when `supported`
+  // is true. FLUX-1629: `configKey` is a config-override KEY for CLIs with no bare-flag form
+  // (Codex takes `-c model_reasoning_effort="<level>"` — a key=value config override, not
+  // `<flag> <level>`); codex.ts composes that `-c key=value` shape itself rather than exposing a
+  // bare `flag` a generic consumer could misuse as `args.push(flag, level)` and emit an invalid
+  // `-c high`. Exactly one of `flag`/`configKey` must be set when `supported` is true.
+  effort: { supported: boolean; flag?: string; configKey?: string };
   // FLUX-901 (audit B.1–B.7): per-framework OPTIONAL behaviors, verified against current
   // master. Mostly Claude-only; the exceptions are spawnTimeMcpConfig (FLUX-984: Copilot too) and
   // selfPause (FLUX-985: copilot/gemini now honor a Require-Input pause as waiting-input). Shipped to
@@ -125,6 +130,251 @@ export interface CliCapabilities {
   bakesPermissionAllowlist: boolean;
 }
 
+// ─── Adapter verification checklist (FLUX-1626, epic FLUX-1625) ──────────────
+//
+// The `CLI_CAPABILITIES` row below is the choke point for adding a framework: tsc will not let a
+// new `CliFramework` compile until the row is complete. So the checklist for HOW to fill it in
+// lives here, adjacent to it, rather than in a reference doc — `agent-adapter-contract.md` has
+// said "when you add a new framework, add a row here too" for a while, and that is precisely the
+// instruction nobody reads while staring at a red `Record<CliFramework, …>`.
+//
+// Every entry is settled by running the probe against the LIVE CLI, never by reading its docs.
+// That is not pedantry: FLUX-959 (Copilot captured a resume id the resume flag does not accept —
+// every resumed turn failed, silently), FLUX-977 (Copilot rejects `--effort` outright unless
+// `--model` is also set), and FLUX-984 (Copilot never auto-loads workspace `.mcp.json` in `-p`
+// mode, and no permission flag changes that) were each discovered by a live spawn contradicting a
+// reasonable reading of the documentation.
+//
+// GROUP B entries are not capability flags. They are the cross-cutting preflight concerns that
+// have each broken a shipping adapter at least once; the `origin` field is the receipt.
+// A runtime const rather than a bare union: the FLUX-1626 exhaustiveness gate needs to iterate
+// these to spot an orphaned probe (one whose id matches neither a capability flag nor a preflight
+// concern), and a type alone erases at compile time. `PreflightId` is derived from it so the two
+// can never drift.
+export const PREFLIGHT_IDS = [
+  'loopback-mcp',
+  'mcp-write-tools',
+  'resume-id-semantics',
+  'prompt-over-stdin',
+  'cwd-and-worktree-commits',
+  'terminal-reason-strings',
+  'effort-preconditions',
+  'windows-binary-resolution',
+  'cache-and-context-reporting',
+  'silent-spawn-behavior',
+  'cost-model',
+  'spawn-vs-resume-flag-divergence',
+] as const;
+
+export type PreflightId = typeof PREFLIGHT_IDS[number];
+
+export interface CapabilityProbe {
+  /** The `CliCapabilities` field this settles, or a Group B preflight concern. */
+  id: keyof CliCapabilities | PreflightId;
+  /** What EH actually LOSES when this is false — the consequence, not the flag's definition. */
+  impact: string;
+  /** The exact invocation that settles it against the live CLI. */
+  probe: string;
+  /** What counts as a pass. Vagueness here is how FLUX-959 happened — "it emits an id" was true. */
+  pass: string;
+  /** The ticket that paid for this entry, when it was learned the hard way. */
+  origin?: string;
+}
+
+export const CAPABILITY_PROBES: readonly CapabilityProbe[] = [
+  // ── Group A: one per CliCapabilities flag ──
+  {
+    id: 'resume',
+    impact: 'Without it every turn is a cold spawn: no ticket chat continuity, no scatter-gather combiner resume, and `resumeOrDispatchSession` degrades to always-fresh.',
+    probe: 'Run a turn, capture the id the stream emits, then feed that exact value back to the resume invocation and ask a question that can only be answered from the prior turn.',
+    pass: 'The follow-up answers from prior context. A clean exit alone is NOT a pass — a CLI that silently starts a fresh session also exits 0.',
+    origin: 'FLUX-959',
+  },
+  {
+    id: 'background',
+    impact: 'A detachable child survives an engine restart; otherwise every in-flight session dies with the engine and the Furnace loses its slot.',
+    probe: 'Spawn a long turn, restart the engine, check whether the child is still alive and still writing.',
+    pass: 'Process survives and its output is still attachable.',
+  },
+  {
+    id: 'supervisor',
+    impact: 'Gates whether this CLI can lead a supervisor/worker orchestration run.',
+    probe: 'Confirm the CLI can spawn and coordinate its own sub-agents within one session.',
+    pass: 'Sub-agent output is observable in the parent stream.',
+  },
+  {
+    id: 'scatter',
+    impact: 'Gates whether this CLI can be a parallel worker in scatter-gather review.',
+    probe: 'Launch N concurrent sessions in separate worktrees; confirm no shared-state collision (auth cache, session db, temp dirs).',
+    pass: 'All N complete independently with distinct resume ids.',
+  },
+  {
+    id: 'toolGating',
+    impact: 'Generic allow/deny tool list support. Unused today — `chatEditGateEnforced` is the flag that actually drives behavior.',
+    probe: 'Check for any per-tool allow/deny flag.',
+    pass: 'A named tool can be withheld from the model.',
+  },
+  {
+    id: 'structuredOutput',
+    impact: 'Without a parseable stream there is no progress SSE, no activity indicator, no token counters, and no cost — the session is an opaque box.',
+    probe: 'Capture a full session with the JSON/JSONL output flag to a fixture file and commit it under `agents/__snapshots__/`.',
+    pass: 'Assistant text, tool calls, and usage are all recoverable from the stream. The fixture then drives the parser tests in `adapter-contract.test.ts`.',
+  },
+  {
+    id: 'effort',
+    impact: 'One of only two cost dials (the other is the model tier). If a CLI exposes a single model, effort is the ONLY dial — a no-op here means grooming burns what review burns.',
+    probe: 'Run the same prompt at the lowest and highest effort; diff output tokens and wall-clock.',
+    pass: 'Materially different numbers. Identical numbers mean the flag is accepted and ignored, which is worse than rejected — see `effort-preconditions`.',
+  },
+  {
+    id: 'persistentChat',
+    impact: 'A clean chat-turn exit staying `waiting-input` rather than `completed` is what makes the next message resume the same conversation.',
+    probe: 'This is adapter-side exit-handler logic, not a CLI feature — Copilot/Gemini are `false` by effort, not impossibility. Confirm only that the CLI can be resumed at all (see `resume`).',
+    pass: '`resume` passes; the rest is ours to implement.',
+  },
+  {
+    id: 'selfPause',
+    impact: "Without it a mid-turn `change_status('Require Input')` posts the agent's question as a bogus completion comment and can trip the scatter-gather barrier early.",
+    probe: 'Adapter-side, like `persistentChat`. All three shipping adapters have it as of FLUX-985.',
+    pass: 'Session can be parked `waiting-input` and later resumed.',
+    origin: 'FLUX-985',
+  },
+  {
+    id: 'partialDeltas',
+    impact: 'Token-level `assistantDelta` SSE — live typing in the portal. Absent means text appears in complete blocks. Cosmetic, never correctness.',
+    probe: 'Inspect the captured fixture for events below whole-message granularity.',
+    pass: 'Incremental text deltas present. Degrade gracefully — the parser must handle complete blocks either way.',
+    origin: 'FLUX-691',
+  },
+  {
+    id: 'permissionGating',
+    impact: 'Whether EH can route each tool decision to a portal approval prompt. Absent means the session runs in bypass and the git worktree is the only boundary.',
+    probe: 'Look for a flag that delegates the approval decision to an EXTERNAL tool or callback. Built-in approval MODES are not the same thing — they prompt a human on a TTY that a dispatched session does not have.',
+    pass: 'An arbitrary MCP tool (or equivalent hook) can be named as the approval authority.',
+    origin: 'FLUX-605',
+  },
+  {
+    id: 'nativeAskBlocked',
+    impact: "Not a capability you want — a quirk marker. Claude's native AskUserQuestion cannot be fulfilled in `-p` print mode, so it must be disallowed or the agent silently degrades to prose.",
+    probe: 'Check whether the CLI ships an interactive-only ask tool that is unreachable in non-interactive mode.',
+    pass: 'True when such a tool exists AND can be disabled. Agents ask via the EH `ask_user_question` MCP tool instead.',
+    origin: 'FLUX-662',
+  },
+  {
+    id: 'spawnTimeMcpConfig',
+    impact: 'Per-phase MCP profiles — the lever that keeps thousands of tokens of tool schemas out of grooming and review sessions.',
+    probe: 'Inject an MCP server via a per-invocation flag and confirm the spawned agent can call it. Crucially: verify it does NOT require writing user-global config — an installer must never write personal global state (see `bakesPermissionAllowlist`).',
+    pass: 'A server named only at spawn time is callable, and nothing outside the project was mutated.',
+    origin: 'FLUX-984',
+  },
+  {
+    id: 'imageAttachments',
+    impact: 'Pasted screenshots in ticket chat resolve into the prompt instead of being dropped.',
+    probe: 'Pass an image by absolute path and ask the model to describe it.',
+    pass: 'The description matches the image.',
+    origin: 'FLUX-674',
+  },
+  {
+    id: 'chatEditGateEnforced',
+    impact: 'Whether the FLUX-926 gate (chat turns must not mutate the repo outside In Progress) is a real block or only an advisory prompt note.',
+    probe: 'Withhold write access by whatever mechanism exists — a per-tool deny list, or a read-only sandbox mode — then instruct the agent to edit a file.',
+    pass: 'The write genuinely fails. A coarse read-only sandbox counts: it is stronger than a per-tool deny list for this gate\'s actual purpose.',
+    origin: 'FLUX-926 / FLUX-1123',
+  },
+  {
+    id: 'bakesPermissionAllowlist',
+    impact: 'Whether the workspace installer must commit a project-level "trust the event-horizon MCP server" config. Without one, a restrictive local default can deny every EH tool call in an unattended session with no prompt and no error anywhere but the transcript.',
+    probe: 'Determine whether the CLI has a PROJECT-level committable permission file. A home-directory-only config does not qualify — that is personal global state an installer must not write.',
+    pass: 'True only when a project-committable file exists.',
+    origin: 'FLUX-901 B.9',
+  },
+
+  // ── Group B: preflight concerns that are not capability flags ──
+  {
+    id: 'loopback-mcp',
+    impact: 'THE make-or-break item. The `event-horizon` server is the engine\'s own in-process Streamable-HTTP mount on 127.0.0.1. A CLI that cannot reach loopback cannot read or mutate a single ticket, and every other capability is moot.',
+    probe: 'Spawn the CLI in its most restrictive sandbox mode and have it call a read-only EH tool such as `get_board_config`.',
+    pass: 'The tool result comes back with real board data. Run this FIRST — it can cancel the whole adapter. NOTE: a read passing proves nothing about writes — see `mcp-write-tools` below (FLUX-1631: this exact probe passed for Codex while every mutating call was silently cancelled).',
+    origin: 'FLUX-645',
+  },
+  {
+    id: 'mcp-write-tools',
+    impact: 'A read succeeding proves nothing about writes. FLUX-1631: Codex\'s `loopback-mcp` probe passed with `get_board_config` (a read) while every mutating event-horizon call — `add_note`, `change_status` — was silently auto-cancelled ("user cancelled MCP tool call") by the CLI\'s own approval elicitation, in BOTH sandbox modes. An adapter that only clears `loopback-mcp` can ship able to read a ticket but unable to ever record a decision on one — exactly the failure this preflight exists to catch before shipping.',
+    probe: 'In the SAME sandbox/approval configuration the adapter actually spawns with, have the CLI call a MUTATING event-horizon tool — `add_note` or `change_status` — against a real ticket, non-interactively (no human present to answer an approval prompt).',
+    pass: 'The call completes and the ticket history shows the write. A cancelled, elicited, or pending result is a FAIL even when the process exits 0 — that is precisely how FLUX-1631 shipped undetected.',
+    origin: 'FLUX-1631',
+  },
+  {
+    id: 'resume-id-semantics',
+    impact: 'Distinct from the `resume` flag. A stream can emit several ids (thread, turn, parent, rollout) and only one is the token the resume path accepts.',
+    probe: 'Enumerate every id-shaped field in the captured fixture, then try each one against the resume invocation.',
+    pass: 'Exactly one round-trips. Record WHICH field in the adapter, with a comment — this is the single most expensive mistake in this layer.',
+    origin: 'FLUX-959',
+  },
+  {
+    id: 'prompt-over-stdin',
+    impact: "Windows caps a command line at 32,767 chars. A scatter-gather reviewer's inlined PR diff blows past that, so the prompt must go over stdin, not argv.",
+    probe: 'Send a >40 KB prompt over stdin and confirm it arrives intact. Then check the CLI\'s behavior when BOTH an argv prompt and an open stdin are present.',
+    pass: 'Large prompt round-trips. Note carefully whether the CLI blocks waiting for stdin EOF — if so the adapter must close stdin, or every session hangs with zero output and gets reaped by the `hungSpawnKilledAt` watchdog.',
+    origin: 'FLUX-1444 / FLUX-1625',
+  },
+  {
+    id: 'cwd-and-worktree-commits',
+    impact: 'A branch-bearing ticket must run in its own worktree. A one-shot CLI that never checks the branch out will commit straight to master.',
+    probe: 'Spawn with cwd set to a worktree, have the agent commit, and verify which branch received it.',
+    pass: 'The commit lands on the ticket branch. Also confirm the adapter asserts `assertIsolatedSpawnRoot` — fail closed, never degrade to the main checkout.',
+    origin: 'FLUX-972 / FLUX-1018',
+  },
+  {
+    id: 'terminal-reason-strings',
+    impact: 'Drives `terminalReason`, which drives the Furnace stoker. An unmapped rate limit is classified as a generic failure, so the ticket is PARKED instead of cooled down and retried — it looks like an EH bug, not a provider limit.',
+    probe: 'Collect the verbatim error text for: quota/rate limit, expired or invalid credentials, and context-window overflow.',
+    pass: 'All three literals recorded and matched by the adapter\'s classifiers. These predicates are pure and unit-testable — add fixtures.',
+    origin: 'FLUX-1047 / FLUX-1063 / FLUX-1397',
+  },
+  {
+    id: 'effort-preconditions',
+    impact: 'An effort flag may be conditionally rejected. Copilot rejects `--effort` outright unless `--model` is also set, which crashed every Copilot session for users who never configured one.',
+    probe: 'Send the effort flag with and without every other flag it might depend on.',
+    pass: 'Preconditions documented in the adapter. When dropping a requested effort, LOG the drop — replacing a crash with a silent no-op just makes "why did effort do nothing" unanswerable.',
+    origin: 'FLUX-977',
+  },
+  {
+    id: 'windows-binary-resolution',
+    impact: 'npm bin shims are shell scripts; spawning one instead of the real executable mangles stdio and the JSON stream never parses.',
+    probe: 'Resolve and spawn the actual executable on Windows, not the PATH shim. Cache the resolution — it must not re-run per spawn.',
+    pass: 'Stream parses identically on Windows and POSIX.',
+    origin: 'FLUX-975',
+  },
+  {
+    id: 'cache-and-context-reporting',
+    impact: 'Feeds `lastTurnContextTokens` / `contextWindow`, which decide whether to resume a session or cold-spawn. Missing data must not be read as "unlimited".',
+    probe: 'Inspect the terminal usage event for cache-read, cache-write, and any context-window figure.',
+    pass: 'Whatever is present is mapped; whatever is absent falls back conservatively.',
+    origin: 'FLUX-1378',
+  },
+  {
+    id: 'silent-spawn-behavior',
+    impact: 'A CLI that is installed but not logged in may hang forever without writing a byte. The watchdog kills it, but the failure reads as a mystery.',
+    probe: 'Spawn with credentials deliberately absent or invalid.',
+    pass: 'It exits with a diagnosable error rather than hanging. If it hangs, say so in the adapter so the watchdog kill is expected rather than alarming.',
+  },
+  {
+    id: 'cost-model',
+    impact: 'Wrong per-MTok rates make every cost badge, session estimate, and Furnace budget wrong by a constant — and plausible enough that nobody notices.',
+    probe: 'Look up current published pricing for each model the tiers resolve to.',
+    pass: 'Rates recorded in the manifest with the date checked.',
+    origin: 'FLUX-1375',
+  },
+  {
+    id: 'spawn-vs-resume-flag-divergence',
+    impact: 'The resume path may accept a NARROWER flag set than the spawn path. EH rebuilds args on every resume, so a flag valid at spawn can hard-fail the reply.',
+    probe: 'Take the full spawn arg list and replay it verbatim against the resume invocation.',
+    pass: 'Either it is accepted, or every rejected flag has a documented equivalent (typically a generic config-override flag). Verify the equivalent actually applies — do not assume.',
+    origin: 'FLUX-1625',
+  },
+] as const;
+
 export const CLI_CAPABILITIES: Record<CliFramework, CliCapabilities> = {
   claude: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true, effort: { supported: true, flag: '--effort' }, persistentChat: true, selfPause: true, partialDeltas: true, permissionGating: true, nativeAskBlocked: true, spawnTimeMcpConfig: true, imageAttachments: true, chatEditGateEnforced: true, bakesPermissionAllowlist: true },
   gemini: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true, effort: { supported: false }, persistentChat: false, selfPause: true, partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: false, imageAttachments: false, chatEditGateEnforced: false, bakesPermissionAllowlist: false },
@@ -133,16 +383,55 @@ export const CLI_CAPABILITIES: Record<CliFramework, CliCapabilities> = {
   // injects the event-horizon server via --additional-mcp-config", a different flag/JSON-shape than
   // Claude's --mcp-config but the same capability concept (B.6).
   copilot: { resume: true, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false, effort: { supported: true, flag: '--effort' }, persistentChat: false, selfPause: true, partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: true, imageAttachments: false, chatEditGateEnforced: false, bakesPermissionAllowlist: false },
+  // FLUX-1625 Phase 0 (live probe, codex-cli 0.146.0, Windows): resume / structuredOutput /
+  // spawnTimeMcpConfig / imageAttachments / partialDeltas / permissionGating /
+  // bakesPermissionAllowlist are all CONFIRMED against the live CLI (see the ticket's Phase 0 note).
+  // The rest were NOT probed and carry a conservative default rather than a guess — flip each only
+  // once a live probe confirms it (CAPABILITY_PROBES entries above name the exact invocation):
+  //  - effort: verified via `-c model_reasoning_effort="<level>"`; Codex accepts the same five
+  //    levels Event Horizon exposes (some accounts also advertise an intentionally unreachable ultra).
+  //    No bare flag form exists, so `flag` stays undefined and `configKey` carries the config-override
+  //    key instead (see the `effort` field comment above) — codex.ts's buildCodexEffortArgs composes
+  //    the `-c key=value` shape itself.
+  //  - scatter: true (FLUX-1633, live probe) — three concurrent `codex exec` runs in separate
+  //    directories all exited 0 with three distinct thread_ids and each wrote its own correct
+  //    output; no shared-state collision (auth cache, session db, temp dirs).
+  //  - background: true (FLUX-1633, live probe) — spawned `codex exec`, killed the parent shell,
+  //    codex.exe stayed alive and kept streaming output.
+  //  - toolGating: FALSE — probed and genuinely absent, not unprobed: no allow/deny tool surface
+  //    exists anywhere in `--help`, `codex features list`, or the config keys (FLUX-1633).
+  //  - supervisor/nativeAskBlocked: never probed at all. (`codex features list` reports
+  //    `multi_agent` as stable/true — a strong supervisor lead, but leave false until someone
+  //    drives a sub-agent through `exec` and observes it in the parent stream.)
+  //  - persistentChat: true (FLUX-1630) — resume is live-verified (`codex exec resume <thread_id>`,
+  //    CAPABILITY_PROBES) and the adapter's exit-handler now routes a clean `phase:'chat'` turn to
+  //    'waiting-input' (codex.ts), matching claude-code.ts, instead of forcing 'completed' and
+  //    posting the reply as a ticket comment.
+  //  - chatEditGateEnforced: FALSE (FLUX-1631 — flipped from Phase 0's `true`). Phase 0 confirmed a
+  //    read-only sandbox genuinely blocks a raw file write in isolation, which is a real capability —
+  //    but FLUX-1631 found that BOTH sandbox modes ALSO silently cancel every mutating event-horizon
+  //    MCP call ("user cancelled MCP tool call"): non-interactive `exec` can never satisfy codex's
+  //    approval elicitation for a tool call, and only `--dangerously-bypass-approvals-and-sandbox`
+  //    clears it — which lifts the sandbox too. codex.ts and codex-board.ts now spawn with that flag
+  //    unconditionally (mirrors Copilot's `--yolo` / Gemini's `--yolo --skip-trust`), so the sandbox
+  //    is never actually in force in the shipped configuration. This must reflect what's enforced by
+  //    the real spawn, not what the CLI can enforce in principle — see `mcp-write-tools` above.
+  codex: { resume: true, background: true, supervisor: false, scatter: true, toolGating: false, structuredOutput: true, effort: { supported: true, configKey: 'model_reasoning_effort' }, persistentChat: true, selfPause: true, partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: true, imageAttachments: true, chatEditGateEnforced: false, bakesPermissionAllowlist: false },
 };
 
 // FLUX-905 (audit C.17): model-family name fragments per framework, for detecting whether a
 // ticket-history author string represents an agent (a session may post under a model display name
 // like "Claude (Opus 4.8)", not the canonical 'Agent'). Centralized + type-checked so a new model
 // family is a one-line edit here, not a buried regex in history.ts. Drives AGENT_AUTHOR_PATTERN.
+// FLUX-1625: 'codex' fragment removed from copilot's list — it used to be copilot's own alias for
+// a gpt-5-codex model, but is now the literal name of a DISTINCT framework below, so leaving it on
+// copilot's list would misattribute a real Codex CLI session's history author to Copilot. 'gpt'
+// stays on both (both are genuinely OpenAI-model-family CLIs; the overlap predates this ticket).
 export const MODEL_FAMILIES: Record<CliFramework, string[]> = {
   claude: ['claude', 'opus', 'sonnet', 'haiku'],
-  copilot: ['copilot', 'gpt', 'codex'],
+  copilot: ['copilot', 'gpt'],
   gemini: ['gemini'],
+  codex: ['codex', 'gpt'],
 };
 
 // FLUX-931: framework -> its config key under `integrations.*` (config.ts: claudeCode/geminiCli/
@@ -152,6 +441,7 @@ export const INTEGRATION_CONFIG_KEYS: Record<CliFramework, string> = {
   claude: 'claudeCode',
   gemini: 'geminiCli',
   copilot: 'copilotCli',
+  codex: 'codexCli',
 };
 
 export interface AgentProcess {

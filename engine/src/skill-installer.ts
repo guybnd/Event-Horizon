@@ -1,9 +1,7 @@
 import { log } from './log.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getWorkflowInstallStatus, installWorkspaceWorkflow } from './workflow-installer.js';
-
-type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
+import { getWorkflowInstallStatus, installWorkspaceWorkflow, type Framework } from './workflow-installer.js';
 
 const __dir = (() => {
   if (typeof __dirname === 'string' && path.isAbsolute(__dirname)) return __dirname;

@@ -5,9 +5,10 @@ import path from 'node:path';
 import type { CliSessionRecord, CliSessionSummary, CliFramework, ExecutionPattern, PatternPosition, LaunchPhase } from './agents/types.js';
 import { CLI_CAPABILITIES as capabilities } from './agents/types.js';
 import { killProcessTree } from './kill-process-tree.js';
+import { clearHoldsForSession } from './background-process-holds.js';
 import { settleOpenPromptsForConversation } from './hitl-prompts.js';
 import { getActiveFluxDir } from './workspace.js';
-import { getWorkspace } from './workspace-context.js';
+import { getWorkspace, type Workspace } from './workspace-context.js';
 import { isVirtualConversationId } from './agents/board.js';
 import { broadcastEvent } from './events.js';
 
@@ -271,6 +272,10 @@ export function stopCliSession(sessionId: string): boolean {
   session.requestedStop = true;
   session.status = 'cancelled';
   session.endedAt = new Date().toISOString();
+  // FLUX-1645: an engine-initiated stop always wins the race against a hold (AC7) — the plain
+  // killProcessTree below carries no exemption, so it already reaps a held pid same as any other
+  // descendant; this only drops the now-stale registry entry and logs the forced clear.
+  clearHoldsForSession(sessionId, 'session stopped');
   if (session.proc) {
     try {
       killProcessTree(session.proc);
@@ -854,27 +859,40 @@ function reapHungSilentSpawn(session: CliSessionRecord, proc: CliSessionRecord['
   killProcessTree(proc, 'SIGKILL', { label: `hung-spawn ${session.taskId}` });
 }
 
-/** FLUX-604: all currently-active sessions across the whole board (orchestrator situational awareness). */
-export function getAllActiveSessions(): CliSessionRecord[] {
-  reconcileDeadSessions();
+/**
+ * FLUX-604: all currently-active sessions across the whole board (orchestrator situational
+ * awareness; also backs `/api/board/state` and the portal's session badge).
+ *
+ * FLUX-1636: reconciled against `ACTIVE_STATUSES`/`getActiveSessionsForTask` — this now includes
+ * `scheduled` (a sleeping-but-in-flight session is not idle) and, symmetrically, excludes a
+ * `waiting-input` session that has gone STALE (`isSessionStale`, `STALE_SESSION_RECLAIM_MS`): a
+ * days-old resting session with no live process and no recent activity is a phantom, not
+ * "active" — the exact bug this ticket fixes (33 phantom `waiting-input` stubs, oldest 12 days,
+ * inflating the board's reported count with nothing actually running). A FRESH resting session
+ * (mid-conversation, waiting on the user's next reply) still counts — only staleness excludes it,
+ * never `waiting-input` outright (that distinction belongs to `getLiveProcessSessionCount`, which
+ * excludes every proc-less session regardless of age for a different question: "is anything
+ * physically running right now").
+ */
+export function getAllActiveSessions(now: number = Date.now()): CliSessionRecord[] {
+  reconcileDeadSessions(now);
   const out: CliSessionRecord[] = [];
   for (const session of cliSessionsById.values()) {
-    if (session.status === 'running' || session.status === 'waiting-input' || session.status === 'pending') {
-      out.push(session);
-    }
+    if (!ACTIVE_STATUSES.has(session.status)) continue;
+    if (session.status === 'waiting-input' && isSessionStale(session, now)) continue;
+    out.push(session);
   }
   return out;
 }
 
-export function getActiveSessionCount(): number {
-  reconcileDeadSessions();
-  let count = 0;
-  for (const session of cliSessionsById.values()) {
-    if (session.status === 'running' || session.status === 'waiting-input' || session.status === 'pending') {
-      count++;
-    }
-  }
-  return count;
+/**
+ * FLUX-1636: delegates to {@link getAllActiveSessions} so the two predicates can never re-diverge.
+ * Also feeds `checkAutoRestart`'s "board is idle" test — a STALE `waiting-input` session no longer
+ * blocks auto-restart (nobody is coming back to a day-old resting chat), while a fresh resumable
+ * one still does, same as before.
+ */
+export function getActiveSessionCount(now: number = Date.now()): number {
+  return getAllActiveSessions(now).length;
 }
 
 // FLUX-1338: sessions that are genuinely in flight — a live OS process, or a dispatch still in the
@@ -883,9 +901,11 @@ export function getActiveSessionCount(): number {
 // from getActiveSessionCount, which also counts proc-less `waiting-input` sessions: those are
 // resumable resting sessions rehydrated from on-disk stubs at boot (rehydratedRecord, no `proc`),
 // so the workspace-switch guard using the broader count warned "N agent sessions running" when
-// nothing was actually running. That guard must use THIS count; getActiveSessionCount stays as-is
-// for checkAutoRestart's "board is idle" test (where a resumable waiting-input session legitimately
-// means "not idle, don't auto-restart").
+// nothing was actually running. That guard must use THIS count; getActiveSessionCount stays broader
+// for checkAutoRestart's "board is idle" test (a FRESH resumable waiting-input session legitimately
+// means "not idle, don't auto-restart") — FLUX-1636 narrowed that broader count to exclude only
+// STALE proc-less waiting-input sessions (isSessionStale), so a board whose only "active" record is
+// a days-old phantom now correctly reads idle too.
 export function getLiveProcessSessionCount(): number {
   reconcileDeadSessions();
   let count = 0;
@@ -987,6 +1007,16 @@ interface SessionStub {
   contextWindow?: number;
   /** FLUX-1390: only set when status === 'scheduled'. */
   wakeAt?: string;
+  /**
+   * FLUX-1636 (Fix A2): the board this stub was written for. Restored onto the rehydrated
+   * `CliSessionRecord` (see `rehydratedRecord`) so `sessionBelongsToWorkspaceRoot` resolves the
+   * session to its OWN board instead of collapsing through the untagged `?? defaultWorkspaceRoot`
+   * fallback — the latent bug named H3.2 that let a same-prefix ticket on the wrong board adopt a
+   * foreign session. Absent on legacy stubs written before this field existed (and on one written
+   * for the null/orphan root); `rehydrateSessionStubs` falls back to ticket-existence-on-this-board
+   * for those (see its Fix A1 doc comment) rather than assuming default-workspace ownership.
+   */
+  workspaceRoot?: string;
 }
 
 // Guard so a sync can't wipe the on-disk stubs before boot rehydration has read them back: an
@@ -1010,8 +1040,10 @@ function sessionStubPath(id: string): string {
 
 /** The stub payload for a session, or null when it must not be persisted (terminal/pending, or a
  *  virtual conversation — the board orchestrator or Furnace chat — neither owns a task worktree,
- *  so the reclaim guard never asks about either). */
-function stubFor(session: CliSessionRecord): SessionStub | null {
+ *  so the reclaim guard never asks about either). `workspaceRoot` is the board the caller (
+ *  `syncActiveSessionStubs`) already resolved this session to belong to (FLUX-1636 Fix A2) — tagged
+ *  verbatim so rehydration can restore it rather than re-deriving via the untagged fallback. */
+function stubFor(session: CliSessionRecord, workspaceRoot: string | null): SessionStub | null {
   if (!STUB_PERSIST_STATUSES.has(session.status)) return null;
   if (!session.taskId || isVirtualConversationId(session.taskId)) return null;
   // FLUX-1390: preserve a genuine sleep across the stub round-trip; anything else (running, or a
@@ -1025,6 +1057,7 @@ function stubFor(session: CliSessionRecord): SessionStub | null {
     startedAt: session.startedAt,
     status: isScheduled ? 'scheduled' : 'waiting-input',
   };
+  if (workspaceRoot != null) stub.workspaceRoot = workspaceRoot;
   if (isScheduled && session.wakeAt) stub.wakeAt = session.wakeAt;
   if (session.resumeSessionId) stub.resumeSessionId = session.resumeSessionId;
   if (session.lastOutputAt) stub.lastOutputAt = session.lastOutputAt;
@@ -1079,6 +1112,9 @@ function rehydratedRecord(stub: SessionStub): CliSessionRecord {
     ...(stub.lastTurnContextTokens != null ? { lastTurnContextTokens: stub.lastTurnContextTokens } : {}),
     ...(stub.contextWindow != null ? { contextWindow: stub.contextWindow } : {}),
     ...(scheduled ? { wakeAt: stub.wakeAt } : {}),
+    // FLUX-1636 (Fix A2): restore the tag so `sessionBelongsToWorkspaceRoot` resolves this
+    // rehydrated session to its OWN board instead of collapsing through the untagged fallback.
+    ...(stub.workspaceRoot ? { workspaceRoot: stub.workspaceRoot } : {}),
   };
 }
 
@@ -1102,7 +1138,7 @@ export async function syncActiveSessionStubs(workspaceRoot: string | null, defau
     const keep = new Set<string>();
     for (const session of cliSessionsById.values()) {
       if (!sessionBelongsToWorkspaceRoot(session, workspaceRoot, defaultWorkspaceRoot)) continue;
-      const stub = stubFor(session);
+      const stub = stubFor(session, workspaceRoot);
       if (!stub) continue;
       stubs.push(stub);
       keep.add(sessionStubFileName(stub.id));
@@ -1123,9 +1159,23 @@ export async function syncActiveSessionStubs(workspaceRoot: string | null, defau
  * Boot recovery (FLUX-1060): load persisted stubs back into `cliSessionsById` as `waiting-input`
  * (resumable) records so the reclaim guard and chat resume see pre-restart sessions again. Marks
  * rehydration done so a later {@link syncActiveSessionStubs} can safely prune. Best-effort; never
- * throws. Returns the number of stubs rehydrated.
+ * throws. Returns the number of stubs rehydrated (foreign stubs pruned below don't count).
+ *
+ * FLUX-1636 (Fix A1): also prunes foreign residue that would otherwise sit on disk forever.
+ * `syncActiveSessionStubs`'s own prune only runs for a board that has ALREADY rehydrated
+ * (`rehydratedWorkspaceRoots`) — a board this engine process never opens (a multi-workspace member
+ * nobody switched to) never sweeps its own `sessions/` dir, so pre-FLUX-1556 residue written when
+ * the stub path was still unscoped stays byte-identical forever (the observed symptom: two
+ * completely different boards' `sessions/` dirs held the same 32 stub files). THIS pass runs
+ * unconditionally, every time a board's watcher goes `ready` — regardless of whether that board
+ * ever rehydrates again — so it is the one place guaranteed to eventually see every stub a board's
+ * own directory holds. Ownership check: a tagged stub (Fix A2) belongs here iff its `workspaceRoot`
+ * matches `ws.root`; an untagged legacy stub has no tag to check, so ticket existence on THIS
+ * board's own cache (`ws.tasks`, already populated — `initDir()` runs before `startWatchers()`) is
+ * the next-best signal — a taskId this board has never heard of is unambiguously some other
+ * board's residue, never a real ticket that simply hasn't loaded yet.
  */
-export async function rehydrateSessionStubs(): Promise<number> {
+export async function rehydrateSessionStubs(ws: Workspace = getWorkspace()): Promise<number> {
   let count = 0;
   try {
     const dir = sessionStubsDir();
@@ -1133,12 +1183,20 @@ export async function rehydrateSessionStubs(): Promise<number> {
       const files = await fs.readdir(dir).catch(() => [] as string[]);
       for (const file of files) {
         if (!file.endsWith('.json')) continue;
+        const filePath = path.join(dir, file);
         try {
-          const raw = await fs.readFile(path.join(dir, file), 'utf-8');
+          const raw = await fs.readFile(filePath, 'utf-8');
           const stub = JSON.parse(raw) as SessionStub;
           if (!stub || typeof stub.id !== 'string' || typeof stub.taskId !== 'string') continue;
           if (isVirtualConversationId(stub.taskId)) continue;
           if (cliSessionsById.has(stub.id)) continue; // a live session already owns this id
+          const belongsHere = stub.workspaceRoot !== undefined
+            ? stub.workspaceRoot === ws.root
+            : Object.prototype.hasOwnProperty.call(ws.tasks, stub.taskId);
+          if (!belongsHere) {
+            await fs.unlink(filePath).catch(() => {});
+            continue;
+          }
           cliSessionsById.set(stub.id, rehydratedRecord(stub));
           registerSession(stub.taskId, stub.id);
           count++;
@@ -1151,9 +1209,9 @@ export async function rehydrateSessionStubs(): Promise<number> {
     /* best-effort */
   }
   // FLUX-1556: mark THIS call's own workspace root rehydrated, not every board — this runs bound
-  // inside `runWithWorkspace(ws, …)` (task-store.ts's watcher `ready` handler), so `getWorkspace()`
-  // resolves to the board whose stubs were just read back.
-  rehydratedWorkspaceRoots.add(getWorkspace().root);
+  // inside `runWithWorkspace(ws, …)` (task-store.ts's watcher `ready` handler), so `ws` (defaulting
+  // to `getWorkspace()`) resolves to the board whose stubs were just read back.
+  rehydratedWorkspaceRoots.add(ws.root);
   return count;
 }
 
@@ -1182,6 +1240,14 @@ export function isWithinReclaimGrace(now: number = Date.now()): boolean {
 // would otherwise hog forever on a ticket nobody is coming back to.
 export const STALE_SESSION_RECLAIM_MS = 24 * 60 * 60_000;
 
+// FLUX-1636 (Fix C): the equivalent threshold for a NON-terminal ticket's session — deliberately
+// far more generous than STALE_SESSION_RECLAIM_MS above: nobody has closed this ticket out, so a
+// multi-day gap (a weekend, a vacation) must never read as abandonment. Only widens the same
+// isSessionStale check `sessionsPinTicket` already applies to terminal tickets (FLUX-1617); it
+// never bypasses the separate uncommitted-tree guard in `reclaimWorktrees`, so live in-progress
+// work is never actually lost even if a slot is freed while a session is genuinely resting.
+export const NON_TERMINAL_STALE_RECLAIM_MS = 7 * 24 * 60 * 60_000;
+
 /**
  * Is `session`'s last known activity older than `thresholdMs`? Mirrors `reapHungSilentSpawn`'s
  * `lastOutputAt ?? lastInputAt ?? startedAt` derivation. A session with no parseable timestamp at
@@ -1208,6 +1274,7 @@ export function stopAllCliSessions(reason: string) {
     if (!session.proc) continue;
     if (session.status === 'running' || session.status === 'waiting-input' || session.status === 'pending') {
       session.requestedStop = true;
+      clearHoldsForSession(session.id, reason); // FLUX-1645: engine-wide teardown overrides every hold
       try {
         killProcessTree(session.proc);
       } catch (error) {
@@ -1228,6 +1295,7 @@ export function stopCliSessionsForWorkspace(workspaceRoot: string | null, defaul
     if (!sessionBelongsToWorkspaceRoot(session, workspaceRoot, defaultWorkspaceRoot)) continue;
     if (session.status === 'running' || session.status === 'waiting-input' || session.status === 'pending') {
       session.requestedStop = true;
+      clearHoldsForSession(session.id, reason); // FLUX-1645: workspace teardown overrides every hold
       try {
         killProcessTree(session.proc);
       } catch (error) {
@@ -1258,6 +1326,7 @@ export function stopAllSessionsForTask(taskId: string, reason: string) {
     session.requestedStop = true;
     session.status = 'cancelled';
     session.endedAt = new Date().toISOString();
+    clearHoldsForSession(session.id, reason); // FLUX-1645: ticket-scoped teardown overrides every hold
     if (session.proc) {
       try {
         killProcessTree(session.proc);
@@ -1295,6 +1364,7 @@ export function reapStaleParkedSessions(taskId: string, reason: string): CliSess
     session.requestedStop = true;
     session.status = 'cancelled';
     session.endedAt = now;
+    clearHoldsForSession(session.id, reason); // FLUX-1645: reaping a stale session overrides its hold
     if (session.proc) {
       try {
         killProcessTree(session.proc);

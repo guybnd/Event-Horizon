@@ -785,7 +785,7 @@ export async function renameDocsFolder(from: string, to: string): Promise<void> 
 }
 
 export interface SkillStatus {
-  framework: 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
+  framework: 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'codex' | 'generic';
   skillSourcePath: string;
   skillSourcePaths: string[];
   skillInstalledPath: string;
@@ -1777,6 +1777,8 @@ export interface ResetToRemoteResult {
   oldHead: string;
   newHead: string;
   changedFiles: string[];
+  recoveryPath: string | null;
+  recoveryCount: number;
 }
 
 // Matches the engine's RESET_REMOTE_TIMEOUT_MS budget with a small margin, same reasoning as

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Bot, Zap, Terminal } from 'lucide-react';
+import { Bot, Zap, Terminal, Braces } from 'lucide-react';
 import type { CliFramework, ModelPreset, TaskKey, Tier } from '../../types';
 import {
   DEFAULT_TIER_MODELS,
@@ -19,6 +19,8 @@ interface AgentModelPolicySectionProps {
   setGeminiTiers: (v: TierModels) => void;
   copilotTiers: TierModels;
   setCopilotTiers: (v: TierModels) => void;
+  codexTiers: TierModels;
+  setCodexTiers: (v: TierModels) => void;
   assignments: Record<TaskKey, Tier>;
   setAssignments: (v: Record<TaskKey, Tier>) => void;
 }
@@ -27,6 +29,7 @@ const CLI_COLUMNS: { id: CliFramework; label: string; icon: typeof Bot }[] = [
   { id: 'claude', label: 'Claude', icon: Bot },
   { id: 'gemini', label: 'Gemini', icon: Zap },
   { id: 'copilot', label: 'Copilot', icon: Terminal },
+  { id: 'codex', label: 'Codex', icon: Braces },
 ];
 
 const PRESET_CHIPS: { id: Exclude<ModelPreset, 'custom'>; label: string; blurb: string }[] = [
@@ -44,14 +47,16 @@ export function AgentModelPolicySection({
   setGeminiTiers,
   copilotTiers,
   setCopilotTiers,
+  codexTiers,
+  setCodexTiers,
   assignments,
   setAssignments,
 }: AgentModelPolicySectionProps) {
   const [previewCli, setPreviewCli] = useState<CliFramework>('claude');
   const activePreset = derivePreset(assignments);
 
-  const tiersByFramework: Record<CliFramework, TierModels> = { claude: claudeTiers, gemini: geminiTiers, copilot: copilotTiers };
-  const setTiersByFramework: Record<CliFramework, (v: TierModels) => void> = { claude: setClaudeTiers, gemini: setGeminiTiers, copilot: setCopilotTiers };
+  const tiersByFramework: Record<CliFramework, TierModels> = { claude: claudeTiers, gemini: geminiTiers, copilot: copilotTiers, codex: codexTiers };
+  const setTiersByFramework: Record<CliFramework, (v: TierModels) => void> = { claude: setClaudeTiers, gemini: setGeminiTiers, copilot: setCopilotTiers, codex: setCodexTiers };
 
   const applyPreset = (preset: Exclude<ModelPreset, 'custom'>) => setAssignments({ ...PRESET_ASSIGNMENTS[preset] });
 

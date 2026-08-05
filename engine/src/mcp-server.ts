@@ -30,19 +30,29 @@ import { sanitizeCompletion, completionInputSchema } from './completion-payload.
 import { getActiveFluxDir, getWorkspacesList, getWorkspaceRoot, resolveSkillSourceRoot } from './workspace.js';
 import { log } from './log.js';
 import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, getGhAvailability, ghUnavailableMessage, captureDiff, resolveCommit, planFinishPr, evaluateCiGate, type DiffFileSummary } from './branch-manager.js';
-import { detachTaskWorktree, taskWorktreeDir, findWorktreeForBranch, worktreeUncommittedCount, reclaimWorktrees } from './task-worktree.js';
+import { detachTaskWorktree, resolveTaskWorktreePath, findWorktreeForBranch, worktreeUncommittedCount, reclaimWorktrees } from './task-worktree.js';
 import { ensureTicketIsolation } from './ticket-isolation.js';
 import { cleanupMergedBranch, isWorktreeReclaimable } from './pr-cleanup.js';
 import { sharedNonDoneSiblings, prTicketsOnBranch } from './pr-tickets.js';
 import { existsSync } from 'fs';
-import { getActiveSessionsForTask, getLiveStandaloneSessionForTask, stopAllSessionsForTask, reapStaleParkedSessions, getCliSessionSummaryForTask } from './session-store.js';
+import { getActiveSessionsForTask, getLiveStandaloneSessionForTask, stopAllSessionsForTask, reapStaleParkedSessions, getCliSessionSummaryForTask, cliSessionsById } from './session-store.js';
+import { verifyConversation } from './session-binding.js';
+import { isPidAlive, isSameOrDescendantPid, listWin32ProcessSnapshot, indexProcessTable } from './kill-process-tree.js';
+import {
+  createOrRenewHold,
+  releaseHold,
+  findHold,
+  MIN_TTL_MINUTES,
+  MAX_TTL_MINUTES,
+  DEFAULT_TTL_MINUTES,
+} from './background-process-holds.js';
 import { handoffChatSessionPhase } from './agents/shared.js';
 import { SKILL_MODULES, type SkillModule } from './workflow-installer.js';
 import { generatePromptNotification, generateReviewNotification, dismissNotificationsForTicket, addNotification } from './notifications.js';
 import { groupDocsLabel, summarizeGroup, groupDocPathToStoreRelative } from './group.js';
 import type { GroupContext } from './group.js';
 import { submitGroupEdit } from './group-edit.js';
-import { writeArtifactRevision, isSafeTicketId, listArtifactRevisionsOnDisk } from './artifacts.js';
+import { writeArtifactRevisionInPublication, withArtifactPublication, isSafeTicketId, listArtifactRevisionsOnDisk } from './artifacts.js';
 import { ensureFurnaceLoaded, getFurnaceBatch, getFurnaceBatchesCache, getFurnaceBatchesCacheForWorkspace, updateFurnaceBatch, createFurnaceBatch, deleteFurnaceBatch, mutateFurnaceBatch, globalSlotsInUse, freeSlots, FURNACE_SLOT_CAP } from './furnace-store.js';
 import { buildBatchTickets, toBuildCandidate, validateBatchTickets } from './furnace-builder.js';
 import { igniteBatch, stopBatch, burnRateClampWarning, retryTicket, resumeBatch, dismissTicketFlag, takeoverTicket, handBackTicket, reconcileBatchCached, reconcileAllBatchesCached, refreshWorktreePool, isDispatching, clearTakeoverTracking, evictReconcileReadCache } from './furnace-stoker.js';
@@ -1944,6 +1954,140 @@ export function buildMcpServer(): McpServer {
     },
   );
 
+  // ─── Background-process holds (FLUX-1645) ─────────────────────────────────────
+  // Let an agent-declared long-running background process (a build it explicitly started)
+  // survive this session's ordinary exit instead of being tree-killed, while every OTHER
+  // descendant still dies immediately (the FLUX-1207 default). Windows-only: the selective
+  // survival guarantee needs the ParentProcessId graph-walk kill-process-tree.ts already relies
+  // on, which has no proven equivalent on other platforms here.
+
+  server.registerTool(
+    'hold_background_process',
+    {
+      title: 'Hold background process',
+      description: 'Protect a live background process (e.g. a long build) from being tree-killed at session exit. Windows-only, TTL-bounded (default 30min, 1-120); re-holding renews it.',
+      inputSchema: {
+        ticketId: z.string().describe('Ticket ID this session is running on.'),
+        pid: z.number().int().positive().describe('Live PID to protect (must be a descendant of this session).'),
+        reason: z.string().trim().min(1).max(300).describe('Why this process must survive.'),
+        ttlMinutes: z.number().int().min(MIN_TTL_MINUTES).max(MAX_TTL_MINUTES).optional().describe(`TTL in minutes before force-kill (default ${DEFAULT_TTL_MINUTES}, ${MIN_TTL_MINUTES}-${MAX_TTL_MINUTES}).`),
+      },
+      outputSchema: z.object({
+        pid: z.number(),
+        sessionId: z.string(),
+        reason: z.string(),
+        expiresAt: z.string().describe('ISO-8601 expiry.'),
+        renewed: z.boolean(),
+      }).catchall(z.unknown()),
+    },
+    async ({ ticketId, pid, reason, ttlMinutes }) => {
+      if (process.platform !== 'win32') {
+        return errorResult('Background-process holds are only supported on Windows — the engine has no proven way to guarantee selective process-tree survival on this platform.', 'validation_failed');
+      }
+      const sessionId = getVerifiedSessionId();
+      if (!sessionId) return errorResult('No verified live session is bound to this connection — cannot authorize a hold.', 'validation_failed');
+      const session = cliSessionsById.get(sessionId);
+      if (!session) return errorResult('The bound session is no longer registered.', 'invalid_state');
+      if (session.taskId !== ticketId) {
+        return errorResult(`This session belongs to ticket ${session.taskId}, not ${ticketId} — a hold can only be registered against the session's own ticket.`, 'validation_failed');
+      }
+      if (!['pending', 'running', 'waiting-input', 'scheduled'].includes(session.status)) {
+        return errorResult(`Session ${sessionId} is ${session.status} — a terminal session cannot register a hold.`, 'invalid_state');
+      }
+      const ws = boundWorkspace();
+      if ((session.workspaceRoot ?? null) !== (ws.root ?? null)) {
+        return errorResult('This session belongs to a different workspace than the one bound to this connection.', 'validation_failed');
+      }
+      const task = ws.tasks[ticketId];
+      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
+      if (getTerminalStatuses().includes(task.status ?? '')) {
+        return errorResult(`${ticketId} is ${task.status} (terminal) — cannot register a hold on it.`, 'invalid_state');
+      }
+      if (pid === process.pid) return errorResult('Cannot hold the engine\'s own process.', 'validation_failed');
+      if (!session.pid) return errorResult('This session has no root process pid on record.', 'invalid_state');
+      if (pid === session.pid) return errorResult('Cannot hold the session\'s own root process — hold the specific descendant process instead.', 'validation_failed');
+      if (!isPidAlive(pid)) return errorResult(`pid ${pid} is not a live process.`, 'validation_failed');
+
+      const rows = await listWin32ProcessSnapshot();
+      const childrenByParent = indexProcessTable(rows);
+      if (!isSameOrDescendantPid(childrenByParent, pid, session.pid)) {
+        return errorResult(`pid ${pid} is not a descendant of this session's own process (pid ${session.pid}) — arbitrary/cross-session PIDs cannot be held.`, 'validation_failed');
+      }
+      const fingerprint = rows.find((r) => r.pid === pid)?.creationDate ?? '';
+
+      const result = createOrRenewHold(
+        {
+          workspaceRoot: ws.root,
+          taskId: ticketId,
+          sessionId,
+          pid,
+          fingerprint,
+          reason: reason.trim(),
+          ttlMinutes: ttlMinutes ?? DEFAULT_TTL_MINUTES,
+          worktreePath: session.executionRoot ?? null,
+          branch: task.branch ?? null,
+        },
+        childrenByParent,
+      );
+      if (!result.ok) {
+        const msg = result.error === 'overlap'
+          ? `pid ${pid} overlaps an existing hold (an ancestor or descendant of it) owned by session ${result.owner}.`
+          : `pid ${pid} is already held by a different session (${result.owner}) — only that session can renew or release it.`;
+        return errorResult(msg, 'invalid_state');
+      }
+
+      await updateTaskWithHistory(ticketId, {
+        entries: [buildActivityEntry(
+          `Background-process hold ${result.renewed ? 'renewed' : 'created'}: pid ${pid}, reason "${result.hold.reason}", expires ${result.hold.expiresAt}.`,
+          'Agent',
+          new Date().toISOString(),
+        )],
+        updatedBy: 'Agent',
+      });
+      broadcastEvent('taskUpdated', { id: ticketId });
+
+      return structuredResult({
+        pid: result.hold.pid,
+        sessionId: result.hold.sessionId,
+        reason: result.hold.reason,
+        expiresAt: result.hold.expiresAt,
+        renewed: result.renewed,
+      });
+    },
+  );
+
+  server.tool(
+    'release_background_process',
+    'Owner-only release of a background-process hold — removes protection without killing the process. Idempotent.',
+    {
+      ticketId: z.string().describe('Ticket ID the hold was registered against.'),
+      pid: z.number().int().positive().describe('PID whose hold to release.'),
+    },
+    async ({ ticketId, pid }) => {
+      const sessionId = getVerifiedSessionId();
+      if (!sessionId) return errorResult('No verified live session is bound to this connection.', 'validation_failed');
+      const ws = boundWorkspace();
+      const existing = findHold(ws.root, pid);
+      if (!existing) return textResult(`No active hold for pid ${pid} on ${ticketId} (already released or expired).`);
+      if (existing.taskId !== ticketId) {
+        return errorResult(`The hold on pid ${pid} belongs to ticket ${existing.taskId}, not ${ticketId}.`, 'validation_failed');
+      }
+
+      const result = releaseHold(ws.root, pid, sessionId);
+      if (!result.ok) {
+        if (result.error === 'not-found') return textResult(`No active hold for pid ${pid} on ${ticketId} (already released or expired).`);
+        return errorResult(`pid ${pid} is held by a different session (${result.owner}) — only the owning session can release it.`, 'invalid_state');
+      }
+
+      await updateTaskWithHistory(ticketId, {
+        entries: [buildActivityEntry(`Background-process hold released: pid ${pid}.`, 'Agent', new Date().toISOString())],
+        updatedBy: 'Agent',
+      });
+      broadcastEvent('taskUpdated', { id: ticketId });
+      return textResult(`Hold released for pid ${pid} on ${ticketId}.`);
+    },
+  );
+
   // ─── Artifact Tools (FLUX-873, FLUX-976) ──────────────────────────────────────
 
   server.tool(
@@ -1962,16 +2106,21 @@ export function buildMcpServer(): McpServer {
       if (!html || !html.trim()) return errorResult('html is required and must be a non-empty self-contained HTML document');
 
       try {
-        const { rev, pointer, bytes } = await writeArtifactRevision(ticketId, html, { title, note }, task.artifacts);
-        const result = await updateTaskWithHistory(ticketId, {
-          updatedBy: 'Agent',
-          extraFields: { artifacts: pointer },
-          entries: [{
-            type: 'activity',
-            user: 'Agent',
-            comment: `Published artifact revision ${rev}${title ? ` — ${title}` : ''} (${bytes.toLocaleString()} bytes).`,
-            date: new Date().toISOString(),
-          }],
+        const { rev, result } = await withArtifactPublication(ticketId, async () => {
+          const current = boundWorkspace().tasks[ticketId];
+          if (!current) throw new Error(`Ticket ${ticketId} no longer exists`);
+          const publication = await writeArtifactRevisionInPublication(ticketId, html, { title, note }, current.artifacts);
+          const result = await updateTaskWithHistory(ticketId, {
+            updatedBy: 'Agent',
+            extraFields: { artifacts: publication.pointer },
+            entries: [{
+              type: 'activity',
+              user: 'Agent',
+              comment: `Published artifact revision ${publication.rev}${title ? ` — ${title}` : ''} (${publication.bytes.toLocaleString()} bytes).`,
+              date: new Date().toISOString(),
+            }],
+          });
+          return { rev: publication.rev, bytes: publication.bytes, result };
         });
         if (!result) return errorResult(`Failed to record artifact revision on ${ticketId}`);
         // taskUpdated refreshes the card/sideview pointer; artifactReady tells an open viewer to
@@ -2290,7 +2439,7 @@ export function buildMcpServer(): McpServer {
         // A branch can't be deleted while a worktree holds it checked out — stop the session
         // (release the cwd lock) and detach. This is an ABANDON, so uncommitted work is preserved
         // as a stash ref but NOT applied onto master.
-        const wtPath = taskWorktreeDir(getWorkspaceRoot()!, ticketId);
+        const wtPath = await resolveTaskWorktreePath(getWorkspaceRoot()!, ticketId);
         if (existsSync(wtPath)) {
           stopAllSessionsForTask(ticketId, 'Deleting branch — detaching worktree');
           await detachTaskWorktree(getWorkspaceRoot()!, wtPath, { ticketId, applyToMain: false });
@@ -3266,6 +3415,14 @@ const httpTransports = new Map<string, StreamableHTTPServerTransport>();
 interface BoundConversationContext {
   id: string | null;
   token: string | null;
+  /** FLUX-1645: the exact live `CliSessionRecord.id` this connection was spawned for — distinct
+   *  from `id` above (the TICKET/conversation id). Two sessions can run on the same ticket, and
+   *  `hold_background_process`/`release_background_process` must authorize against the SESSION,
+   *  not just the ticket, so a parallel agent on the same ticket can never hold or release
+   *  another session's process. Absent on any session spawned before this binding existed, and on
+   *  the stdio `--mcp` path unless the launching env carries `EH_SESSION_ID`/`EH_SESSION_TOKEN`. */
+  sessionId: string | null;
+  sessionToken: string | null;
 }
 
 /**
@@ -3286,29 +3443,57 @@ function getBoundConversation(): BoundConversationContext {
   return boundConversationALS.getStore() ?? {
     id: process.env.EH_CONVERSATION_ID || null,
     token: process.env.EH_CONVERSATION_TOKEN || null,
+    sessionId: process.env.EH_SESSION_ID || null,
+    sessionToken: process.env.EH_SESSION_TOKEN || null,
   };
 }
 
-/** Reads `x-eh-conversation-id`/`x-eh-conversation-token` off the request — header first (the
- *  primary channel, set via the per-session `--mcp-config` `headers` override), falling back to
- *  `?conversationId=&conversationToken=` query params in case a client's HTTP MCP transport
- *  doesn't forward custom headers. Absent both, the caller is unbound (not an error — e.g. a
+/** Reads `x-eh-conversation-id`/`x-eh-conversation-token` (+ FLUX-1645's `x-eh-session-id`/
+ *  `x-eh-session-token`) off the request — header first (the primary channel, set via the
+ *  per-session `--mcp-config` `headers` override), falling back to `?conversationId=&
+ *  conversationToken=&sessionId=&sessionToken=` query params in case a client's HTTP MCP
+ *  transport doesn't forward custom headers. Absent, the caller is unbound (not an error — e.g. a
  *  manual/unrouted MCP client — and drops to the same "unrouted" handling as today). */
 function extractBoundConversationFromRequest(req: IncomingMessage): BoundConversationContext {
   const headerId = req.headers['x-eh-conversation-id'];
   const headerToken = req.headers['x-eh-conversation-token'];
+  const headerSessionId = req.headers['x-eh-session-id'];
+  const headerSessionToken = req.headers['x-eh-session-token'];
   let id = Array.isArray(headerId) ? headerId[0] : headerId;
   let token = Array.isArray(headerToken) ? headerToken[0] : headerToken;
-  if (!id) {
+  let sessionId = Array.isArray(headerSessionId) ? headerSessionId[0] : headerSessionId;
+  let sessionToken = Array.isArray(headerSessionToken) ? headerSessionToken[0] : headerSessionToken;
+  if (!id || !sessionId) {
     try {
       const url = new URL(req.url ?? '', 'http://localhost');
-      id = url.searchParams.get('conversationId') ?? undefined;
-      token = url.searchParams.get('conversationToken') ?? undefined;
+      if (!id) {
+        id = url.searchParams.get('conversationId') ?? undefined;
+        token = url.searchParams.get('conversationToken') ?? undefined;
+      }
+      if (!sessionId) {
+        sessionId = url.searchParams.get('sessionId') ?? undefined;
+        sessionToken = url.searchParams.get('sessionToken') ?? undefined;
+      }
     } catch {
       // Malformed request URL — leave unbound rather than throwing out of the HTTP handler.
     }
   }
-  return { id: id || null, token: token || null };
+  return { id: id || null, token: token || null, sessionId: sessionId || null, sessionToken: sessionToken || null };
+}
+
+/**
+ * FLUX-1645: the caller's UNFORGEABLE live session id, or null when unbound/unverified. Unlike
+ * `getBoundConversation().id` (the ticket id, resolved from `boundWorkspace().tasks[ticketId]`
+ * with no ownership proof beyond "this connection knows a valid ticket id"), this is verified
+ * via the same HMAC scheme as the ticket binding (`verifyConversation`) — an agent-supplied
+ * `sessionId` tool argument is never trusted; only the value the ENGINE itself signed at spawn
+ * and threaded back through this connection's own headers/env can pass. Tool handlers must use
+ * this, never a `sessionId` input parameter, to decide "which live process is calling".
+ */
+function getVerifiedSessionId(): string | null {
+  const bound = getBoundConversation();
+  if (!bound.sessionId) return null;
+  return verifyConversation(bound.sessionId, bound.sessionToken) ? bound.sessionId : null;
 }
 
 /**

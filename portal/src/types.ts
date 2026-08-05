@@ -241,7 +241,7 @@ export interface Task {
 // leave-with-justification — it is a STRUCTURAL mirror, not a feature gate: the runtime source of
 // truth is the `cliCapabilities` table served on /api/config (engine/src/agents/types.ts), which
 // the UI reads to decide what to show. Keep these keys in lockstep with the engine union.
-export type CliFramework = 'claude' | 'copilot' | 'gemini';
+export type CliFramework = 'claude' | 'copilot' | 'gemini' | 'codex';
 
 // FLUX-1373: the three-tier spend model. Each CLI defines what a tier resolves to
 // (`integrations.<cli>.tiers`); `modelPolicy.assignments` maps a task key to a tier.
@@ -534,6 +534,10 @@ export interface Config {
     };
     /** FLUX-1373: was silently dropped by the narrower type before — Copilot never had a model card. */
     copilotCli?: {
+      tiers?: { smart?: string; efficient?: string; cheap?: string };
+    };
+    /** FLUX-1625 */
+    codexCli?: {
       tiers?: { smart?: string; efficient?: string; cheap?: string };
     };
   };

@@ -57,6 +57,12 @@ describe('buildGeminiMcpServerEntry / installMcpConfig — Gemini HITL header ro
     expect(entry.headers).toEqual({
       'x-eh-conversation-id': '${EH_CONVERSATION_ID}',
       'x-eh-conversation-token': '${EH_CONVERSATION_TOKEN}',
+      // FLUX-1645: the per-SESSION identity pair, distinct from the per-ticket pair above —
+      // hold_background_process/release_background_process need to trust which live session is
+      // calling, not just which ticket. Same env-placeholder mechanism (cleanChildEnv sets
+      // EH_SESSION_ID/EH_SESSION_TOKEN per spawn).
+      'x-eh-session-id': '${EH_SESSION_ID}',
+      'x-eh-session-token': '${EH_SESSION_TOKEN}',
     });
     // Claude-schema fields must NOT leak into the Gemini entry.
     expect(entry).not.toHaveProperty('type');

@@ -13,6 +13,7 @@ import {
   listTaskWorktrees,
   reclaimWorktrees,
   ticketIdFromWorktreePath,
+  resolveTaskWorktreePath,
   resolveTaskExecutionRoot,
   resolveResumeExecutionRoot,
   isRegisteredWorktree,
@@ -591,23 +592,29 @@ describe('task-worktree', () => {
       }
     });
 
-    it('still refuses a non-empty directory at the target that is not a valid/repairable worktree (FLUX-1277)', async () => {
+    it('routes around a non-empty directory at the target that is not a valid/repairable worktree, creating a `-r2` recovery sibling instead of refusing (FLUX-1644)', async () => {
       const branch = 'flux/FLUX-53-nonempty';
       const target = taskWorktreeDir(repo, 'FLUX-53');
-      // Same leftover scenario, but with real content still sitting in it — never auto-delete.
+      // Same leftover scenario as before, but with real content still sitting in it — never
+      // auto-delete or touch it; route around it instead of refusing.
       await fs.mkdir(target, { recursive: true });
       await fs.writeFile(path.join(target, 'leftover.txt'), 'un-pushed work\n', 'utf8');
 
-      await expect(createTaskWorktree(repo, 'FLUX-53', branch)).rejects.toThrow(
-        /not a valid git worktree and could not be repaired/i,
-      );
+      const resolved = await createTaskWorktree(repo, 'FLUX-53', branch);
+      expect(realpathSync(resolved)).toBe(realpathSync(`${target}-r2`));
+      expect(await currentBranch(resolved)).toBe(branch);
+
+      // The husk itself is left completely untouched.
+      expect(existsSync(target)).toBe(true);
+      expect(existsSync(path.join(target, 'leftover.txt'))).toBe(true);
     });
 
     // FLUX-1207: repair can fail because an orphaned descendant of a killed session (e.g. a
     // Bash-tool-launched vitest run) still holds a Windows file-handle lock on the worktree dir.
     // The no-known-session case is already covered by the FLUX-53 test above (unchanged behavior);
-    // this covers the NEW reap-and-retry wiring that fires when a session pid IS known.
-    it('reaps a known session pid for the ticket before retrying repair, and still throws when repair genuinely cannot succeed (FLUX-1207)', async () => {
+    // this covers the reap-and-retry wiring that fires when a session pid IS known, now combined
+    // with the FLUX-1644 recovery-suffix fallback when the retried repair still can't succeed.
+    it('reaps a known session pid for the ticket before retrying repair, then routes to a `-r2` recovery sibling when repair genuinely cannot succeed (FLUX-1207 + FLUX-1644)', async () => {
       const branch = 'flux/FLUX-60-reap';
       const ticketId = 'FLUX-60';
       const target = taskWorktreeDir(repo, ticketId);
@@ -624,16 +631,161 @@ describe('task-worktree', () => {
       try {
         const reapDescendantsByPid = vi.fn(async (_pid: number) => [] as number[]);
 
-        await expect(
-          createTaskWorktree(repo, ticketId, branch, { reapDescendantsByPid }),
-        ).rejects.toThrow(/not a valid git worktree and could not be repaired/i);
+        const resolved = await createTaskWorktree(repo, ticketId, branch, { reapDescendantsByPid });
+        expect(realpathSync(resolved)).toBe(realpathSync(`${target}-r2`));
+        expect(await currentBranch(resolved)).toBe(branch);
 
         // The wiring fired: the known session pid was reaped before the retry (and the retry
-        // still failed since nothing about the underlying corruption changed in this test).
+        // still failed since nothing about the underlying corruption changed in this test) —
+        // creation then routed around the husk instead of throwing.
         expect(reapDescendantsByPid).toHaveBeenCalledWith(424242);
+        expect(existsSync(target)).toBe(true);
+        expect(existsSync(path.join(target, 'leftover.txt'))).toBe(true);
       } finally {
         cliSessionsById.delete('fake-sess-60');
       }
+    });
+
+    describe('recovery-suffix routing around an unrepairable husk (FLUX-1644)', () => {
+      it('allocates the lowest FILESYSTEM-ABSENT suffix, skipping an occupied `-r2`', async () => {
+        const branch = 'flux/FLUX-70-suffix3';
+        const ticketId = 'FLUX-70';
+        const target = taskWorktreeDir(repo, ticketId);
+        await fs.mkdir(target, { recursive: true });
+        await fs.writeFile(path.join(target, 'leftover.txt'), 'husk\n', 'utf8');
+        // Occupy `-r2` with a plain (non-worktree) directory — not a git worktree, just present
+        // on the filesystem, so it must be skipped without being touched.
+        const occupiedR2 = `${target}-r2`;
+        await fs.mkdir(occupiedR2, { recursive: true });
+        await fs.writeFile(path.join(occupiedR2, 'someone-elses.txt'), 'x\n', 'utf8');
+
+        const resolved = await createTaskWorktree(repo, ticketId, branch);
+        expect(realpathSync(resolved)).toBe(realpathSync(`${target}-r3`));
+        expect(await currentBranch(resolved)).toBe(branch);
+
+        // Neither the canonical husk nor the occupied `-r2` were renamed/deleted/overwritten.
+        expect(existsSync(target)).toBe(true);
+        expect(existsSync(path.join(target, 'leftover.txt'))).toBe(true);
+        expect(existsSync(occupiedR2)).toBe(true);
+        expect(existsSync(path.join(occupiedR2, 'someone-elses.txt'))).toBe(true);
+      });
+
+      it('re-entry reuses the SAME registered recovery worktree and self-heals it (no `-r3` created)', async () => {
+        const branch = 'flux/FLUX-71-reentry';
+        const ticketId = 'FLUX-71';
+        const target = taskWorktreeDir(repo, ticketId);
+        await fs.mkdir(target, { recursive: true });
+        await fs.writeFile(path.join(target, 'leftover.txt'), 'husk\n', 'utf8');
+
+        const first = await createTaskWorktree(repo, ticketId, branch);
+        expect(realpathSync(first)).toBe(realpathSync(`${target}-r2`));
+
+        // The reuse path returns the LITERAL, deterministically-constructed `-r2` path (not
+        // whatever string `git worktree list` happens to report) — both calls resolve to the
+        // exact same string.
+        const second = await createTaskWorktree(repo, ticketId, branch);
+        expect(second).toBe(first);
+        expect(existsSync(`${target}-r3`)).toBe(false);
+
+        // Self-heal ran on reuse: the Serena override at the RECOVERY path names its own basename.
+        const serenaOverride = await fs.readFile(
+          path.join(second, '.serena', 'project.local.yml'),
+          'utf8',
+        );
+        expect(serenaOverride).toContain(`project_name: "${path.basename(second)}"`);
+      });
+
+      it('a same-ticket recovery worktree on a DIFFERENT branch is an explicit collision, named by its own (not canonical) path', async () => {
+        const ticketId = 'FLUX-72';
+        const target = taskWorktreeDir(repo, ticketId);
+        await fs.mkdir(target, { recursive: true });
+        await fs.writeFile(path.join(target, 'leftover.txt'), 'husk\n', 'utf8');
+
+        await createTaskWorktree(repo, ticketId, 'flux/FLUX-72-a');
+
+        let thrown: unknown;
+        try {
+          await createTaskWorktree(repo, ticketId, 'flux/FLUX-72-b');
+        } catch (err) {
+          thrown = err;
+        }
+        expect(thrown).toBeInstanceOf(Error);
+        // The message names the literal `-r2` path (not the canonical path, and not whatever
+        // string `git worktree list` happens to report for it).
+        const message = (thrown as Error).message;
+        expect(message).toContain(`${target}-r2`);
+        expect(message).toMatch(/different branch/i);
+      });
+
+      it('never reuses or repoints a DIFFERENT ticket\'s worktree, even one whose name looks like a recovery sibling', async () => {
+        // A worktree literally named `<repo>-OTHER-70-r2` belongs to ticket "OTHER-70-r2"-stripped
+        // -> "OTHER-70", NOT to "FLUX-73" — creating FLUX-73's own recovery worktree must allocate
+        // its OWN `-r2`, never touch this unrelated directory.
+        const otherTicketDir = `${taskWorktreeDir(repo, 'OTHER-70')}-r2`;
+        await fs.mkdir(otherTicketDir, { recursive: true });
+        await execFileAsync('git', ['-C', repo, 'worktree', 'add', '-b', 'flux/OTHER-70-r2-branch', otherTicketDir], { windowsHide: true });
+
+        const ticketId = 'FLUX-73';
+        const target = taskWorktreeDir(repo, ticketId);
+        await fs.mkdir(target, { recursive: true });
+        await fs.writeFile(path.join(target, 'leftover.txt'), 'husk\n', 'utf8');
+
+        const resolved = await createTaskWorktree(repo, ticketId, 'flux/FLUX-73-own');
+        expect(realpathSync(resolved)).toBe(realpathSync(`${target}-r2`));
+        expect(await currentBranch(otherTicketDir)).toBe('flux/OTHER-70-r2-branch'); // untouched
+      });
+
+      it('reuses the winning same-ticket/same-branch worktree when a competing creator wins the `-r2` race', async () => {
+        const branch = 'flux/FLUX-74-race';
+        const ticketId = 'FLUX-74';
+        const target = taskWorktreeDir(repo, ticketId);
+        await fs.mkdir(target, { recursive: true });
+        await fs.writeFile(path.join(target, 'leftover.txt'), 'husk\n', 'utf8');
+
+        const candidate = `${target}-r2`;
+        let addAttempts = 0;
+        const racingRunner = async (cwd: string, args: string[]) => {
+          if (args[0] === 'worktree' && args[1] === 'add' && args.includes(candidate)) {
+            addAttempts++;
+            // Simulate a competing creator winning the race: it registers the SAME candidate on
+            // the SAME branch via a raw, out-of-band `git worktree add`, then this call fails as
+            // if it lost the race (git would report "already exists").
+            await execFileAsync('git', ['-C', repo, 'worktree', 'add', candidate, '-b', branch], { windowsHide: true });
+            throw new Error(`fatal: '${candidate}' already exists`);
+          }
+          const { stdout, stderr } = await execFileAsync('git', ['-C', cwd, ...args], { windowsHide: true });
+          return { stdout, stderr };
+        };
+
+        const resolved = await createTaskWorktree(repo, ticketId, branch, { gitRunner: racingRunner });
+        expect(addAttempts).toBe(1);
+        expect(realpathSync(resolved)).toBe(realpathSync(candidate));
+        expect(existsSync(`${target}-r3`)).toBe(false);
+      });
+
+      it('moves on to the next absent suffix when the race loser finds `-r2` occupied by something else', async () => {
+        const ticketId = 'FLUX-75';
+        const target = taskWorktreeDir(repo, ticketId);
+        await fs.mkdir(target, { recursive: true });
+        await fs.writeFile(path.join(target, 'leftover.txt'), 'husk\n', 'utf8');
+
+        const candidate = `${target}-r2`;
+        let addAttempts = 0;
+        const racingRunner = async (cwd: string, args: string[]) => {
+          if (args[0] === 'worktree' && args[1] === 'add' && args.includes(candidate)) {
+            addAttempts++;
+            // Someone else's ticket/branch wins the race at this exact candidate path.
+            await execFileAsync('git', ['-C', repo, 'worktree', 'add', candidate, '-b', 'flux/somebody-elses-branch'], { windowsHide: true });
+            throw new Error(`fatal: '${candidate}' already exists`);
+          }
+          const { stdout, stderr } = await execFileAsync('git', ['-C', cwd, ...args], { windowsHide: true });
+          return { stdout, stderr };
+        };
+
+        const resolved = await createTaskWorktree(repo, ticketId, 'flux/FLUX-75-own', { gitRunner: racingRunner });
+        expect(addAttempts).toBe(1);
+        expect(realpathSync(resolved)).toBe(realpathSync(`${target}-r3`));
+      });
     });
 
     it('enforces the configurable concurrency cap', async () => {
@@ -958,6 +1110,29 @@ describe('task-worktree', () => {
         expect(findLockHolders).not.toHaveBeenCalled();
         expect(existsSync(wt)).toBe(true);
         expect(existsSync(path.join(wt, 'README.md'))).toBe(true);
+      });
+
+      // FLUX-1644: a canonical husk can coexist with its own ticket's registered `-r2` recovery
+      // worktree. The sweep must still reclaim the (unregistered) husk once its lock clears, and
+      // must never mistake the REGISTERED `-r2` sibling for an orphan/husk itself.
+      it('sweeps the canonical husk once unlocked, but never the ticket\'s own registered `-r2` recovery worktree', async () => {
+        const ticketId = 'FLUX-77';
+        const target = taskWorktreeDir(repo, ticketId);
+        await fs.mkdir(target, { recursive: true });
+        await fs.writeFile(path.join(target, 'leftover.txt'), 'husk\n', 'utf8');
+        // Route around the husk — registers `-r2` for the SAME ticket.
+        const wt = await createTaskWorktree(repo, ticketId, `flux/${ticketId}`);
+        expect(realpathSync.native(wt)).toBe(realpathSync.native(`${target}-r2`));
+
+        const findLockHolders = vi.fn(async () => [] as number[]);
+        await pruneTaskWorktrees(repo, { isSessionActiveForTask: () => false, findLockHolders });
+
+        // The unregistered husk is swept...
+        expect(existsSync(target)).toBe(false);
+        // ...but the registered `-r2` worktree is left completely alone (never even considered a
+        // sweep candidate — findLockHolders is never asked about it).
+        expect(existsSync(wt)).toBe(true);
+        expect(findLockHolders).not.toHaveBeenCalledWith(wt, taskWorktreesBaseDir(repo));
       });
 
       // FLUX-1216 review fix: a transient failure of the `git worktree list` QUERY itself (index.lock
@@ -1426,6 +1601,58 @@ describe('task-worktree', () => {
       expect(ticketIdFromWorktreePath(repo, path.join(parent, 'somewhere-else'))).toBeNull();
     });
 
+    // FLUX-1644: a recovery worktree is named `<repo>-<id>-r<N>` — only a FINAL, purely-numeric
+    // `-r<N>` with N >= 2 is a reserved suffix; everything else remains part of the parsed id.
+    it('strips only a final numeric `-r<N>` (N >= 2) recovery suffix; malformed/embedded/`-r1` endings stay part of the id', () => {
+      const base = taskWorktreesBaseDir(repo);
+      const at = (name: string) => path.join(base, name);
+      const prefix = path.basename(repo);
+      expect(ticketIdFromWorktreePath(repo, at(`${prefix}-FLUX-9-r2`))).toBe('FLUX-9');
+      expect(ticketIdFromWorktreePath(repo, at(`${prefix}-FLUX-9-r10`))).toBe('FLUX-9');
+      expect(ticketIdFromWorktreePath(repo, at(`${prefix}-FLUX-9-r1`))).toBe('FLUX-9-r1'); // r1 reserved as "no suffix"
+      expect(ticketIdFromWorktreePath(repo, at(`${prefix}-FLUX-9-rABC`))).toBe('FLUX-9-rABC'); // nonnumeric
+      expect(ticketIdFromWorktreePath(repo, at(`${prefix}-FLUX-9-r2-extra`))).toBe('FLUX-9-r2-extra'); // not final
+      expect(ticketIdFromWorktreePath(repo, at(`${prefix}-FLUX-9`))).toBe('FLUX-9'); // canonical, no suffix at all
+    });
+
+    describe('resolveTaskWorktreePath (FLUX-1644)', () => {
+      it('falls back to the canonical path unchanged when nothing is registered for the ticket', async () => {
+        const resolved = await resolveTaskWorktreePath(repo, 'FLUX-80');
+        expect(resolved).toBe(taskWorktreeDir(repo, 'FLUX-80'));
+      });
+
+      it('returns the canonical path when it is itself a registered worktree', async () => {
+        const wt = await createTaskWorktree(repo, 'FLUX-81', 'flux/FLUX-81');
+        const resolved = await resolveTaskWorktreePath(repo, 'FLUX-81');
+        expect(realpathSync.native(resolved)).toBe(realpathSync.native(wt));
+      });
+
+      it('returns the registered `-r2` sibling when the canonical path is not itself registered', async () => {
+        const ticketId = 'FLUX-82';
+        const target = taskWorktreeDir(repo, ticketId);
+        await fs.mkdir(target, { recursive: true });
+        await fs.writeFile(path.join(target, 'leftover.txt'), 'husk\n', 'utf8');
+        const wt = await createTaskWorktree(repo, ticketId, 'flux/FLUX-82');
+        expect(realpathSync.native(wt)).toBe(realpathSync.native(`${target}-r2`));
+
+        const resolved = await resolveTaskWorktreePath(repo, ticketId);
+        expect(realpathSync.native(resolved)).toBe(realpathSync.native(wt));
+      });
+
+      it('prefers the canonical path over any registered suffix when BOTH are registered (anomaly)', async () => {
+        const ticketId = 'FLUX-83';
+        const canonicalPath = taskWorktreeDir(repo, ticketId);
+        const suffixPath = `${canonicalPath}-r3`;
+        // Register both directly via git (an anomalous state this resolver never repairs/repoints,
+        // only selects around) on distinct branches so neither creation call collides.
+        await execFileAsync('git', ['-C', repo, 'worktree', 'add', '-b', 'flux/FLUX-83-canonical', canonicalPath], { windowsHide: true });
+        await execFileAsync('git', ['-C', repo, 'worktree', 'add', '-b', 'flux/FLUX-83-suffix', suffixPath], { windowsHide: true });
+
+        const resolved = await resolveTaskWorktreePath(repo, ticketId);
+        expect(realpathSync.native(resolved)).toBe(realpathSync.native(canonicalPath));
+      });
+    });
+
     it('removes clean reclaimable worktrees and frees the cap', async () => {
       const a = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1', { maxWorktrees: 2 });
       await createTaskWorktree(repo, 'FLUX-2', 'flux/FLUX-2', { maxWorktrees: 2 });
@@ -1440,6 +1667,26 @@ describe('task-worktree', () => {
       // ...and the freed slot lets a new worktree be created under the same cap.
       const c = await createTaskWorktree(repo, 'FLUX-3', 'flux/FLUX-3', { maxWorktrees: 2 });
       expect(existsSync(c)).toBe(true);
+    });
+
+    // FLUX-1644: a `-r<N>` recovery worktree's owning ticket id must reach the predicates in its
+    // NORMALIZED (suffix-stripped) form — a predicate keyed on the real ticket id (e.g. to check
+    // its board status) must never be asked about `FLUX-9-r2` instead of `FLUX-9`.
+    it('passes the STRIPPED ticket id (not the `-r2`-suffixed name) to isReclaimable/isTerminal for a recovery worktree', async () => {
+      const ticketId = 'FLUX-9';
+      const target = taskWorktreeDir(repo, ticketId);
+      await fs.mkdir(target, { recursive: true });
+      await fs.writeFile(path.join(target, 'leftover.txt'), 'husk\n', 'utf8');
+      const wt = await createTaskWorktree(repo, ticketId, `flux/${ticketId}`);
+      expect(realpathSync.native(wt)).toBe(realpathSync.native(`${target}-r2`));
+
+      const isReclaimable = vi.fn((id: string) => id === ticketId);
+      const reclaimed = await reclaimWorktrees(repo, isReclaimable);
+
+      expect(isReclaimable).toHaveBeenCalledWith(ticketId);
+      expect(isReclaimable).not.toHaveBeenCalledWith(`${ticketId}-r2`);
+      expect(reclaimed).toEqual([ticketId]);
+      expect(existsSync(wt)).toBe(false);
     });
 
     it('never reclaims a worktree with real uncommitted work', async () => {

@@ -20,6 +20,7 @@ import { generateSyncAuthNotification, clearSyncAuthNotification, generateSyncCo
 import { getHistoryTimestamp, historyEntryIdentity, type HistoryEntryLike } from './history.js';
 import { runGit } from './git-exec.js';
 import { readJournalEntries, dropFlushedJournalEntries, replayJournalEntry, reloadCacheAfterReset } from './sync-journal.js';
+import { captureCanonicalSidecars } from './sync-sidecar-preservation.js';
 
 const execFileAsyncRaw = promisify(execFile);
 // All sync git calls go through here so they share the non-interactive +
@@ -630,6 +631,11 @@ export class SyncWorker {
         }
       }
 
+      // A prepared HEAD owns exactly this journal prefix. Entries appended after this point may
+      // be picked up by a later commit, but they must remain durable journal suffixes until a
+      // prepared HEAD explicitly includes them; a successful push must never acknowledge them.
+      let preparedPrefixCount = (await readJournalEntries(storeDir)).length;
+
       // Step 2: fetch remote
       try {
         await execFileAsync('git', ['-C', storeDir, 'fetch', 'origin', 'flux-data']);
@@ -671,17 +677,14 @@ export class SyncWorker {
       // mergePrTicketConflict, etc.) intentionally stays in this file, unreachable from this path —
       // removed in a follow-up ticket once this is proven (see FLUX-1428's "delete nothing yet").
       for (let attempt = 1; attempt <= CAS_MAX_ATTEMPTS; attempt++) {
-        // Snapshot the journal for THIS attempt before pushing — these are the ops the current local
-        // HEAD carries that aren't confirmed on the remote yet. Re-read fresh each attempt (not
-        // hoisted above the loop) so an entry appended mid-retry by a concurrent request is captured
-        // by the attempt that actually pushes it, rather than silently skipped.
-        const journalBatch = await readJournalEntries(storeDir);
+        // Do not re-snapshot here: this HEAD was prepared with preparedPrefixCount. A late entry is
+        // intentionally left in the journal even if it landed before the network push completed.
 
         try {
           await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
           log.info(`[sync-watcher] Pushed flux-data to remote (CAS, attempt ${attempt})`);
           this.markSynced();
-          await dropFlushedJournalEntries(storeDir, journalBatch.length);
+          await dropFlushedJournalEntries(storeDir, preparedPrefixCount);
           return;
         } catch (pushErr: unknown) {
           const errorMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
@@ -699,6 +702,9 @@ export class SyncWorker {
             return;
           }
 
+          // A rejection discards the prepared HEAD. Take a fresh complete prefix for the
+          // replacement preparation, including entries that landed after the old cutoff.
+          const journalBatch = await readJournalEntries(storeDir);
           log.info(`[sync-watcher] Push rejected (remote moved) — resetting to origin/flux-data and replaying ${journalBatch.length} local op(s) (attempt ${attempt}/${CAS_MAX_ATTEMPTS})`);
 
           const { stdout: preResetHead } = await execFileAsync('git', ['-C', storeDir, 'rev-parse', 'HEAD']);
@@ -711,6 +717,14 @@ export class SyncWorker {
           if (postFetchMarker > SUPPORTED_SYNC_PROTOCOL) {
             this.reportProtocolMismatch(postFetchMarker);
             return;
+          }
+
+          // The rejected prepared HEAD is about to be discarded. Retain every engine-owned
+          // sidecar version outside the worktree first; the journal can replay ticket intent,
+          // but cannot reconstruct artifact/transcript/diff bytes written beside it.
+          const recovery = await captureCanonicalSidecars(storeDir);
+          if (recovery.referenceCount > 0) {
+            log.info(`[sync-watcher] Retained ${recovery.referenceCount} sidecar version reference(s) at ${recovery.recoveryDir}`);
           }
 
           await execFileAsync('git', ['-C', storeDir, 'reset', '--hard', 'origin/flux-data']);
@@ -740,6 +754,10 @@ export class SyncWorker {
               } catch (replayErr: unknown) {
                 const replayMsg = replayErr instanceof Error ? replayErr.message : String(replayErr);
                 console.error(`[sync-watcher] Replay failed for ${entry.taskId} (op ${entry.opId}): ${replayMsg}`);
+                // Publishing a replacement commit after a partial replay creates dangling
+                // sidecar metadata. Stop before add/commit/push; the external recovery
+                // manifest remains available for investigation and manual recovery.
+                throw replayErr;
               }
             }
           }
@@ -750,6 +768,9 @@ export class SyncWorker {
           if (porcelainAfterReplay.trim()) {
             await execFileAsync('git', ['-C', storeDir, 'commit', '-m', `flux: sync (replay ${journalBatch.length} op(s))`]);
           }
+          // The replacement commit can only acknowledge the prefix it replayed. Any mutation
+          // arriving while reset/replay ran is a suffix and survives the eventual successful push.
+          preparedPrefixCount = journalBatch.length;
           // loop continues → retry push against the new base
         }
       }

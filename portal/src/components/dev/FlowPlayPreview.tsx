@@ -246,7 +246,7 @@ function CtxToggleRow({
           onChange={(e) => onChange({ ...ctx, assistant: e.target.value })}
           className="rounded-md border border-gray-200 bg-white px-1.5 py-0.5 dark:border-white/10 dark:bg-white/5"
         >
-          {['claude', 'copilot', 'cursor', 'cline', 'windsurf', 'gemini', 'generic'].map((a) => (
+          {['claude', 'copilot', 'codex', 'cursor', 'cline', 'windsurf', 'gemini', 'generic'].map((a) => (
             <option key={a} value={a}>
               {a}
             </option>

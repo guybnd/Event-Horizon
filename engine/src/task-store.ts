@@ -29,6 +29,7 @@ import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { broadcastEvent, bumpTasksVersion } from './events.js';
 import { rehydrateOpenPrompts } from './hitl-prompts.js';
 import { cliSessionsById, cliSessionIdByTaskId, rehydrateSessionStubs, armReclaimGrace } from './session-store.js';
+import { rehydrateHoldStubs, clearHoldsForTask, forceKillHeldSubtree } from './background-process-holds.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
 import { bootstrapNewWorkspace, installSkillsForWorkspace } from './bootstrap.js';
@@ -44,7 +45,7 @@ import { loadBootIndex, partitionByBootIndex, persistBootIndex } from './boot-in
 // internal uses go through the import below.
 export { atomicWriteFile, serializeTaskForApi, serializeTaskForAgent, serializeTaskForList, getTerminalStatuses, subtaskIds, validateParentLink, repairTicket, truncateBodyForAgent, AGENT_BODY_LIMIT, computeBodyVersion, computeDiskBodyVersion } from './task-serialize.js';
 export type { TaskRecord, TaskFrontmatter } from './task-serialize.js';
-import { atomicWriteFile, subtaskIds, repairTicket, computeDiskBodyVersion } from './task-serialize.js';
+import { atomicWriteFile, subtaskIds, repairTicket, computeDiskBodyVersion, getTerminalStatuses } from './task-serialize.js';
 import type { TaskRecord, TaskFrontmatter } from './task-serialize.js';
 
 // FLUX-343: the mutable workspace state (tasks/docs/parse-errors/isActivating) that used to be
@@ -436,6 +437,15 @@ async function updateTaskWithHistoryLocked(taskId: string, options: UpdateTaskWi
     // the card via the board). Skip when extraFields explicitly sets needsAction (the backstop).
     if (!(options.extraFields && 'needsAction' in options.extraFields)) {
       frontmatter.needsAction = null;
+    }
+    // FLUX-1645 (plan step 6): every status-changing write funnels through this ONE function
+    // (MCP change_status, the REST PUT route, finish_ticket, archive, and pr-cleanup's merge
+    // reconciliation all call updateTaskWithHistory) — the single shared mutation seam a terminal
+    // transition needs to force-clear any live background-process hold before the ticket leaves
+    // the active board. Fire-and-forget: the kill itself is best-effort (matches every other kill
+    // primitive here) and must never block/fail this write.
+    if (getTerminalStatuses().includes(options.nextStatus)) {
+      for (const hold of clearHoldsForTask(ws.root, taskId)) forceKillHeldSubtree(hold);
     }
   }
 
@@ -1638,6 +1648,10 @@ export async function startWatchers(ws: Workspace = getWorkspace()) {
         void rehydrateSessionStubs()
           .then(() => armReclaimGrace())
           .catch((err) => console.error('[session] stub rehydrate failed', err));
+        // FLUX-1645: restore persisted background-process holds the same way — an unclean restart
+        // must not silently drop a still-live, unexpired lease (AC8). rehydrateHoldStubs itself
+        // drops overdue/dead leases rather than resuming them.
+        void rehydrateHoldStubs(ws).catch((err) => console.error('[background-process-holds] stub rehydrate failed', err));
       });
     })
     .on('unlink', (filePath) => {

@@ -6,9 +6,9 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { cleanChildEnv, chatEditGateNote } from './agents/shared.js';
 import { verifyConversation } from './session-binding.js';
-import { CLI_CAPABILITIES, type CliFramework, type CliCapabilities, type CliSessionRecord } from './agents/types.js';
+import { CLI_CAPABILITIES, CAPABILITY_PROBES, PREFLIGHT_IDS, type CliFramework, type CliCapabilities, type CliSessionRecord } from './agents/types.js';
 import { BOARD_CONVERSATION_ID } from './agents/board.js';
-import { getBoardAdapter } from './agents/index.js';
+import { getBoardAdapter, getAdapter, getRuntimeFrameworks, isKnownFramework } from './agents/index.js';
 
 // ─── Mocks for the A.1 stdout-parse fixture tests below ───────────────────────
 // claude-code.ts / copilot.ts / gemini.ts each import a wide surface (task persistence,
@@ -184,7 +184,7 @@ function feedLines(proc: ChildProcessWithoutNullStreams, ...events: unknown[]) {
  * the board orchestrator).
  */
 
-const FRAMEWORKS: CliFramework[] = ['claude', 'copilot', 'gemini'];
+const FRAMEWORKS: CliFramework[] = ['claude', 'copilot', 'gemini', 'codex'];
 
 // The seven optional per-framework behaviors added in FLUX-901 (audit B.1–B.7), plus
 // chatEditGateEnforced (FLUX-1123: whether the FLUX-926 chat file-edit gate is a real block vs an
@@ -244,44 +244,77 @@ describe('CLI_CAPABILITIES contract (FLUX-901, audit B.1)', () => {
         expect(typeof cap[flag], `${fw}.${flag} must be a boolean`).toBe('boolean');
       }
       expect(typeof cap.effort.supported).toBe('boolean');
-      if (cap.effort.supported) expect(typeof cap.effort.flag).toBe('string');
+      if (cap.effort.supported) {
+        expect(
+          typeof cap.effort.flag === 'string' || typeof cap.effort.configKey === 'string',
+          `${fw}.effort.supported is true but neither flag nor configKey is declared`,
+        ).toBe(true);
+      }
     }
   });
 
-  it('six of the eight B.1–B.7 (+chatEditGateEnforced) optional behaviors are Claude-only (verified against current master)', () => {
+  it('four of the eight B.1–B.7 (+chatEditGateEnforced) optional behaviors are Claude-only (verified against current master)', () => {
     // spawnTimeMcpConfig and selfPause are excluded here — each has a dedicated test below.
     // FLUX-984: Copilot injects MCP config too (different mechanism than Claude's --mcp-config).
     // FLUX-985: copilot/gemini now honor a Require-Input pause as waiting-input, so selfPause is
-    // no longer Claude-only.
+    // no longer Claude-only. imageAttachments is ALSO excluded here (FLUX-1625): Codex live-probe
+    // confirmed it too, so it's no longer Claude-exclusive either — see its own dedicated test
+    // below. persistentChat is excluded too (FLUX-1630): Codex's resume is live-verified and its
+    // exit-handler now routes a clean chat turn to 'waiting-input' like Claude — see the dedicated
+    // "persistentChat is distinct from resume" test. chatEditGateEnforced IS included in this loop
+    // (FLUX-1631 flipped codex's row back to false — see the dedicated regression test below for why).
     for (const flag of BEHAVIOR_FLAGS) {
-      if (flag === 'spawnTimeMcpConfig' || flag === 'selfPause') continue;
+      if (flag === 'spawnTimeMcpConfig' || flag === 'selfPause' || flag === 'imageAttachments' || flag === 'persistentChat') continue;
       expect(CLI_CAPABILITIES.claude[flag], `claude.${flag}`).toBe(true);
       expect(CLI_CAPABILITIES.copilot[flag], `copilot.${flag}`).toBe(false);
       expect(CLI_CAPABILITIES.gemini[flag], `gemini.${flag}`).toBe(false);
+      expect(CLI_CAPABILITIES.codex[flag], `codex.${flag}`).toBe(false);
     }
   });
 
-  it('chatEditGateEnforced: only Claude can actually block chat file-edits — neither CLI has a --disallowed-tools equivalent (FLUX-1123)', () => {
+  it('chatEditGateEnforced: only Claude actually blocks chat file-edits — Codex CAN sandbox writes but ships bypassed (FLUX-1123 / FLUX-1631)', () => {
+    // Claude blocks via a per-tool --disallowed-tools deny. Codex's `-s read-only` sandbox mode
+    // COULD block all writes the same coarse way (FLUX-1625 Phase 0 confirmed this in isolation),
+    // but FLUX-1631 found that same sandbox also silently cancels every mutating event-horizon MCP
+    // call ("user cancelled MCP tool call") — non-interactive `exec` can never answer codex's
+    // approval elicitation for a tool call. The only fix, `--dangerously-bypass-approvals-and-sandbox`,
+    // also lifts the sandbox, so codex.ts/codex-board.ts now spawn with it unconditionally and this
+    // must read false: the gate is enforceable in principle, but not in the configuration that
+    // actually ships. Copilot/Gemini have no equivalent mechanism at all, enforced or not.
     expect(CLI_CAPABILITIES.claude.chatEditGateEnforced).toBe(true);
+    expect(CLI_CAPABILITIES.codex.chatEditGateEnforced).toBe(false);
     expect(CLI_CAPABILITIES.copilot.chatEditGateEnforced).toBe(false);
     expect(CLI_CAPABILITIES.gemini.chatEditGateEnforced).toBe(false);
   });
 
-  it('selfPause: all three now keep a Require-Input pause resumable (FLUX-985)', () => {
+  it('imageAttachments: Claude and Codex resolve pasted images into the prompt; Copilot/Gemini do not (FLUX-901 B.7 / FLUX-1625)', () => {
+    // Codex: -i/--image confirmed present on `codex exec` (live probe, FLUX-1625 Phase 0).
+    expect(CLI_CAPABILITIES.claude.imageAttachments).toBe(true);
+    expect(CLI_CAPABILITIES.codex.imageAttachments).toBe(true);
+    expect(CLI_CAPABILITIES.copilot.imageAttachments).toBe(false);
+    expect(CLI_CAPABILITIES.gemini.imageAttachments).toBe(false);
+  });
+
+  it('selfPause: all four now keep a Require-Input pause resumable (FLUX-985 / FLUX-1625)', () => {
     // A change_status→Require Input mid-turn parks the session as waiting-input instead of
     // force-terminalizing it. Claude always did this; FLUX-985 added the same pause branch to the
     // copilot/gemini exit handlers (the resume route already accepts waiting-input), so a paused
     // Copilot/Gemini session no longer posts its question as a bogus completion comment or trips the
-    // scatter-gather barrier early. Purely-descriptive flag (nothing gates on it) — kept honest here.
+    // scatter-gather barrier early. codex.ts (FLUX-1625) mirrors the same pause branch. Purely-
+    // descriptive flag (nothing gates on it) — kept honest here.
     expect(CLI_CAPABILITIES.claude.selfPause).toBe(true);
     expect(CLI_CAPABILITIES.copilot.selfPause).toBe(true);
     expect(CLI_CAPABILITIES.gemini.selfPause).toBe(true);
+    expect(CLI_CAPABILITIES.codex.selfPause).toBe(true);
   });
 
-  it('spawnTimeMcpConfig: Claude AND Copilot inject MCP config explicitly (FLUX-984); Gemini cannot — it routes via env-resolved settings headers (FLUX-1222)', () => {
+  it('spawnTimeMcpConfig: Claude, Copilot, AND Codex inject MCP config explicitly (FLUX-984 / FLUX-1625); Gemini cannot — it routes via env-resolved settings headers (FLUX-1222)', () => {
     // Copilot never auto-loads workspace .mcp.json in non-interactive mode (confirmed live,
     // no permission flag changes it) — copilot.ts injects it via --additional-mcp-config, a
-    // different flag/JSON-shape than Claude's --mcp-config, same capability concept (B.6).
+    // different flag/JSON-shape than Claude's --mcp-config, same capability concept (B.6). Codex
+    // injects via a per-key `-c mcp_servers.<name>.url=…` config override (confirmed live,
+    // FLUX-1625 Phase 0) — the make-or-break probe: a read-only-sandboxed `codex exec` reached the
+    // event-horizon MCP mount over loopback this way.
     // Gemini (verified on FLUX-1222) has NO inline-config-injection flag — only the
     // differently-shaped --allowed-mcp-server-names — so the flag stays `false`. Its per-session
     // HITL routing works WITHOUT spawn-time config instead: the installer bakes
@@ -291,6 +324,7 @@ describe('CLI_CAPABILITIES contract (FLUX-901, audit B.1)', () => {
     // gemini-conversation-headers.test.ts.
     expect(CLI_CAPABILITIES.claude.spawnTimeMcpConfig).toBe(true);
     expect(CLI_CAPABILITIES.copilot.spawnTimeMcpConfig).toBe(true);
+    expect(CLI_CAPABILITIES.codex.spawnTimeMcpConfig).toBe(true);
     expect(CLI_CAPABILITIES.gemini.spawnTimeMcpConfig).toBe(false);
   });
 
@@ -300,11 +334,14 @@ describe('CLI_CAPABILITIES contract (FLUX-901, audit B.1)', () => {
   // import of a concrete adapter file from outside agents/" rule. This file lives OUTSIDE
   // agents/, so importing copilot.js directly here trips that guard (caught by CI on FLUX-984).
 
-  it('persistentChat is distinct from resume — all three resume, but only Claude persists chat', () => {
+  it('persistentChat is distinct from resume — all four resume, but only Claude and Codex persist chat', () => {
     for (const fw of FRAMEWORKS) expect(CLI_CAPABILITIES[fw].resume, `${fw}.resume`).toBe(true);
     // copilot/gemini --resume fine, but their first chat turn exits `completed`, not persistent `waiting-input`.
     expect(CLI_CAPABILITIES.copilot.persistentChat).toBe(false);
     expect(CLI_CAPABILITIES.gemini.persistentChat).toBe(false);
+    // codex (FLUX-1630): resume is live-verified and the exit-handler now routes a clean chat turn
+    // to 'waiting-input', matching Claude.
+    expect(CLI_CAPABILITIES.codex.persistentChat).toBe(true);
   });
 });
 
@@ -318,7 +355,7 @@ describe('CLI_CAPABILITIES contract (FLUX-901, audit B.1)', () => {
 // the ratcheting-guard style matches scripts/check-adapter-boundary.mjs.
 describe('every adapter resolves delegations on terminal exit (FLUX-985)', () => {
   const agentsDir = join(dirname(fileURLToPath(import.meta.url)), 'agents');
-  for (const file of ['claude-code.ts', 'copilot.ts', 'gemini.ts']) {
+  for (const file of ['claude-code.ts', 'copilot.ts', 'gemini.ts', 'codex.ts']) {
     it(`${file} calls notifyDelegationComplete(session) on exit`, () => {
       const src = readFileSync(join(agentsDir, file), 'utf8');
       expect(src, `${file} must resolve a pending delegation on terminal exit`).toMatch(
@@ -332,7 +369,7 @@ describe('every adapter resolves delegations on terminal exit (FLUX-985)', () =>
 // The FLUX-900 review flagged that cleanChildEnv now REMOVES NODE_OPTIONS (was '' for Claude). This
 // smoke confirms each CLI still launches with that env. skip-with-reason when the binary is absent
 // (CI typically has no CLIs installed) so a skip means "binary absent", never a silent pass.
-const BINARY: Record<CliFramework, string> = { claude: 'claude', copilot: 'copilot', gemini: 'gemini' };
+const BINARY: Record<CliFramework, string> = { claude: 'claude', copilot: 'copilot', gemini: 'gemini', codex: 'codex' };
 
 function binaryPresent(bin: string): boolean {
   try {
@@ -444,6 +481,57 @@ describe('A.1 per-adapter stdout-parse contract — enabled by FLUX-932', () => 
     expect(session.currentActivity).toBeUndefined();
   });
 
+  it('codex: thread.started/item.completed(agent_message)/mcp_tool_call/turn.completed usage → same transitions (FLUX-1625)', async () => {
+    // FLUX-1625: fixture is HAND-AUTHORED against the ticket's Phase 0 live-probe notes (thread.
+    // started/item.started/item.completed/turn.completed shape, mcp_tool_call fields, usage fields)
+    // — the actual captured session Phase 0 flagged "to be committed" never landed in the checkout.
+    // Treat this as documenting the parser's expected shape, not as independently-verified against
+    // a real capture; re-verify against a live `codex exec --json` run before trusting it in anger.
+    const { attachStdoutProcessing } = await import('./agents/codex.js');
+    const session = fakeSession();
+    const proc = fakeProc();
+    attachStdoutProcessing(proc, session, 'FLUX-903');
+
+    const fixturePath = join(dirname(fileURLToPath(import.meta.url)), 'agents', '__snapshots__', 'codex-exec-fixture.jsonl');
+    const events = readFileSync(fixturePath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    feedLines(proc, ...events);
+
+    // thread.started's thread_id IS the resume token (live-verified FLUX-1625 Phase 0 — the only
+    // id-shaped field confirmed to round-trip `codex exec resume <id>`).
+    expect(session.resumeSessionId).toBe('thread_abc123');
+    // agent_message arrives whole on item.completed (no deltas — partialDeltas:false) and commits
+    // directly, unlike Claude/Copilot's accumulate-then-commit-on-next-event.
+    expect(session.cumulativeOutput).toBe('Hello world');
+    // mcp_tool_call completed with status:'completed' (no error) — no failure surfaced.
+    // turn.completed usage: input_tokens(100) + cached_input_tokens(5) = 105 total input;
+    // reasoning_output_tokens(8) is a breakdown of output_tokens, not additive.
+    expect(session.inputTokens).toBe(105);
+    expect(session.outputTokens).toBe(20);
+    expect(session.cacheReadTokens).toBe(5);
+    expect(session.cacheCreationTokens).toBe(3);
+    expect(session.costIsEstimated).toBe(true); // no direct cost figure in codex's usage payload
+    expect(session.currentActivity).toBeUndefined(); // turn.completed resets activity
+  });
+
+  it('codex: a failed mcp_tool_call renders a human-readable reason, never [object Object] (FLUX-1630)', async () => {
+    // Live-verified (FLUX-1630, SCRATCH-18 session 5c4ab7af): a failed mcp_tool_call sends
+    // `error` as an OBJECT (`{message, code}`), not the string the original typing/interpolation
+    // assumed — that mismatch collapsed to the literal text "[object Object]" and swallowed the
+    // real reason. This fixture captures that shape.
+    const { attachStdoutProcessing } = await import('./agents/codex.js');
+    const session = fakeSession();
+    const proc = fakeProc();
+    attachStdoutProcessing(proc, session, 'FLUX-903');
+
+    const fixturePath = join(dirname(fileURLToPath(import.meta.url)), 'agents', '__snapshots__', 'codex-exec-failed-tool-fixture.jsonl');
+    const events = readFileSync(fixturePath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    feedLines(proc, ...events);
+
+    expect(session.cumulativeOutput).toContain('Tool failed: add_note');
+    expect(session.cumulativeOutput).toContain('ticket is locked for scratch mutation');
+    expect(session.cumulativeOutput).not.toContain('[object Object]');
+  });
+
   it('flushSessionOutput: claude omits progress type; copilot/gemini push type:"text" (Narration block) (FLUX-932)', async () => {
     const { flushSessionOutput } = await import('./agents/shared.js');
 
@@ -479,6 +567,29 @@ describe('B.8 __board__ orchestrator contract (FLUX-904 — lifted into a BoardA
   });
   it('getBoardAdapter() is a stable resolver the route layer can call per-request', () => {
     expect(getBoardAdapter()).toBe(getBoardAdapter());
+  });
+  it('getBoardAdapter("codex") resolves the codex BoardAdapter (FLUX-1625)', () => {
+    const adapter = getBoardAdapter('codex');
+    expect(typeof adapter.startBoardSession).toBe('function');
+    expect(typeof adapter.sendBoardInput).toBe('function');
+  });
+});
+
+// ─── FLUX-1625: codex registry wiring — the fourth framework must be reachable through every
+// registry-backed entry point, not just CLI_CAPABILITIES (locked above).
+describe('FLUX-1625: codex is wired into the adapter registry', () => {
+  it('getAdapter("codex") resolves a CodexAdapter with the full AgentAdapter surface', () => {
+    const adapter = getAdapter('codex');
+    expect(adapter.labelForFramework()).toBe('Codex CLI');
+    expect(typeof adapter.start).toBe('function');
+    expect(typeof adapter.sendInput).toBe('function');
+    expect(typeof adapter.stop).toBe('function');
+  });
+  it('getRuntimeFrameworks() includes codex', () => {
+    expect(getRuntimeFrameworks()).toContain('codex');
+  });
+  it('isKnownFramework("codex") is true', () => {
+    expect(isKnownFramework('codex')).toBe(true);
   });
 });
 
@@ -862,4 +973,41 @@ describe('FLUX-1444: oversized prompt is delivered via stdin, not argv', () => {
       expect(promptArgFromLastSpawnCall()).toContain(OVERSIZED_PROMPT);
     });
   }
+});
+
+// FLUX-1626 (epic FLUX-1625): CAPABILITY_PROBES is the in-code verification checklist an adapter
+// author walks against a live CLI. Its value depends entirely on being COMPLETE — a flag with no
+// probe is a flag someone will fill in by guessing. This gate makes adding a capability to
+// `CliCapabilities` force writing the probe that settles it, in the same commit.
+//
+// Deliberately NOT gated here: per-framework evidence metadata (verifiedAt/cliVersion) with a
+// staleness check. That rots into ceremony, and the engine test baseline is already being burned
+// down — see the ticket's "Enforcement" section for when to revisit.
+describe('FLUX-1626: CAPABILITY_PROBES covers every capability flag', () => {
+  // Derived from a real row rather than a hand-maintained literal, so a renamed field fails here
+  // instead of silently leaving a stale probe pointing at a key that no longer exists.
+  const capabilityKeys = Object.keys(CLI_CAPABILITIES.claude) as (keyof CliCapabilities)[];
+  const probeIds = new Set(CAPABILITY_PROBES.map((p) => p.id));
+
+  it.each(capabilityKeys)('has a probe for "%s"', (key) => {
+    expect(probeIds.has(key)).toBe(true);
+  });
+
+  it('has no probe for a capability flag that no longer exists', () => {
+    const known = new Set<string>([...capabilityKeys, ...PREFLIGHT_IDS]);
+    const orphaned = CAPABILITY_PROBES.map((p) => p.id).filter((id) => !known.has(id));
+    expect(orphaned).toEqual([]);
+  });
+
+  it('gives every probe a non-empty impact, probe and pass', () => {
+    const incomplete = CAPABILITY_PROBES
+      .filter((p) => !p.impact.trim() || !p.probe.trim() || !p.pass.trim())
+      .map((p) => p.id);
+    expect(incomplete).toEqual([]);
+  });
+
+  it('declares each id exactly once', () => {
+    const ids = CAPABILITY_PROBES.map((p) => p.id);
+    expect(ids.length).toBe(new Set(ids).size);
+  });
 });

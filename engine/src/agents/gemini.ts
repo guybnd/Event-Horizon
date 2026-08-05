@@ -12,6 +12,7 @@ import { resolveExecutionRootReclaimOpts } from '../pr-cleanup.js';
 import { notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { killProcessTree } from '../kill-process-tree.js';
+import { getExemptPidsForSession, clearHoldsForSession } from '../background-process-holds.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked } from '../parked-ticket.js';
 import { buildMemberScopeArgs } from '../group.js';
@@ -158,7 +159,7 @@ async function resolveGeminiWindowsLaunch(binaryName: string): Promise<GeminiWin
  * (which both inlined this same Windows JS-entry/exe/shell-fallback resolution) so the board
  * orchestrator's Gemini `BoardSpec` (FLUX-959) can reuse it without a third copy.
  */
-export async function spawnGemini(geminiArgs: string[], executionRoot: string, conversationId?: string): Promise<ReturnType<typeof spawn>> {
+export async function spawnGemini(geminiArgs: string[], executionRoot: string, conversationId?: string, sessionId?: string): Promise<ReturnType<typeof spawn>> {
   const binaryName = 'gemini';
   // Preserve the per-session log tag the two inlined call sites used (`[${id}]`) rather than a
   // flat `[gemini]` — important for grepping logs when multiple sessions run concurrently.
@@ -167,7 +168,7 @@ export async function spawnGemini(geminiArgs: string[], executionRoot: string, c
     // On Windows, find the JS entry point or .exe instead of using cmd.exe wrapper (see
     // resolveGeminiWindowsLaunch for why, and its caching rationale).
     const { nodeCmd, entryPoint, exePath } = await resolveGeminiWindowsLaunch(binaryName);
-    const env = cleanChildEnv('gemini', conversationId);
+    const env = cleanChildEnv('gemini', conversationId, sessionId);
     if (entryPoint) {
       log.info(`${logTag} Windows spawn (node=${nodeCmd}): ${entryPoint}`);
       return spawn(nodeCmd, [entryPoint, ...geminiArgs], {
@@ -197,7 +198,7 @@ export async function spawnGemini(geminiArgs: string[], executionRoot: string, c
   }
   return spawn(binaryName, geminiArgs, {
     cwd: executionRoot,
-    env: cleanChildEnv('gemini', conversationId),
+    env: cleanChildEnv('gemini', conversationId, sessionId),
     stdio: 'pipe',
   });
 }
@@ -597,7 +598,7 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
     geminiArgs.push(effortCap.flag, effectiveEffort);
   }
 
-  const proc = await spawnGemini(geminiArgs, executionRoot, id);
+  const proc = await spawnGemini(geminiArgs, executionRoot, id, session.id);
   // FLUX-1444: deliver the prompt over stdin instead of argv — see the geminiArgs comment above.
   // Attach the stdin error listener before writing — an EPIPE (child exited before the write lands)
   // would otherwise be an unhandled 'error' event; the spawn-level failure is handled by proc.on('error') below.
@@ -690,8 +691,9 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
 
   proc.on('exit', async (code, signal) => {
     // FLUX-1207: best-effort reap of any orphaned descendants (e.g. a Bash-tool-launched vitest
-    // run) on every exit, not only engine-initiated stop().
-    killProcessTree(proc, undefined, { label: id });
+    // run) on every exit, not only engine-initiated stop(). FLUX-1645: spare any pid THIS session
+    // holds on an ordinary exit — explicit Stop (below) never passes exemptions.
+    killProcessTree(proc, undefined, { label: id, exemptPids: getExemptPidsForSession(session.id) });
     // Clear heartbeat timer
     if (session.progressHeartbeat) {
       clearInterval(session.progressHeartbeat);
@@ -853,6 +855,8 @@ export class GeminiAdapter implements AgentAdapter {
   }
 
   stop(session: CliSessionRecord): void {
+    // FLUX-1645: explicit Stop force-clears first — always wins the race against a hold (AC7).
+    clearHoldsForSession(session.id);
     // Tree-kill so the agent's MCP servers (serena, context7, …) are reaped too, not orphaned —
     // the stale-node-process leak. See kill-process-tree.ts.
     killProcessTree(session.proc);
@@ -911,7 +915,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     ? ['-p', '', '--resume', session.resumeSessionId, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs]
     : ['-p', '', '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs];
 
-  const replyProc = await spawnGemini(resumeArgs, executionRoot, id);
+  const replyProc = await spawnGemini(resumeArgs, executionRoot, id, session.id);
   // FLUX-1444: deliver the prompt over stdin instead of argv — see the initial-spawn comment above.
   replyProc.stdin!.on('error', () => {});
   replyProc.stdin!.write(promptForCli);
@@ -948,8 +952,8 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
 
   replyProc.on('exit', async (code, signal) => {
     // FLUX-1207: best-effort reap of any orphaned descendants (e.g. a Bash-tool-launched vitest
-    // run) on every exit, not only engine-initiated stop().
-    killProcessTree(replyProc, undefined, { label: id });
+    // run) on every exit, not only engine-initiated stop(). FLUX-1645: spare this session's holds.
+    killProcessTree(replyProc, undefined, { label: id, exemptPids: getExemptPidsForSession(session.id) });
     commitReplyPending();
     flushSessionOutput(session, true, 'text');
     // FLUX-981: a crashed resumed turn (nonzero/signal, not user-stopped) was silent in the chat.

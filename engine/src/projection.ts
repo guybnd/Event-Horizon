@@ -1,6 +1,6 @@
 import path from 'path';
 import { getWorkspaceRoot } from './workspace.js';
-import { taskWorktreeDir } from './task-worktree.js';
+import { taskWorktreeDir, taskWorktreesBaseDir, ticketIdFromWorktreePath } from './task-worktree.js';
 
 /**
  * FLUX-658: substrate vs projection split.
@@ -198,10 +198,29 @@ function relativizePath(filePath: unknown, taskId: string): string | undefined {
   const workspaceRoot = getWorkspaceRoot();
   if (!workspaceRoot) return undefined;
   const abs = path.resolve(filePath);
-  const roots = [taskWorktreeDir(workspaceRoot, taskId), workspaceRoot];
   const onWin = process.platform === 'win32';
   const norm = (p: string) => (onWin ? path.resolve(p).toLowerCase() : path.resolve(p));
   const absKey = norm(abs);
+
+  const roots = [taskWorktreeDir(workspaceRoot, taskId), workspaceRoot];
+  // FLUX-1644: a task can be running from a `-r<N>` recovery worktree instead of the canonical
+  // `<repo>-<taskId>` dir (when the canonical directory was an unrepairable husk at session
+  // start). Stay synchronous — this projects transcripts already on disk, not live git state — by
+  // deriving the candidate root purely from the observed path's own worktree-directory segment,
+  // then only trusting it when reversing it (`ticketIdFromWorktreePath`) yields THIS transcript's
+  // own ticket id. That never accepts an arbitrary sibling worktree under `.eh-worktrees/`.
+  const worktreesBase = taskWorktreesBaseDir(workspaceRoot);
+  const baseKey = norm(worktreesBase);
+  if (absKey === baseKey || absKey.startsWith(baseKey + path.sep)) {
+    const firstSegment = path.relative(worktreesBase, abs).split(path.sep)[0];
+    if (firstSegment) {
+      const candidateRoot = path.join(worktreesBase, firstSegment);
+      if (ticketIdFromWorktreePath(workspaceRoot, candidateRoot) === taskId) {
+        roots.push(candidateRoot);
+      }
+    }
+  }
+
   let best: string | undefined;
   let bestLen = -1;
   for (const root of roots) {

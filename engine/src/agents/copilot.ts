@@ -11,6 +11,7 @@ import { resolveExecutionRootReclaimOpts } from '../pr-cleanup.js';
 import { notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { killProcessTree } from '../kill-process-tree.js';
+import { getExemptPidsForSession, clearHoldsForSession } from '../background-process-holds.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked } from '../parked-ticket.js';
 import { buildMemberScopeArgs } from '../group.js';
@@ -377,7 +378,7 @@ function getVSCodeGlobalStoragePaths(): string[] {
 }
 
 /** Spawn the copilot process using the resolved binary info. */
-export function spawnCopilot(id: string, args: string[], cwdRoot: string) {
+export function spawnCopilot(id: string, args: string[], cwdRoot: string, sessionId?: string) {
   const { nodePath, entryPoint, exePath } = resolveCopilotBinary(id);
 
   if (nodePath && entryPoint) {
@@ -385,7 +386,7 @@ export function spawnCopilot(id: string, args: string[], cwdRoot: string) {
     log.info(`[${id}] Spawning: node ${path.basename(entryPoint)} [${args.length} args]`);
     return spawn(nodePath, [entryPoint, ...args], {
       cwd: cwdRoot,
-      env: cleanChildEnv('copilot', id),
+      env: cleanChildEnv('copilot', id, sessionId),
       stdio: 'pipe',
       windowsHide: true,
     });
@@ -394,7 +395,7 @@ export function spawnCopilot(id: string, args: string[], cwdRoot: string) {
   log.info(`[${id}] Spawning: ${exePath} [${args.length} args]`);
   return spawn(exePath, args, {
     cwd: cwdRoot,
-    env: cleanChildEnv('copilot', id),
+    env: cleanChildEnv('copilot', id, sessionId),
     stdio: 'pipe',
     windowsHide: true,
   });
@@ -411,8 +412,8 @@ export function spawnCopilot(id: string, args: string[], cwdRoot: string) {
 // the injected entry (same shared-HTTP-mount problem/fix as claude-code.ts's
 // eventHorizonSpawnOverride) so this session's HITL prompts route to its own ticket instead of the
 // `__board__` catch-all.
-export function buildAdditionalMcpConfigArgs(conversationId?: string, workspaceRoot?: string): string[] {
-  return ['--additional-mcp-config', JSON.stringify({ mcpServers: { 'event-horizon': buildMcpServerEntry(conversationId, workspaceRoot) } })];
+export function buildAdditionalMcpConfigArgs(conversationId?: string, workspaceRoot?: string, sessionId?: string): string[] {
+  return ['--additional-mcp-config', JSON.stringify({ mcpServers: { 'event-horizon': buildMcpServerEntry(conversationId, workspaceRoot, sessionId) } })];
 }
 
 export async function startCliSession(session: CliSessionRecord, task: CliTask, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
@@ -471,7 +472,7 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
     '--output-format', 'json',
     ...(session.skipPermissions ? ['--yolo'] : ['--allow-all-tools']),
     // FLUX-984: explicit MCP config injection — workspace .mcp.json is never auto-loaded in -p mode.
-    ...buildAdditionalMcpConfigArgs(id, workspaceRoot),
+    ...buildAdditionalMcpConfigArgs(id, workspaceRoot, session.id),
     // Multi-repo group: put every checked-out member repo in scope (no-op single-repo).
     ...buildMemberScopeArgs(),
     // Member worktree: add local .flux-group/ so the agent reads shared group docs (FLUX-422).
@@ -501,7 +502,7 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
   // FLUX-1444: the prompt no longer rides argv (delivered via stdin below), so no redaction needed.
   log.info(`[${id}] Args: [${copilotArgs.join(', ')}] (prompt ${initialPrompt.length} chars, via stdin)`);
 
-  const proc = spawnCopilot(id, copilotArgs, executionRoot);
+  const proc = spawnCopilot(id, copilotArgs, executionRoot, session.id);
   // FLUX-1444: deliver the prompt over stdin instead of argv — see the copilotArgs comment above.
   // Attach the stdin error listener before writing — an EPIPE (child exited before the write lands)
   // would otherwise be an unhandled 'error' event; the spawn-level failure is handled by proc.on('error') below.
@@ -593,8 +594,9 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
 
   proc.on('exit', async (code, signal) => {
     // FLUX-1207: best-effort reap of any orphaned descendants (e.g. a Bash-tool-launched vitest
-    // run) on every exit, not only engine-initiated stop().
-    killProcessTree(proc, undefined, { label: id });
+    // run) on every exit, not only engine-initiated stop(). FLUX-1645: spare any pid THIS session
+    // holds on an ordinary exit — explicit Stop (below) never passes exemptions.
+    killProcessTree(proc, undefined, { label: id, exemptPids: getExemptPidsForSession(session.id) });
     if (session.progressHeartbeat) {
       clearInterval(session.progressHeartbeat);
       session.progressHeartbeat = undefined;
@@ -760,6 +762,8 @@ export class CopilotAdapter implements AgentAdapter {
   }
 
   stop(session: CliSessionRecord): void {
+    // FLUX-1645: explicit Stop force-clears first — always wins the race against a hold (AC7).
+    clearHoldsForSession(session.id);
     // Tree-kill so the agent's MCP servers (serena, context7, …) are reaped too, not orphaned —
     // the stale-node-process leak. See kill-process-tree.ts.
     killProcessTree(session.proc);
@@ -808,11 +812,11 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   // FLUX-984: explicit MCP config injection on the resume path too — the gap applies to every spawn.
   // FLUX-1444: `-p` is a bare flag here too — promptForCli is written to stdin after spawn, below.
   const resumeArgs = session.resumeSessionId
-    ? ['-p', '--resume', session.resumeSessionId, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id, workspaceRoot)]
-    : ['-p', '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id, workspaceRoot)];
+    ? ['-p', '--resume', session.resumeSessionId, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id, workspaceRoot, session.id)]
+    : ['-p', '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id, workspaceRoot, session.id)];
 
   log.info(`[${id}] Reply spawn, resume=${session.resumeSessionId || 'none'}`);
-  const replyProc = spawnCopilot(id, resumeArgs, executionRoot);
+  const replyProc = spawnCopilot(id, resumeArgs, executionRoot, session.id);
   // FLUX-1444: deliver the prompt over stdin instead of argv — see the initial-spawn comment above.
   replyProc.stdin.on('error', () => {});
   replyProc.stdin.write(promptForCli);
@@ -850,8 +854,8 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
 
   replyProc.on('exit', async (code, signal) => {
     // FLUX-1207: best-effort reap of any orphaned descendants (e.g. a Bash-tool-launched vitest
-    // run) on every exit, not only engine-initiated stop().
-    killProcessTree(replyProc, undefined, { label: id });
+    // run) on every exit, not only engine-initiated stop(). FLUX-1645: spare this session's holds.
+    killProcessTree(replyProc, undefined, { label: id, exemptPids: getExemptPidsForSession(session.id) });
     commitReplyPending();
     flushSessionOutput(session, true, 'text');
     // FLUX-981: a crashed resumed turn (nonzero/signal, not user-stopped) was silent in the chat.

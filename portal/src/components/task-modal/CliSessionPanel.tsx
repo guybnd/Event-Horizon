@@ -55,7 +55,7 @@ export function CliSessionPanel({
           value={selectedCliFramework}
           onChange={(v) => setSelectedCliFramework(v as CliFramework)}
           disabled={sessionIsActive || cliSessionBusy}
-          allowedFrameworks={['claude', 'gemini', 'copilot']}
+          allowedFrameworks={['claude', 'gemini', 'copilot', 'codex']}
         />
         <LaunchAgentSplitButton
           size="md"

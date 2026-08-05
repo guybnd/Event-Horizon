@@ -71,7 +71,7 @@ export type EffortLevel = typeof EFFORT_LEVELS[number];
 // so the route can verify a session only routes events into its own ticket. Previously
 // ONLY the Claude adapter accepted `conversationId`, so HITL picker routing silently
 // degraded on Copilot/Gemini — passing it here for every framework is the A.6 fix.
-export function cleanChildEnv(framework?: string, conversationId?: string): NodeJS.ProcessEnv {
+export function cleanChildEnv(framework?: string, conversationId?: string, sessionId?: string): NodeJS.ProcessEnv {
   const env = { ...process.env };
   // Fully REMOVE NODE_OPTIONS rather than blanking it to '': the Gemini adapter documented
   // that pkg-built CLIs may still parse an empty value, and an absent var is functionally
@@ -91,6 +91,18 @@ export function cleanChildEnv(framework?: string, conversationId?: string): Node
   if (conversationId) {
     env.EH_CONVERSATION_ID = conversationId;
     env.EH_CONVERSATION_TOKEN = signConversation(conversationId);
+  }
+  // FLUX-1645: same clear-then-set discipline for the per-SESSION identity pair — distinct from
+  // EH_CONVERSATION_ID (the ticket), this is the exact live CliSessionRecord.id, which
+  // hold_background_process/release_background_process trust instead of an agent-supplied
+  // sessionId argument. Gemini's static settings.json resolves these via `${EH_SESSION_ID}`/
+  // `${EH_SESSION_TOKEN}` placeholders (buildGeminiMcpServerEntry); Claude/Copilot/Codex inject the
+  // signed value directly into their per-spawn MCP header override instead of relying on env.
+  delete env.EH_SESSION_ID;
+  delete env.EH_SESSION_TOKEN;
+  if (sessionId) {
+    env.EH_SESSION_ID = sessionId;
+    env.EH_SESSION_TOKEN = signConversation(sessionId);
   }
   return env;
 }

@@ -46,7 +46,7 @@ export function frameworkEffort(
  * The fallback mirrors the shipped registry and is reached only before `/api/config` loads — the engine
  * (`getRuntimeFrameworks()`) is the source of truth.
  */
-export const DEFAULT_RUNTIME_FRAMEWORKS = ['claude', 'copilot', 'gemini'];
+export const DEFAULT_RUNTIME_FRAMEWORKS = ['claude', 'copilot', 'gemini', 'codex'];
 export function runtimeFrameworks(config: Config | null | undefined): string[] {
   return config?.runtimeFrameworks ?? DEFAULT_RUNTIME_FRAMEWORKS;
 }

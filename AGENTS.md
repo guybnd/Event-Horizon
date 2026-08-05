@@ -1,0 +1,46 @@
+# EventHorizon — Agent Guide
+
+EventHorizon ("Event Horizon" / FLUX) is a local-first, markdown-backed ticket board. The engine is an Express + TypeScript API (`engine/src/`); the portal is a React UI (`portal/src/`). Ticket workflow rules for agents live in [.Codex/rules/event-horizon.md](.Codex/rules/event-horizon.md) — that file governs how you interact with tickets (always via the `event-horizon` MCP tools, never by editing `.flux/` or `.flux-store/` directly).
+
+## NEVER run the dev stack from an agent session or worktree (FLUX-1117)
+
+Do not run `npm run dev`, `npm run dev:stable`, or `scripts/dev.mjs` when working a ticket — in this repo those commands force-kill whatever holds ports 3067/5167, which is the user's **live engine**: killing it destroys every running agent session (including yours) and can re-bind the board to your checkout's workspace. `dev.mjs` refuses to start inside agent sessions and worktree checkouts — do not work around the guard. Validate with `npm run check` / `npm run typecheck` and targeted tests instead; a portal or engine change never needs its own dev server to be verified. (This is EventHorizon-repo dev hygiene only — it is deliberately NOT part of the installable agent skills, which must stay project-agnostic.)
+
+## Validating changes — run `npm run check`
+
+After editing code, run **`npm run check`** from the repo root before moving a ticket to `Ready`/`Done`. It runs the type-check (portal + engine `tsc --noEmit`) and lint (`npm run lint -w portal && npm run lint -w engine`, FLUX-1073) gates and must exit 0 — neither typecheck nor lint runs as part of `dev` (the engine executes via `tsx`/esbuild, which strip types and skip lint), so a regression surfaces nowhere else. The VS Code **Problems** panel is wired to the same checks via `.vscode/tasks.json` (run the default build task, "check"). The engine test suite (`npm run test -w engine`) is also part of `check` — its baseline is still being burned down; run it directly when relevant and don't block on pre-existing failures unrelated to your change.
+
+## Code Navigation — Use Serena's Symbol Tools
+
+This is a TypeScript codebase indexed by **Serena** (MCP server `serena`, available via `ToolSearch` with query `serena`). Serena gives you language-server-backed semantic navigation that is faster and more precise than text search for code. **Prefer it over raw `Grep`/`Glob` whenever you are working with code symbols.**
+
+- **First time you touch code in a session**, call `mcp__serena__initial_instructions` once to load Serena's usage manual, then use its tools.
+- **Use Serena for:**
+  - `get_symbols_overview` — see the top-level symbols of a file before reading it whole.
+  - `find_symbol` — jump to a function/class/method by name path instead of grepping.
+  - `find_referencing_symbols` — find all call sites / usages before changing a signature.
+  - `replace_symbol_body` / `insert_after_symbol` / `insert_before_symbol` — edit a symbol precisely without re-reading the whole file.
+  - `rename_symbol` — rename across the codebase via the language server, not find-and-replace.
+- **Still use built-in `Grep`/`Read`** for non-code text (markdown, configs, logs), for string-literal searches, and when you already know the exact file and line.
+
+### Serena transport (local dev)
+
+`.mcp.json` spawns `serena` **per session over stdio** with `--project-from-cwd`, so each Codex session binds Serena to its **own** working directory:
+
+```json
+"serena": {
+  "command": "serena",
+  "args": ["start-mcp-server", "--context", "Codex", "--project-from-cwd",
+           "--open-web-dashboard", "False", "--enable-gui-log-window", "False"]
+}
+```
+
+This per-session model is **required** for task **worktree** sessions to edit the right tree. A worktree runs from `<repoParent>/.eh-worktrees/<repo>-<id>`, but the committed `.serena/project.yml` carries `project_name: "EventHorizon"` and git worktrees share all tracked files — so every worktree would otherwise start Serena under the *same* name, and Serena's **name-keyed** project registry resolves `--project-from-cwd` back to the already-registered "EventHorizon" → the **main checkout**. Symbol edits then silently land on `master` in the main tree.
+
+The engine fixes this when it creates a worktree (`engine/src/task-worktree.ts`, `createTaskWorktree`): it writes `<worktree>/.serena/project.local.yml` with a **unique** `project_name` (`<repo>-<id>`, e.g. `EventHorizon-FLUX-843`). `project.local.yml` is gitignored (`.serena/.gitignore`), so it is per-checkout and never shared into other worktrees. A name with no prior registration forces `--project-from-cwd` to register/bind at the **worktree path**, so Serena's edit tools write there — FLUX-843.
+
+**Do not hand-roll a single shared HTTP Serena server for the dev `.mcp.json`.** A lone server pinned with `--project <main-checkout>` on a fixed port cannot auto-detect the project per client, so it binds every session to whatever path it was launched with — defeating per-worktree binding. For the dev navigation transport, keep `.mcp.json` on the stdio per-session spawn above so worktrees stay correctly bound. If you run such a server for convenience, point it at the **main checkout only**.
+
+The **engine-managed** shared HTTP servers (modules with `sharedHttp`, e.g. when EH boots Serena once per project instead of per session — `engine/src/shared-mcp-server.ts`) do NOT have this problem: as of **FLUX-579** they are keyed per `(module, worktree)` — `${m.id}::${projectPath}` — and each is launched with `--project <that worktree's path>`. So two sessions in different worktrees get their **own** server bound to their **own** tree (no cross-worktree kill/respawn thrash or stale symbol resolution), and a removed worktree's server is evicted by its composite key. A single-checkout session keys on the workspace root, exactly as before.
+
+Either way the `serena` tools are scoped to this repo only — don't expect them to resolve symbols for other projects.

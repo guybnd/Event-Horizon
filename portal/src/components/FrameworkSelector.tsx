@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
-import { ChevronDown, Bot, Zap, Code, Cloud, Terminal, Cpu, Layout } from 'lucide-react';
+import { ChevronDown, Bot, Zap, Code, Cloud, Terminal, Cpu, Layout, Braces } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useConfig } from '../store/useAppSelector';
 import { isRuntimeFramework } from '../utils';
 
-export type ExtendedFramework = 'auto' | 'claude' | 'gemini' | 'copilot' | 'cursor' | 'cline' | 'windsurf' | 'antigravity' | 'generic';
+export type ExtendedFramework = 'auto' | 'claude' | 'gemini' | 'copilot' | 'codex' | 'cursor' | 'cline' | 'windsurf' | 'antigravity' | 'generic';
 
 /** FLUX-907 (split semantics): a small pill marking a framework EH can install skills for but NOT
  *  launch a session against. `auto` is never marked (it's a resolve-at-launch sentinel, not a CLI). */
@@ -32,6 +32,7 @@ const FRAMEWORKS: { id: ExtendedFramework; label: string; icon: LucideIcon; colo
   { id: 'claude', label: 'Claude Code', icon: Bot, color: 'text-orange-500', description: 'Anthropic\'s CLI agent' },
   { id: 'gemini', label: 'Gemini CLI', icon: Zap, color: 'text-blue-500', description: 'Google\'s CLI agent' },
   { id: 'copilot', label: 'Copilot CLI', icon: Terminal, color: 'text-purple-500', description: 'GitHub CLI extension' },
+  { id: 'codex', label: 'Codex CLI', icon: Braces, color: 'text-teal-500', description: 'OpenAI\'s CLI agent' },
   { id: 'cursor', label: 'Cursor', icon: Code, color: 'text-cyan-500', description: 'AI Code Editor rules' },
   { id: 'cline', label: 'Cline', icon: Cloud, color: 'text-sky-500', description: 'VS Code Extension' },
   { id: 'windsurf', label: 'Windsurf', icon: Layout, color: 'text-emerald-500', description: 'AI Agent Editor' },

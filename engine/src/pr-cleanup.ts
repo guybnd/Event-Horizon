@@ -1,14 +1,15 @@
-import { getWorkspace, type Workspace } from './workspace-context.js';
+import { getWorkspace, getDefaultWorkspace, type Workspace } from './workspace-context.js';
 import { log } from './log.js';
 import { findWorktreeForBranch, removeTaskWorktree, detachTaskWorktree, stashDirtyTree, unlinkWorktreeDependencies, reclaimWorktrees, listTaskWorktrees, ticketIdFromWorktreePath } from './task-worktree.js';
 import { getDefaultBranch, deleteTicketBranch, getPullRequestStatus, getTicketBranchStatus, getOpenPullRequestsWithBase } from './branch-manager.js';
 import { addNotification } from './notifications.js';
-import { stopAllSessionsForTask, getActiveSessionsForTask, isWithinReclaimGrace, RECLAIM_GRACE_MS, isSessionStale } from './session-store.js';
+import { stopAllSessionsForTask, getActiveSessionsForTaskInWorkspace, isWithinReclaimGrace, RECLAIM_GRACE_MS, isSessionStale, STALE_SESSION_RECLAIM_MS, NON_TERMINAL_STALE_RECLAIM_MS } from './session-store.js';
 import { updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { getConfig } from './config.js';
 import { TERMINAL_TICKET_STATUSES } from './schema.js';
 import { buildActivityEntry } from './history.js';
+import { getHoldsForBranch, getHoldsForTask, clearHoldsForBranch, forceKillHeldSubtree } from './background-process-holds.js';
 // FLUX-1297: disarm Temper before this module stops a ticket's sessions itself (see
 // `disarmTemperForExternalStop`'s doc comment). Deliberately a function-body-only cross-import —
 // furnace-stoker.ts already imports from this module (reclaimReadyWorktrees), so this closes a
@@ -68,7 +69,7 @@ interface CachedTicket {
 const stuckWorktreeSlotsNotified = new Set<string>();
 
 /** Why {@link worktreeUnreclaimableReason} refused — surfaced by the Furnace's slot-holder naming (FLUX-1157). */
-export type UnreclaimableReason = 'unknown-ticket' | 'live-session' | 'recent-activity' | 'status';
+export type UnreclaimableReason = 'unknown-ticket' | 'live-session' | 'background-process-hold' | 'recent-activity' | 'status';
 
 /**
  * Why a ticket's task worktree can NOT be reclaimed (its slot returned to the board-wide pool) right
@@ -117,6 +118,15 @@ export function worktreeUnreclaimableReason(
   const t = (ws.tasks as Record<string, CachedTicket>)[ticketId];
   if (!t) return 'unknown-ticket';
   if (hasLiveSessionOnBranch(t.branch, ticketId, ws)) return 'live-session'; // never yank live work
+  // FLUX-1645: a live background-process hold protects this exact physical worktree/branch from
+  // reclaim/prune/repair-retry/lock-holder reaping — same branch-scoped resolution as the
+  // live-session check above, so a hold registered by a JOINED sibling (riding the same branch)
+  // is honored too, not only one registered by the directory-owning ticket. Never overridden here:
+  // only an explicit Stop/terminal-transition/teardown/shutdown clears a hold (see
+  // background-process-holds.ts) — the proactive sweep must defer, exactly like a live session.
+  if ((t.branch && getHoldsForBranch(ws.root, t.branch).length > 0) || getHoldsForTask(ws.root, ticketId).length > 0) {
+    return 'background-process-hold';
+  }
   // FLUX-1060: within the post-restart grace window, also protect a worktree whose ticket shows
   // very recent session activity. After an engine restart the in-memory session map is empty and
   // rehydrated from persisted stubs (session-store) — but a session that entered `waiting-input`
@@ -164,6 +174,7 @@ export function isTicketTerminal(ticketId: string, ws: Workspace = getWorkspace(
 const UNRECLAIMABLE_LABEL: Record<UnreclaimableReason, string> = {
   'unknown-ticket': 'ticket not found on the board',
   'live-session': 'a session is still live on its branch',
+  'background-process-hold': 'a background-process hold protects this worktree/branch',
   'recent-activity': 'recently active — briefly protected from reclaim',
   status: 'ticket status is not yet reclaimable (not Ready/terminal)',
 };
@@ -311,18 +322,28 @@ function hasRecentSessionActivity(t: CachedTicket, now: number = Date.now(), gra
 }
 
 /**
- * Does ticket `ticketId` have an active session that still pins its worktree? True the instant
- * ANY active session exists on a NON-terminal ticket (never yank live/in-flight work). For a
- * TERMINAL ticket (Done/Released/Archived), a session stale past {@link STALE_SESSION_RECLAIM_MS}
- * (FLUX-1617) no longer counts — only a fresh/active session still pins it. This is the fix for the
- * "96h-stale chat session pins a Done ticket's slot forever" half of the incident: the ticket already
- * reached a terminal status, so nobody is coming back to a session that's been silent for a day.
+ * Does ticket `ticketId` have an active session that still pins its worktree? For a TERMINAL
+ * ticket (Done/Released/Archived), a session stale past {@link STALE_SESSION_RECLAIM_MS} (FLUX-1617)
+ * no longer counts — only a fresh/active session still pins it. This is the fix for the "96h-stale
+ * chat session pins a Done ticket's slot forever" half of the incident: the ticket already reached a
+ * terminal status, so nobody is coming back to a session that's been silent for a day.
+ *
+ * FLUX-1636 (Fix C): a NON-terminal ticket is now staleness-gated too, just on the far more
+ * generous {@link NON_TERMINAL_STALE_RECLAIM_MS} threshold — previously ANY active session
+ * unconditionally pinned a non-terminal ticket forever, which is exactly how a days-old phantom
+ * `waiting-input` stub (never reaped — see `getAllActiveSessions`) could pin a worktree slot
+ * indefinitely. `reclaimWorktrees` independently refuses to remove a tree with uncommitted tracked
+ * changes, so genuinely live work is never actually lost even if this frees the slot.
+ *
+ * Also workspace-scoped (FLUX-1548/1636): `getActiveSessionsForTaskInWorkspace` instead of the bare
+ * `getActiveSessionsForTask` — without this, two boards sharing a ticket-id prefix could adopt each
+ * other's session for worktree-pinning purposes (H3/H5 of FLUX-1636's diagnosis).
  */
 function sessionsPinTicket(ticketId: string, ws: Workspace, now: number): boolean {
-  const sessions = getActiveSessionsForTask(ticketId);
+  const sessions = getActiveSessionsForTaskInWorkspace(ticketId, ws.root, getDefaultWorkspace().root);
   if (sessions.length === 0) return false;
-  if (!isTicketTerminal(ticketId, ws)) return true;
-  return sessions.some((s) => !isSessionStale(s, now));
+  const thresholdMs = isTicketTerminal(ticketId, ws) ? STALE_SESSION_RECLAIM_MS : NON_TERMINAL_STALE_RECLAIM_MS;
+  return sessions.some((s) => !isSessionStale(s, now, thresholdMs));
 }
 
 /**
@@ -551,8 +572,11 @@ export async function cleanupMergedBranch(
   // ALREADY Done at this point (e.g. `finish_ticket` writes its own ticket to Done before calling
   // this function) is excluded here, so a solo ticket's own in-flight session — the common case —
   // never self-blocks its own post-merge teardown.
+  // FLUX-1636: workspace-scoped (mirrors sessionsPinTicket) — the bare `getActiveSessionsForTask`
+  // would let a same-id ticket on a DIFFERENT board's live session block THIS board's post-merge
+  // teardown.
   const nonDoneSiblingsWithLiveSession = branchTickets.filter(
-    (t) => t.status !== DONE_STATUS && getActiveSessionsForTask(t.id).length > 0,
+    (t) => t.status !== DONE_STATUS && getActiveSessionsForTaskInWorkspace(t.id, ws.root, getDefaultWorkspace().root).length > 0,
   );
 
   // 1. Advance non-Done tickets → Done. Each is isolated: the squash-merge already landed
@@ -618,6 +642,12 @@ export async function cleanupMergedBranch(
 
   // 2. Stop sessions on the worktree.
   for (const t of branchTickets) stopAllSessionsForTask(t.id, 'Post-merge worktree cleanup');
+  // FLUX-1645: branch/worktree deletion is an explicit teardown override (AC7) — unlike the
+  // proactive reclaim sweep above, this path always proceeds, so any surviving hold on this
+  // branch is force-cleared-and-killed here too (belt-and-suspenders alongside
+  // stopAllSessionsForTask's own per-session clear, in case a hold's session record was already
+  // gone) rather than deferring for it.
+  for (const hold of clearHoldsForBranch(ws.root, branch, 'branch merged and cleaned up')) forceKillHeldSubtree(hold);
 
   // 3. Fast-forward local master.
   const masterSynced = await syncDefaultBranch(workspaceRoot);

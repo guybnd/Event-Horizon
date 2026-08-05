@@ -95,6 +95,18 @@ describe('grooming artifacts (FLUX-873)', () => {
     expect(rev1).toBe('<h1>rev one</h1>');
   });
 
+  it('serializes concurrent local publishes so each gets a distinct immutable revision', async () => {
+    const id = 'FLUX-1643';
+    const [first, second] = await Promise.all([
+      writeArtifactRevision(id, '<p>first</p>', {}, undefined),
+      writeArtifactRevision(id, '<p>second</p>', {}, undefined),
+    ]);
+    expect([first.rev, second.rev].sort()).toEqual([1, 2]);
+    expect(await listArtifactRevisionsOnDisk(id)).toEqual([1, 2]);
+    expect(await fs.readFile(getArtifactFilePath(id, first.rev), 'utf8')).toBe('<p>first</p>');
+    expect(await fs.readFile(getArtifactFilePath(id, second.rev), 'utf8')).toBe('<p>second</p>');
+  });
+
   it('reads a specific revision and resolves "latest"', async () => {
     const id = 'FLUX-873';
     const a = await writeArtifactRevision(id, '<p>one</p>', {}, undefined);

@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"thread_failed456"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"event_horizon","tool":"add_note"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"event_horizon","tool":"add_note","arguments":{},"error":{"message":"ticket is locked for scratch mutation","code":"LOCKED"},"status":"failed"}}
+{"type":"turn.completed","usage":{"input_tokens":50,"output_tokens":10}}

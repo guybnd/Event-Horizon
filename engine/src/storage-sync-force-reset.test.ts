@@ -127,6 +127,88 @@ describe('forceResetToRemote — force-reset-to-remote escape hatch (FLUX-1232)'
     expect(preserved).toBe('{"local":true}');
   }, 30_000);
 
+  it('preserves distinct HEAD, index, worktree, and untracked canonical sidecars externally before an exact reset', async () => {
+    const artifact = path.join(storeDir, 'artifacts', 'FLUX-1', '1.html');
+    await fs.mkdir(path.dirname(artifact), { recursive: true });
+    await fs.writeFile(artifact, 'HEAD artifact', 'utf8');
+    await commitAll(storeDir, 'local: committed artifact');
+    await fs.writeFile(artifact, 'INDEX artifact', 'utf8');
+    await git(storeDir, ['add', 'artifacts/FLUX-1/1.html']);
+    await fs.writeFile(artifact, 'WORKTREE artifact', 'utf8');
+    await fs.mkdir(path.join(storeDir, 'assets'), { recursive: true });
+    await fs.writeFile(path.join(storeDir, 'assets', 'local.txt'), 'UNTRACKED asset', 'utf8');
+    await fs.mkdir(path.join(storeDir, 'memory'), { recursive: true });
+    await fs.writeFile(path.join(storeDir, 'memory', 'external.txt'), 'outside boundary', 'utf8');
+
+    const other = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-other-'));
+    await git(other, ['clone', remote, '.']);
+    await git(other, ['config', 'user.email', 'other@test.com']);
+    await git(other, ['config', 'user.name', 'Other']);
+    await fs.mkdir(path.join(other, 'artifacts', 'FLUX-1'), { recursive: true });
+    await fs.writeFile(path.join(other, 'artifacts', 'FLUX-1', '1.html'), 'REMOTE artifact', 'utf8');
+    await commitAll(other, 'remote: artifact wins');
+    await git(other, ['push', 'origin', 'flux-data']);
+    await fs.rm(other, { recursive: true, force: true });
+
+    const result = await forceResetToRemote(storeDir);
+    expect(result.recoveryPath).toBeTruthy();
+    expect(result.recoveryCount).toBe(4);
+    const manifest = JSON.parse(await fs.readFile(path.join(result.recoveryPath!, 'manifest.json'), 'utf8')) as {
+      references: Array<{ path: string; source: string; sha256: string }>;
+    };
+    expect(manifest.references.map(({ path, source }) => ({ path, source }))).toEqual([
+      { path: 'artifacts/FLUX-1/1.html', source: 'HEAD' },
+      { path: 'artifacts/FLUX-1/1.html', source: 'index' },
+      { path: 'artifacts/FLUX-1/1.html', source: 'worktree' },
+      { path: 'assets/local.txt', source: 'untracked' },
+    ]);
+    const contents = await Promise.all(manifest.references.map((ref) => fs.readFile(path.join(result.recoveryPath!, 'blobs', ref.sha256), 'utf8')));
+    expect(contents).toEqual(['HEAD artifact', 'INDEX artifact', 'WORKTREE artifact', 'UNTRACKED asset']);
+    expect(manifest.references.some((ref) => ref.path.startsWith('memory/'))).toBe(false);
+
+    const remoteHead = (await git(storeDir, ['rev-parse', 'origin/flux-data'])).stdout.trim();
+    expect((await git(storeDir, ['rev-parse', 'HEAD'])).stdout.trim()).toBe(remoteHead);
+    expect((await git(storeDir, ['status', '--porcelain'])).stdout.trim()).toBe('');
+    await expect(fs.access(path.join(storeDir, 'memory', 'external.txt'))).rejects.toThrow();
+  }, 30_000);
+
+  it('retains byte-exact HEAD and index versions of a non-UTF-8 binary asset (FLUX-1643 review — gitBytes() must not utf8-decode blob bytes)', async () => {
+    // Deliberately invalid UTF-8 (lone continuation/overlong-lead bytes) — a naive
+    // Buffer.from(runGit-decoded-string, 'utf8') round-trip replaces every such byte with U+FFFD,
+    // so a straight equality check against the original Buffer catches the corruption the review
+    // flagged in `gitBytes()`.
+    const headBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0xfd, 0xfc, 0x80, 0x81]);
+    const indexBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x80, 0x81, 0xc0, 0xc1, 0xf5, 0xff, 0xfe, 0x00]);
+    const asset = path.join(storeDir, 'assets', 'binary.png');
+    await fs.mkdir(path.dirname(asset), { recursive: true });
+    await fs.writeFile(asset, headBytes);
+    await commitAll(storeDir, 'local: committed binary asset');
+    await fs.writeFile(asset, indexBytes);
+    await git(storeDir, ['add', 'assets/binary.png']);
+
+    const other = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-other-'));
+    await git(other, ['clone', remote, '.']);
+    await git(other, ['config', 'user.email', 'other@test.com']);
+    await git(other, ['config', 'user.name', 'Other']);
+    await fs.writeFile(path.join(other, TICKET), baseContent.replace('status: Todo', 'status: Done'), 'utf8');
+    await commitAll(other, 'remote: unrelated change');
+    await git(other, ['push', 'origin', 'flux-data']);
+    await fs.rm(other, { recursive: true, force: true });
+
+    const result = await forceResetToRemote(storeDir);
+    const manifest = JSON.parse(await fs.readFile(path.join(result.recoveryPath!, 'manifest.json'), 'utf8')) as {
+      references: Array<{ path: string; source: string; sha256: string }>;
+    };
+    const headRef = manifest.references.find((r) => r.path === 'assets/binary.png' && r.source === 'HEAD');
+    const indexRef = manifest.references.find((r) => r.path === 'assets/binary.png' && r.source === 'index');
+    expect(headRef).toBeTruthy();
+    expect(indexRef).toBeTruthy();
+    const headBlob = await fs.readFile(path.join(result.recoveryPath!, 'blobs', headRef!.sha256));
+    const indexBlob = await fs.readFile(path.join(result.recoveryPath!, 'blobs', indexRef!.sha256));
+    expect(headBlob.equals(headBytes)).toBe(true);
+    expect(indexBlob.equals(indexBytes)).toBe(true);
+  }, 30_000);
+
   it('clears a stale conflict/diverged sync status after resetting', async () => {
     reportDivergedStatus(3, 5);
     expect(getSyncStatus().state).toBe('diverged');

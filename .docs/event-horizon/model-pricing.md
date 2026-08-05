@@ -43,6 +43,17 @@ Gemini rows omit the cache columns — they use the 0.1x/1.25x default fallback 
 
 Copilot CLI does not currently report token counts in its JSON output. Cost tracking for Copilot sessions shows token estimates based on output volume rather than exact API billing. Pricing depends on your GitHub Copilot subscription tier (Individual, Business, or Enterprise) — the per-token cost is effectively bundled into your subscription.
 
+## Codex Models
+
+| model | input_per_1m | output_per_1m |
+|---|---|---|
+| gpt-5.6-terra | 1.25 | 10 |
+| gpt-5.6-luna | 1.25 | 10 |
+| gpt-5.5 | 1.25 | 10 |
+| gpt-5.4-mini | 0.25 | 2 |
+
+Codex CLI reports exact token counts (including a cached-input breakdown), but no direct cost figure — these rows drive the estimate. FLUX-1629: renamed from the fictional gpt-5-codex/gpt-5/gpt-5-mini ids to the real, account-scoped slugs codex.ts now validates against (`~/.codex/models_cache.json`); rates carried over unchanged from the prior rows (mirrors OpenAI's published GPT-5 family pricing, not independently live-probed against codex-cli's own billing) — recheck before trusting it for real billing. Model availability/slugs are account-scoped and may drift; the engine matches by substring, so an unlisted slug (e.g. a new tier) falls back to the Sonnet-class default rate below.
+
 ---
 
 The engine matches model names by substring (case-insensitive), longest match wins.

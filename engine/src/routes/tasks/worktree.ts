@@ -10,7 +10,7 @@ import { updateTaskWithHistory } from '../../task-store.js';
 import { stopAllSessionsForTask } from '../../session-store.js';
 import { createTicketBranch } from '../../branch-manager.js';
 import {
-  createTaskWorktree, detachTaskWorktree, taskWorktreeDir, listTaskWorktrees, findWorktreeForBranch,
+  createTaskWorktree, detachTaskWorktree, resolveTaskWorktreePath, listTaskWorktrees, findWorktreeForBranch,
   worktreeChangeCount, worktreeChangeCounts, currentBranchName,
 } from '../../task-worktree.js';
 import { isEditorAvailable, openEditorWindow } from '../../editor-launcher.js';
@@ -167,7 +167,7 @@ router.post('/:id/worktree/detach', async (req, res) => {
   const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
 
-  const wtPath = taskWorktreeDir(getWorkspaceRoot()!, id);
+  const wtPath = await resolveTaskWorktreePath(getWorkspaceRoot()!, id);
   if (!existsSync(wtPath)) {
     return res.status(404).json({ error: 'No worktree for this ticket' });
   }

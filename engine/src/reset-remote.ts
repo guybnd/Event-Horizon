@@ -37,6 +37,9 @@ function printResult(result: ForceResetResult): void {
   log.info(`\nBackup ref: ${result.backupRef}  (recover with: git -C .flux-store checkout ${result.backupRef})`);
   log.info(`HEAD: ${result.oldHead || '(none)'} -> ${result.newHead || '(none)'}`);
   log.info(`Files changed: ${result.changedFiles.length}`);
+  if (result.recoveryPath) {
+    log.info(`Sidecar recovery: ${result.recoveryCount} version reference(s) at ${result.recoveryPath}`);
+  }
   if (result.changedFiles.length > 0 && result.changedFiles.length <= 20) {
     for (const f of result.changedFiles) log.info(`  ${f}`);
   }

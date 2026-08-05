@@ -56,10 +56,13 @@ export const GET_COMPUTED_CONFIG_KEYS = [
 // Claude uses the CLI's short model aliases (matches the pre-1373 TIER_MODELS convention);
 // Gemini's ids are validated elsewhere against KNOWN_GEMINI_MODELS (agents/gemini.ts); Copilot has
 // no known-model validation list today, so its ids are the plain gpt-5 family.
-export const INTEGRATION_TIER_DEFAULTS: Record<'claudeCode' | 'geminiCli' | 'copilotCli', Record<Tier, string>> = {
+export const INTEGRATION_TIER_DEFAULTS: Record<'claudeCode' | 'geminiCli' | 'copilotCli' | 'codexCli', Record<Tier, string>> = {
   claudeCode: { smart: 'opus', efficient: 'sonnet', cheap: 'haiku' },
   geminiCli: { smart: 'gemini-2.5-pro', efficient: 'gemini-2.5-flash', cheap: 'gemini-2.5-flash-lite' },
   copilotCli: { smart: 'gpt-5', efficient: 'gpt-5-mini', cheap: 'gpt-4.1' },
+  // Codex CLI model availability is account-scoped. These are the live slugs from the
+  // supported account cache, not the similarly named Copilot model ids.
+  codexCli: { smart: 'gpt-5.6-terra', efficient: 'gpt-5.5', cheap: 'gpt-5.4-mini' },
 };
 
 // FLUX-1373: the three pinned task->tier presets (ticket plan's Layer 3 table) — single source of
@@ -178,6 +181,9 @@ const CONFIG_DEFAULTS: any = {
     },
     copilotCli: {
       tiers: { ...INTEGRATION_TIER_DEFAULTS.copilotCli },
+    },
+    codexCli: {
+      tiers: { ...INTEGRATION_TIER_DEFAULTS.codexCli },
     }
   },
   // FLUX-1373: task -> tier assignment policy. `preset` is 'splurge'|'balanced'|'frugal'|'custom'

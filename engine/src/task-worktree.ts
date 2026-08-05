@@ -11,6 +11,7 @@ import { runGit } from './git-exec.js';
 import { cliSessionsById, getActiveSessionsForTask, isWithinReclaimGrace } from './session-store.js';
 import { killDescendantsByPid, defaultKillWin32Pid } from './kill-process-tree.js';
 import { findWorktreeLockHolders } from './worktree-lock-holders.js';
+import { getExemptPidsForTask, getAllExemptPids, clearHoldsForWorktree, forceKillHeldSubtree } from './background-process-holds.js';
 import { log } from './log.js';
 
 /**
@@ -325,27 +326,43 @@ export async function createTaskWorktree(
   await runner(workspaceRoot, ['worktree', 'prune']).catch(() => {});
   const worktrees = await listWorktrees(runner, workspaceRoot);
 
-  // Idempotent reuse / collision at the target path.
-  const atTarget = worktrees.find((w) => pathsEqual(w.path, target));
-  if (atTarget) {
-    if (atTarget.branch === branch) {
+  // Idempotent reuse / collision — generalized (FLUX-1644) to the ticket's PREFERRED registered
+  // worktree (canonical first, else the lowest registered `-r<N>` recovery sibling from an
+  // earlier husk fallback below), not just the exact canonical `target` path. A same-ticket
+  // worktree on a different branch is an explicit collision regardless of which path it's at —
+  // duplicate registrations are anomalies this never deletes or repoints (see
+  // {@link selectPreferredOwnedWorktree}).
+  const owned = ownedWorktreesForTicket(worktrees, workspaceRoot, ticketId);
+  const preferredOwned = selectPreferredOwnedWorktree(owned, target);
+  if (preferredOwned) {
+    // Reuse the LITERAL, deterministically-constructed path (canonical `target`, or the exact
+    // `-r<N>` join) rather than `preferredOwned.path` itself — `git worktree list` reports its own
+    // (long-form, forward-slash on Windows) rendering of the same directory, and returning that
+    // instead of the constructed form would make createTaskWorktree's return value inconsistent
+    // across calls for the identical physical worktree (breaks exact-path callers/tests).
+    const reusePath = literalPathForOwnedEntry(base, path.basename(path.resolve(workspaceRoot)), ticketId, target, preferredOwned);
+    if (preferredOwned.branch === branch) {
       // Self-heal a reused worktree missing its node_modules junctions (created
       // before FLUX-518, or a prior link attempt failed) — best-effort, and the
       // existsSync(dest) guard skips already-linked sub-paths, so it's cheap (TRAIL-1).
       if (opts.linkDependencies !== false) {
-        await linkWorktreeDependencies(workspaceRoot, target).catch((err) =>
+        await linkWorktreeDependencies(workspaceRoot, reusePath).catch((err) =>
           console.error('[task-worktree] re-linking node_modules on reuse failed:', err),
         );
       }
       // Self-heal the Serena binding on reuse (worktree created before FLUX-843,
       // or a prior write failed) — best-effort, idempotent (FLUX-843).
-      await writeWorktreeSerenaOverride(target, { gitRunner: runner });
-      return target;
+      await writeWorktreeSerenaOverride(reusePath, { gitRunner: runner });
+      return reusePath;
     }
     throw new Error(
-      `A worktree already exists at ${target} on a different branch (${atTarget.branch ?? 'detached'}).`,
+      `A worktree already exists at ${reusePath} on a different branch (${preferredOwned.branch ?? 'detached'}).`,
     );
   }
+
+  // FLUX-1644: set when the canonical directory turns out to be a non-empty, unregistered,
+  // unrepairable husk below — routes creation to a `-r<N>` recovery sibling instead of refusing.
+  let useRecoverySuffix = false;
 
   // FLUX-1018 — orphaned tree self-heal. The target DIRECTORY exists but git has
   // no worktree record for it (the `worktree prune` above dropped the entry
@@ -391,7 +408,10 @@ export async function createTaskWorktree(
           .filter((s) => s.taskId === ticketId && typeof s.pid === 'number')
           .map((s) => s.pid as number);
         if (pids.length > 0) {
-          const reap = opts.reapDescendantsByPid ?? killDescendantsByPid;
+          // FLUX-1645 (AC8): never reap into a held pid's subtree — a test-injected
+          // `reapDescendantsByPid` is used as-is (tests aren't exercising the hold interaction).
+          const reap = opts.reapDescendantsByPid
+            ?? ((pid: number) => killDescendantsByPid(pid, { exemptPids: getExemptPidsForTask(workspaceRoot, ticketId) }));
           const killedGroups = await Promise.all(pids.map((pid) => reap(pid).catch(() => [] as number[])));
           const killed = killedGroups.flat();
           if (killed.length > 0) {
@@ -416,13 +436,13 @@ export async function createTaskWorktree(
           `A worktree already exists at ${target} on a different branch (${repaired.branch ?? 'detached'}).`,
         );
       }
-      // Repair could not re-register the tree (e.g. its .git metadata is gone
-      // entirely). Refuse rather than let `git worktree add` fail cryptically or,
-      // worse, degrade to master.
-      throw new Error(
-        `A directory already exists at ${target} but is not a valid git worktree and could not be repaired. ` +
-          `Remove it and retry.`,
-      );
+      // FLUX-1644: repair could not re-register the tree (e.g. its .git metadata is gone
+      // entirely, or a Windows-locked file survived teardown — the husk this ticket exists to
+      // route around). Previously this refused outright; now fall through to allocate a `-r<N>`
+      // recovery sibling instead of blocking session start on an unrepairable leftover. The husk
+      // itself is left completely untouched — the existing prune sweep remains responsible for
+      // eventually removing it once its locks clear.
+      useRecoverySuffix = true;
     }
   }
 
@@ -476,11 +496,16 @@ export async function createTaskWorktree(
 
   await fs.mkdir(base, { recursive: true });
 
-  const branchExists = await localBranchExists(runner, workspaceRoot, branch);
-  const args = branchExists
-    ? ['worktree', 'add', target, branch]
-    : ['worktree', 'add', '-b', branch, target, baseBranch];
-  await runner(workspaceRoot, args);
+  // FLUX-1644: an unrepairable canonical husk routes creation to the lowest absent `-r<N>`
+  // recovery sibling instead of `target` itself; every other case (the common path) creates at
+  // the canonical `target` exactly as before.
+  let creationTarget: string;
+  if (useRecoverySuffix) {
+    creationTarget = await allocateRecoveryWorktree(runner, workspaceRoot, base, ticketId, branch, baseBranch);
+  } else {
+    await gitWorktreeAdd(runner, workspaceRoot, target, branch, baseBranch);
+    creationTarget = target;
+  }
   // FLUX-1195: the entry invalidation above covers the whole function body's window, but a read
   // that lands between it and this mutation actually completing could still cache a pre-mutation
   // (missing-entry) snapshot for the rest of the TTL window. Invalidate again right after the
@@ -490,16 +515,16 @@ export async function createTaskWorktree(
   // Make the worktree runnable by sharing the main tree's installed deps
   // (best-effort; no-op when the repo has no node_modules) — FLUX-518.
   if (opts.linkDependencies !== false) {
-    await linkWorktreeDependencies(workspaceRoot, target).catch((err) =>
+    await linkWorktreeDependencies(workspaceRoot, creationTarget).catch((err) =>
       console.error('[task-worktree] linking node_modules failed:', err),
     );
   }
 
   // Bind Serena to this worktree (not the main checkout) so its symbol-editing
   // tools write here — FLUX-843.
-  await writeWorktreeSerenaOverride(target, { gitRunner: runner });
+  await writeWorktreeSerenaOverride(creationTarget, { gitRunner: runner });
 
-  return target;
+  return creationTarget;
 }
 
 /**
@@ -569,14 +594,21 @@ async function reapWorktreeLockHoldersAndRemove(
         .filter((s) => s.taskId === ticketId && typeof s.pid === 'number')
         .map((s) => s.pid as number)
     : [];
-  const reap = opts.reapDescendantsByPid ?? killDescendantsByPid;
+  // FLUX-1645 (AC8): "a held process or ancestor containing it is never killed by a lock-holder
+  // hunt" — a test-injected reap/killPid is used as-is (no workspaceRoot is available at this call
+  // depth to scope the exemption more tightly than "every hold, any workspace", so this is
+  // deliberately the broadest/safest form: over-excluding a numerically-coincident pid in a
+  // different workspace is harmless, under-excluding a real held process is not).
+  const exemptPids = getAllExemptPids();
+  const reap = opts.reapDescendantsByPid ?? ((pid: number) => killDescendantsByPid(pid, { exemptPids }));
   const findHolders = opts.findLockHolders ?? findWorktreeLockHolders;
   const killPid = opts.killPid ?? defaultKillWin32Pid;
 
-  const [reapedGroups, pathHolders] = await Promise.all([
+  const [reapedGroups, pathHoldersRaw] = await Promise.all([
     Promise.all(sessionPids.map((pid) => reap(pid).catch(() => [] as number[]))),
     findHolders(worktreePath, base).catch(() => [] as number[]),
   ]);
+  const pathHolders = pathHoldersRaw.filter((pid) => !exemptPids.has(pid));
   for (const pid of pathHolders) {
     try {
       killPid(pid);
@@ -621,6 +653,11 @@ export async function removeTaskWorktree(
   opts: { gitRunner?: GitRunner } & WorktreeReapOptions = {},
 ): Promise<void> {
   const runner = opts.gitRunner ?? defaultGitRunner;
+  // FLUX-1645: explicit worktree removal is a teardown override (AC7) — force-clear-and-kill any
+  // hold still protecting this exact physical path before removing it out from under a held
+  // process (never reached for a ticket the caller already deferred via worktreeUnreclaimableReason
+  // — this only fires on a genuinely explicit removal, e.g. finish/detach/branch-delete).
+  for (const hold of clearHoldsForWorktree(worktreePath, 'worktree removed')) forceKillHeldSubtree(hold);
   // FLUX-1182: this removes a registered worktree below — drop the cached
   // `isRegisteredWorktree` read (see createTaskWorktree for the same rationale).
   invalidateWorktreeListCache(workspaceRoot);
@@ -1165,16 +1202,218 @@ export async function listTaskWorktrees(
 }
 
 /**
+ * Matches a trailing `-r<N>` recovery suffix on a worktree directory name (FLUX-1644). Only a
+ * FINAL, purely-numeric `-r<N>` counts — an embedded occurrence (`FLUX-1-r2-foo`), a nonnumeric
+ * one (`FLUX-1-rABC`), or `-r1` (reserved as "no suffix" / never allocated, see
+ * {@link findLowestAbsentRecoverySuffix}) all remain part of the ticket id rather than being
+ * stripped.
+ */
+const RECOVERY_SUFFIX_RE = /^(.*)-r([0-9]+)$/;
+
+/** The numeric N of a trailing `-r<N>` (N >= 2) on `name`, or null when there is none. */
+function recoverySuffixNumber(name: string): number | null {
+  const m = RECOVERY_SUFFIX_RE.exec(name);
+  if (!m) return null;
+  const n = Number(m[2]);
+  return n >= 2 ? n : null;
+}
+
+/**
  * Recover the owning ticket id from a task worktree path. Worktrees are named
- * `<repo>-<id>` (see {@link taskWorktreeDir}); reverse that. Returns null when
- * the path is not a task worktree of this repo (so callers can skip it).
+ * `<repo>-<id>` (see {@link taskWorktreeDir}), optionally followed by a recovery suffix
+ * `-r<N>` (N >= 2, see {@link findLowestAbsentRecoverySuffix}) when the canonical path was an
+ * unrepairable husk (FLUX-1644). Reverse both. Returns null when the path is not a task worktree
+ * of this repo (so callers can skip it).
  */
 export function ticketIdFromWorktreePath(workspaceRoot: string, worktreePath: string): string | null {
   const base = taskWorktreesBaseDir(workspaceRoot);
   if (!isUnder(worktreePath, base)) return null;
   const prefix = `${path.basename(path.resolve(workspaceRoot))}-`;
   const name = path.basename(path.resolve(worktreePath));
-  return name.startsWith(prefix) && name.length > prefix.length ? name.slice(prefix.length) : null;
+  if (!name.startsWith(prefix) || name.length <= prefix.length) return null;
+  const id = name.slice(prefix.length);
+  const m = RECOVERY_SUFFIX_RE.exec(id);
+  if (m && Number(m[2]) >= 2) return m[1] ?? id;
+  return id;
+}
+
+/**
+ * Registered worktrees (from `entries`) owned by `ticketId` — canonical or a recovery-suffixed
+ * sibling — whose directory still exists on disk. Multiple owned entries can coexist as anomalies
+ * (e.g. an old `-r2` left behind after the canonical husk was eventually cleared); callers never
+ * delete or repoint the ones they don't select (FLUX-1644).
+ */
+function ownedWorktreesForTicket(
+  entries: WorktreeEntry[],
+  workspaceRoot: string,
+  ticketId: string,
+): WorktreeEntry[] {
+  return entries.filter((w) => existsSync(w.path) && ticketIdFromWorktreePath(workspaceRoot, w.path) === ticketId);
+}
+
+/**
+ * Deterministic selection among a ticket's owned worktrees (FLUX-1644): the canonical path when
+ * it is itself registered, otherwise the lowest-numbered registered `-r<N>` sibling. Does not
+ * consider branch — callers check `.branch` on the returned entry themselves.
+ */
+function selectPreferredOwnedWorktree(
+  owned: WorktreeEntry[],
+  canonicalTarget: string,
+): WorktreeEntry | undefined {
+  const atCanonical = owned.find((w) => pathsEqual(w.path, canonicalTarget));
+  if (atCanonical) return atCanonical;
+  return owned
+    .map((w) => ({ w, n: recoverySuffixNumber(path.basename(w.path)) }))
+    .filter((x): x is { w: WorktreeEntry; n: number } => x.n !== null)
+    .sort((a, b) => a.n - b.n)[0]?.w;
+}
+
+/** `<base>/<repoBasename>-<ticketId>-r<n>` — the literal, deterministically-constructed path for
+ *  recovery suffix `n` (FLUX-1644), shared by every place that needs to name one so the RETURNED
+ *  path is always this exact construction (backslash-joined on Windows) rather than whatever
+ *  string `git worktree list` happens to report (long-form, forward-slash) for the same directory
+ *  — keeps `createTaskWorktree`/`resolveTaskWorktreePath`'s return format consistent with
+ *  `taskWorktreeDir`'s, regardless of whether the path came from a fresh allocation or from
+ *  matching an already-registered entry. */
+function recoveryWorktreePath(base: string, repoBasename: string, ticketId: string, n: number): string {
+  return path.join(base, `${repoBasename}-${ticketId}-r${n}`);
+}
+
+/**
+ * Given an owned worktree entry selected by {@link selectPreferredOwnedWorktree}, return the
+ * literal, deterministically-constructed path for it (canonical `canonicalTarget`, or the
+ * `-r<N>` sibling via {@link recoveryWorktreePath}) rather than the entry's own `.path` field —
+ * see {@link recoveryWorktreePath}'s comment for why. Falls back to `entry.path` itself only if
+ * its basename doesn't parse as a suffix (shouldn't happen for anything `selectPreferredOwnedWorktree`
+ * returns, but never fabricates a wrong path if it somehow does).
+ */
+function literalPathForOwnedEntry(
+  base: string,
+  repoBasename: string,
+  ticketId: string,
+  canonicalTarget: string,
+  entry: WorktreeEntry,
+): string {
+  if (pathsEqual(entry.path, canonicalTarget)) return canonicalTarget;
+  const n = recoverySuffixNumber(path.basename(entry.path));
+  return n != null ? recoveryWorktreePath(base, repoBasename, ticketId, n) : entry.path;
+}
+
+/**
+ * Resolve the registered worktree path EH should act on for `ticketId`'s lifecycle operations
+ * (branch status/delete, ticket delete, manual detach, MCP branch-delete — FLUX-1644): the
+ * canonical `<repo>-<id>` path when it is itself a registered worktree, otherwise the lowest
+ * numbered registered `-r<N>` recovery sibling, otherwise the canonical path unchanged (so
+ * existing "no worktree" / not-found handling in callers is unaffected when nothing is
+ * registered at all). Never selects an external checkout, another ticket's worktree, or a
+ * same-ticket path on a different branch — those are exactly what {@link createTaskWorktree}
+ * itself refuses to touch.
+ */
+export async function resolveTaskWorktreePath(
+  workspaceRoot: string,
+  ticketId: string,
+  opts: { gitRunner?: GitRunner } = {},
+): Promise<string> {
+  const runner = opts.gitRunner ?? defaultGitRunner;
+  const canonicalTarget = taskWorktreeDir(workspaceRoot, ticketId);
+  let entries: WorktreeEntry[];
+  try {
+    entries = await listWorktreesCached(runner, workspaceRoot);
+  } catch {
+    return canonicalTarget;
+  }
+  const owned = ownedWorktreesForTicket(entries, workspaceRoot, ticketId);
+  const selected = selectPreferredOwnedWorktree(owned, canonicalTarget);
+  if (!selected) return canonicalTarget;
+  const base = taskWorktreesBaseDir(workspaceRoot);
+  const repoBasename = path.basename(path.resolve(workspaceRoot));
+  return literalPathForOwnedEntry(base, repoBasename, ticketId, canonicalTarget, selected);
+}
+
+/**
+ * Lowest `N >= 2` such that `<repo>-<ticketId>-rN` is absent from the filesystem under `base`
+ * (FLUX-1644) — used only when the canonical worktree directory is a non-empty, unregistered,
+ * unrepairable husk. "Absent" means no file/dir/junction/worktree occupies the candidate path at
+ * all; an occupied candidate (canonical husk counts as occupied at N=1 implicitly, since N starts
+ * at 2) is skipped, never renamed/adopted/overwritten.
+ */
+function findLowestAbsentRecoverySuffix(base: string, repoBasename: string, ticketId: string, startAt = 2): string {
+  let n = startAt;
+  for (;;) {
+    const candidate = recoveryWorktreePath(base, repoBasename, ticketId, n);
+    if (!existsSync(candidate)) return candidate;
+    n++;
+  }
+}
+
+/** Plain `git worktree add`, branching from `baseBranch` when `branch` doesn't exist yet locally. */
+async function gitWorktreeAdd(
+  runner: GitRunner,
+  workspaceRoot: string,
+  targetPath: string,
+  branch: string,
+  baseBranch: string,
+): Promise<void> {
+  const branchExists = await localBranchExists(runner, workspaceRoot, branch);
+  const args = branchExists
+    ? ['worktree', 'add', targetPath, branch]
+    : ['worktree', 'add', '-b', branch, targetPath, baseBranch];
+  await runner(workspaceRoot, args);
+}
+
+/**
+ * Allocate the lowest absent `<repo>-<ticketId>-rN` sibling (N starting at 2) and `git worktree
+ * add` it, routing around an unrepairable canonical husk (FLUX-1644). Never renames, deletes,
+ * adopts, or overwrites an existing entry — only ever creates at a path that was filesystem-absent
+ * at the moment of the attempt.
+ *
+ * Races: if a competing creator wins the candidate path between the absence check and `worktree
+ * add` (e.g. two spawns for the same ticket racing after a shared husk), refresh the registered
+ * list and either reuse the winner (same ticket + same branch — self-healed by the caller like any
+ * other reuse) or move on to the next absent suffix (occupied by anything else). A genuine,
+ * non-occupancy git failure is surfaced with the attempted path and original cause rather than
+ * silently retried.
+ */
+async function allocateRecoveryWorktree(
+  runner: GitRunner,
+  workspaceRoot: string,
+  base: string,
+  ticketId: string,
+  branch: string,
+  baseBranch: string,
+): Promise<string> {
+  const repoBasename = path.basename(path.resolve(workspaceRoot));
+  const MAX_ATTEMPTS = 50; // backstop against a pathological, permanently-contended directory
+  let startAt = 2;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const candidate = findLowestAbsentRecoverySuffix(base, repoBasename, ticketId, startAt);
+    console.warn(
+      `[task-worktree] ${ticketId}: canonical worktree directory is an unrepairable husk — ` +
+        `creating a recovery worktree at ${candidate} instead.`,
+    );
+    try {
+      await gitWorktreeAdd(runner, workspaceRoot, candidate, branch, baseBranch);
+      return candidate;
+    } catch (err) {
+      invalidateWorktreeListCache(workspaceRoot);
+      const fresh = await listWorktrees(runner, workspaceRoot);
+      const atCandidate = fresh.find((w) => pathsEqual(w.path, candidate));
+      if (atCandidate?.branch === branch) return candidate; // a competing creator won — reuse it
+      if (atCandidate || existsSync(candidate)) {
+        // Occupied by something else that appeared mid-race — try the next absent suffix.
+        startAt = (recoverySuffixNumber(path.basename(candidate)) ?? startAt) + 1;
+        continue;
+      }
+      throw new Error(
+        `Failed to create recovery worktree for ${ticketId} at ${candidate}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
+    }
+  }
+  throw new Error(
+    `Could not find an available recovery worktree slot for ${ticketId} under ${base} after ${MAX_ATTEMPTS} attempts.`,
+  );
 }
 
 /**

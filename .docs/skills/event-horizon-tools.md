@@ -95,6 +95,23 @@ Atomically sets `implementationLink`, adds the completion comment, and moves sta
 
 "create" opens a feature branch, and — unless `worktree:false` — a dedicated worktree (agent branch sessions are worktree-isolated by DEFAULT so parallel ticket sessions never share a checkout; `worktree:false` is the single-checkout/human-manual escape). Refused for a `kind:"scratch"` ticket (promote it first). "status" reports name + existence + ahead/behind counts. "delete" refuses an unmerged branch unless `force:true`; if a worktree still holds the branch checked out, deleting first stops any session on it and detaches the worktree — uncommitted work is preserved as a stash ref, but NOT applied onto master (an abandon, not a merge).
 
+## hold_background_process
+
+Windows-only. Lets a genuinely long-running background process (a build/test run you started and want to keep going) survive this session's ordinary exit — the engine otherwise tree-kills every descendant of a session the instant its turn ends (FLUX-1207), including a still-useful build. Everything else you spawned still dies immediately; only the exact PID you name (plus its own subtree) is spared, and only for the ticket/session that registered it.
+
+**Workflow:**
+1. Launch the long-running command yourself (Bash) with its output redirected to a file inside the worktree (e.g. `npm run build > build.log 2>&1 &` or the Windows equivalent) — you need a way to check on it later without the live process attached to your own stdout.
+2. Call `hold_background_process` with that process's PID, a short `reason`, and — if the default 30 minutes isn't enough — a longer `ttlMinutes` (max 120). Do this BEFORE your turn ends; a PID you never held is not protected.
+3. When you resume (a later turn, or `send_input` on a resumed session), check the log file and `isPidAlive`-style liveness before deciding to renew (re-call with the same pid — it extends the deadline and updates `reason`) or `release_background_process` once it's done.
+
+**Rejected, not silently ignored:** an arbitrary/cross-session PID (must be a live descendant of YOUR session's own process), the engine's own PID, a PID already held by a different session, a PID that overlaps (is an ancestor or descendant of) another live hold, a non-Windows platform, or a terminal-status ticket. A rejection never changes reap behavior — nothing was protected, so ending the turn still reaps everything as if you'd never called this.
+
+**What still overrides a hold:** an explicit Stop, the ticket reaching a configured terminal status, the branch/worktree being deleted or detached, and engine shutdown all force-kill a held process and clear the lease — a hold is a "please spare this during an ordinary pause," not an indefinite exemption. It also expires and is force-killed on its own TTL regardless of what happens to the session.
+
+## release_background_process
+
+Pairs with `hold_background_process` — releases the lease WITHOUT killing the process (use this once the build/test run has already finished on its own, or you no longer need it protected). Owner-only (only the session that created the hold can release it) and idempotent — releasing an already-released or already-expired hold is reported as a no-op, not an error.
+
 ## list_available_agents
 
 Read-only roster lookup — id, label, description, role (lead/worker/flex), and phases per persona. Filter by `phase` to narrow to personas relevant to a specific workflow stage.

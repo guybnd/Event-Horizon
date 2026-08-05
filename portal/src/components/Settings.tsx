@@ -103,6 +103,7 @@ export function Settings() {
   const [claudeTiers, setClaudeTiers] = useState<TierModels>(EMPTY_TIER_MODELS);
   const [geminiTiers, setGeminiTiers] = useState<TierModels>(EMPTY_TIER_MODELS);
   const [copilotTiers, setCopilotTiers] = useState<TierModels>(EMPTY_TIER_MODELS);
+  const [codexTiers, setCodexTiers] = useState<TierModels>(EMPTY_TIER_MODELS);
   const [modelPolicyAssignments, setModelPolicyAssignments] = useState<Record<TaskKey, Tier>>(PRESET_ASSIGNMENTS.balanced);
   const [generateDistinctFiles, setGenerateDistinctFiles] = useState(true);
   const [releaseNotesPath, setReleaseNotesPath] = useState('release-notes');
@@ -183,6 +184,7 @@ export function Settings() {
       setClaudeTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.claudeCode?.tiers ?? {}) });
       setGeminiTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.geminiCli?.tiers ?? {}) });
       setCopilotTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.copilotCli?.tiers ?? {}) });
+      setCodexTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.codexCli?.tiers ?? {}) });
       setModelPolicyAssignments(config.modelPolicy?.assignments ?? PRESET_ASSIGNMENTS.balanced);
       if (config.releaseSettings) {
         setGenerateDistinctFiles(config.releaseSettings.generateDistinctFiles);
@@ -315,6 +317,9 @@ export function Settings() {
           copilotCli: {
             tiers: { smart: copilotTiers.smart.trim(), efficient: copilotTiers.efficient.trim(), cheap: copilotTiers.cheap.trim() },
           },
+          codexCli: {
+            tiers: { smart: codexTiers.smart.trim(), efficient: codexTiers.efficient.trim(), cheap: codexTiers.cheap.trim() },
+          },
         },
         modelPolicy: {
           preset: derivePreset(modelPolicyAssignments),
@@ -413,6 +418,7 @@ export function Settings() {
     setClaudeTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.claudeCode?.tiers ?? {}) });
     setGeminiTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.geminiCli?.tiers ?? {}) });
     setCopilotTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.copilotCli?.tiers ?? {}) });
+    setCodexTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.codexCli?.tiers ?? {}) });
     setModelPolicyAssignments(config.modelPolicy?.assignments ?? PRESET_ASSIGNMENTS.balanced);
     setGenerateDistinctFiles(config.releaseSettings?.generateDistinctFiles ?? true);
     setReleaseNotesPath(config.releaseSettings?.releaseNotesPath || 'release-notes');
@@ -490,6 +496,7 @@ export function Settings() {
       claudeTiers,
       geminiTiers,
       copilotTiers,
+      codexTiers,
       modelPolicyAssignments,
       agentProgressEnabled,
       agentProgressDelay,
@@ -554,6 +561,7 @@ export function Settings() {
       claudeTiers: { ...EMPTY_TIER_MODELS, ...(config.integrations?.claudeCode?.tiers ?? {}) },
       geminiTiers: { ...EMPTY_TIER_MODELS, ...(config.integrations?.geminiCli?.tiers ?? {}) },
       copilotTiers: { ...EMPTY_TIER_MODELS, ...(config.integrations?.copilotCli?.tiers ?? {}) },
+      codexTiers: { ...EMPTY_TIER_MODELS, ...(config.integrations?.codexCli?.tiers ?? {}) },
       modelPolicyAssignments: config.modelPolicy?.assignments ?? PRESET_ASSIGNMENTS.balanced,
       agentProgressEnabled: config.agentProgress?.enabled ?? true,
       agentProgressDelay: config.agentProgress?.inlineDelay ?? 2,
@@ -725,6 +733,8 @@ export function Settings() {
                     setGeminiTiers={setGeminiTiers}
                     copilotTiers={copilotTiers}
                     setCopilotTiers={setCopilotTiers}
+                    codexTiers={codexTiers}
+                    setCodexTiers={setCodexTiers}
                     assignments={modelPolicyAssignments}
                     setAssignments={setModelPolicyAssignments}
                   />
