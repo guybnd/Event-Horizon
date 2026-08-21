@@ -1,0 +1,11 @@
+# Local-per-workspace state — never synced through flux-data (FLUX-532)
+config.json
+read-state.json
+open-prompts.json
+open-prompts.json.tmp
+session-binding-secret
+session-binding-secret.tmp
+sessions/
+sync-journal.jsonl
+boot-index.json
+*.body-history.json

@@ -1,0 +1,2 @@
+# Union-mergeable append-only logs (FLUX-1076) — never a manual conflict
+transcripts/*.jsonl merge=union
