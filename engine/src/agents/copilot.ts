@@ -266,6 +266,61 @@ function resolveCopilotBinary(id: string): ResolvedCopilotBinary {
   return resolved;
 }
 
+const COPILOT_NOT_INSTALLED_MESSAGE = '"copilot" is not installed or not on PATH. Please install it before starting an agent session.';
+
+/** `resolveCopilotBinaryUncached`'s only path returning a bare `'copilot'` exePath with no
+ *  nodePath/entryPoint is its final "nothing found" fallback — every successful resolution (a PATH
+ *  match, VS Code globalStorage, or the Windows node+npm-loader fallback) returns an absolute,
+ *  existence-checked path instead. */
+function isCopilotBinaryResolved(resolved: ResolvedCopilotBinary): boolean {
+  return resolved.exePath !== 'copilot' || Boolean(resolved.nodePath && resolved.entryPoint);
+}
+
+/** FLUX-1641: precheck the binary `spawnCopilot` would actually use, so a missing CLI fails a
+ *  dispatched session with the same actionable install message board chat already gets (via
+ *  board-core.ts's spec.binary check into shared.ts's checkBinaryInstalled), instead of a bare
+ *  `spawn copilot ENOENT` from proc.on('error').
+ *
+ *  Deliberately NOT `checkBinaryInstalled` — that probes PATH only (which/where), but
+ *  `resolveCopilotBinary` also accepts a VS Code globalStorage `copilot.exe` and an npm-loader.js
+ *  fallback (see `resolveCopilotBinaryUncached` above); a PATH-only check would falsely reject
+ *  those installs. Mirrors FLUX-1600's resolved-path pattern instead: validate what
+ *  `resolveCopilotBinary` would ACTUALLY spawn, so this check can never disagree with the spawn.
+ *
+ *  Deliberately does NOT negative-cache a "not found" result (unlike shared.ts's
+ *  `checkBinaryInstalled`, FLUX-1003). `resolveCopilotBinaryUncached` swallows every `execSync`
+ *  failure with a bare `catch {}` — it cannot distinguish a clean "not on PATH" from a transient
+ *  10s-timeout kill under load (the exact FLUX-985/996 distinction `shared.ts`'s
+ *  `isDefinitiveNotInstalled` exists to make). Without that signal, caching "not found" risks
+ *  serving a false negative for a real install for the whole TTL window. Re-resolving on every
+ *  call only costs a chain when the binary is genuinely missing — the session is failing anyway —
+ *  and the success path still writes through to `cachedCopilotBinary` so FLUX-974's per-turn win
+ *  on the hot (installed) path is unaffected. */
+export async function checkCopilotBinaryInstalled(id: string): Promise<void> {
+  if (cachedCopilotBinary && isCopilotBinaryResolved(cachedCopilotBinary)) return;
+
+  const resolved = resolveCopilotBinaryUncached(id);
+  if (isCopilotBinaryResolved(resolved)) {
+    cachedCopilotBinary = resolved;
+    return;
+  }
+
+  throw new Error(COPILOT_NOT_INSTALLED_MESSAGE);
+}
+
+/** Test-only: force a resolved (installed) state so `checkCopilotBinaryInstalled`/`spawnCopilot`
+ *  skip re-probing PATH/globalStorage — mirrors `resetClaudeBinaryDarwinCacheForTest`'s role for
+ *  other tests exercising startCliSession/sendCliSessionInput end-to-end without a real CLI on the
+ *  test machine's PATH. */
+export function primeCopilotBinaryForTest(exePath = '/fake/copilot'): void {
+  cachedCopilotBinary = { nodePath: null, entryPoint: null, exePath };
+}
+
+/** Test-only: clear cached resolution state so each test starts from a clean slate. */
+export function resetCopilotBinaryCacheForTest(): void {
+  cachedCopilotBinary = null;
+}
+
 function resolveCopilotBinaryUncached(id: string): ResolvedCopilotBinary {
   const isWin = process.platform === 'win32';
 
@@ -429,6 +484,9 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
   // checks the branch out itself, so spawning with cwd = workspaceRoot would
   // commit straight to master (the FLUX-972 incident).
   assertIsolatedSpawnRoot('Copilot', id, task, executionRoot, workspaceRoot);
+
+  // FLUX-1641: precheck before spawning — see checkCopilotBinaryInstalled's doc comment.
+  await checkCopilotBinaryInstalled(id);
 
   log.info(`[${id}] Starting Copilot CLI session in ${workspaceRoot}`);
 
@@ -782,8 +840,11 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   try {
     executionRoot = await resolveResumeExecutionRoot(session, getWorkspace().tasks[id], workspaceRoot);
   } catch (error) {
-    return surfaceResumeFailure(session, id, error);
+    return surfaceResumeFailure(session, id, error, workspaceRoot);
   }
+
+  // FLUX-1641: precheck before spawning — see checkCopilotBinaryInstalled's doc comment.
+  await checkCopilotBinaryInstalled(id);
 
   const inputAt = new Date().toISOString();
   session.lastInputAt = inputAt;

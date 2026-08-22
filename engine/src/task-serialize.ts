@@ -5,7 +5,7 @@ import { createHash } from 'crypto';
 import { getConfig } from './config.js';
 import { getWorkspace } from './workspace-context.js';
 import { digestHistoryForAgent, buildHistoryDigest, extractRecentUserComments, extractLaunchFocus, type HistoryEntryLike } from './history.js';
-import { getCliSessionSummaryForTask, getListCliSessionSummaryForTask, getAllSessionSummariesForTask, getListSessionSummariesForTask, slimSessionSummaryForAgent } from './session-store.js';
+import { getCliSessionSummaryForTask, getListCliSessionSummaryForTask, getListSessionSummariesForTask, slimSessionSummaryForAgent, getDetailCliSessionSummaryForTask, getDetailSessionSummariesForTask } from './session-store.js';
 
 // FLUX-343 (plan step 1): the stateless ticket surface, split out of task-store.ts so the
 // serializers/validators/repair path no longer live in the same module as the stateful
@@ -101,11 +101,14 @@ export function computeDiskBodyVersion(body: string): string {
 }
 
 export function serializeTaskForApi(task: TaskRecord) {
-  const cliSessions = getAllSessionSummariesForTask(task.id);
+  // FLUX-1685: terminal sessions are truncated to a short tail here — the full buffer is fetched
+  // on demand via GET /:id/cli-sessions/:sessionId/output. `getAllSessionSummariesForTask` (full)
+  // is still used by other callers (the /:id/cli-sessions route) — do not swap those.
+  const cliSessions = getDetailSessionSummariesForTask(task.id);
   return {
     ...task,
     bodyVersion: computeDiskBodyVersion(task.body || ''),
-    cliSession: getCliSessionSummaryForTask(task.id),
+    cliSession: getDetailCliSessionSummaryForTask(task.id),
     cliSessions: cliSessions.length > 0 ? cliSessions : undefined,
   };
 }

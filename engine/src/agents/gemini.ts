@@ -509,6 +509,14 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
 
   log.info(`[${id}] Starting ${framework} session in ${workspaceRoot}`);
 
+  // FLUX-1641 audit: this is PATH-only, but resolveGeminiWindowsLaunch (Windows spawn path,
+  // below) also accepts an `npm prefix -g`-resolved gemini-cli bundle independent of whether
+  // `gemini` itself is on PATH — the same class of false-negative copilot.ts's
+  // checkCopilotBinaryInstalled was added to fix. Narrower and Windows-only (needs the npm global
+  // prefix to succeed while the shim isn't on PATH — an unusual setup), and fixing it properly
+  // means an async, resolver-aware checker mirroring resolveGeminiWindowsLaunch's own caching.
+  // Left as-is for FLUX-1641 rather than risk a blind edit to that Windows-only resolution path
+  // from a non-Windows dev machine — a documented follow-up, not an oversight.
   await checkBinaryInstalled(binaryName);
 
   const groomingStatuses = [getConfig().requireInputStatus || 'Require Input', 'Grooming'];
@@ -876,9 +884,17 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   try {
     executionRoot = await resolveResumeExecutionRoot(session, getWorkspace().tasks[id], workspaceRoot);
   } catch (error) {
-    return surfaceResumeFailure(session, id, error);
+    return surfaceResumeFailure(session, id, error, workspaceRoot);
   }
 
+  // FLUX-1641 audit: this is PATH-only, but resolveGeminiWindowsLaunch (Windows spawn path,
+  // below) also accepts an `npm prefix -g`-resolved gemini-cli bundle independent of whether
+  // `gemini` itself is on PATH — the same class of false-negative copilot.ts's
+  // checkCopilotBinaryInstalled was added to fix. Narrower and Windows-only (needs the npm global
+  // prefix to succeed while the shim isn't on PATH — an unusual setup), and fixing it properly
+  // means an async, resolver-aware checker mirroring resolveGeminiWindowsLaunch's own caching.
+  // Left as-is for FLUX-1641 rather than risk a blind edit to that Windows-only resolution path
+  // from a non-Windows dev machine — a documented follow-up, not an oversight.
   await checkBinaryInstalled(binaryName);
 
   const inputAt = new Date().toISOString();

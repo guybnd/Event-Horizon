@@ -494,6 +494,9 @@ export interface CliSessionSummary {
    *  chat error card, FLUX-1601, reads this instead of the raw provider error). */
   authDiagnosis?: AuthDiagnosis;
   liveOutput?: string;
+  /** FLUX-1685: original `liveOutput` length before detail-payload truncation was applied to a
+   *  terminal session — present only when truncation actually happened. */
+  liveOutputChars?: number;
   currentActivity?: string | undefined;
   skipPermissions?: boolean;
   inputTokens?: number;

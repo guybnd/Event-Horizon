@@ -123,6 +123,7 @@ describe('Furnace ignite-time reclaim + slot-holder naming (FLUX-1157)', () => {
 
     expect(r.ok).toBe(false);
     const filler0 = r.holders?.find((h) => h.ticketId === 'FILLER-0');
+    expect(filler0?.status).toBe('unknown');
     expect(filler0?.reason).toBe('actively burning');
   });
 
@@ -144,6 +145,7 @@ describe('Furnace ignite-time reclaim + slot-holder naming (FLUX-1157)', () => {
     expect(r.holders?.length).toBe(4);
     for (let i = 0; i < 4; i++) {
       const holder = r.holders?.find((h) => h.ticketId === `FILLER-${i}`);
+      expect(holder?.status).toBe('unknown');
       expect(holder?.reason).toBe('reserved — worktree not yet created');
     }
   });
@@ -158,6 +160,6 @@ describe('Furnace ignite-time reclaim + slot-holder naming (FLUX-1157)', () => {
 
     const holders = await describeSlotHolders(root);
 
-    expect(holders).toEqual([{ ticketId: 'TEMPER-1', reason: 'Temper-reserved — worktree not yet created' }]);
+    expect(holders).toEqual([{ ticketId: 'TEMPER-1', status: 'unknown', reason: 'Temper-reserved — worktree not yet created' }]);
   });
 });

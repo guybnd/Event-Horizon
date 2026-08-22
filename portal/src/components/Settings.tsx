@@ -20,6 +20,7 @@ import { AgentProgressSection } from './settings/AgentProgressSection';
 import { FurnaceSection } from './settings/FurnaceSection';
 import { CostTokensSection } from './settings/CostTokensSection';
 import { ModulesSection } from './settings/ModulesSection';
+import { ConnectorsSection } from './settings/ConnectorsSection';
 import { McpPhasesSection } from './settings/McpPhasesSection';
 import { GeneralSection } from './settings/GeneralSection';
 import { CommunicationStyleSection, type CommUserStyle } from './settings/CommunicationStyleSection';
@@ -29,9 +30,9 @@ import { EMPTY_TIER_MODELS, PRESET_ASSIGNMENTS, derivePreset, type TierModels } 
 /** Runtime config carries a per-phase MCP server map that isn't yet on the `Config` type. */
 type ConfigWithMcpPhases = Config & { mcpServerPhases?: Record<string, string[]> };
 
-type SettingsTab = 'board' | 'appearance' | 'attributes' | 'workspace' | 'agents' | 'modules' | 'general';
+type SettingsTab = 'board' | 'appearance' | 'attributes' | 'workspace' | 'agents' | 'modules' | 'connectors' | 'general';
 
-const TAB_ORDER: SettingsTab[] = ['board', 'appearance', 'attributes', 'workspace', 'agents', 'modules', 'general'];
+const TAB_ORDER: SettingsTab[] = ['board', 'appearance', 'attributes', 'workspace', 'agents', 'modules', 'connectors', 'general'];
 
 const TAB_LABELS: Record<SettingsTab, string> = {
   board: 'Board',
@@ -40,6 +41,7 @@ const TAB_LABELS: Record<SettingsTab, string> = {
   workspace: 'Workspace',
   agents: 'Agents',
   modules: 'Modules',
+  connectors: 'Connectors',
   general: 'General',
 };
 
@@ -507,6 +509,8 @@ export function Settings() {
       tokenCostThresholds,
     },
     modules: { modules, mcpServerPhases },
+    // Read-only status panel (FLUX-1656) — nothing to save, so its slice never differs.
+    connectors: {},
     general: {
       defaultUser: globalDefaultUser,
       preferredFramework: globalPreferredFramework,
@@ -575,6 +579,7 @@ export function Settings() {
       modules: config.modules || [],
       mcpServerPhases: (config as ConfigWithMcpPhases).mcpServerPhases || {},
     },
+    connectors: {},
     general: {
       defaultUser: loadedGlobal.defaultUser,
       preferredFramework: loadedGlobal.preferredFramework,
@@ -774,6 +779,8 @@ export function Settings() {
                   <McpPhasesSection value={mcpServerPhases} setValue={setMcpServerPhases} />
                 </>
               )}
+
+              {activeTab === 'connectors' && <ConnectorsSection />}
 
               {activeTab === 'general' && (
                 <GeneralSection

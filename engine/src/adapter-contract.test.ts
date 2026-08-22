@@ -10,6 +10,20 @@ import { CLI_CAPABILITIES, CAPABILITY_PROBES, PREFLIGHT_IDS, type CliFramework, 
 import { BOARD_CONVERSATION_ID } from './agents/board.js';
 import { getBoardAdapter, getAdapter, getRuntimeFrameworks, isKnownFramework } from './agents/index.js';
 
+// `existsSync` is wrapped in a vi.fn() that DEFAULTS to the real implementation (set in the
+// vi.mock factory below) — every existing test in this file gets real filesystem behavior
+// unchanged, and the FLUX-1641 block further down overrides it for the duration of one describe
+// block only. A plain `vi.spyOn(await import('fs'), 'existsSync')` doesn't work here: Node's ESM
+// module namespace for 'fs' is non-configurable, so it must be mocked (not spied) up front.
+const { existsSyncMock } = vi.hoisted(() => {
+  return { existsSyncMock: vi.fn() };
+});
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  existsSyncMock.mockImplementation(actual.existsSync);
+  return { ...actual, existsSync: existsSyncMock };
+});
+
 // ─── Mocks for the A.1 stdout-parse fixture tests below ───────────────────────
 // claude-code.ts / copilot.ts / gemini.ts each import a wide surface (task persistence,
 // SSE broadcast, session bookkeeping, the durable transcript). None of it is exercised by
@@ -660,12 +674,21 @@ describe('FLUX-1193: chat edit-gate note reaches the real spawn -p arg', () => {
   // above) that throws before the prompt is ever built. Spy it out for this block only — every OTHER
   // shared.js helper (buildInitialPrompt, isChatEditGated, prependEditGateNote, chatEditGateNote,
   // cleanChildEnv, attachStdoutProcessing) stays real; that real wiring is the entire point.
+  // FLUX-1641: copilot's own precheck (checkCopilotBinaryInstalled) lives inside copilot.ts, not
+  // shared.ts, so the spy above doesn't reach it — prime copilot's cached resolution instead.
   beforeAll(async () => {
     const shared = await import('./agents/shared.js');
     vi.spyOn(shared, 'checkBinaryInstalled').mockResolvedValue(undefined);
+    const { primeCopilotBinaryForTest } = await import('./agents/copilot.js');
+    primeCopilotBinaryForTest();
   });
-  afterAll(() => {
+  afterAll(async () => {
     vi.restoreAllMocks();
+    // FLUX-1641 review (Minor 3): vi.restoreAllMocks() doesn't touch copilot.ts's module-level
+    // cachedCopilotBinary — without this, the primed '/fake/copilot' would leak into whatever
+    // describe block runs next in this file.
+    const { resetCopilotBinaryCacheForTest } = await import('./agents/copilot.js');
+    resetCopilotBinaryCacheForTest();
   });
 
   for (const framework of ['copilot', 'gemini'] as const) {
@@ -705,6 +728,46 @@ describe('FLUX-1193: chat edit-gate note reaches the real spawn -p arg', () => {
   }
 });
 
+// ─── FLUX-1641 review (Major 2, coverage gap): the glue between checkCopilotBinaryInstalled and
+// startCliSession had no test — every existing case (copilot-binary-check.test.ts) drives the
+// precheck helper directly, never through the real dispatched-session seam the bug actually lived
+// at. This forces resolution to fail (no PATH match, no globalStorage, no Windows fallback) and
+// asserts startCliSession itself rejects with the actionable install-hint message instead of a bare
+// `spawn copilot ENOENT`.
+describe('FLUX-1641: startCliSession surfaces the install-hint message when copilot cannot be resolved', () => {
+  let execSyncSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeAll(async () => {
+    const cp = await import('child_process');
+    execSyncSpy = vi.spyOn(cp, 'execSync').mockImplementation(() => {
+      throw Object.assign(new Error('not found'), { status: 1 });
+    });
+    existsSyncMock.mockReturnValue(false);
+    const { resetCopilotBinaryCacheForTest } = await import('./agents/copilot.js');
+    resetCopilotBinaryCacheForTest();
+  });
+  afterAll(async () => {
+    execSyncSpy.mockRestore();
+    const actualFs = await vi.importActual<typeof import('fs')>('fs');
+    existsSyncMock.mockImplementation(actualFs.existsSync);
+    const { resetCopilotBinaryCacheForTest } = await import('./agents/copilot.js');
+    resetCopilotBinaryCacheForTest();
+  });
+
+  it('rejects with the "not installed" message before ever calling spawn()', async () => {
+    const { startCliSession } = await loadAdapter('copilot');
+    const taskId = 'FLUX-TEST-copilot-unresolvable';
+    const task = { id: taskId, status: 'Todo' };
+    const session = fakeChatSession(taskId, 'copilot');
+
+    mockSpawn.mockClear();
+    await expect(startCliSession(session, task, '', '', '/tmp/test-repo')).rejects.toThrow(
+      '"copilot" is not installed or not on PATH. Please install it before starting an agent session.',
+    );
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+});
+
 // ─── FLUX-931: session.model reaches the real spawn --model arg on Gemini/Copilot ───
 // FLUX-482 threaded a delegate's resolved model onto `session.model`, but only claude-code.ts
 // read it (`session.model || selectedModel`) — Gemini/Copilot ignored it and always used their own
@@ -715,14 +778,23 @@ describe('FLUX-931: session.model reaches the real spawn --model arg', () => {
   beforeAll(async () => {
     const shared = await import('./agents/shared.js');
     vi.spyOn(shared, 'checkBinaryInstalled').mockResolvedValue(undefined);
+    // FLUX-1641: copilot's own precheck lives inside copilot.ts, not shared.ts, so the spy above
+    // doesn't reach it — prime copilot's cached resolution instead.
+    const { primeCopilotBinaryForTest } = await import('./agents/copilot.js');
+    primeCopilotBinaryForTest();
     // FLUX-1375: the claude test below doesn't go through loadAdapter's copilot/gemini binary
     // resolution — stub claude-code.ts's own real binary probe too, so this stays hermetic on a
     // machine without claude.exe on PATH (this test only cares about session.model, not the spawn's
     // real binary path).
     vi.spyOn(shared, 'resolveClaudeExePath').mockResolvedValue('C:\\fake\\claude.exe');
   });
-  afterAll(() => {
+  afterAll(async () => {
     vi.restoreAllMocks();
+    // FLUX-1641 review (Minor 3): vi.restoreAllMocks() doesn't touch copilot.ts's module-level
+    // cachedCopilotBinary — without this, the primed '/fake/copilot' would leak into whatever
+    // describe block runs next in this file.
+    const { resetCopilotBinaryCacheForTest } = await import('./agents/copilot.js');
+    resetCopilotBinaryCacheForTest();
   });
 
   it("gemini: session.model overrides the (unset) configured model — validated against KNOWN_GEMINI_MODELS", async () => {
@@ -920,9 +992,18 @@ describe('FLUX-1444: oversized prompt is delivered via stdin, not argv', () => {
   beforeAll(async () => {
     const shared = await import('./agents/shared.js');
     vi.spyOn(shared, 'checkBinaryInstalled').mockResolvedValue(undefined);
+    // FLUX-1641: copilot's own precheck lives inside copilot.ts, not shared.ts, so the spy above
+    // doesn't reach it — prime copilot's cached resolution instead.
+    const { primeCopilotBinaryForTest } = await import('./agents/copilot.js');
+    primeCopilotBinaryForTest();
   });
-  afterAll(() => {
+  afterAll(async () => {
     vi.restoreAllMocks();
+    // FLUX-1641 review (Minor 3): vi.restoreAllMocks() doesn't touch copilot.ts's module-level
+    // cachedCopilotBinary — without this, the primed '/fake/copilot' would leak into whatever
+    // describe block runs next in this file.
+    const { resetCopilotBinaryCacheForTest } = await import('./agents/copilot.js');
+    resetCopilotBinaryCacheForTest();
   });
 
   // A synthetic scatter-gather reviewer prompt, well past the 32,767-char Windows CreateProcess cap.

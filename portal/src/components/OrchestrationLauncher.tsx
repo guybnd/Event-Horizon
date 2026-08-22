@@ -12,7 +12,8 @@ import {
   type OrchestrationMode,
   type ReviewPersona,
 } from '../agentActions';
-import { fetchOrchestrationPersonas, fetchConfig, fetchWorkflows, fetchHealth, createBranch, joinWorktree, fetchWorktrees, type WorktreeInfo, type WorkflowPhaseConfig, type WorkflowTemplate } from '../api';
+import { fetchOrchestrationPersonas, fetchConfig, fetchWorkflows, createBranch, joinWorktree, fetchWorktrees, type WorktreeInfo, type WorkflowPhaseConfig, type WorkflowTemplate } from '../api';
+import { useGhStatus } from '../hooks/useGhStatus';
 import type { CliFramework, CliSessionSummary } from '../types';
 import { type SessionGroup } from '../orchestration';
 import { useAppActions } from '../store/useAppSelector';
@@ -141,7 +142,6 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   const [startMode, setStartMode] = useState<StartMode>('branch');
   const [joinBranch, setJoinBranch] = useState<string | null>(null);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
-  const [ghAvailable, setGhAvailable] = useState<boolean | null>(null);
   const [branchBusy, setBranchBusy] = useState(false);
   const [branchError, setBranchError] = useState<string | null>(null);
   const defaultAppliedRef = useRef(false);
@@ -155,6 +155,12 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   const { pushOverlay, popOverlay } = useAppActions();
 
   const showBranchSection = ticket?.status === 'Todo' && !ticket?.branch;
+
+  // FLUX-1686: gated on `open && showBranchSection` — the exact condition the removed
+  // fetchHealth() effect below used to gate on — so the probe fires only when the branch UI
+  // is reachable, and re-fires on every fresh open rather than once at first mount (this
+  // component stays mounted, rendering null, for the whole ticket-modal lifetime).
+  const { gh, checking: ghChecking, settled: ghSettled, error: ghError, recheck: recheckGh } = useGhStatus(Boolean(open && showBranchSection));
 
   // FLUX-1380: 'fast-path' is solo-session only (design decision 7) and never opens this
   // multi-persona launcher — it dispatches directly (see dispatchFastPath). FLUX-1383:
@@ -187,7 +193,6 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
       setSupervisorLeadId('');
       setStartMode('branch');
       setJoinBranch(null);
-      setGhAvailable(null);
       setBranchBusy(false);
       setBranchError(null);
       defaultAppliedRef.current = false;
@@ -206,9 +211,6 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
     // XS continues on the current branch. worktreeByDefault upgrades to a worktree.
     setStartMode(ticket?.effort === 'XS' ? 'current' : 'branch');
     let cancelled = false;
-    fetchHealth()
-      .then((h) => { if (!cancelled) setGhAvailable(h.ghAuthAvailable); })
-      .catch(() => { if (!cancelled) setGhAvailable(null); });
     fetchConfig()
       .then((c) => { if (!cancelled && c.worktreeByDefault && ticket?.effort !== 'XS') setStartMode('worktree'); })
       .catch(() => {});
@@ -767,7 +769,11 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
                 taskId={ticket!.id}
                 taskTitle={ticket!.title}
                 effort={ticket!.effort}
-                ghAvailable={ghAvailable}
+                gh={gh}
+                ghChecking={ghChecking}
+                ghSettled={ghSettled}
+                ghError={ghError}
+                onRecheckGh={recheckGh}
                 mode={startMode}
                 setMode={setStartMode}
                 worktrees={worktrees}

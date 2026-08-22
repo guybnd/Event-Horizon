@@ -7,7 +7,7 @@ import { evictSharedServersForPath } from './shared-mcp-server.js';
 // non-interactive env — so `git worktree add` (the spawn-agent-with-isolation path) could hang
 // forever on a slow/unreachable remote or a stalled credential prompt. Route through the S1
 // runner; every caller here goes through this one default (or an injected test runner).
-import { runGit } from './git-exec.js';
+import { runGit, resolveBranchCreationBase } from './git-exec.js';
 import { cliSessionsById, getActiveSessionsForTask, isWithinReclaimGrace } from './session-store.js';
 import { killDescendantsByPid, defaultKillWin32Pid } from './kill-process-tree.js';
 import { findWorktreeLockHolders } from './worktree-lock-holders.js';
@@ -65,7 +65,7 @@ export interface TaskWorktreeOptions {
    *  bare message (this module has no workspace/pr-cleanup access of its own; a caller that has one
    *  wires it in, e.g. via pr-cleanup.ts's `describeWorktreeSlotHolders`). Best-effort: a describer
    *  failure never blocks the underlying limit error itself. */
-  describeSlotHolders?: () => Promise<Array<{ ticketId: string; reason: string }>>;
+  describeSlotHolders?: () => Promise<Array<{ ticketId: string; status: string; reason: string }>>;
 }
 
 /**
@@ -268,25 +268,18 @@ function branchPinnedToMainCheckoutError(branch: string, workspaceRoot: string, 
  * pass an explicit `baseBranch`. Hardcoding 'master' breaks any repo whose default
  * branch is 'main': `git worktree add -b <branch> <path> master` fails with
  * "fatal: invalid reference: master", which aborts the entire spawn-with-isolation
- * path and leaves the agent session unable to start (FLUX-167). Probe the local
- * branches that actually exist (master, then main — matching diff-aggregator's
- * `resolveBaseBranch`), then fall back to origin's advertised default, then 'master'.
+ * path and leaves the agent session unable to start (FLUX-167).
+ *
+ * FLUX-1638: prefers the remote-tracking ref (`origin/<default>`) over the bare local
+ * default branch — a local default ahead of `origin/<default>` (e.g. a branchless
+ * single-shot session that committed directly to master) must not have that stray
+ * commit ride into every subsequently-created task branch's PR. Falls back to the
+ * local branches that actually exist (master, then main — matching diff-aggregator's
+ * `resolveBaseBranch`), then 'master', only when there is no `origin` at all (a
+ * local-only repo) or no remote-tracking ref for the resolved default name.
  */
 async function resolveDefaultBaseBranch(runner: GitRunner, workspaceRoot: string): Promise<string> {
-  for (const candidate of ['master', 'main']) {
-    if (await localBranchExists(runner, workspaceRoot, candidate)) return candidate;
-  }
-  try {
-    // Keep the `origin/` prefix: this is only reached when neither local master nor
-    // main exists, so the bare branch name may have no local copy to resolve against.
-    // The remote-tracking ref always resolves as a commit-ish for `git worktree add -b`.
-    const { stdout } = await runner(workspaceRoot, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
-    const ref = stdout.trim();
-    if (ref) return ref;
-  } catch {
-    /* no origin/HEAD configured — fall through to the last-resort default */
-  }
-  return 'master';
+  return resolveBranchCreationBase((args) => runner(workspaceRoot, args));
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────────
@@ -486,7 +479,7 @@ export async function createTaskWorktree(
     // hide the underlying limit error itself.
     const holders = opts.describeSlotHolders ? await opts.describeSlotHolders().catch(() => []) : [];
     const holderLines = holders.length > 0
-      ? '\n' + holders.map((h) => `  - ${h.ticketId} (${h.reason})`).join('\n')
+      ? '\n' + holders.map((h) => `  - ${h.ticketId} (${h.status}) — ${h.reason}`).join('\n')
       : '';
     throw new Error(
       `Task worktree limit reached (${taskCount}/${maxWorktrees}). ` +
@@ -1010,7 +1003,7 @@ export async function resolveTaskExecutionRoot(
     isTerminal?: (ticketId: string) => boolean | Promise<boolean>;
     /** FLUX-1617 (Gap 3): forwarded into `createTaskWorktree` so a cap error this path wraps
      *  already names its holders — see `TaskWorktreeOptions.describeSlotHolders`. */
-    describeSlotHolders?: () => Promise<Array<{ ticketId: string; reason: string }>>;
+    describeSlotHolders?: () => Promise<Array<{ ticketId: string; status: string; reason: string }>>;
   } = {},
 ): Promise<string> {
   const branch = task?.branch;

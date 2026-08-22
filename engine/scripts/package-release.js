@@ -3,7 +3,7 @@
  * Packages the built engine into versioned release artifacts under releases/.
  *
  * Usage:
- *   node scripts/package-release.js [--platform mac|win|all] [--version v1.2.3]
+ *   node scripts/package-release.js [--platform mac|win|linux|all] [--version v1.2.3]
  *
  * Version is resolved from (in priority order):
  *   1. --version flag
@@ -12,7 +12,8 @@
  *
  * Outputs (at repo root):
  *   releases/event-horizon-macos-<version>.zip
- *   releases/event-horizon-win-<version>.exe
+ *   releases/event-horizon-win-<version>.zip
+ *   releases/event-horizon-linux-<version>.zip
  */
 
 import { execFileSync, spawnSync } from 'child_process';
@@ -114,6 +115,24 @@ function buildMac() {
   return zipPath;
 }
 
+// ── Linux ─────────────────────────────────────────────────────────────────────
+
+// Same @yao-pkg/pkg path as buildMac — the Windows SEA detour exists only to dodge a
+// Defender false-positive, which has no Linux equivalent. x64 matches the GitHub
+// ubuntu runners and the overwhelming majority of Linux desktops.
+function buildLinux() {
+  const tmpBin = path.join(distDir, 'event-horizon-linux');
+  pkg('node22-linux-x64', tmpBin);
+
+  const zipName = `event-horizon-linux-${version}.zip`;
+  const zipPath = path.join(releasesDir, zipName);
+  createFlatZip(zipPath, tmpBin);
+  fs.rmSync(tmpBin, { force: true });
+
+  console.log(`Linux artifact → releases/${zipName}`);
+  return zipPath;
+}
+
 // ── Windows (Node.js SEA) ─────────────────────────────────────────────────────
 // Builds the Windows executable using Node.js Single Executable Applications
 // instead of @yao-pkg/pkg.  SEA produces a standard Node.js binary rather
@@ -202,9 +221,11 @@ function buildWin() {
 
 const platform = platformFlag === 'mac' ? 'mac'
   : platformFlag === 'win' ? 'win'
+  : platformFlag === 'linux' ? 'linux'
   : 'all';
 
 if (platform === 'mac' || platform === 'all') buildMac();
 if (platform === 'win' || platform === 'all') buildWin();
+if (platform === 'linux' || platform === 'all') buildLinux();
 
 console.log(`Done. Artifacts in releases/`);

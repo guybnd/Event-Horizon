@@ -15,6 +15,7 @@ import { serializeTaskForApi, updateTaskWithHistory, syncParentSubtaskLinks, val
 import { evaluateCommentGate, resolveTransitionStatusNames, validateAndRegisterTicketWrite } from '../../status-transition-service.js';
 import { stopAllSessionsForTask } from '../../session-store.js';
 import { broadcastEvent } from '../../events.js';
+import { emitDocRecap, emitDocRecapForBranch } from '../../doc-recap-emit.js';
 import { reqWorkspace } from './helpers.js';
 import type { HistoryEntry } from './helpers.js';
 
@@ -123,7 +124,11 @@ router.put('/:id', async (req, res) => {
   // drag-to-Ready with no commits cannot silently open an empty PR either. If this ever needs to
   // refuse, reuse `evaluateWorktreeReadyRefusal` from status-transition-service.ts rather than
   // duplicating it.
-  if (updates.status === readyStatus && task.status !== readyStatus) {
+  // FLUX-1667: captured here (before any later branch could touch updates.status) so the
+  // doc-recap emit after the write below fires on exactly the same Ready transition this gate
+  // just validated — mirrors the MCP change_status path's trigger condition.
+  const movingToReady = updates.status === readyStatus && task.status !== readyStatus;
+  if (movingToReady) {
     const submittedHistory: HistoryEntry[] = Array.isArray(updates.history) ? updates.history : [];
     // FLUX-1308: skip reconciliation when no history array was submitted — building identity
     // signatures for the whole existing history is wasted work in the appendHistory-only case.
@@ -281,6 +286,22 @@ router.put('/:id', async (req, res) => {
     }, req.workspace);
 
     broadcastEvent('taskUpdated', { id });
+
+    // FLUX-1667: closes the gap where FLUX-1662's auto doc-recap only fired on the MCP
+    // change_status path — a portal drag-to-Ready (this REST PUT) missed it. Fire-and-forget:
+    // emitDocRecap already swallows its own errors (never blocks/fails this response); the
+    // .catch here is a defensive backstop, same pattern as mcp-server.ts's change_status.
+    if (movingToReady && task.branch) {
+      await emitDocRecap(id, task.branch, task.baselineCommit ?? '', reqWorkspace(req)).catch((err) =>
+        console.error(`[update] doc-recap emit for ${id} failed:`, err),
+      );
+      // FLUX-1670: also refresh the PR ticket's own doc-recap (if one owns this branch) — the REST
+      // drag-to-Ready path is the same "member reaches Ready" seam as mcp-server.ts's change_status.
+      await emitDocRecapForBranch(task.branch, reqWorkspace(req)).catch((err) =>
+        console.error(`[update] doc-recap emit for PR ticket on branch ${task.branch} failed:`, err),
+      );
+    }
+
     res.json(serializeTaskForApi(reqWorkspace(req).tasks[id]));
   } catch (err) {
     // FLUX-1550: a stale baseBodyVersion is a conflict, not a server failure — 409 with the

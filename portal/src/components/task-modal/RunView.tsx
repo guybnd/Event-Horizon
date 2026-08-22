@@ -5,6 +5,7 @@ import { FRAMEWORK_ICONS } from '../../constants';
 import { OrchestrationTopology } from '../OrchestrationTopology';
 import { OutputTail } from './OutputTail';
 import { TokenBadge } from '../TokenBadge';
+import { useSessionOutput } from '../../hooks/useSessionOutput';
 import {
   type SessionGroup,
   aggregateGroup,
@@ -49,6 +50,7 @@ function SessionRow({ session, config, busy, onStop }: {
   const label = normalizeRoleLabel(session.role) ?? session.label ?? session.framework;
   const active = isActiveSession(session);
   const hasOutput = Boolean(session.liveOutput);
+  const output = useSessionOutput(session, open);
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white dark:border-white/10 dark:bg-white/5">
@@ -90,7 +92,7 @@ function SessionRow({ session, config, busy, onStop }: {
         <p className="px-2.5 pb-1.5 pl-9 text-[11px] text-gray-500 dark:text-gray-400">{session.currentActivity}</p>
       )}
       {open && hasOutput && (
-        <OutputTail text={session.liveOutput!} className="mx-2.5 mb-2.5" />
+        <OutputTail text={output.text} notice={output.notice} className="mx-2.5 mb-2.5" />
       )}
       {(session.inputTokens != null || session.outputTokens != null || session.costUSD != null) && (
         <div className="px-2.5 pb-2 pl-9">

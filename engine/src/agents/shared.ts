@@ -19,7 +19,7 @@ import { getConfig } from '../config.js';
 import { INTEGRATION_TIER_DEFAULTS, MODEL_POLICY_PRESETS } from '../config.js';
 import { getModulePromptFragments } from '../modules.js';
 import { updateAgentSession, updateTaskWithHistory } from '../task-store.js';
-import { getWorkspace } from '../workspace-context.js';
+import { getWorkspace, resolveWorkspaceByRoot, runWithWorkspace } from '../workspace-context.js';
 import { buildActivityEntry } from '../history.js';
 import { raiseNeedsAction } from '../parked-ticket.js';
 import { resolveClaudeBinaryPathDarwin, invalidateClaudeBinaryDarwinCache } from './claude-binary-darwin.js';
@@ -313,7 +313,7 @@ export function appendErrorToSession(session: CliSessionRecord, message: string)
 // retry might succeed), `resolveResumeExecutionRoot` never self-heals a reclaimed worktree — only a
 // FRESH spawn does — so leaving this session resumable would just let the user retry into the same
 // wall. The thrown message's own guidance ("restart the session") means start a NEW one.
-export async function surfaceResumeFailure(session: CliSessionRecord, taskId: string, error: unknown): Promise<never> {
+export async function surfaceResumeFailure(session: CliSessionRecord, taskId: string, error: unknown, workspaceRoot: string): Promise<never> {
   const message = error instanceof Error ? error.message : String(error);
   // FLUX-1120 review: a Stop already in flight (or just processed) owns this session's terminal
   // state — the stop route already set status:'cancelled'+requestedStop and killed the proc.
@@ -326,24 +326,34 @@ export async function surfaceResumeFailure(session: CliSessionRecord, taskId: st
     appendErrorToSession(session, message);
     flushSessionOutput(session, true);
     await session.writeQueue;
-    void raiseNeedsAction(taskId, message);
+    // FLUX-1574: this fires from the resume path BEFORE any child process spawns — unlike the
+    // adapters' spawn/exit handlers (FLUX-1563), there is no ambient runWithWorkspace binding
+    // here, so an unbound raiseNeedsAction would resolve getWorkspace() to the DEFAULT board
+    // (FLUX-1557) instead of this session's owning board on a non-default board.
+    runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => void raiseNeedsAction(taskId, message));
     // Best-effort durable surfacing (mirrors cli-session.ts's pre-spawn-failure catch, FLUX-981)
     // — a persistence failure here must never mask the ORIGINAL error with a store-layer one.
+    // FLUX-1695: same unbound-path hazard as the raiseNeedsAction call above — updateAgentSession
+    // and updateTaskWithHistory both default to getWorkspace() (the DEFAULT board) when not run
+    // inside a workspace binding, so wrap them the same way rather than leaving these two durable
+    // writes to silently land on the wrong board's ticket file.
     try {
-      if (session.sessionHistoryEntry?.sessionId) {
-        const accumulatedProgress = session.sessionHistoryEntry.progress || [];
-        await updateAgentSession(taskId, session.sessionHistoryEntry.sessionId, (entry) => {
-          entry.status = 'failed';
-          entry.outcome = message;
-          entry.endedAt = session.endedAt;
-          entry.progress = accumulatedProgress;
-        });
-      } else {
-        await updateTaskWithHistory(taskId, {
-          updatedBy: 'Agent',
-          entries: [buildActivityEntry(message, 'Agent', session.endedAt)],
-        });
-      }
+      await runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), async () => {
+        if (session.sessionHistoryEntry?.sessionId) {
+          const accumulatedProgress = session.sessionHistoryEntry.progress || [];
+          await updateAgentSession(taskId, session.sessionHistoryEntry.sessionId, (entry) => {
+            entry.status = 'failed';
+            entry.outcome = message;
+            entry.endedAt = session.endedAt!;
+            entry.progress = accumulatedProgress;
+          });
+        } else {
+          await updateTaskWithHistory(taskId, {
+            updatedBy: 'Agent',
+            entries: [buildActivityEntry(message, 'Agent', session.endedAt!)],
+          });
+        }
+      });
     } catch (persistError) {
       log.error(`surfaceResumeFailure: failed to record resume failure for ${taskId}:`, persistError);
     }

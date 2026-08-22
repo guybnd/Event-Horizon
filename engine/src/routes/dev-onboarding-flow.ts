@@ -70,6 +70,7 @@ const KNOWN_WIDGET_IDS = new Set<string>([
   'pick-folder',
   'storage-mode',
   'pick-assistant',
+  'github-cli',
   'install-skill',
   'bootstrap',
   'path-setup',

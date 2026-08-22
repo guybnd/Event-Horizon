@@ -13,7 +13,7 @@ import { type LaunchPhase } from '../agentActions';
 import { getReadyForMergeStatus, isPromptableStatus, isTaskAwaitingInput, classifyCardSessionState } from '../workflow';
 import { epicDeckSubtasks } from '../lib/decks';
 import { isEpic as isEpicTask, getDoneStatuses } from '../lib/epics';
-import { groupSessions, aggregateGroup, isGroupLive, isCombinerPending } from '../orchestration';
+import { groupSessions, aggregateGroup, isGroupLive, isCombinerPending, ACTIVE_SESSION_STATUSES } from '../orchestration';
 import { useAnimationControls } from 'framer-motion';
 import { tintFill, type StatusTint } from '../statusStyles';
 import { useMotionTokens } from '../motion/tokens';
@@ -265,6 +265,14 @@ export function useTaskCardController({
   // record itself is live), but they must NOT drive the card's "agent is actively working" chrome
   // (border glow, breathing overlay, footer bot-glow) — only `running`/`starting` should.
   const isSessionRunning = sessionState === 'running' || sessionState === 'starting';
+  // FLUX-1604: mirrors ContextMenu.hasActiveSession verbatim — checks the live-SSE status against
+  // the full ACTIVE_SESSION_STATUSES set (including 'scheduled', unlike hasActiveCliSession/
+  // sessionState above, which intentionally exclude it for the "is actively working" chrome). This
+  // is the source of truth for "does this card have a live session to Stop", so a lone `scheduled`
+  // session can't disagree between the card's Stop-only gate and the context menu's Stop item.
+  const liveSessionStatus = liveSession?.status ?? task.cliSession?.status;
+  const hasActiveSession =
+    !!task.cliSession && !!liveSessionStatus && (ACTIVE_SESSION_STATUSES as readonly string[]).includes(liveSessionStatus);
   // S10 (epic FLUX-996): the SSE-fed failure detail (kind/reason), scoped to the task's CURRENT
   // session — a stale failure from a superseded session (a retry that has since started a new
   // one) must never outlive it and read as if the fresh attempt failed.
@@ -933,6 +941,7 @@ export function useTaskCardController({
     snippet,
     readCommentIds,
     hasActiveCliSession,
+    hasActiveSession,
     isSessionRunning,
     currentActivity,
     sessionState,

@@ -7,11 +7,13 @@ import {
   ARTIFACT_CSP,
   ARTIFACT_ANNOTATOR_SCRIPT,
   ARTIFACT_LAYOUT_AUDIT_SCRIPT,
+  ARTIFACT_DOC_EDIT_SCRIPT,
   injectAnnotatorScript,
   injectArtifactScripts,
   isSafeTicketId,
   parseRevParam,
   writeArtifactRevision,
+  writeArtifactRevisionInPublication,
   readArtifactRevision,
   listArtifactRevisionsOnDisk,
   getArtifactFilePath,
@@ -310,19 +312,68 @@ describe('grooming artifacts (FLUX-873)', () => {
       expect(ARTIFACT_LAYOUT_AUDIT_SCRIPT).toContain('function reaudit');
     });
 
-    it('injectArtifactScripts injects BOTH the annotator and the audit runtimes before </body>', () => {
+    it('ARTIFACT_DOC_EDIT_SCRIPT responds to a set-doc-edit-availability message by hiding/showing its buttons (FLUX-1670)', () => {
+      expect(ARTIFACT_DOC_EDIT_SCRIPT).toContain('set-doc-edit-availability');
+      expect(ARTIFACT_DOC_EDIT_SCRIPT).toContain('style.display = available');
+    });
+
+    it('injectArtifactScripts injects the annotator, the audit runtime, the doc-edit runtime, AND the doc-tabs runtime before </body>', () => {
       const out = injectArtifactScripts('<html><body><h1>hi</h1></body></html>');
       expect(out).toContain("ns: NS, type: 'ready'");        // annotator present
       expect(out).toContain("type: 'layout-audit'");          // audit present
+      expect(out).toContain("type: 'doc-edit-request'");      // FLUX-1662 doc-edit button present
+      expect(out).toContain("d.type !== 'show-doc'");         // FLUX-1667 doc-tabs runtime present
       expect(out).toContain('<h1>hi</h1>');
-      // Two separate tags so one runtime's syntax error can't disable the other.
-      expect((out.match(/<script>/g) || []).length).toBe(2);
+      // Four separate tags so one runtime's syntax error can't disable the others.
+      expect((out.match(/<script>/g) || []).length).toBe(4);
       expect(out.indexOf('<script>')).toBeLessThan(out.indexOf('</body>'));
     });
 
     it('injectArtifactScripts falls back to </html> then plain append for fragment-ish HTML', () => {
       expect(injectArtifactScripts('<html><h1>no body</h1></html>')).toMatch(/<\/script><\/html>$/);
       expect(injectArtifactScripts('<h1>bare</h1>')).toMatch(/<h1>bare<\/h1><script>/);
+    });
+  });
+
+  // FLUX-1662: `kind` is an additive/back-compat discriminant on ArtifactRevision (undefined =
+  // legacy / agent-authored) so the portal can label an engine-emitted doc-recap ("Doc Recap")
+  // distinctly from an agent's manual Visual Recap, instead of both matching the same /recap/i
+  // regex on title/note (see TicketSideView.tsx). writeArtifactRevisionInPublication must accept
+  // and persist an optional `kind` alongside title/note without disturbing the existing contract.
+  describe('kind discriminant on ArtifactRevision (FLUX-1662)', () => {
+    it('persists an optional kind on the revision when provided', async () => {
+      const id = 'FLUX-1662-a';
+      const { pointer, rev } = await writeArtifactRevisionInPublication(
+        id,
+        '<p>recap</p>',
+        { title: 'Doc Recap', kind: 'doc-recap' },
+        undefined,
+      );
+      expect(rev).toBe(1);
+      expect(pointer.revisions[0]!.kind).toBe('doc-recap');
+      expect(pointer.revisions[0]!.title).toBe('Doc Recap');
+    });
+
+    it('round-trips a revision written WITHOUT kind (back-compat: absent, not defaulted to a string)', async () => {
+      const id = 'FLUX-1662-b';
+      const { pointer } = await writeArtifactRevisionInPublication(id, '<p>legacy</p>', { title: 'Legacy' }, undefined);
+      expect(pointer.revisions[0]!.kind).toBeUndefined();
+    });
+
+    it('does not leak kind across successive revisions on the same artifact', async () => {
+      const id = 'FLUX-1662-c';
+      const a = await writeArtifactRevisionInPublication(id, '<p>one</p>', {}, undefined);
+      expect(a.pointer.revisions[0]!.kind).toBeUndefined();
+      const b = await writeArtifactRevisionInPublication(id, '<p>two</p>', { kind: 'doc-recap' }, a.pointer);
+      expect(b.pointer.revisions[0]!.kind).toBeUndefined();
+      expect(b.pointer.revisions[1]!.kind).toBe('doc-recap');
+    });
+
+    it('does not break the pre-existing writeArtifactRevision path when no kind is passed', async () => {
+      const id = 'FLUX-1662-d';
+      const a = await writeArtifactRevision(id, '<h1>rev one</h1>', { title: 'First' }, undefined);
+      expect(a.rev).toBe(1);
+      expect(a.pointer.revisions[0]!.kind).toBeUndefined();
     });
   });
 });

@@ -8,8 +8,26 @@ declare global {
     interface Request {
       /** The active workspace, attached by {@link attachWorkspace} (FLUX-343). */
       workspace?: Workspace;
+      /**
+       * True when a routing value (header/`?ws=`) was present but matched neither a registered
+       * workspace nor the default workspace — set by {@link attachWorkspace}, consumed by
+       * {@link requireWorkspace} to refuse misrouted mutations (FLUX-1675).
+       */
+      workspaceHeaderUnresolved?: boolean;
     }
   }
+}
+
+/**
+ * True when `root` names a registered workspace (via `getWorkspaceByRoot`) or the default
+ * workspace's root (compared via `normalizeWorkspaceKey`, per the FLUX-1571 fix below). Shared by
+ * {@link resolveWorkspaceFromRoot} and {@link attachWorkspace}'s unresolved-header check so the
+ * two never drift out of sync (FLUX-1675).
+ */
+function isRegisteredOrDefaultRoot(key: string): boolean {
+  if (getWorkspaceByRoot(key)) return true;
+  const defaultWs = getDefaultWorkspace();
+  return !!defaultWs.root && normalizeWorkspaceKey(defaultWs.root) === normalizeWorkspaceKey(key);
 }
 
 /**
@@ -62,6 +80,8 @@ export function attachWorkspace(req: express.Request, _res: express.Response, ne
     if (typeof q === 'string') root = q;
     else if (Array.isArray(q)) root = q.filter((v): v is string => typeof v === 'string');
   }
+  const key = Array.isArray(root) ? root[0] : root;
+  req.workspaceHeaderUnresolved = !!key && !isRegisteredOrDefaultRoot(key);
   req.workspace = resolveWorkspaceFromRoot(root);
   next();
 }
@@ -80,12 +100,49 @@ export function workspaceScope(req: express.Request, _res: express.Response, nex
   runWithWorkspace(req.workspace ?? null, () => next());
 }
 
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/**
+ * Guards every workspace-scoped router. Beyond the pre-existing "no workspace configured" check,
+ * refuses a mutating request (POST/PUT/PATCH/DELETE) whose routing header/`?ws=` named a board
+ * that isn't currently loaded — the common case right after an engine restart, before any board
+ * but the boot one is open. Without this, `attachWorkspace`'s FLUX-1557 "never an error" fallback
+ * silently created the record on the active/default board instead (FLUX-1675). Reads (GET/HEAD)
+ * keep that silent fallback unchanged — only mutations are refused, and only when the header
+ * genuinely failed to resolve (`req.workspaceHeaderUnresolved`, set by `attachWorkspace`).
+ */
 export function requireWorkspace(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (!getWorkspaceRoot()) {
     res.status(503).json({ error: 'No workspace configured', code: 'NO_WORKSPACE' });
     return;
   }
+  if (req.workspaceHeaderUnresolved && MUTATING_METHODS.has(req.method)) {
+    const root = req.headers['x-eh-workspace'] ?? req.query?.ws;
+    const key = Array.isArray(root) ? root[0] : root;
+    res.status(400).json({
+      error: `Workspace "${key}" is not open — open that board first, then retry.`,
+      code: 'WORKSPACE_NOT_LOADED',
+    });
+    return;
+  }
   next();
+}
+
+/**
+ * True when the request carries an agent identity header — `x-eh-conversation-id` or
+ * `x-eh-session-id` (FLUX-1678, decided in FLUX-1675). EH agent clients set one of these on every
+ * request (`engine/src/agents/claude-code.ts`, `engine/src/agents/codex.ts`); the portal's raw
+ * `fetch` calls (e.g. `switchWorkspace`, `portal/src/api.ts`) never send either. Mere presence is
+ * sufficient to distinguish portal from agent — no signature verification needed, consistent with
+ * EH's trusted-localhost model (`loopbackOnly` above): a headerless curl is treated as the trusted
+ * local user by design. A repeated header (`string[]`) collapses to its first entry, mirroring
+ * `attachWorkspace`'s handling of `x-eh-workspace`.
+ */
+export function isAgentAuthenticatedRequest(req: express.Request): boolean {
+  const conversationId = req.headers['x-eh-conversation-id'];
+  const sessionId = req.headers['x-eh-session-id'];
+  const key = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
+  return !!key(conversationId) || !!key(sessionId);
 }
 
 /** True for a bare hostname that resolves to loopback (no port, brackets already stripped). */

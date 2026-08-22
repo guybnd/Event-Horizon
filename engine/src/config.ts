@@ -1,7 +1,8 @@
 import { log } from './log.js';
 import fs from 'fs/promises';
-import { renameSync } from 'fs';
-import { getConfigFile } from './workspace.js';
+import { existsSync, renameSync } from 'fs';
+import path from 'path';
+import { getConfigFile, getWorkspaceRoot } from './workspace.js';
 import { getWorkspace } from './workspace-context.js';
 import { DEFAULT_GATE_POLICY, UNMIGRATED_GATE_POLICY_DEFAULT } from './models/gate-policy.js';
 import type { Tier, TaskKey } from './agents/types.js';
@@ -304,6 +305,13 @@ const CONFIG_DEFAULTS: any = {
   //   toolScoping: { categoryDeny: { worker: ['tool_a', 'tool_b', ...] } }
   // Seeding an empty object here would be indistinguishable from "no override" anyway, so it's
   // left absent rather than adding a no-op key to every board's config.json.
+  //
+  // FLUX-1657: also NOT seeded here, same convention — `mcpServerReadOnly` maps a connector id to
+  // `true` (read-only in every phase) or `{ exceptPhases?, allow?, deny? }` (phase exceptions +
+  // per-server tool overrides). Absent/unmapped = connector fully enabled. Enforced by
+  // `mcp-readonly.ts`'s deny-list helpers, wired into `disallowedToolsArgs` (agents/claude-code.ts).
+  // Persisted via the targeted `GET`/`PUT /config/mcp-readonly` route (routes/config.ts), never the
+  // full-config PUT. Shape: mcpServerReadOnly: { jira: true, doc360: { exceptPhases: ['finalize'] } }
   modules: [],
   terminalCommands: [
     { id: 'restart-dev', label: 'Restart dev server', command: 'npm run dev', runMode: 'current' },
@@ -326,6 +334,21 @@ export function getConfig(): any {
   // pollute) every other workspace's defaults.
   if (ws.config === null) ws.config = structuredClone(CONFIG_DEFAULTS);
   return ws.config;
+}
+
+/**
+ * FLUX-1655: whether a viewer doc save should prompt for a message and commit (routes/docs.ts PUT).
+ * `docsCommitOnSave` has no static default in CONFIG_DEFAULTS — an orphan `.flux-store` workspace
+ * has no repo at its root to commit into, and that can only be determined at runtime. An explicit
+ * true/false the user saved in config.json always wins; otherwise this resolves to whether
+ * `getWorkspaceRoot()` is itself a git working tree (mirrors the shallow `.git`-directory probe
+ * `group-discovery.ts`'s `isGitRepo` / `git-worktree.ts` already use).
+ */
+export function isDocsCommitOnSaveEnabled(): boolean {
+  const explicit = getConfig().docsCommitOnSave;
+  if (typeof explicit === 'boolean') return explicit;
+  const root = getWorkspaceRoot();
+  return root != null && existsSync(path.join(root, '.git'));
 }
 
 /**

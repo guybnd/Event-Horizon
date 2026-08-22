@@ -135,6 +135,28 @@ export interface TicketLink {
   label?: string;
 }
 
+/** FLUX-1667: shared revision/pointer shape for both artifact channels (`artifacts`/plan and
+ *  `docRecap`/doc-recap on `Task`). */
+export interface ArtifactRevisionMeta {
+  rev: number;
+  title?: string;
+  note?: string;
+  /** FLUX-1662: `kind` is an additive discriminant — 'doc-recap' for the engine-emitted auto
+   *  doc-recap artifact, undefined for a legacy/agent-authored artifact (incl. a manual Visual
+   *  Recap, still detected by title/note regex). */
+  kind?: 'doc-recap';
+  /** FLUX-1667: for a `kind:'doc-recap'` revision, the ordered set of doc paths that actually got
+   *  a rendered `<section data-eh-doc-path>` in this revision — the per-doc tab strip's source. */
+  docPaths?: string[];
+  createdAt: string;
+  bytes: number;
+}
+
+export interface ArtifactPointer {
+  latest: number;
+  revisions: ArtifactRevisionMeta[];
+}
+
 export interface Task {
   id: string;
   status: string;
@@ -220,11 +242,14 @@ export interface Task {
   /** FLUX-873: rich grooming artifact pointer — revision-keyed self-contained HTML published via the
    *  `publish_artifact` MCP tool. Each publish appends a revision (history is kept); the viewer
    *  defaults to `latest`. The HTML lives in a sidecar served by GET /api/tasks/:id/artifact?rev=,
-   *  never inlined in the body. */
-  artifacts?: {
-    latest: number;
-    revisions: { rev: number; title?: string; note?: string; createdAt: string; bytes: number }[];
-  };
+   *  never inlined in the body. This is the **`plan`** channel (FLUX-1667) — grooming mockups and
+   *  Ready-time Visual Recaps; the auto doc-recap moved to its own `docRecap` channel below. */
+  artifacts?: ArtifactPointer;
+  /** FLUX-1667: the **`doc-recap`** channel — FLUX-1662's auto doc-recap, split out of `artifacts`
+   *  into its own typed stream so publishing a Visual Recap and an auto doc-recap no longer bury
+   *  one another. Same shape/sidecar convention as `artifacts`, served at
+   *  GET /api/tasks/:id/artifact?rev=&channel=doc-recap. */
+  docRecap?: ArtifactPointer;
   parentId?: string;
   subtasks?: (string | InlineSubtask)[];
   version?: string;
@@ -311,6 +336,10 @@ export interface CliSessionSummary {
   lastInputAt?: string;
   blockedReason?: string;
   liveOutput?: string;
+  /** FLUX-1685: original untruncated length of `liveOutput`, present only when the detail
+   *  payload truncated a terminal session's buffer to a tail. Fetch the full buffer via
+   *  `fetchSessionOutput` when this is set and the caller needs more than the tail. */
+  liveOutputChars?: number;
   currentActivity?: string;
   skipPermissions?: boolean;
   inputTokens?: number;
@@ -344,11 +373,16 @@ export interface CliSessionSummary {
   /** FLUX-1434: `event-horizon` MCP tool names (bare) disallowed for this session at its last
    *  spawn/resume — the deny-list model's computed output, read-only. Absent/empty = unscoped. */
   disallowedEhTools?: string[];
-  /** FLUX-1047/1063/1397/1601: mirrors the engine's `CliSessionRecord.terminalReason` — why a
-   *  terminal session ended, when the raw exit is otherwise an opaque `failed`. */
-  terminalReason?: 'context-exhausted' | 'rate-limited' | 'auth-expired';
+  /** FLUX-1047/1063/1397/1601/1639: mirrors the engine's `CliSessionRecord.terminalReason` — why a
+   *  terminal session ended, when the raw exit is otherwise an opaque `failed`. `'quota-exhausted'`
+   *  is Codex's provider-quota-wall diagnosis (distinct from `'rate-limited'`'s short cooldown —
+   *  the reset window may be weeks away, so Furnace halts the batch instead of retrying). */
+  terminalReason?: 'context-exhausted' | 'rate-limited' | 'auth-expired' | 'quota-exhausted';
   /** FLUX-1599/1601: structured self-diagnosis attached when `terminalReason` is 'auth-expired'. */
   authDiagnosis?: AuthDiagnosis;
+  /** FLUX-1639: verbatim provider reset text, present only when `terminalReason` is
+   *  'quota-exhausted' and Codex supplied one. Never parsed for a date — display-only. */
+  quotaResetText?: string;
 }
 
 export interface TaskLiveEvent {
@@ -410,6 +444,10 @@ export interface Doc {
   group?: boolean;
   /** True when this group doc is editable but its writes route through the group parent (bound member, FLUX-419). */
   viaParent?: boolean;
+  /** Front-matter keys other than `title`/`order`, retained verbatim across saves (FLUX-1650). Presence drives the collapsible metadata strip above the rendered body (FLUX-1672). */
+  extraFrontmatter?: Record<string, unknown>;
+  /** Hash of the on-disk markdown as of this load (FLUX-1655) — echoed back as `baseHash` on save so the engine can detect an external edit landing first. */
+  hash?: string;
 }
 
 export interface SwimlaneDef {
@@ -459,6 +497,20 @@ export interface ProbeResult {
   status: ProbeStatus;
   message: string;
   checkedAt: string;
+  /** FLUX-1656 (Connectors panel) fields — absent on a plain module probe result. */
+  source?: 'module' | 'workspace';
+  env?: { required: string[]; present: string[]; missing: string[] };
+  upstreamStatus?: number;
+}
+
+/** FLUX-1656: one row in the Settings → Connectors panel — a configured module server or a
+ *  workspace `.mcp.json` server, plus its latest cached probe (if any has run yet). */
+export interface ConnectorStatus {
+  id: string;
+  name: string;
+  source: 'module' | 'workspace';
+  requiredEnv: string[];
+  probe?: ProbeResult;
 }
 
 export interface Config {
@@ -513,6 +565,11 @@ export interface Config {
   docsEditPermissions?: DocsEditPermissions;
   docsAllowedUsers?: string[];
   docsRoot?: string;
+  /** FLUX-1655: a viewer doc save prompts for a message and commits it (one file, pathspec-scoped).
+   *  Resolved server-side (`GET /api/config`) to whether the workspace root is a git repo when the
+   *  user hasn't made an explicit choice — an orphan `.flux-store` workspace has no repo to commit
+   *  into. */
+  docsCommitOnSave?: boolean;
   animationsEnabled?: boolean;
   animationSpeed?: 'fast' | 'normal' | 'slow';
   hoverPopupsEnabled?: boolean;

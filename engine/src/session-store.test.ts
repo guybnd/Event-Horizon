@@ -1146,11 +1146,17 @@ describe('active-session stub sync/rehydrate — two-board isolation (FLUX-1556)
         'utf-8',
       );
 
-      const count = await runWithWorkspace(boardB, () => rehydrateSessionStubs());
-
-      expect(count).toBe(0);
+      // FLUX-1642: a first ownership mismatch quarantines rather than deletes — it takes two
+      // consecutive mismatched passes (i.e. two watcher-`ready` boots) before this residue is pruned.
+      const firstCount = await runWithWorkspace(boardB, () => rehydrateSessionStubs());
+      expect(firstCount).toBe(0);
       expect(cliSessionsById.has('foreign')).toBe(false); // never loaded — H4 (board-state leak) can't see it either
-      expect(await readStubFiles(rootB)).toEqual([]); // pruned from disk — the residue stops being frozen forever
+      expect(await readStubFiles(rootB)).toEqual(['foreign.json']); // quarantined on first mismatch, not yet deleted
+
+      const secondCount = await runWithWorkspace(boardB, () => rehydrateSessionStubs());
+      expect(secondCount).toBe(0);
+      expect(cliSessionsById.has('foreign')).toBe(false);
+      expect(await readStubFiles(rootB)).toEqual([]); // pruned from disk on the second consecutive mismatch
     });
 
     it('rehydrates a legacy/untagged stub whose taskId IS a real ticket on this board (backward compatible)', async () => {
@@ -1169,7 +1175,7 @@ describe('active-session stub sync/rehydrate — two-board isolation (FLUX-1556)
       expect(await readStubFiles(rootA)).toEqual(['legacy.json']); // kept, not pruned
     });
 
-    it('prunes a TAGGED stub whose workspaceRoot points at a different board, even if its taskId happens to exist here too', async () => {
+    it('quarantines (does not delete) a TAGGED stub on its FIRST mismatched pass, then deletes it on a second consecutive mismatch (FLUX-1642)', async () => {
       // Both boards happen to have a ticket called FLUX-SHARED (same-prefix collision, H3/H5's
       // premise) — the tag, not ticket existence, must decide ownership once Fix A2 has tagged it.
       boardA.tasks['FLUX-SHARED'] = { id: 'FLUX-SHARED', status: 'Ready' };
@@ -1181,11 +1187,39 @@ describe('active-session stub sync/rehydrate — two-board isolation (FLUX-1556)
         'utf-8',
       );
 
-      const count = await runWithWorkspace(boardB, () => rehydrateSessionStubs());
+      // First pass: mismatch is flagged, NOT deleted — a delete decision must never rest on one
+      // string compare with a swallowed error (AC2).
+      const firstCount = await runWithWorkspace(boardB, () => rehydrateSessionStubs());
+      expect(firstCount).toBe(0);
+      expect(cliSessionsById.has('tagged-for-a')).toBe(false);
+      expect(await readStubFiles(rootB)).toEqual(['tagged-for-a.json']); // quarantined, not deleted
+      const quarantined = JSON.parse(await fsp.readFile(path.join(stubsDirFor(rootB), 'tagged-for-a.json'), 'utf-8'));
+      expect(typeof quarantined.ownershipMismatchAt).toBe('string');
 
-      expect(count).toBe(0);
+      // Second consecutive pass: still mismatched → now confirmed foreign, deleted.
+      const secondCount = await runWithWorkspace(boardB, () => rehydrateSessionStubs());
+      expect(secondCount).toBe(0);
       expect(cliSessionsById.has('tagged-for-a')).toBe(false);
       expect(await readStubFiles(rootB)).toEqual([]);
+    });
+
+    it.skipIf(process.platform !== 'win32')('does NOT quarantine/delete a tagged stub whose workspaceRoot differs only in path FORM (case) from this board\'s root (FLUX-1642)', async () => {
+      boardA.tasks['FLUX-A'] = { id: 'FLUX-A', status: 'Ready' };
+      // Simulate a stub written with a differently-cased form of the same on-disk root — the exact
+      // Windows failure mode `pathsEqual` exists to survive (raw `===` would treat this as foreign).
+      const differentlyFormedRoot = rootA === rootA.toUpperCase() ? rootA.toLowerCase() : rootA.toUpperCase();
+      await fsp.mkdir(stubsDirFor(rootA), { recursive: true });
+      await fsp.writeFile(
+        path.join(stubsDirFor(rootA), 'case-mismatch.json'),
+        JSON.stringify({ id: 'case-mismatch', taskId: 'FLUX-A', status: 'waiting-input', startedAt: new Date().toISOString(), workspaceRoot: differentlyFormedRoot }),
+        'utf-8',
+      );
+
+      const count = await runWithWorkspace(boardA, () => rehydrateSessionStubs());
+
+      expect(count).toBe(1); // rehydrated, not quarantined
+      expect(cliSessionsById.get('case-mismatch')?.taskId).toBe('FLUX-A');
+      expect(await readStubFiles(rootA)).toEqual(['case-mismatch.json']); // never touched
     });
 
     it('round-trips a freshly-written (Fix A2 tagged) stub through sync → restart → rehydrate without cross-board leakage', async () => {

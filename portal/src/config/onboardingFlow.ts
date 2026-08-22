@@ -30,6 +30,7 @@ export type OnboardingWidgetId =
   | 'pick-folder'
   | 'storage-mode'
   | 'pick-assistant'
+  | 'github-cli'
   | 'install-skill'
   | 'bootstrap'
   | 'path-setup'
@@ -123,6 +124,7 @@ export const SYSTEM_PAGE_SPECS: Record<
   'pick-folder': { system: true, required: true, locked: true, dependsOn: [] },
   'storage-mode': { system: true, required: true, locked: true, dependsOn: ['pick-folder'] },
   'pick-assistant': { system: true, required: true, locked: true, dependsOn: ['pick-folder'] },
+  'github-cli': { system: true, required: false, locked: true, dependsOn: ['pick-folder'] },
   'install-skill': { system: true, required: false, locked: true, dependsOn: ['pick-folder', 'pick-assistant'] },
   'bootstrap': { system: true, required: false, locked: true, dependsOn: ['pick-folder'] },
   'path-setup': { system: true, required: false, locked: true, dependsOn: ['pick-folder'] },
@@ -275,6 +277,19 @@ export const DEFAULT_FLOW: OnboardingFlowConfig = {
         'Event Horizon installs a workflow skill into your AI coding assistant so it can manage tickets automatically.',
       system: true,
       required: true,
+      locked: true,
+      dependsOn: ['pick-folder'],
+    },
+    {
+      id: 'github-cli',
+      kind: 'widget',
+      widget: 'github-cli',
+      icon: 'GitPullRequest',
+      title: 'Connect the GitHub CLI',
+      subtitle:
+        "Event Horizon uses the gh CLI to create, review, and merge PRs, and to keep ticket status in sync with PR state. You can skip this and connect it later.",
+      system: true,
+      required: false,
       locked: true,
       dependsOn: ['pick-folder'],
     },

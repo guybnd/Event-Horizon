@@ -12,6 +12,7 @@ import {
   unregisterSession,
   getCliSessionSummaryForTask,
   getAllSessionSummariesForTask,
+  getFullLiveOutputForSession,
   getActiveSessionsForTask,
   stopCliSession,
   getPreferredInputSessionId,
@@ -612,6 +613,18 @@ router.get('/:id/cli-sessions', (req, res) => {
   const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
   res.json({ sessions: getAllSessionSummariesForTask(id) });
+});
+
+// FLUX-1685: on-demand full buffer for one session, fetched when the portal expands a terminal
+// session truncated in the task detail payload. Raw `id` (not sessionKeyFor) — virtual
+// board/Furnace conversations never reach this route (no task.cliSessions to expand).
+router.get('/:id/cli-sessions/:sessionId/output', (req, res) => {
+  const { id, sessionId } = req.params;
+  const task = reqWorkspace(req).tasks[id];
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+  const output = getFullLiveOutputForSession(id, sessionId);
+  if (output === undefined) return res.status(404).json({ error: 'Session output not available' });
+  res.json({ output });
 });
 
 // FLUX-602: durable conversation transcript (raw tier) for the chat pane.
@@ -1681,6 +1694,9 @@ router.post('/:id/cli-session/stop', async (req, res) => {
         console.warn(`Failed to stop session ${session.id} for task ${id}:`, error instanceof Error ? error.message : error);
       }
     }
+    // Keep every existing portal stop surface responsive even if the history write or child exit
+    // lingers. The in-memory records above are now authoritative for the task refresh.
+    broadcastEvent('taskUpdated', { id });
     await updateTaskWithHistory(id, {
       updatedBy: 'Agent',
       entries: [buildActivityEntry(
@@ -1713,6 +1729,9 @@ router.post('/:id/cli-session/stop', async (req, res) => {
 
   const label = session.label;
   stopCliSession(sessionId);
+  // stopCliSession synchronously marks the record cancelled before killing its process tree, so
+  // clients can reconcile immediately rather than waiting for persistence or process exit.
+  broadcastEvent('taskUpdated', { id });
   await updateTaskWithHistory(id, {
     updatedBy: 'Agent',
     entries: [buildActivityEntry(`${label} session stopped.`, 'Agent', session.endedAt!)],

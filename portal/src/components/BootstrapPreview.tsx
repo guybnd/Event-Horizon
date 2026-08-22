@@ -4,7 +4,10 @@ import { scanBootstrap, importBootstrap, type BootstrapScanResult, type Bootstra
 
 interface BootstrapPreviewProps {
   onComplete: () => void;
-  onSkip: () => void;
+  /** FLUX-1684: `{ skipped: true }` for the real "Skip" (docs/tasks found, none imported);
+   *  `{ skipped: false }` from the two "Continue" sites, where this is the page's only
+   *  forward control and not a skip at all (error / nothing-found states). */
+  onSkip: (opts?: { skipped?: boolean }) => void;
 }
 
 export function BootstrapPreview({ onComplete, onSkip }: BootstrapPreviewProps) {
@@ -82,7 +85,7 @@ export function BootstrapPreview({ onComplete, onSkip }: BootstrapPreviewProps) 
           <span>{error}</span>
         </div>
         <button
-          onClick={onSkip}
+          onClick={() => onSkip({ skipped: false })}
           className="flex h-11 items-center justify-center rounded-2xl border border-gray-200 bg-white px-6 text-sm font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
         >
           Continue
@@ -124,7 +127,7 @@ export function BootstrapPreview({ onComplete, onSkip }: BootstrapPreviewProps) 
           </p>
         </div>
         <button
-          onClick={onSkip}
+          onClick={() => onSkip({ skipped: false })}
           className="flex h-11 items-center justify-center rounded-2xl border border-gray-200 bg-white px-6 text-sm font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
         >
           Continue
@@ -264,7 +267,7 @@ export function BootstrapPreview({ onComplete, onSkip }: BootstrapPreviewProps) 
           )}
         </button>
         <button
-          onClick={onSkip}
+          onClick={() => onSkip({ skipped: true })}
           disabled={importing}
           className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
         >

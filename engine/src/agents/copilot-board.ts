@@ -5,15 +5,16 @@
 // confirmed live, no permission flag changes it — so `buildAdditionalMcpConfigArgs()` injects the
 // event-horizon server directly via `--additional-mcp-config`. See FLUX-959 risk notes: turn-1
 // `resumeSessionId` capture still needed live verification (separately confirmed working, FLUX-977).
-import { attachStdoutProcessing, spawnCopilot, buildAdditionalMcpConfigArgs } from './copilot.js';
+import { attachStdoutProcessing, spawnCopilot, buildAdditionalMcpConfigArgs, checkCopilotBinaryInstalled } from './copilot.js';
 import { EFFORT_LEVELS } from './shared.js';
 import { CLI_CAPABILITIES } from './types.js';
-import type { BoardSpec } from './board.js';
+import { BOARD_CONVERSATION_ID, type BoardSpec } from './board.js';
 import { makeBoardAdapter } from './board-core.js';
 
 export const copilotBoardSpec: BoardSpec = {
   framework: 'copilot',
   binary: 'copilot',
+  checkBinary: () => checkCopilotBinaryInstalled(BOARD_CONVERSATION_ID),
   buildArgs({ session, workspaceRoot, isResume }) {
     const resumeArgs = isResume && session.resumeSessionId ? ['--resume', session.resumeSessionId] : [];
     // FLUX-1496: `-p` is a bare flag — the prompt is written to stdin by wireBoardProc after spawn

@@ -22,7 +22,7 @@ import { getEnginePort } from '../packaged-mode.js';
 import { signConversation } from '../session-binding.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest, SendInputOptions } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, buildPhaseHandoffNote, resolveAttachmentAbsPaths, type CliTask } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, buildPhaseHandoffNote, resolveAttachmentAbsPaths, type CliTask } from './shared.js';
 
 // codex item.type -> progress-activity label. Mirrors copilot.ts's TOOL_ACTIVITY_MAP, keyed by the
 // codex JSONL item shape instead of a bare tool name (FLUX-1625 Phase 0: item.type is the stable
@@ -417,6 +417,14 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
   // a branch out itself, so spawning with cwd = workspaceRoot would commit straight to master.
   assertIsolatedSpawnRoot('Codex', id, task, executionRoot, workspaceRoot);
 
+  // FLUX-1641: precheck before spawning, mirroring claude-code.ts/gemini.ts — codex previously had
+  // no precheck at all, so a missing binary surfaced as a bare `spawn codex ENOENT` instead of an
+  // actionable install message. Unlike copilot's resolver (VS Code globalStorage + npm-loader
+  // fallback), resolveCodexBinaryUncached above only ever probes PATH via which/where 'codex' — the
+  // same binary name and mechanism checkBinaryInstalled itself uses — so there's no resolver
+  // divergence here and the shared PATH-only checker is safe to use as-is.
+  await checkBinaryInstalled('codex');
+
   log.info(`[${id}] Starting Codex CLI session in ${workspaceRoot}`);
 
   const groomingStatuses = [getConfig().requireInputStatus || 'Require Input', 'Grooming'];
@@ -725,8 +733,11 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   try {
     executionRoot = await resolveResumeExecutionRoot(session, getWorkspace().tasks[id], workspaceRoot);
   } catch (error) {
-    return surfaceResumeFailure(session, id, error);
+    return surfaceResumeFailure(session, id, error, workspaceRoot);
   }
+
+  // FLUX-1641: precheck before spawning — see the fresh-spawn call site's comment above.
+  await checkBinaryInstalled('codex');
 
   const inputAt = new Date().toISOString();
   session.lastInputAt = inputAt;

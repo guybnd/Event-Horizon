@@ -2821,12 +2821,26 @@ const ChatWindow = memo(function ChatWindow({
   // immediate clear. Auto-clears a couple seconds after a successful dispatch — by then the plan
   // strip's own `revising…` state (driven by `working`) has taken over.
   const [reviseStatus, setReviseStatus] = useState<{ phase: 'interrupting' | 'delivered' } | null>(null);
-  const dispatchAsRevise = useCallback(async (text: string) => {
+  const dispatchAsRevise = useCallback(async (text: string, opts?: ChatSendOptions) => {
     if (!task) return { ok: false as const };
+    // FLUX-1587: `startPlanRevise`/`POST /plan-review/revise` only carries text notes — a plan
+    // revision has no attachment storage, unlike a normal chat turn. Warn rather than silently
+    // dropping a pasted image the user reasonably expects to ride along with their message.
+    // Image-only submit (no text) has nothing left to send: bail out here, before the revise
+    // dispatch, so a stray screenshot-only Enter can't interrupt an in-flight gate pass with an
+    // empty, notes-free revise (`startPlanReviseNow` in gate-runner.ts kills the running session
+    // and re-dispatches grooming with no guidance when notes are empty).
+    if (opts?.attachments?.length && !text.trim()) {
+      notify.info("Pasted images aren't included in a plan revision — add a note describing the change you want.");
+      return { ok: false as const };
+    }
     setReviseStatus({ phase: 'interrupting' });
     try {
       const outcome = await revisePlan(task.id, currentUser, text, true);
       if (outcome.ok) {
+        if (opts?.attachments?.length) {
+          notify.info("Pasted images aren't included in a plan revision — only your text was sent.");
+        }
         setReviseStatus({ phase: 'delivered' });
         window.setTimeout(() => setReviseStatus((s) => (s?.phase === 'delivered' ? null : s)), 2500);
         return outcome;
@@ -2869,11 +2883,11 @@ const ChatWindow = memo(function ChatWindow({
   // failure (toast + restored draft) and never rejects, so this stays `Promise<void>` like the
   // plain `chat.send` path.
   const handleSend = useCallback((text: string, opts?: ChatSendOptions) => {
-    if (planGateOwnsInput) return dispatchAsRevise(text).then(() => undefined);
+    if (planGateOwnsInput) return dispatchAsRevise(text, opts).then(() => undefined);
     return chat.send(text, opts);
   }, [planGateOwnsInput, dispatchAsRevise, chat]);
   const handleEnqueue = useCallback((text: string, opts?: ChatSendOptions) => {
-    if (planGateOwnsInput) { void dispatchAsRevise(text); return; }
+    if (planGateOwnsInput) { void dispatchAsRevise(text, opts); return; }
     chat.enqueue(text, opts);
   }, [planGateOwnsInput, dispatchAsRevise, chat]);
 

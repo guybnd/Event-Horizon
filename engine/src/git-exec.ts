@@ -373,3 +373,93 @@ export async function runGitBinary(args: string[], opts: GitExecOptions = {}): P
 export function runGh(args: string[], opts?: GitExecOptions): Promise<GitExecResult> {
   return runHardened('gh', args, opts);
 }
+
+/**
+ * FLUX-1638: resolve the commit-ish a NEW task/ticket branch should be cut from, preferring the
+ * remote-tracking ref over the local default branch. `createTicketBranch` (branch-manager.ts) and
+ * `createTaskWorktree` (task-worktree.ts) each used to base new branches on the bare LOCAL default
+ * branch's tip (`getDefaultBranch()` / a local master→main probe) — so a commit sitting unpushed on
+ * local `master` (e.g. from a branchless single-shot session) silently rode into every
+ * subsequently-created branch's PR (the FLUX-1635 → PR #700 incident). Basing on the last-fetched
+ * `origin/<default>` excludes any such stray local commit by construction. Deliberately does NOT
+ * `git fetch` first — the last-fetched remote-tracking ref is still the correct base (it already
+ * excludes unpushed local commits) and this stays offline-safe.
+ *
+ * `run` is injected so both call sites can route through their own cwd-bound wrapper (or a test
+ * double) without this module knowing about workspace resolution.
+ */
+export async function resolveBranchCreationBase(
+  run: (args: string[]) => Promise<{ stdout: string; stderr: string }>,
+): Promise<string> {
+  let defaultName = 'master';
+  try {
+    // No `--short` here: `--short` on a REMOTE symbolic-ref (refs/remotes/origin/HEAD) returns the
+    // already-prefixed `origin/<name>` (e.g. `origin/trunk`), not the bare name — using it as-is
+    // below would probe the nonsensical `refs/remotes/origin/origin/trunk`. Strip the full ref path
+    // manually instead, matching getDefaultBranch's (branch-manager.ts) approach.
+    const { stdout } = await run(['symbolic-ref', 'refs/remotes/origin/HEAD']);
+    const ref = stdout.trim().replace('refs/remotes/origin/', '');
+    if (ref) defaultName = ref;
+  } catch {
+    // No origin/HEAD configured — resolve the name from the local branches that exist instead.
+    for (const candidate of ['master', 'main']) {
+      try {
+        await run(['rev-parse', '--verify', '--quiet', `refs/heads/${candidate}`]);
+        defaultName = candidate;
+        break;
+      } catch {
+        /* try the next candidate */
+      }
+    }
+  }
+
+  // Prefer the remote-tracking ref for the actual base — unstripped, since the bare name may have
+  // no local copy to resolve against (FLUX-1341).
+  try {
+    await run(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${defaultName}`]);
+    return `origin/${defaultName}`;
+  } catch {
+    /* no remote-tracking ref (local-only repo, or origin/HEAD lied) — fall back to local */
+  }
+
+  try {
+    await run(['rev-parse', '--verify', '--quiet', `refs/heads/${defaultName}`]);
+    return defaultName;
+  } catch {
+    /* resolved name has no local ref either — last-resort ladder below */
+  }
+  for (const candidate of ['master', 'main']) {
+    try {
+      await run(['rev-parse', '--verify', '--quiet', `refs/heads/${candidate}`]);
+      return candidate;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  return 'master';
+}
+
+/**
+ * Best-effort: log a warning when `localName`'s local tip has diverged ahead of
+ * `origin/<localName>` at branch-creation time (FLUX-1638 acceptance #3) — surfaces the exact
+ * condition this module's base-ref preference exists to route around, instead of silently basing
+ * on the remote and leaving the divergence invisible. Never throws: a probe failure must not fail
+ * branch creation itself.
+ */
+export async function warnIfLocalAheadOfOrigin(
+  run: (args: string[]) => Promise<{ stdout: string; stderr: string }>,
+  localName: string,
+  logWarn: (message: string) => void,
+): Promise<void> {
+  try {
+    const { stdout } = await run(['rev-list', '--count', `origin/${localName}..${localName}`]);
+    const count = parseInt(stdout.trim(), 10) || 0;
+    if (count > 0) {
+      logWarn(
+        `local '${localName}' is ahead of 'origin/${localName}' by ${count} commit(s) — new branches are based on the remote-tracking ref, so ${count > 1 ? 'these' : 'this'} unpushed commit${count > 1 ? 's' : ''} will NOT be inherited.`,
+      );
+    }
+  } catch {
+    /* no local branch named localName, or no origin/<localName> — nothing to warn about */
+  }
+}

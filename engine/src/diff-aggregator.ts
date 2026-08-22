@@ -1,6 +1,9 @@
 import { execFile, type ExecFileException } from 'child_process';
 import { promisify } from 'util';
+import fs from 'fs/promises';
+import path from 'path';
 import { listTaskWorktrees, findWorktreeForBranch } from './task-worktree.js';
+import { getConfig } from './config.js';
 
 /**
  * Cross-worktree diff aggregator (FLUX-527 / FLUX-528 / FLUX-529).
@@ -44,6 +47,26 @@ export interface ChangedFile {
    *  i.e. a working-tree discard would remove something. Absent/false for committed-only files.
    *  Drives the portal's per-file Discard controls (FLUX-1333). */
   uncommitted?: boolean;
+  /** True when this file is a markdown doc under the workspace's configured docsRoot (FLUX-1653) —
+   *  drives the portal's Raw↔Rendered toggle and inline-edit affordance in the PR/diff view. */
+  isDoc?: boolean;
+}
+
+/**
+ * True when `file` (a path relative to a worktree/workspace root, as carried on `ChangedFile.file`)
+ * is a markdown file under the workspace's configured `docsRoot` (default `.docs`) — regardless of
+ * which physical checkout (main tree or a worktree) it came from. Deliberately root-agnostic: it
+ * compares the REPO-RELATIVE `file` string against the repo-relative `docsRoot` config value rather
+ * than resolving an absolute path (as `isDocFile()` in file-utils.ts does via `getWorkspaceRoot()`),
+ * because a worktree's files are relative to a DIFFERENT absolute root than the main workspace —
+ * joining them against `getWorkspaceRoot()`-derived `getDocsDir()` would compare paths from two
+ * unrelated trees and always miss (FLUX-1653).
+ */
+export function isDocsRootMarkdownFile(file: string): boolean {
+  if (!file.toLowerCase().endsWith('.md')) return false;
+  const docsRoot = (getConfig().docsRoot || '.docs').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  const normalized = file.replace(/\\/g, '/');
+  return normalized === docsRoot || normalized.startsWith(`${docsRoot}/`);
 }
 
 export interface DiffGroup {
@@ -73,6 +96,16 @@ export interface DiffOverviewOptions {
   /** Diff each worktree against its own HEAD (loose/uncommitted work only) instead
    *  of the merge-base, so every group is uncommitted-only — matching the main tree. */
   uncommittedOnly?: boolean;
+  /** The ticket's stored `baselineCommit` (a fixed divergence point recorded once at
+   *  branch-creation time, branch-manager.ts) — preferred over a live `merge-base` recompute in
+   *  the no-dedicated-worktree fallback path used by `diffFilesForBranch`/`diffFileContent`/
+   *  `fileContentPair`. Once a PR merges, master contains the branch's own tip as an ancestor, so
+   *  `merge-base(defaultBranch, branch)` drifts to the tip itself and the `<tip>..<tip>` range
+   *  collapses to empty — `baselineCommit` doesn't move after merge, so it stays the real
+   *  pre-merge divergence point (FLUX-1676). Ignored when the branch still has a dedicated
+   *  worktree (that path's live merge-base hasn't drifted yet) and ignored by `buildDiffOverview`.
+   */
+  baselineCommit?: string | null;
 }
 
 // ─── Parsing ────────────────────────────────────────────────────────────────────
@@ -227,6 +260,34 @@ async function mergeBaseOrBranch(runner: GitRunner, cwd: string, defaultBranch: 
 }
 
 /**
+ * The diff base for the no-dedicated-worktree fallback path (FLUX-1676): prefers `baselineCommit`
+ * (the ticket's stored, fixed divergence point) when it's given and still resolves to a real
+ * commit, falling back to a live `merge-base(defaultBranch, branch)` recompute otherwise — the
+ * same recompute this replaces, kept as the fallback for branches with no recorded baseline (an
+ * orphan branch, or a ticket created before baselineCommit was tracked). See `baselineCommit` on
+ * `DiffOverviewOptions` for why the live recompute drifts once the branch's PR merges.
+ */
+async function noWorktreeDiffBase(
+  runner: GitRunner,
+  workspaceRoot: string,
+  branch: string,
+  defaultBranch: string,
+  baselineCommit?: string | null,
+): Promise<string> {
+  if (baselineCommit) {
+    try {
+      await runner(workspaceRoot, ['rev-parse', '--verify', '--quiet', baselineCommit]);
+      return baselineCommit;
+    } catch {
+      /* stored baseline no longer resolves — fall through to the live merge-base recompute */
+    }
+  }
+  return runner(workspaceRoot, ['merge-base', defaultBranch, branch])
+    .then((r) => r.stdout.trim() || defaultBranch)
+    .catch(() => defaultBranch);
+}
+
+/**
  * Changed files in `cwd` versus `base` (committed-ahead + uncommitted tracked, via
  * name-status + numstat) plus untracked files (via ls-files). Best-effort: a failed
  * git call yields fewer/no files, never throws.
@@ -339,13 +400,14 @@ export async function buildDiffOverview(workspaceRoot: string, opts: DiffOvervie
       const uncommittedSet = await uncommittedPathSet(runner, wt.path);
       for (const f of files) if (uncommittedSet.has(f.file)) f.uncommitted = true;
     }
+    for (const f of files) if (isDocsRootMarkdownFile(f.file)) f.isDoc = true;
     groups.push({ kind: 'worktree', path: wt.path, files, ...(wt.branch ? { branch: wt.branch } : {}) });
   }
 
   // Main tree: uncommitted (+ untracked) work on whatever HEAD points at — every file is
   // uncommitted by construction; flagged anyway so the client contract is uniform (FLUX-1333).
   const mainFiles = await changedFilesAgainst(runner, workspaceRoot, 'HEAD').catch(() => []);
-  for (const f of mainFiles) f.uncommitted = true;
+  for (const f of mainFiles) { f.uncommitted = true; if (isDocsRootMarkdownFile(f.file)) f.isDoc = true; }
   groups.push({ kind: 'main', path: workspaceRoot, files: mainFiles });
 
   const collisions = computeCollisions(groups);
@@ -373,7 +435,21 @@ export async function diffFileContent(
     base = 'HEAD';
   } else {
     const wt = await findWorktreeForBranch(workspaceRoot, ref, { gitRunner: runner });
-    if (!wt) return '';
+    if (!wt) {
+      // No dedicated worktree (e.g. its member ticket reached Ready and the worktree was
+      // reclaimed) — fall back to the branch's committed range in the workspace root, mirroring
+      // diffFilesForBranch's no-worktree fallback (FLUX-1670). Verify the ref exists first so an
+      // unknown branch still yields '' rather than a spurious diff against the default branch.
+      try {
+        await runner(workspaceRoot, ['rev-parse', '--verify', '--quiet', ref]);
+      } catch {
+        return '';
+      }
+      const defaultBranch = opts.baseBranch ?? await resolveBaseBranch(runner, workspaceRoot);
+      const mergeBase = await noWorktreeDiffBase(runner, workspaceRoot, ref, defaultBranch, opts.baselineCommit);
+      // A committed range has no untracked files, so skip the --no-index fallback below.
+      return runner(workspaceRoot, ['diff', `${mergeBase}..${ref}`, '--', file]).then((r) => r.stdout).catch(() => '');
+    }
     cwd = wt;
     const defaultBranch = opts.baseBranch ?? await resolveBaseBranch(runner, workspaceRoot);
     base = await mergeBaseOrBranch(runner, cwd, defaultBranch);
@@ -391,6 +467,66 @@ export async function diffFileContent(
     const execErr = err as ExecFileException;
     return typeof execErr.stdout === 'string' ? execErr.stdout : '';
   }
+}
+
+export interface FileContentPair {
+  before: string;
+  after: string;
+}
+
+/**
+ * The before/after raw content of ONE file, in the correct root — the un-diffed sibling of
+ * `diffFileContent()`, for a rendered (not unified-diff) preview (FLUX-1653). `before` is the
+ * file's content at the diff base (empty string when the file didn't exist there, e.g. an added
+ * file); `after` is the file's CURRENT content on disk (empty string when it no longer exists,
+ * e.g. a deleted file) — read live rather than via `git show HEAD:file` so it reflects uncommitted
+ * edits too, matching `buildDiffOverview`'s "committed-ahead + loose" picture. Read-only.
+ */
+export async function fileContentPair(
+  workspaceRoot: string,
+  ref: string,
+  file: string,
+  opts: DiffOverviewOptions = {},
+): Promise<FileContentPair> {
+  const runner = opts.gitRunner ?? defaultGitRunner;
+
+  let cwd: string;
+  let base: string;
+  if (ref === 'main') {
+    cwd = workspaceRoot;
+    base = 'HEAD';
+  } else {
+    const wt = await findWorktreeForBranch(workspaceRoot, ref, { gitRunner: runner });
+    if (!wt) {
+      // No dedicated worktree (e.g. its member ticket reached Ready and the worktree was
+      // reclaimed) — fall back to reading both sides straight from the object store in the
+      // workspace root, mirroring diffFileContent's/diffFilesForBranch's no-worktree fallback
+      // (FLUX-1670). Verify the ref exists first so an unknown branch still yields empty content.
+      try {
+        await runner(workspaceRoot, ['rev-parse', '--verify', '--quiet', ref]);
+      } catch {
+        return { before: '', after: '' };
+      }
+      const defaultBranch = opts.baseBranch ?? await resolveBaseBranch(runner, workspaceRoot);
+      const mergeBase = await noWorktreeDiffBase(runner, workspaceRoot, ref, defaultBranch, opts.baselineCommit);
+      // `after` here is the branch TIP's committed content (not live disk) — there is no live
+      // disk to read without a worktree; fine for a read-only PR-level view (FLUX-1670).
+      const [before, after] = await Promise.all([
+        runner(workspaceRoot, ['show', `${mergeBase}:${file}`]).then((r) => r.stdout).catch(() => ''),
+        runner(workspaceRoot, ['show', `${ref}:${file}`]).then((r) => r.stdout).catch(() => ''),
+      ]);
+      return { before, after };
+    }
+    cwd = wt;
+    const defaultBranch = opts.baseBranch ?? await resolveBaseBranch(runner, workspaceRoot);
+    base = await mergeBaseOrBranch(runner, cwd, defaultBranch);
+  }
+
+  const [before, after] = await Promise.all([
+    runner(cwd, ['show', `${base}:${file}`]).then((r) => r.stdout).catch(() => ''),
+    fs.readFile(path.join(cwd, file), 'utf-8').catch(() => ''),
+  ]);
+  return { before, after };
 }
 
 // ─── Single-branch summary (FLUX-615) ──────────────────────────────────────────
@@ -452,9 +588,7 @@ export async function diffFilesForBranch(
   } catch {
     return { branch, worktree: null, base: null, files: [] };
   }
-  const mergeBase = await runner(workspaceRoot, ['merge-base', defaultBranch, branch])
-    .then((r) => r.stdout.trim() || defaultBranch)
-    .catch(() => defaultBranch);
+  const mergeBase = await noWorktreeDiffBase(runner, workspaceRoot, branch, defaultBranch, opts.baselineCommit);
   const range = `${mergeBase}..${branch}`;
   const files = await changedFilesForRange(runner, workspaceRoot, range).catch(() => []);
   return { branch, worktree: null, base: range, files };

@@ -1,6 +1,6 @@
 {
   "name": "engine",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "description": "Event Horizon engine — Express + TypeScript API, MCP server, and agent orchestration for the local-first ticket board.",
   "main": "dist/index.js",
   "bin": "dist/index.js",
@@ -19,7 +19,12 @@
     "package": "npm run build && node scripts/package-release.js",
     "package:win": "npm run build && node scripts/package-release.js --platform win",
     "package:mac": "npm run build && node scripts/package-release.js --platform mac",
-    "test": "vitest run"
+    "package:linux": "npm run build && node scripts/package-release.js --platform linux",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:changed": "node scripts/test-changed.mjs",
+    "test:classify": "node scripts/classify-tests.mjs"
   },
   "keywords": [
     "event-horizon",
@@ -45,6 +50,7 @@
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "gray-matter": "^4.0.3",
+    "marked": "^18.0.3",
     "node-pty": "^1.1.0",
     "systray": "^1.0.5",
     "ws": "^8.21.0",

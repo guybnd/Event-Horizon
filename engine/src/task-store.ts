@@ -30,13 +30,14 @@ import { broadcastEvent, bumpTasksVersion } from './events.js';
 import { rehydrateOpenPrompts } from './hitl-prompts.js';
 import { cliSessionsById, cliSessionIdByTaskId, rehydrateSessionStubs, armReclaimGrace } from './session-store.js';
 import { rehydrateHoldStubs, clearHoldsForTask, forceKillHeldSubtree } from './background-process-holds.js';
-import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
+import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder, hashDocContent } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
 import { bootstrapNewWorkspace, installSkillsForWorkspace } from './bootstrap.js';
 import { activateGroup, activateMemberBinding, groupDocsLabel } from './group.js';
 import { attachMemberWorktree } from './group-member-worktree.js';
 import { pruneTaskWorktrees } from './task-worktree.js';
-import { probeAllEnabled } from './module-probe.js';
+import { probeAllEnabled, probeAllConnectors } from './module-probe.js';
+import { getConnectors } from './modules.js';
 import { runWithConcurrency } from './concurrency.js';
 import { loadBootIndex, partitionByBootIndex, persistBootIndex } from './boot-index.js';
 
@@ -928,6 +929,47 @@ export async function loadTask(filePath: string, ws: Workspace = getWorkspace())
   }
 }
 
+/**
+ * FLUX-1667 (decision 3) — pure, idempotent read-path normalizer. Before this ticket, the auto
+ * doc-recap (FLUX-1662) and the plan mockup shared one `artifacts` stream; an existing ticket
+ * written before the split may still carry `kind:'doc-recap'` revisions mixed into `artifacts`.
+ * Splits those out into the new `docRecap` pointer (recomputing `latest` for each resulting
+ * pointer from the max `rev` remaining in it) so every reader downstream of `ws.tasks` sees the
+ * split shape. In-memory only — never persisted back to frontmatter; the `docRecap` field
+ * materializes for real on the next actual `writeArtifactRevisionInPublication` write. No-op
+ * (returns the same object) when `artifacts` has no `doc-recap` revisions to split out, so it's
+ * safe to call on every load unconditionally. Must run at every seam that populates the
+ * API-served `ws.tasks` map — see the two call sites below.
+ */
+function partitionArtifactChannels(record: Record<string, unknown>): Record<string, unknown> {
+  const pointer = record.artifacts as { latest?: number; revisions?: Array<{ rev: number; kind?: string }> } | undefined;
+  if (!pointer || !Array.isArray(pointer.revisions) || !pointer.revisions.some((r) => r.kind === 'doc-recap')) {
+    return record;
+  }
+  const planRevisions = pointer.revisions.filter((r) => r.kind !== 'doc-recap');
+  const docRecapRevisions = pointer.revisions.filter((r) => r.kind === 'doc-recap');
+  const maxRev = (revs: Array<{ rev: number }>) => revs.reduce((max, r) => Math.max(max, r.rev), 0);
+
+  // A real docRecap write (emitDocRecap / publish_artifact channel:'doc-recap') persists its
+  // pointer via Object.assign onto disk frontmatter that still carries the legacy mixed
+  // `artifacts` (the split above is never written back — decision 3) — so `record.docRecap`
+  // may already contain revisions newer than anything left in the legacy `artifacts` stream.
+  // Union by rev (existing wins on collision) instead of overwriting, so a re-split on the next
+  // load can't drop already-materialized revisions.
+  const existingDocRecap = record.docRecap as { latest?: number; revisions?: Array<{ rev: number; kind?: string }> } | undefined;
+  const existingDocRecapRevisions = Array.isArray(existingDocRecap?.revisions) ? existingDocRecap.revisions : [];
+  const mergedByRev = new Map<number, { rev: number; kind?: string }>();
+  for (const r of docRecapRevisions) mergedByRev.set(r.rev, r);
+  for (const r of existingDocRecapRevisions) mergedByRev.set(r.rev, r);
+  const mergedDocRecapRevisions = Array.from(mergedByRev.values()).sort((a, b) => a.rev - b.rev);
+
+  return {
+    ...record,
+    artifacts: planRevisions.length ? { latest: maxRev(planRevisions), revisions: planRevisions } : undefined,
+    docRecap: { latest: maxRev(mergedDocRecapRevisions), revisions: mergedDocRecapRevisions },
+  };
+}
+
 async function loadTaskInner(filePath: string, ws: Workspace) {
   if (!isTopLevelTaskFile(filePath)) return;
   if (repairingPaths.has(filePath)) return;
@@ -1074,7 +1116,7 @@ async function loadTaskInner(filePath: string, ws: Workspace) {
     }
 
     ws.tasks[id] = {
-      ...normalizedFrontmatter,
+      ...partitionArtifactChannels(normalizedFrontmatter),
       id,
       body: parsed.content,
       _path: filePath
@@ -1115,6 +1157,7 @@ export async function loadDoc(filePath: string, ws: Workspace = getWorkspace()) 
     const order = parseDocOrder(parsed.data.order);
     const directory = docPath.includes('/') ? docPath.slice(0, docPath.lastIndexOf('/')) : '';
     const slugSource = docPath.split('/').filter(Boolean).pop() || docPath;
+    const { title: _title, order: _order, ...extraFrontmatter } = parsed.data;
 
     ws.docs[docPath] = {
       path: docPath,
@@ -1123,6 +1166,8 @@ export async function loadDoc(filePath: string, ws: Workspace = getWorkspace()) 
       slug: slugifyDocValue(slugSource),
       directory,
       ...(order !== undefined ? { order } : {}),
+      ...(Object.keys(extraFrontmatter).length ? { extraFrontmatter } : {}),
+      hash: hashDocContent(content),
       _path: filePath,
     };
 
@@ -1179,6 +1224,7 @@ export async function loadGroupDoc(storeDir: string, filePath: string, ws: Works
     const order = parseDocOrder(parsed.data.order);
     const directory = docPath.slice(0, docPath.lastIndexOf('/'));
     const slugSource = docPath.split('/').filter(Boolean).pop() || docPath;
+    const { title: _title, order: _order, ...extraFrontmatter } = parsed.data;
 
     // FLUX-1565: resolve read-only/viaParent from `ws`'s own group fields (populated per-workspace
     // in `hydrateWorkspace`), not the `getGroupContext()`/`getMemberBinding()` singletons — those
@@ -1190,6 +1236,7 @@ export async function loadGroupDoc(storeDir: string, filePath: string, ws: Works
       slug: slugifyDocValue(slugSource),
       directory,
       ...(order !== undefined ? { order } : {}),
+      ...(Object.keys(extraFrontmatter).length ? { extraFrontmatter } : {}),
       // A group doc is genuinely read-only only when no writer resolves. The
       // parent owns the canonical store and edits inline (FLUX-414); a bound
       // member also edits — its writes route through the parent via
@@ -1198,6 +1245,7 @@ export async function loadGroupDoc(storeDir: string, filePath: string, ws: Works
       readOnly: ws.groupContext == null && ws.memberBinding == null,
       ...(ws.groupContext == null && ws.memberBinding != null ? { viaParent: true } : {}),
       group: true,
+      hash: hashDocContent(content),
       _path: filePath,
     };
   } catch (error) {
@@ -1414,12 +1462,31 @@ async function seedStarterDocs(docsDir: string): Promise<void> {
   }
 }
 
-export async function initDir(ws: Workspace = getWorkspace()) {
+/**
+ * Scans the workspace's flux dir and (re)loads every top-level ticket file into `ws.tasks`
+ * (upserting in place — never clearing first). Returns the set of ticket ids found on disk this
+ * scan (FLUX-1678): ticket files are always named `<id>.md` (see the `filePath` construction at
+ * ticket-creation call sites), so the on-disk id set is exactly `names` with `.md` stripped —
+ * cheaper than threading a return value through `loadTask`'s bounded-concurrency pool, and used by
+ * {@link reloadWorkspaceIndex} to prune entries for tickets actually deleted from disk without
+ * ever clearing the map first (which would let a concurrent read observe an empty/partial index).
+ */
+export async function initDir(ws: Workspace = getWorkspace()): Promise<Set<string>> {
   // FLUX-1132: thin timing wrapper around the whole disk rescan — see recordFullRescan.
   const __initDirStartedAt = performance.now();
   try {
     try {
       await fs.mkdir(getActiveFluxDir(), { recursive: true });
+    } catch {
+      // ignore
+    }
+    // FLUX-1660: loadConfig() must run before any getDocsDir()/getConfig() call below —
+    // otherwise getConfig() still serves the CONFIG_DEFAULTS clone (docsRoot: '.docs',
+    // projects: ['FLUX']), so the docs bootstrap seeds/caches a stub tree instead of the
+    // workspace's real configured docs. Kept outside the swallow-all try/catch below so a
+    // genuine loadConfig() failure surfaces instead of being silently ignored.
+    await loadConfig();
+    try {
       await fs.mkdir(getDocsDir(), { recursive: true });
       await fs.mkdir(getTaskAssetsDir(), { recursive: true });
       await seedStarterDocs(getDocsDir());
@@ -1432,12 +1499,12 @@ export async function initDir(ws: Workspace = getWorkspace()) {
     } catch {
       // ignore
     }
-    await loadConfig();
     await loadPricingDoc();
     await loadCustomPersonas();
     const activeDir = getActiveFluxDir();
     const fluxFiles = await fs.readdir(activeDir).catch(() => [] as string[]);
     const names = fluxFiles.filter((name) => isTopLevelTaskFile(path.join(activeDir, name)));
+    const idsOnDisk = new Set(names.map((name) => path.basename(name, '.md')));
     // FLUX-1540: in-memory filter of the already-read `fluxFiles` list — no extra I/O —
     // so the portal's cold-boot loading state can show real "Loaded X / Y" progress
     // instead of a static skeleton for the whole scan.
@@ -1466,7 +1533,7 @@ export async function initDir(ws: Workspace = getWorkspace()) {
         names,
         bootIndex,
         (id, data, name) => {
-          ws.tasks[id] = { ...data, id, _path: path.join(activeDir, name) };
+          ws.tasks[id] = { ...partitionArtifactChannels(data), id, _path: path.join(activeDir, name) };
           loaded += 1;
         },
         BOOT_SCAN_CONCURRENCY,
@@ -1503,8 +1570,49 @@ export async function initDir(ws: Workspace = getWorkspace()) {
     // Refresh the persisted index from the now-fully-populated cache so the *next* boot gets the
     // warm-boot fast path too. Best-effort — persistBootIndex/saveBootIndex never throw.
     await persistBootIndex(activeDir, names, ws.tasks, BOOT_SCAN_CONCURRENCY);
+    return idsOnDisk;
   } finally {
     recordFullRescan(performance.now() - __initDirStartedAt);
+  }
+}
+
+/**
+ * Atomic counterpart to a bare `initDir` call (FLUX-1678): rescans the workspace's flux dir via
+ * `initDir` (upsert-in-place, no upfront clear — see its doc comment) and then prunes any
+ * `ws.tasks`/`ws.parseErrors` entry whose backing file was NOT found on disk this scan. A
+ * concurrent reader therefore only ever observes the complete pre-reload set or the complete
+ * post-reload set, never an empty/partial one — fixing `doActivateWorkspace`'s prior
+ * clear-then-refill window where `GET /api/tasks/:id` and the MCP `get_ticket`/`list_tickets`
+ * tools (which read `ws.tasks` directly, unguarded by the `isActivating` 503) served 404 for a
+ * ticket whose file was intact on disk the whole time. Also correctly handles a cross-board
+ * switch (A→B): B's ids get upserted, then any leftover entry from A gets pruned.
+ *
+ * Two correctness properties that are easy to get wrong here (both caught in review):
+ * - The candidate-for-pruning set is snapshotted from `ws.tasks`/`ws.parseErrors` BEFORE
+ *   `initDir` runs, not after. `initDir` is a multi-await scan (docs, boot-index partition,
+ *   per-file loads) during which a concurrent `createTask`/watcher-add can insert a brand-new
+ *   entry into `ws.tasks`. Pruning against a post-scan snapshot would delete that entry even
+ *   though its file is genuinely on disk — pruning only entries that already existed before the
+ *   scan started leaves it untouched.
+ * - Pruning checks the entry's own `_path`/`path` basename against `idsOnDisk`, not the map key.
+ *   `ws.tasks` (and `ws.parseErrors`) can be keyed by a frontmatter `id` that differs from the
+ *   file's basename, while `idsOnDisk` (from `initDir`) is always basenames. Checking the map key
+ *   against `idsOnDisk` would delete a validly-on-disk ticket whose id doesn't match its filename;
+ *   checking the file's actual basename doesn't have that false-positive.
+ */
+async function reloadWorkspaceIndex(ws: Workspace): Promise<void> {
+  const taskIdsBefore = Object.keys(ws.tasks);
+  const parseErrorIdsBefore = Object.keys(ws.parseErrors);
+  const idsOnDisk = await initDir(ws);
+  for (const id of taskIdsBefore) {
+    const task = ws.tasks[id];
+    if (!task) continue;
+    if (!idsOnDisk.has(path.basename(task._path, '.md'))) delete ws.tasks[id];
+  }
+  for (const id of parseErrorIdsBefore) {
+    const err = ws.parseErrors[id];
+    if (!err) continue;
+    if (!idsOnDisk.has(path.basename(err.path, '.md'))) delete ws.parseErrors[id];
   }
 }
 
@@ -1763,9 +1871,14 @@ async function doActivateWorkspace(newRoot: string, ws: Workspace): Promise<stri
     // flag can't diverge for a short/symlinked root (FLUX-711). Throws if missing, so guard it.
     try { newRoot = realpathSync.native(newRoot); } catch { /* missing/unresolvable — keep as given */ }
     setWorkspaceRoot(newRoot);
-    ws.tasks = {};
+    // FLUX-1678: ws.tasks/ws.parseErrors are deliberately NOT cleared here — hydrateWorkspace's
+    // reloadWorkspaceIndex() upserts the new board's tickets in place and then prunes whatever
+    // wasn't found on disk, so a concurrent read during activation still sees a complete set (the
+    // old board's, momentarily) instead of an empty/partial one. ws.docs still gets a fresh clear:
+    // its reload path stays upsert-only (no prune), so leaving stale entries from the previous
+    // board would otherwise leak into the new one — doc-index atomicity is out of this ticket's
+    // scope.
     ws.docs = {};
-    ws.parseErrors = {};
     clearNotifications();
     log.info(`Workspace: ${newRoot}`);
     await hydrateWorkspace(ws);
@@ -1827,7 +1940,7 @@ async function hydrateWorkspace(ws: Workspace): Promise<void> {
     console.error('[task-worktree] prune on activation failed:', err),
   );
   await migrateStrandedFluxTickets(root);
-  await initDir(ws);
+  await reloadWorkspaceIndex(ws);
   await installSkillsForWorkspace();
   await startWatchers(ws);
   startSyncWatcher();
@@ -1852,6 +1965,11 @@ async function hydrateWorkspace(ws: Workspace): Promise<void> {
   seedPromptNotifications(ws);
   const modulesToProbe = Array.isArray(getConfig().modules) ? getConfig().modules : [];
   probeAllEnabled(modulesToProbe).catch(() => {});
+  // FLUX-1659: warm mcp-readonly.ts's tool-name cache on every workspace activation (engine
+  // startup + workspace switch), not only on the manual Test-button probe — otherwise
+  // mcpServerReadOnly scoping is silently inert (fails open) until a human clicks Test.
+  // Fire-and-forget, same as probeAllEnabled above; probeConnector already fails open on error.
+  probeAllConnectors(getConnectors()).catch(() => {});
 }
 
 /**
@@ -1870,7 +1988,8 @@ async function hydrateWorkspace(ws: Workspace): Promise<void> {
  *
  * Idempotent: a `ws` that already has a live `fluxWatcher` is returned as-is, no re-bootstrap.
  */
-export async function openWorkspaceLive(root: string): Promise<Workspace> {
+export async function openWorkspaceLive(root: string, opts: { reload?: boolean } = {}): Promise<Workspace> {
+  const { reload = false } = opts;
   let canonicalRoot = root;
   try { canonicalRoot = realpathSync.native(root); } catch { /* missing/unresolvable — keep as given */ }
   const ws = openWorkspace(canonicalRoot);
@@ -1881,7 +2000,15 @@ export async function openWorkspaceLive(root: string): Promise<Workspace> {
   // this call runs inside the REQUESTING board's binding — without this wrap the hydrate would
   // read the OLD board's files into the new Workspace.
   return ws.activationLock.runExclusive(() => runWithWorkspace(ws, async () => {
-    if (ws.fluxWatcher) return ws; // already live — idempotent, no reload
+    if (ws.fluxWatcher) {
+      // FLUX-1678: an already-open board previously no-op'd unconditionally, so a stale index
+      // (e.g. after a restart that missed file changes) could only be recovered by a close+open
+      // cycle. `reload:true` (wired from `POST /api/workspaces/open`) rescans atomically via
+      // reloadWorkspaceIndex — WITHOUT re-creating watchers, re-binding the group, or re-running
+      // bootstrap, all of which stay one-time setup owned by the branch below.
+      if (reload) await reloadWorkspaceIndex(ws);
+      return ws;
+    }
     ws.isActivating = true;
     try {
       ws.root = canonicalRoot;

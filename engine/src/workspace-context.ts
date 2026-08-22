@@ -448,3 +448,15 @@ export function getWorkspace(): Workspace {
   }
   return defaultWorkspace;
 }
+
+/**
+ * FLUX-1573: which source resolved the current `getWorkspace()` call — `'header'` when inside a
+ * `runWithWorkspace(ws, …)` binding (the MCP per-connection binding from an `X-EH-Workspace`
+ * header, or an HTTP request's `attachWorkspace`), `'default-fallback'` when unbound (no header —
+ * e.g. a hand-launched session's static `.mcp.json` — silently resolved to the boot/default
+ * board). Exposed so disclosure surfaces (`get_board_config`, MCP session instructions) can tell
+ * an agent whether its binding was actually verified or merely assumed.
+ */
+export function getRequestBinding(): 'header' | 'default-fallback' {
+  return requestWorkspaceALS.getStore() ? 'header' : 'default-fallback';
+}

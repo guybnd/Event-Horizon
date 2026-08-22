@@ -9,43 +9,21 @@ import { TableHeader } from '@tiptap/extension-table-header';
 import { TableCell } from '@tiptap/extension-table-cell';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
-import { marked } from 'marked';
-import { AlertCircle, Bold, ChevronDown, ChevronRight, Code, FileText, Heading1, Heading2, Info, Italic, Link as LinkIcon, List, ListOrdered, Lock, Network, Save, Share2, Trash2, X } from 'lucide-react';
-import { applyDocsPromotion, createDoc, deleteDoc, fetchDoc, fetchDocs, fetchGroupStatus, renameDocsFolder, updateDoc, updateGroupDocsLabel } from '../api';
+import { AlertCircle, Bold, ChevronDown, ChevronRight, Clock, Code, FileText, Heading1, Heading2, Info, Italic, Link as LinkIcon, List, ListOrdered, Lock, Network, Save, Share2, Trash2, X } from 'lucide-react';
+import { applyDocsPromotion, createDoc, deleteDoc, DocConflictError, fetchDoc, fetchDocRevisions, fetchDocs, fetchGroupStatus, renameDocsFolder, updateDoc, updateGroupDocsLabel, type DocRevision } from '../api';
 import { useAppSelector } from '../store/useAppSelector';
 import type { Doc } from '../types';
 import type { GroupStatus } from '../api';
 import { resolveDocEditability } from '../utils';
 import { getElectronAPI } from '../electronApi';
 import { DocsSidebar } from './DocsSidebar';
+import { DocHistoryPanel } from './docs/DocHistoryPanel';
 import { PromptModal, type PromptModalState } from './task-modal/PromptModal';
+import { TicketRefChip } from './TicketRefChip';
 import { useConfirm } from '../hooks/useConfirm';
-
-marked.setOptions({ gfm: true, breaks: false });
-
-function normalizeDocPathInput(value: string) {
-  const normalized = value.replace(/\\/g, '/').trim().replace(/^\/+|\/+$/g, '');
-  if (!normalized) {
-    return null;
-  }
-
-  const withoutExtension = normalized.toLowerCase().endsWith('.md') ? normalized.slice(0, -3) : normalized;
-  const segments = withoutExtension.split('/').filter(Boolean);
-  if (segments.length === 0 || segments.some((segment) => segment === '.' || segment === '..')) {
-    return null;
-  }
-
-  return segments.join('/');
-}
-
-function slugify(value: string) {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/\.md$/i, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
+import { formatRelative } from '../lib/relativeTime';
+import { normalizeDocPathInput, slugify, renderMarkdownToHtml, getBrokenWikiLinks, getWikiLinkDefinition } from '../lib/docMarkdown';
+import { detectUnsupported, parseBlocks, spliceEditedBlocks } from '../lib/blockSplice';
 
 function humanizeDocPath(docPath: string) {
   const basename = docPath.split('/').filter(Boolean).pop() || 'untitled';
@@ -58,6 +36,16 @@ function normalizeMarkdownBody(markdown: string) {
   const normalized = markdown.replace(/\r\n/g, '\n').trimEnd();
   return normalized ? `${normalized}\n` : '';
 }
+
+// FLUX-1672: whether this doc carries front-matter keys beyond title/order — drives the
+// collapsible metadata strip above the rendered body. Front matter is preserved verbatim across
+// saves (FLUX-1650) regardless of editor mode, so its presence no longer forces raw mode
+// (that FLUX-1654 default was retired once round-trip fidelity was fixed).
+function hasExtraFrontmatter(doc: Doc) {
+  return Boolean(doc.extraFrontmatter && Object.keys(doc.extraFrontmatter).length > 0);
+}
+
+type EditorMode = 'rich' | 'raw';
 
 function createTurndownService() {
   const service = new TurndownService({
@@ -91,11 +79,6 @@ function createTurndownService() {
   return service;
 }
 
-function renderMarkdownToHtml(markdown: string, docs: Doc[]) {
-  const rendered = marked.parse(injectWikiLinks(markdown, docs)) as string;
-  return rendered || '<p></p>';
-}
-
 function getEditorDocumentSnapshot(editor: { getJSON: () => unknown }) {
   return JSON.stringify(editor.getJSON());
 }
@@ -109,69 +92,6 @@ function getFolderAncestors(docPath: string) {
   }
 
   return ancestors;
-}
-
-function resolveWikiDocPath(target: string, docs: Doc[]) {
-  const normalizedPath = normalizeDocPathInput(target);
-  const targetSlug = slugify(target);
-
-  if (normalizedPath) {
-    const directPathMatch = docs.find((doc) => doc.path.toLowerCase() === normalizedPath.toLowerCase());
-    if (directPathMatch) {
-      return directPathMatch.path;
-    }
-
-    const basenamePathMatch = docs.find((doc) => doc.path.split('/').pop()?.toLowerCase() === normalizedPath.toLowerCase());
-    if (basenamePathMatch) {
-      return basenamePathMatch.path;
-    }
-  }
-
-  const slugMatch = docs.find((doc) => doc.slug === targetSlug);
-  if (slugMatch) {
-    return slugMatch.path;
-  }
-
-  const titleMatch = docs.find((doc) => slugify(doc.title) === targetSlug);
-  return titleMatch?.path || null;
-}
-
-function getWikiLinkDefinition(target: string, docs: Doc[]) {
-  const label = target.trim();
-  const resolvedPath = resolveWikiDocPath(label, docs);
-
-  return {
-    label,
-    resolvedPath,
-    href: resolvedPath ? `wiki:${encodeURIComponent(resolvedPath)}` : `broken:${encodeURIComponent(label)}`,
-  };
-}
-
-function injectWikiLinks(markdown: string, docs: Doc[]) {
-  return markdown.replace(/\[\[([^\]]+)\]\]/g, (_match, rawTarget: string) => {
-    const link = getWikiLinkDefinition(rawTarget, docs);
-
-    if (!link.label) {
-      return _match;
-    }
-
-    return `[${link.label}](${link.href})`;
-  });
-}
-
-function getBrokenWikiLinks(markdown: string, docs: Doc[]) {
-  const brokenTargets = new Set<string>();
-
-  markdown.replace(/\[\[([^\]]+)\]\]/g, (_match, rawTarget: string) => {
-    const label = rawTarget.trim();
-    if (label && !resolveWikiDocPath(label, docs)) {
-      brokenTargets.add(label);
-    }
-
-    return _match;
-  });
-
-  return Array.from(brokenTargets);
 }
 
 function getBreadcrumbs(docPath: string) {
@@ -229,7 +149,11 @@ export function DocsScreen() {
   const [deleting, setDeleting] = useState(false);
   const [docsRefreshKey, setDocsRefreshKey] = useState(0);
   const [notice, setNotice] = useState<{ tone: 'error' | 'success'; message: string } | null>(null);
+  // FLUX-1655: set when a save is rejected by the optimistic-concurrency guard (doc changed on
+  // disk since load) — renders a non-destructive "reload" banner instead of a plain error notice.
+  const [docConflict, setDocConflict] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [activeTab, setActiveTab] = useState<'editor' | 'history'>('editor');
   const confirm = useConfirm();
   const [editorSnapshot, setEditorSnapshot] = useState('');
   const [isEditorFocused, setIsEditorFocused] = useState(false);
@@ -250,8 +174,23 @@ export function DocsScreen() {
   const isApplyingEditorContentRef = useRef(false);
   const lastSyncedDocSignatureRef = useRef<string | null>(null);
   const loadedDocsRef = useRef<Doc[]>([]);
+  // FLUX-1654: verbatim (unnormalized) on-disk body, used only for raw-mode dirty tracking and as
+  // the source when materializing raw edits into the rich editor on a raw -> rich mode switch.
+  const savedBodyRef = useRef('');
+  // FLUX-1663: per-block clean signatures + the source body they were derived from, established
+  // whenever Rich text content is (re)synced from a known-good source (load, reset, mode switch,
+  // restore). handleSave's block-splice diffs the live editor's current blocks against this snapshot.
+  const blockSpliceRef = useRef<{ originalBody: string; cleanSigs: string[] } | null>(null);
+  const [mode, setMode] = useState<EditorMode>('rich');
+  // FLUX-1663: non-null when the current doc can't be block-spliced (footnotes, reference-style
+  // links, or a source/rendered block-count mismatch) -- shown as a banner while forced into raw mode.
+  const [rawFallbackNotice, setRawFallbackNotice] = useState<string | null>(null);
   const [groupStatus, setGroupStatus] = useState<GroupStatus | null>(null);
   const [promptState, setPromptState] = useState<PromptModalState | null>(null);
+  // FLUX-1672: the doc's latest commit (for the last-edited byline), and whether the front-matter
+  // metadata strip is expanded — both reset per doc selection (collapsed-by-default for the strip).
+  const [lastRevision, setLastRevision] = useState<DocRevision | null>(null);
+  const [metadataStripExpanded, setMetadataStripExpanded] = useState(false);
   const promptResolverRef = useRef<((value: string | null) => void) | null>(null);
 
   // FLUX-1457: window.prompt throws in the Electron desktop shell; this promise-based seam feeds
@@ -406,9 +345,86 @@ export function DocsScreen() {
     selectedDoc
     && (
       normalizedDraftTitle !== selectedDoc.title
-      || editorSnapshot !== baselineEditorSnapshotRef.current
+      || (mode === 'raw' ? draftBody !== savedBodyRef.current : editorSnapshot !== baselineEditorSnapshotRef.current)
     )
   );
+
+  // FLUX-1663: each top-level ProseMirror node renders as one direct child of the editor's DOM
+  // root -- reading outerHTML straight off the live DOM (rather than serializing detached nodes)
+  // guarantees turndown sees exactly what handleSave/setupRichBlockSplice would each see, with no
+  // extra dependency (avoids pulling in @tiptap/pm just for a DOMSerializer).
+  //
+  // ProseMirror auto-appends a trailing EMPTY paragraph whenever the document's last real content
+  // is a non-text block (a fenced code block, a table, ...), so there's a cursor position to keep
+  // typing below it -- this happens for a single whole-document render too (verified: rendering
+  // this same corpus as one block produces the identical trailing empty paragraph), so it's a
+  // structural editor artifact, not user content, and has no corresponding source block to splice
+  // against. Drop it here so block-count/signature accounting never sees it.
+  function getSpliceableTopLevelNodeHtmls(activeEditor: NonNullable<typeof editor>): string[] {
+    const htmls = Array.from(activeEditor.view.dom.children).map((child) => (child as HTMLElement).outerHTML);
+    const lastIndex = activeEditor.state.doc.content.childCount - 1;
+    if (lastIndex >= 0) {
+      const lastNode = activeEditor.state.doc.content.child(lastIndex);
+      if (lastNode.type.name === 'paragraph' && lastNode.content.size === 0) {
+        return htmls.slice(0, -1);
+      }
+    }
+    return htmls;
+  }
+
+  // FLUX-1663: (re)establish the block-splice baseline for Rich text mode. Renders `bodyForBlocks`
+  // through marked ONE TOP-LEVEL BLOCK AT A TIME (not the whole body at once) so each mdast block
+  // maps 1:1 to a TipTap top-level node, then snapshots each node's clean signature from the
+  // ACTUAL rendered DOM -- the same path handleSave reads from -- so an untouched block's signature
+  // is guaranteed to compare equal at save time. Falls back (returns false, sets the raw-mode
+  // notice) on unsupported global constructs (footnotes/ref-links) or a block-count mismatch.
+  const setupRichBlockSplice = (bodyForBlocks: string): boolean => {
+    if (!editor) {
+      return false;
+    }
+
+    const unsupported = detectUnsupported(bodyForBlocks);
+    if (!unsupported.supported) {
+      setRawFallbackNotice(unsupported.reason || 'This document uses markdown features not yet supported in rendered editing.');
+      blockSpliceRef.current = null;
+      return false;
+    }
+
+    const blocks = parseBlocks(bodyForBlocks);
+    const combinedHtml = blocks.length > 0
+      ? blocks.map((block) => renderMarkdownToHtml(block.sourceText, docs)).join('')
+      : '<p></p>';
+    setEditorContentSafely(combinedHtml);
+
+    const spliceableHtmls = blocks.length > 0 ? getSpliceableTopLevelNodeHtmls(editor) : [];
+    if (blocks.length > 0 && spliceableHtmls.length !== blocks.length) {
+      setRawFallbackNotice('This document’s structure couldn’t be mapped to editable blocks.');
+      blockSpliceRef.current = null;
+      return false;
+    }
+
+    const cleanSigs = spliceableHtmls.map((html) => turndownServiceRef.current!.turndown(html));
+    blockSpliceRef.current = { originalBody: bodyForBlocks, cleanSigs };
+    setRawFallbackNotice(null);
+    return true;
+  };
+
+  // FLUX-1663: the Rich text save path. Recomputes each current top-level node's signature from its
+  // live rendered HTML and hands off to spliceEditedBlocks, which copies every block whose signature
+  // still matches `blockSpliceRef`'s baseline verbatim from source bytes, and re-serializes only the
+  // blocks that changed -- instead of turndown-ing the whole document (FLUX-1663's whole point).
+  const computeRichSaveBody = (): string => {
+    if (!editor || !blockSpliceRef.current) {
+      return draftMarkdown;
+    }
+
+    const currentBlocks = getSpliceableTopLevelNodeHtmls(editor).map((html) => {
+      const content = turndownServiceRef.current!.turndown(html);
+      return { signature: content, content };
+    });
+
+    return spliceEditedBlocks(blockSpliceRef.current.originalBody, blockSpliceRef.current.cleanSigs, currentBlocks);
+  };
 
   useEffect(() => {
     if (!isEditingTitle) {
@@ -484,6 +500,21 @@ export function DocsScreen() {
           setSelectedPath(loadedDocs[0].path);
         } else if (initialDoc && !selectedPath) {
           setSelectedPath(initialDoc);
+        } else if (selectedPath) {
+          // FLUX-1671: this refresh only replaces the `docs` list -- it never reconciles the
+          // currently OPEN doc, so an external change to it (a merged PR, another tab's save)
+          // left `selectedDoc`/`savedBodyRef` pointing at a stale baseline (false-dirty prompts on
+          // nav, stale/empty content). Reconcile here: apply the fresh body when there are no
+          // local edits to lose; otherwise route through the FLUX-1655 conflict banner instead of
+          // silently overwriting the user's draft or drifting `isDirty`.
+          const freshDoc = loadedDocs.find((doc) => doc.path === selectedPath);
+          if (freshDoc && freshDoc.body !== savedBodyRef.current) {
+            if (isDirty) {
+              setDocConflict(true);
+            } else {
+              applyLoadedDoc(freshDoc);
+            }
+          }
         }
       } catch (error) {
         console.error(error);
@@ -503,6 +534,38 @@ export function DocsScreen() {
       cancelled = true;
     };
   }, [docsRefreshKey, workspacePath]);
+
+  // Apply a freshly fetched doc to editor state — shared by the load-on-select effect below and
+  // the FLUX-1655 "Reload doc" conflict-banner action (which re-fetches the same selected path).
+  // FLUX-1663: a doc carrying footnotes/reference-style links can't be block-spliced safely (a
+  // single-block serialization could drop/duplicate the shared definition), so it opens in raw
+  // mode too, same as the FLUX-1650/1654 extra-frontmatter case -- but WITH a visible banner,
+  // since (unlike extra-frontmatter docs) this is a capability gap, not an intentional default.
+  const computeDefaultMode = (loadedDoc: Doc): { mode: EditorMode; noticeReason: string | null } => {
+    const unsupported = detectUnsupported(loadedDoc.body);
+    if (!unsupported.supported) {
+      return { mode: 'raw', noticeReason: unsupported.reason || 'This document uses markdown features not yet supported in rendered editing.' };
+    }
+
+    return { mode: 'rich', noticeReason: null };
+  };
+
+  const applyLoadedDoc = (loadedDoc: Doc) => {
+    const { mode: defaultMode, noticeReason } = computeDefaultMode(loadedDoc);
+    // FLUX-1671: force the render-sync effect (below) to re-apply this doc's content even when its
+    // signature happens to match the last-synced one (e.g. re-selecting a doc after an external
+    // change reverted, or reapplying the same path after a refresh) -- never leave the editor
+    // showing a stale/previous doc's body or an empty buffer.
+    lastSyncedDocSignatureRef.current = null;
+    setSelectedDoc(loadedDoc);
+    setDraftTitle(loadedDoc.title);
+    setMode(defaultMode);
+    setRawFallbackNotice(noticeReason);
+    savedBodyRef.current = loadedDoc.body;
+    setDraftBody(defaultMode === 'raw' ? loadedDoc.body : normalizeMarkdownBody(loadedDoc.body));
+    setIsEditingTitle(false);
+    setMetadataStripExpanded(false);
+  };
 
   useEffect(() => {
     if (!selectedPath) {
@@ -531,10 +594,7 @@ export function DocsScreen() {
           return;
         }
 
-        setSelectedDoc(loadedDoc);
-        setDraftTitle(loadedDoc.title);
-        setDraftBody(normalizeMarkdownBody(loadedDoc.body));
-        setIsEditingTitle(false);
+        applyLoadedDoc(loadedDoc);
       } catch (error) {
         console.error(error);
         if (!cancelled) {
@@ -557,12 +617,41 @@ export function DocsScreen() {
     };
   }, [selectedPath, workspacePath]);
 
+  // FLUX-1672: last-edited byline — reuses the existing revisions endpoint (no new API), reading
+  // only revisions[0] (newest). Degrades silently (no byline) on a non-git workspace or an
+  // untracked doc, both of which resolve to an empty list rather than throwing.
+  useEffect(() => {
+    // Clear synchronously on every selection change so a slow fetch for the new doc never
+    // leaves the *previous* doc's byline showing while it's in flight.
+    setLastRevision(null);
+    if (!selectedPath) {
+      return;
+    }
+    let cancelled = false;
+    fetchDocRevisions(selectedPath)
+      .then((revisions) => {
+        if (!cancelled) setLastRevision(revisions[0] ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setLastRevision(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPath, workspacePath]);
+
   useEffect(() => {
     if (!editor) {
       return;
     }
 
-    editor.setEditable(Boolean(selectedDoc) && canEditSelectedDoc);
+    // FLUX-1671: `emitUpdate: false` -- setEditable's default (true) fires a TipTap 'update' event
+    // on EVERY call regardless of whether editable actually changed. In raw mode the underlying
+    // rich editor is never seeded with the doc's content (it's lazily seeded only on a switch to
+    // Rich text), so that stray 'update' hands `onUpdate` the editor's still-default empty HTML,
+    // which overwrites `draftBody` with '' -- the concrete empty-editor-buffer/data-loss mechanism.
+    // This effect only toggles read-only-ness here; it never wants to emit a content-change event.
+    editor.setEditable(Boolean(selectedDoc) && canEditSelectedDoc && mode === 'rich', false);
 
     if (!selectedDoc) {
       if (lastSyncedDocSignatureRef.current !== '__empty__') {
@@ -580,8 +669,24 @@ export function DocsScreen() {
     }
 
     lastSyncedDocSignatureRef.current = docSignature;
-    baselineEditorSnapshotRef.current = setEditorContentSafely(renderMarkdownToHtml(normalizedBody, docs));
-  }, [editor, selectedDoc?.path, selectedDoc?.body, canEditSelectedDoc, docs]);
+
+    // FLUX-1654: raw mode never feeds the doc through marked/TipTap — the rich editor is lazily
+    // seeded (see handleModeChange) only if/when the user switches to Rich text for this doc.
+    if (mode !== 'rich') {
+      return;
+    }
+
+    // FLUX-1663: render+snapshot per top-level mdast block (not the whole body at once) so save
+    // can splice edited blocks against untouched, verbatim source bytes. A block-count mismatch
+    // between source and rendered nodes is only detectable once we've actually rendered into the
+    // live editor -- computeDefaultMode already screened for footnotes/ref-links up front.
+    if (setupRichBlockSplice(selectedDoc.body)) {
+      baselineEditorSnapshotRef.current = getEditorDocumentSnapshot(editor);
+    } else {
+      setMode('raw');
+      setDraftBody(selectedDoc.body);
+    }
+  }, [editor, selectedDoc?.path, selectedDoc?.body, canEditSelectedDoc, docs, mode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -635,7 +740,33 @@ export function DocsScreen() {
     }
 
     setNotice(null);
+    setDocConflict(false);
     setSelectedPath(docPath);
+    setActiveTab('editor');
+  };
+
+  const handleRestoreRevision = (revision: DocRevision, content: Doc) => {
+    if (!selectedDoc || !canEditSelectedDoc) {
+      return;
+    }
+
+    setDraftTitle(content.title);
+    // Deliberately leave `baselineEditorSnapshotRef`/`savedBodyRef` pointing at `selectedDoc`'s
+    // synced snapshot — this makes the restored content read as an unsaved DRAFT (isDirty=true)
+    // relative to the current committed doc, so Save commits it as a new revision rather than
+    // silently overwriting.
+    if (mode === 'raw' || !editor) {
+      setDraftBody(content.body);
+    } else if (setupRichBlockSplice(content.body)) {
+      setDraftBody(content.body);
+    } else {
+      // The restored revision isn't block-splice-safe (e.g. it contains footnotes) --
+      // fall back to Markdown mode so the user can still see/save the restored content faithfully.
+      setMode('raw');
+      setDraftBody(content.body);
+    }
+    setActiveTab('editor');
+    setNotice({ tone: 'success', message: `Loaded revision ${revision.hash.slice(0, 7)} into the editor — review and Save to restore it.` });
   };
 
   const handleOpenCreateForm = async (folderPath: string) => {
@@ -784,28 +915,99 @@ export function DocsScreen() {
       return;
     }
 
+    // FLUX-1655: with docsCommitOnSave on, a save becomes a git commit -- prompt for the message
+    // first (before any busy/notice state), and abort on cancel just like the wiki-link prompt.
+    let revisionMessage: string | undefined;
+    if (config?.docsCommitOnSave) {
+      const message = await runPrompt({
+        title: 'Save as revision',
+        message: 'Describe this change -- it becomes the commit message.',
+        defaultValue: `Update ${normalizedDraftTitle}`,
+        submitLabel: 'Save',
+        multiline: true,
+      });
+      if (message === null) {
+        return;
+      }
+      revisionMessage = message;
+    }
+
+    // FLUX-1654: raw mode sends the textarea's body byte-for-byte (no normalizeMarkdownBody
+    // pass) so a no-op load->save round-trips to zero diff on disk. FLUX-1663: rich mode now
+    // splices only the blocks that actually changed against verbatim source bytes, instead of
+    // turndown-ing the whole document -- see computeRichSaveBody.
+    const outgoingBody = mode === 'raw' ? draftBody : computeRichSaveBody();
+
+    // FLUX-1671: hard-guard against the concrete data-loss vector -- a driven-empty editor buffer
+    // (from the state drift this ticket fixes, or any other client bug) saved over a real,
+    // non-empty on-disk doc. Refuse with no write rather than silently clobbering.
+    if (!outgoingBody.trim() && savedBodyRef.current.trim()) {
+      setNotice({ tone: 'error', message: 'Refusing to save: the editor buffer is empty but the doc on disk is not. Reload the doc to recover, then try again.' });
+      return;
+    }
+
     setSaving(true);
     setNotice(null);
+    setDocConflict(false);
 
     try {
+      // FLUX-1671: send `baseHash` on every save (previously only during save-as-revision) so the
+      // FLUX-1655 optimistic-concurrency guard (engine/src/routes/docs.ts) always fires when the
+      // doc changed on disk since load -- a stale-baseline save now 409s into the conflict banner
+      // instead of blindly overwriting an external change.
       const updatedDoc = await updateDoc(selectedDoc.path, {
         title: normalizedDraftTitle,
-        body: draftMarkdown,
+        body: outgoingBody,
+        baseHash: selectedDoc.hash,
+        ...(revisionMessage !== undefined ? { revisionMessage, author: currentUser } : {}),
       });
 
       setSelectedDoc(updatedDoc);
       setDocs((currentDocs) => currentDocs.map((doc) => doc.path === updatedDoc.path ? updatedDoc : doc));
       setDraftTitle(updatedDoc.title);
-      setDraftBody(normalizeMarkdownBody(updatedDoc.body));
+      savedBodyRef.current = updatedDoc.body;
+      setDraftBody(mode === 'raw' ? updatedDoc.body : normalizeMarkdownBody(updatedDoc.body));
       baselineEditorSnapshotRef.current = editor ? getEditorDocumentSnapshot(editor) : editorSnapshot;
       lastSyncedDocSignatureRef.current = `${updatedDoc.path}\u0000${normalizeMarkdownBody(updatedDoc.body)}`;
+      // FLUX-1663: the DOM didn't change across the save round-trip -- every block just persisted
+      // is now "clean" relative to `updatedDoc.body`, so re-baseline instead of waiting for the
+      // render-sync effect (which no-ops here since its own doc-signature guard already matches).
+      if (mode === 'rich' && editor) {
+        blockSpliceRef.current = {
+          originalBody: updatedDoc.body,
+          cleanSigs: getSpliceableTopLevelNodeHtmls(editor).map((html) => turndownServiceRef.current!.turndown(html)),
+        };
+      }
       setIsEditingTitle(false);
       setNotice({ tone: 'success', message: `Saved ${updatedDoc.title}.` });
     } catch (error) {
       console.error(error);
-      setNotice({ tone: 'error', message: 'Failed to save the current doc.' });
+      if (error instanceof DocConflictError) {
+        setDocConflict(true);
+      } else {
+        setNotice({ tone: 'error', message: 'Failed to save the current doc.' });
+      }
     } finally {
       setSaving(false);
+    }
+  };
+
+  // FLUX-1655: the conflict banner's "Reload doc" action -- re-fetches the current on-disk version
+  // (never overwrites it) so the user can see what changed before deciding how to reapply their edit.
+  const handleReloadAfterConflict = async () => {
+    if (!selectedDoc) {
+      return;
+    }
+
+    try {
+      const freshDoc = await fetchDoc(selectedDoc.path);
+      applyLoadedDoc(freshDoc);
+      setDocs((currentDocs) => currentDocs.map((doc) => doc.path === freshDoc.path ? freshDoc : doc));
+      setDocConflict(false);
+      setNotice(null);
+    } catch (error) {
+      console.error(error);
+      setNotice({ tone: 'error', message: `Failed to reload ${selectedDoc.path}.` });
     }
   };
 
@@ -845,12 +1047,48 @@ export function DocsScreen() {
     }
 
     setDraftTitle(selectedDoc.title);
+    savedBodyRef.current = selectedDoc.body;
     const normalizedBody = normalizeMarkdownBody(selectedDoc.body);
-    setDraftBody(normalizedBody);
+    setDraftBody(mode === 'raw' ? selectedDoc.body : normalizedBody);
     lastSyncedDocSignatureRef.current = `${selectedDoc.path}\u0000${normalizedBody}`;
-    baselineEditorSnapshotRef.current = setEditorContentSafely(renderMarkdownToHtml(normalizedBody, docs));
+    if (mode === 'rich' && editor && setupRichBlockSplice(selectedDoc.body)) {
+      baselineEditorSnapshotRef.current = getEditorDocumentSnapshot(editor);
+    }
     setIsEditingTitle(false);
     setNotice(null);
+  };
+
+  // FLUX-1654: Rich text <-> Markdown toggle. Raw -> rich lazily seeds the TipTap editor (the
+  // first time marked/turndown run for a raw-defaulted doc) — the baseline snapshot is rendered
+  // from `savedBodyRef` (the on-disk body) so isDirty still reflects unsaved changes correctly,
+  // then any pending raw edits are layered on top as the actually-displayed content. Rich -> raw
+  // is a no-op on content: `draftBody` is already kept in sync with the rich editor via onUpdate.
+  const handleModeChange = (nextMode: EditorMode) => {
+    if (nextMode === mode) {
+      return;
+    }
+
+    if (nextMode === 'rich' && editor) {
+      const savedBodyNormalized = normalizeMarkdownBody(savedBodyRef.current);
+      const hasPendingRawEdits = draftMarkdown !== savedBodyNormalized;
+      const bodyForBlocks = hasPendingRawEdits ? draftMarkdown : savedBodyNormalized;
+
+      if (!setupRichBlockSplice(bodyForBlocks)) {
+        // Stays in Markdown mode -- forcing Rich text would show an editor we can't safely
+        // splice-save from. `rawFallbackNotice` (set by setupRichBlockSplice) explains why.
+        return;
+      }
+
+      // Baseline must reflect the on-disk state (for isDirty), not `bodyForBlocks` when there
+      // are pending raw edits -- so only overwrite it when there's nothing pending to preserve.
+      if (!hasPendingRawEdits) {
+        baselineEditorSnapshotRef.current = getEditorDocumentSnapshot(editor);
+      }
+
+      setDraftBody(bodyForBlocks);
+    }
+
+    setMode(nextMode);
   };
 
   const handleCancelCreateForm = () => {
@@ -1095,6 +1333,15 @@ export function DocsScreen() {
               )}
             </div>
             {isDirty && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400 dark:bg-amber-300" title="Unsaved changes" />}
+            {isDirty && canEditSelectedDoc && (
+              <button
+                type="button"
+                onClick={handleResetDraft}
+                className="shrink-0 rounded-xl px-2.5 py-1.5 text-xs font-semibold text-gray-500 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/5"
+              >
+                Reset
+              </button>
+            )}
             <button
               type="button"
               onClick={handleSave}
@@ -1145,12 +1392,80 @@ export function DocsScreen() {
               <h1 className="truncate text-2xl font-bold tracking-tight text-gray-900 dark:text-gray-100">Documentation</h1>
             )}
           </div>
+          {selectedDoc && lastRevision && (
+            <div className="mt-1 flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+              <span title={lastRevision.date}>
+                Last edited {formatRelative(lastRevision.date)} · {lastRevision.author}
+              </span>
+              {lastRevision.ticketId && <TicketRefChip ticketId={lastRevision.ticketId} />}
+            </div>
+          )}
+          {selectedDoc && (
+            <div className="mt-3 flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setActiveTab('editor')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${activeTab === 'editor' ? 'bg-primary/10 text-primary' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/5'}`}
+              >
+                Editor
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('history')}
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${activeTab === 'history' ? 'bg-primary/10 text-primary' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/5'}`}
+              >
+                <Clock className="h-3.5 w-3.5" />
+                History
+              </button>
+              {canEditSelectedDoc && activeTab === 'editor' && (
+                <div className="ml-auto flex items-center gap-0.5 rounded-lg bg-gray-100 p-0.5 dark:bg-white/5" title="Markdown mode is byte-faithful — it never round-trips through the rich-text renderer, so edits diff cleanly (FLUX-1654).">
+                  <button
+                    type="button"
+                    onClick={() => handleModeChange('rich')}
+                    className={`rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors ${mode === 'rich' ? 'bg-white text-gray-900 shadow-sm dark:bg-white/10 dark:text-white' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}
+                  >
+                    Rich text
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleModeChange('raw')}
+                    className={`rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors ${mode === 'raw' ? 'bg-white text-gray-900 shadow-sm dark:bg-white/10 dark:text-white' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'}`}
+                  >
+                    Markdown
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="mt-4 space-y-4">
           {notice && (
             <div className={`rounded-2xl border px-4 py-3 text-sm ${notice.tone === 'error' ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-200' : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200'}`}>
               {notice.message}
+            </div>
+          )}
+
+          {docConflict && selectedDoc && (
+            <div className="flex flex-wrap items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="flex-1 min-w-0">
+                This doc changed on disk since you loaded it. Your edits weren't saved — reload to see the latest version, then reapply your change.
+              </div>
+              <button
+                type="button"
+                onClick={handleReloadAfterConflict}
+                className="shrink-0 rounded-xl border border-amber-300 bg-white/60 px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-white dark:border-amber-500/30 dark:bg-white/5 dark:text-amber-200 dark:hover:bg-white/10"
+              >
+                Reload doc
+              </button>
+            </div>
+          )}
+
+          {selectedDoc && mode === 'raw' && rawFallbackNotice && (
+            <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
+              <Info className="mt-0.5 h-4 w-4 shrink-0" />
+              {rawFallbackNotice} Switched to Markdown mode.
             </div>
           )}
 
@@ -1199,6 +1514,32 @@ export function DocsScreen() {
             </div>
           )}
 
+          {selectedDoc && activeTab === 'editor' && hasExtraFrontmatter(selectedDoc) && (
+            <div className="rounded-2xl border border-gray-200 bg-gray-50/70 dark:border-white/10 dark:bg-white/5">
+              <button
+                type="button"
+                onClick={() => setMetadataStripExpanded((expanded) => !expanded)}
+                className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-xs font-semibold text-gray-600 dark:text-gray-300"
+              >
+                {metadataStripExpanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+                Front matter
+                <span className="font-normal text-gray-400">({Object.keys(selectedDoc.extraFrontmatter ?? {}).length})</span>
+              </button>
+              {metadataStripExpanded && (
+                <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1.5 border-t border-gray-200 px-4 py-3 text-xs dark:border-white/10">
+                  {Object.entries(selectedDoc.extraFrontmatter ?? {}).map(([key, value]) => (
+                    <div key={key} className="contents">
+                      <dt className="font-mono text-gray-400 dark:text-gray-500">{key}</dt>
+                      <dd className="min-w-0 truncate text-gray-700 dark:text-gray-200">
+                        {typeof value === 'string' ? value : JSON.stringify(value)}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+            </div>
+          )}
+
           {selectedDoc && canEditSelectedDoc && isEditorFocused && (
             <div className="sticky top-4 z-20 flex flex-wrap items-center gap-2 rounded-[24px] border border-gray-200 bg-gray-50/90 px-4 py-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-[#161720]/90">
               <ToolbarButton label="Bold" active={showToolbarActiveState && Boolean(editor?.isActive('bold'))} disabled={!editor} onClick={() => editor?.chain().focus().toggleBold().run()}>
@@ -1228,15 +1569,6 @@ export function DocsScreen() {
               <ToolbarButton label="External Link" active={showToolbarActiveState && Boolean(editor?.isActive('link'))} disabled={!editor} onClick={handleSetLink}>
                 <LinkIcon className="h-4 w-4" />
               </ToolbarButton>
-              {isDirty && (
-                <button
-                  type="button"
-                  onClick={handleResetDraft}
-                  className="ml-auto rounded-2xl border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-                >
-                  Reset Draft
-                </button>
-              )}
             </div>
           )}
 
@@ -1297,6 +1629,13 @@ export function DocsScreen() {
                 Select a document from the sidebar or create a new one.
               </div>
             )
+          ) : activeTab === 'history' ? (
+            <DocHistoryPanel
+              docPath={selectedDoc.path}
+              docs={docs}
+              canRestore={canEditSelectedDoc}
+              onRestore={handleRestoreRevision}
+            />
           ) : (
             <div className="space-y-3">
               {!editorHintDismissed && (
@@ -1318,8 +1657,19 @@ export function DocsScreen() {
                   </div>
                 </div>
               )}
-              <div className="docs-editor-shell rounded-[28px] border border-gray-200 bg-gray-50/70 px-6 py-6 dark:border-white/10 dark:bg-black/10" onClickCapture={handleEditorClick}>
-                <EditorContent editor={editor} />
+              <div className="docs-editor-shell rounded-[28px] border border-gray-200 bg-gray-50/70 px-6 py-6 dark:border-white/10 dark:bg-black/10" onClickCapture={mode === 'rich' ? handleEditorClick : undefined}>
+                {mode === 'raw' ? (
+                  <textarea
+                    value={draftBody}
+                    onChange={(event) => setDraftBody(event.target.value)}
+                    readOnly={!canEditSelectedDoc}
+                    spellCheck={false}
+                    placeholder="Start writing markdown. Use [[doc-name]] for internal links."
+                    className="docs-editor-content min-h-[26rem] w-full resize-y rounded-[24px] border border-gray-200 bg-white px-5 py-4 font-mono text-sm leading-6 text-gray-900 outline-none focus:border-primary dark:border-white/10 dark:bg-black/20 dark:text-gray-100"
+                  />
+                ) : (
+                  <EditorContent editor={editor} />
+                )}
               </div>
             </div>
           )}

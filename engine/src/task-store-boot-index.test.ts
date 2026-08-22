@@ -135,7 +135,7 @@ describe('initDir persistent boot index (FLUX-1547)', () => {
 
     await fs.writeFile(bootIndexPath(fluxDir), '{ not valid json');
 
-    await expect(initDir()).resolves.toBeUndefined();
+    await expect(initDir()).resolves.toEqual(new Set(['FLUX-1']));
     expect(getWorkspace().tasks['FLUX-1']?.title).toBe('First');
 
     // A fresh, valid index is written by the fallback full scan.
@@ -160,7 +160,7 @@ describe('initDir persistent boot index (FLUX-1547)', () => {
   it('boots correctly with no index file at all (first-ever boot)', async () => {
     await writeTicket('FLUX-1', 'First');
 
-    await expect(initDir()).resolves.toBeUndefined();
+    await expect(initDir()).resolves.toEqual(new Set(['FLUX-1']));
 
     expect(getWorkspace().tasks['FLUX-1']?.title).toBe('First');
   });

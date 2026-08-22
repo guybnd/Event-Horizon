@@ -51,5 +51,11 @@ jobs:
       - name: Adapter-boundary guard
         run: npm run check:boundary
 
+      # FLUX-1665: test-tier classification guard — fails if a spawn/git-fixture test file is
+      # missing from the committed integration tier (test-tiers.json), the list the local
+      # `check` gate's unit/integration split and targeted `test:changed` gate depend on.
+      - name: Test-tier classification guard
+        run: npm run check:classify
+
       - name: Engine tests
         run: npm run test -w engine

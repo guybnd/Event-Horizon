@@ -37,10 +37,22 @@ export interface ArtifactAnnotation {
  * FLUX-1362: compose the `🎯 Artifact annotations` chat/regroom block from the unified host-side
  * list (formerly built inside `ArtifactPanel.sendAnnotationBatch` from the in-iframe Send batch).
  * Mirrors that shape so agents (and history readers) recognize the region-anchored format.
+ *
+ * FLUX-1667: `context` names which artifact channel (and, for the doc-recap channel, which
+ * sub-tab doc) the annotations were captured against — the Docs panel binds ArtifactPanel to a
+ * second, independent channel with its own per-doc tab strip, so a `🎯` message sent from there
+ * must say which doc it's about instead of reading identically to a Plan-channel annotation.
+ * Omitted entirely for the default (plan) channel, so that call site's message stays byte-for-byte
+ * unchanged.
  */
-export function formatArtifactAnnotations(items: ArtifactAnnotation[]): string {
+export function formatArtifactAnnotations(
+  items: ArtifactAnnotation[],
+  context?: { channelLabel?: string; docPath?: string },
+): string {
   if (items.length === 0) return '';
   const rev = items[items.length - 1]!.rev;
+  const channelSuffix = context?.channelLabel ? ` · ${context.channelLabel}` : '';
+  const docSuffix = context?.docPath ? ` · \`${context.docPath}\`` : '';
   const blocks = items
     .map((it, i) => {
       const noteLine = it.note ? `   ${it.note}\n` : '';
@@ -71,7 +83,7 @@ export function formatArtifactAnnotations(items: ArtifactAnnotation[]): string {
     })
     .join('\n\n');
   return (
-    `🎯 **Artifact annotations** · rev ${rev} · ${items.length} region${items.length === 1 ? '' : 's'}\n\n` +
+    `🎯 **Artifact annotations** · rev ${rev}${channelSuffix}${docSuffix} · ${items.length} region${items.length === 1 ? '' : 's'}\n\n` +
     `${blocks}\n\n` +
     `Please revise the artifact to address ${items.length === 1 ? 'this' : 'these'} and call ` +
     `\`publish_artifact\` to publish the updated revision.`

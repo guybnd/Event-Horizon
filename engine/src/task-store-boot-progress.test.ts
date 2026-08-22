@@ -93,8 +93,9 @@ describe('initDir bootProgress broadcasts (FLUX-1540)', () => {
     });
     await writeTickets(60);
 
-    await expect(initDir()).resolves.toBeUndefined();
+    const idsOnDisk = await initDir();
 
+    expect(idsOnDisk.size).toBe(60);
     expect(Object.keys(getWorkspace().tasks).length).toBe(60);
   });
 });

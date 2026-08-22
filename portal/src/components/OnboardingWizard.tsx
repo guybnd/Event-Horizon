@@ -10,13 +10,15 @@ import {
   Copy,
   Check,
   GitBranch,
+  GitPullRequest,
   HardDrive,
   User,
   Package,
+  RefreshCw,
 } from 'lucide-react';
-import { pickWorkspaceFolder, setWorkspace, installWorkspaceSkill, fetchPathInfo, setupPath, migrateStorage, restoreStorage, fetchStorageMode, fetchConfig, saveConfig as apiSaveConfig } from '../api';
+import { pickWorkspaceFolder, setWorkspace, installWorkspaceSkill, fetchPathInfo, setupPath, migrateStorage, restoreStorage, fetchStorageMode, fetchConfig, saveConfig as apiSaveConfig, recheckGh, type GhRecheckResult } from '../api';
 import { useAppActions, useConfig } from '../store/useAppSelector';
-import { isRuntimeFramework } from '../utils';
+import { isRuntimeFramework, resolveEffectiveAgent } from '../utils';
 import { BootstrapPreview } from './BootstrapPreview';
 import { FEATURE_PANELS } from '../config/onboardingFeatures';
 import { OnboardingContentPage } from './onboarding/OnboardingContentPage';
@@ -24,11 +26,22 @@ import { DirectoryPicker } from './onboarding/DirectoryPicker';
 import {
   validateFlow,
   visiblePages,
+  isRequiredSystemPage,
   type ConditionContext,
   type OnboardingPage,
   type OnboardingWidgetId,
 } from '../config/onboardingFlow';
 import rawFlow from '../config/onboardingFlow.json';
+import {
+  actionableSteps,
+  recordSkippedSteps,
+  clearSkippedStep,
+  readResumeStep,
+  clearResumeStep,
+  readAssistant,
+  setAssistant,
+  pageOwnsSkip,
+} from '../config/onboardingSkips';
 
 const SKIP_INSTALL_KEY = 'onboarding-install-skipped';
 
@@ -41,6 +54,44 @@ function normalizePlatform(raw: string | undefined): string {
   const p = (raw ?? '').toLowerCase();
   if (p.includes('win')) return 'win';
   if (p.includes('mac') || p.includes('darwin')) return 'mac';
+  return 'linux';
+}
+
+/** The install command chip set for the GitHub CLI step (FLUX-1683). */
+interface GhCommandOption {
+  key: string;
+  label: string;
+  command: string;
+}
+
+const GH_INSTALL_COMMANDS: GhCommandOption[] = [
+  { key: 'darwin', label: 'macOS', command: 'brew install gh' },
+  { key: 'win32', label: 'Windows', command: 'winget install GitHub.cli' },
+  { key: 'linux-pacman', label: 'Linux (pacman)', command: 'sudo pacman -S github-cli' },
+  { key: 'linux-apt', label: 'Linux (apt)', command: 'sudo apt install gh' },
+  { key: 'linux-dnf', label: 'Linux (dnf)', command: 'sudo dnf install gh' },
+  { key: 'linux-zypper', label: 'Linux (zypper)', command: 'sudo zypper install gh' },
+];
+
+/** Older Debian/Ubuntu releases need the upstream apt repo, not a bare `apt install gh` — always
+ * link the official per-distro docs on Linux, and it's the sole remedy when nothing on PATH resolved. */
+const GH_INSTALL_LINUX_DOCS_URL = 'https://github.com/cli/cli/blob/trunk/docs/install_linux.md';
+
+/** Which GH_INSTALL_COMMANDS entry matches the engine-reported platform/package manager, if any. */
+function ghHighlightKey(state: { platform: string; linuxPackageManager: string | null } | null): string {
+  if (!state) return '';
+  if (state.platform === 'darwin') return 'darwin';
+  if (state.platform === 'win32') return 'win32';
+  if (state.platform === 'linux' && state.linuxPackageManager) return `linux-${state.linuxPackageManager}`;
+  return '';
+}
+
+/** Maps normalizePlatform's browser-derived tokens ('win'|'mac'|'linux') onto the Node-style
+ * values GhRecheckResult.platform carries ('win32'|'darwin'|'linux'), so a failed/never-run
+ * probe can still seed a sensible platform default instead of leaving the state unknown. */
+function browserToGhPlatform(browserPlatform: string): 'win32' | 'darwin' | 'linux' {
+  if (browserPlatform === 'win') return 'win32';
+  if (browserPlatform === 'mac') return 'darwin';
   return 'linux';
 }
 
@@ -115,6 +166,13 @@ export function OnboardingWizard() {
   const [pathSnippet, setPathSnippet] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // GitHub CLI step (FLUX-1683)
+  const [ghState, setGhState] = useState<GhRecheckResult | null>(null);
+  const [ghChecking, setGhChecking] = useState(false);
+  const [ghError, setGhError] = useState<string | null>(null);
+  const [ghSelectedKey, setGhSelectedKey] = useState('');
+  const [ghCopied, setGhCopied] = useState(false);
+
   // -------------------------------------------------------------------------
   // VISIBLE PAGE SEQUENCE (FLUX-763 Phase 4). The wizard now evaluates
   // page.conditions and honors page.hidden when building the rendered sequence,
@@ -127,14 +185,25 @@ export function OnboardingWizard() {
   // visiblePages() FORCE-KEEPS required system pages, so conditions/hidden can
   // never produce a setup missing folder/storage/assistant/completion.
   // -------------------------------------------------------------------------
+  // FLUX-1684: a "Finish setup" click in Settings sets eh-onboarding-resume to the
+  // first skipped step's id and reloads. Consumed once here (both initializers below
+  // read it before the mount-effect clears it) so it can't survive a later reload.
+  const [resuming] = useState<boolean>(() => {
+    const target = readResumeStep();
+    return !!target && flow.pages.some((p) => p.id === target);
+  });
+
   const ctx = useMemo<ConditionContext>(
     () => ({
       storageMode: selectedMode,
       assistant: selectedFramework,
       platform: normalizePlatform(pathInfo?.platform ?? navigator.platform),
-      workspaceConfigured: folderPath.trim() !== '',
+      // A resumed session has empty folderPath state even though the engine's
+      // workspace is already set — without `|| resuming` a page conditioned on
+      // workspaceConfigured would wrongly drop out mid-flow.
+      workspaceConfigured: folderPath.trim() !== '' || resuming,
     }),
-    [selectedMode, selectedFramework, pathInfo, folderPath],
+    [selectedMode, selectedFramework, pathInfo, folderPath, resuming],
   );
 
   const pages = useMemo(() => visiblePages(flow.pages, ctx), [flow, ctx]);
@@ -142,7 +211,34 @@ export function OnboardingWizard() {
   // Walk by PAGE ID (not a raw index) so the position survives mid-flow
   // re-filtering: toggling storage mode can include/exclude a conditioned page
   // live, which would shift raw indices out from under the walker.
-  const [currentId, setCurrentId] = useState<string>(() => pages[0]?.id ?? '');
+  const [currentId, setCurrentId] = useState<string>(() => {
+    const target = readResumeStep();
+    return target && pages.some((p) => p.id === target) ? target : pages[0]?.id ?? '';
+  });
+
+  // Clear the resume key immediately so it can't survive a manual reload afterward.
+  useEffect(() => {
+    clearResumeStep();
+  }, []);
+
+  // A wizard resumed at install-skill must name and install the assistant the user
+  // actually picked, never the hardcoded 'claude' default (FLUX-1684). Persisted at
+  // the pick-assistant "Continue →" click; hydrated here once config is available.
+  // Gated on `resuming` so first-run preselection is untouched. If the fallback
+  // doesn't resolve to a framework this wizard knows about (e.g. 'codex' isn't in
+  // FRAMEWORKS), leave the 'claude' default rather than naming an unrenderable choice.
+  useEffect(() => {
+    if (!resuming) return;
+    const stored = readAssistant();
+    if (stored) {
+      setSelectedFramework(stored);
+      return;
+    }
+    const fallback = resolveEffectiveAgent(undefined, config?.defaultFramework);
+    if (FRAMEWORKS.some((f) => f.id === fallback)) {
+      setSelectedFramework(fallback);
+    }
+  }, [resuming, config?.defaultFramework]);
 
   // Resolve the current visible index from currentId. If the current page just
   // dropped out of the visible list (a ctx change hid it), clamp to the last
@@ -160,22 +256,46 @@ export function OnboardingWizard() {
     }
   }, [pages, currentId, pageIndex]);
 
-  /** Advance to the NEXT VISIBLE page after the current one (clamped at last). */
-  const onAdvance = () => {
+  /**
+   * Advance to the NEXT VISIBLE page after the current one (clamped at last).
+   * FLUX-1684: the single funnel through which record/un-record happens — bookkeeping
+   * here rather than per widget is what makes a future widget correct by default.
+   * `opts.skipped` records the CURRENT page id when it's in the actionable set; a bare
+   * call (the normal "finished this step" path) un-records it instead.
+   */
+  const onAdvance = (opts?: { skipped?: boolean }) => {
+    if (opts?.skipped && actionableSteps(pages).some((p) => p.id === currentId)) {
+      recordSkippedSteps([currentId]);
+    } else {
+      clearSkippedStep(currentId);
+    }
     const idx = pages.findIndex((p) => p.id === currentId);
     const base = idx >= 0 ? idx : pageIndex;
     const next = pages[Math.min(base + 1, pages.length - 1)];
     if (next) setCurrentId(next.id);
   };
 
-  function complete() {
+  // FLUX-1684: does the CURRENT page offer a step-scoped skip at all? A required
+  // system page, a mandatory page, or the last page offers none.
+  const canSkipCurrent = !!page && !isRequiredSystemPage(page) && !page.mandatory && pageIndex < pages.length - 1;
+
+  // "Skip all remaining setup" is offered only when it wouldn't cross a mandatory
+  // page (from the current page onward) and isn't on the last page already.
+  const isLastPage = pageIndex >= pages.length - 1;
+  const hasMandatoryAhead = pages.slice(pageIndex).some((p) => p.mandatory);
+  const canSkipAll = !isLastPage && !hasMandatoryAhead;
+
+  const [confirmSkipAll, setConfirmSkipAll] = useState(false);
+  useEffect(() => {
+    setConfirmSkipAll(false);
+  }, [currentId]);
+
+  const abandonedSteps = useMemo(() => actionableSteps(pages, pageIndex), [pages, pageIndex]);
+
+  function completeAbandoningRemaining() {
+    recordSkippedSteps(abandonedSteps.map((p) => p.id));
     // markOnboardingComplete owns the localStorage write AND flips the reactive
     // store field so App dismisses the wizard immediately (FLUX-758).
-    markOnboardingComplete();
-    notifyWorkspaceSet();
-  }
-
-  function skip() {
     markOnboardingComplete();
     // notifyWorkspaceSet will re-evaluate workspaceConfigured — if no folder was
     // picked yet the WorkspaceSelector will take over from App.tsx.
@@ -279,7 +399,7 @@ export function OnboardingWizard() {
     // Advance to the next VISIBLE page rather than a hard jump to 'bootstrap':
     // if bootstrap is hidden/conditioned out, goTo('bootstrap') would be a no-op
     // and the install step would dead-end with no exit (FLUX-763 risk).
-    onAdvance();
+    onAdvance({ skipped: true });
   }
 
   // FLUX-758: on entering the storage-mode step, detect the workspace's actual
@@ -327,15 +447,50 @@ export function OnboardingWizard() {
     });
   }
 
+  // GitHub CLI step (FLUX-1683). Keyed on the current page being the
+  // 'github-cli' widget, same pattern as the path-setup/storage-mode effects.
+  // A failed probe never blocks the step — it renders an unknown state with
+  // the manual commands instead of a spinner or dead end (AC7).
+  async function handleGhRecheck() {
+    setGhChecking(true);
+    setGhError(null);
+    try {
+      const result = await recheckGh();
+      setGhState(result);
+      setGhSelectedKey(ghHighlightKey(result));
+    } catch (err) {
+      setGhError(err instanceof Error ? err.message : 'Failed to check the GitHub CLI.');
+      setGhSelectedKey(
+        ghHighlightKey(
+          ghState ?? { platform: browserToGhPlatform(normalizePlatform(navigator.platform)), linuxPackageManager: null }
+        )
+      );
+    } finally {
+      setGhChecking(false);
+    }
+  }
+
+  function handleCopyGhCommand(command: string) {
+    navigator.clipboard.writeText(command).then(() => {
+      setGhCopied(true);
+      setTimeout(() => setGhCopied(false), 2000);
+    });
+  }
+
+  useEffect(() => {
+    if (page?.widget !== 'github-cli') return;
+    void handleGhRecheck();
+  }, [page?.widget]);
+
   // Step 8 — docs
   function handleGoDocs() {
-    complete();
+    completeAbandoningRemaining();
     setView('docs');
   }
 
   // Step 9 — finish
   function handleFirstTicket() {
-    complete();
+    completeAbandoningRemaining();
   }
 
   // ---------------------------------------------------------------------------
@@ -590,7 +745,7 @@ export function OnboardingWizard() {
         </p>
 
         <button
-          onClick={() => onAdvance()}
+          onClick={() => { setAssistant(selectedFramework); onAdvance(); }}
           className="flex h-11 w-full items-center justify-center rounded-2xl bg-primary px-6 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover"
         >
           Continue →
@@ -609,7 +764,7 @@ export function OnboardingWizard() {
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 max-w-sm">
             This copies the Event Horizon workflow skill into your{' '}
-            <strong>{FRAMEWORKS.find((f) => f.id === selectedFramework)?.label}</strong>{' '}
+            <strong>{FRAMEWORKS.find((f) => f.id === selectedFramework)?.label ?? selectedFramework}</strong>{' '}
             workspace so the agent knows how to manage your tickets.
           </p>
         </div>
@@ -643,7 +798,7 @@ export function OnboardingWizard() {
               )}
             </button>
           )}
-          {!installDone && (
+          {!installDone && !page?.mandatory && (
             <button
               onClick={handleSkipInstall}
               className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
@@ -676,11 +831,31 @@ export function OnboardingWizard() {
             Let's check if your project has docs or tasks we can import.
           </p>
         </div>
-        <BootstrapPreview onComplete={() => onAdvance()} onSkip={() => onAdvance()} />
+        <BootstrapPreview
+          onComplete={() => onAdvance()}
+          onSkip={(o) => onAdvance({ skipped: o?.skipped !== false })}
+        />
       </div>
     ),
 
-    'path-setup': () => (
+    'path-setup': () => {
+      // FLUX-1684: only the isPkg-and-not-done state's trailing button is a PURE skip
+      // (Add automatically / Show me the command are also on screen there); in every
+      // other state it's the page's only forward control and reads "Continue →".
+      const pathActionable = !!pathInfo?.isPkg && !pathDone;
+      // FLUX-1689: mandatory must have teeth without recreating the FLUX-1684 dead end
+      // (the button always renders — see the "Do NOT" note on that ticket). Instead of
+      // hiding it, gate/relabel it on a mandatory page: disable through the fetchPathInfo
+      // loading window (it silently read "Continue →" and bypassed with skipped:false),
+      // and require the user to have actually engaged (tried "Show me the command" or hit
+      // an error from "Add automatically") before a bare Skip can advance.
+      const pathMandatory = !!page?.mandatory;
+      const pathLoadingWindow = pathMandatory && pathInfo === null;
+      const pathNeedsAck = pathMandatory && pathActionable;
+      const pathAcknowledged = pathSnippet !== null || pathError !== null;
+      const trailingDisabled = pathLoadingWindow || (pathNeedsAck && !pathAcknowledged);
+      const trailingLabel = pathNeedsAck ? "I've added it manually — continue" : pathActionable ? 'Skip' : 'Continue →';
+      return (
       <div>
         <div className="mb-8 flex flex-col items-center gap-3 text-center">
           <div className="flex items-center justify-center rounded-2xl bg-primary/10 p-4">
@@ -762,13 +937,146 @@ export function OnboardingWizard() {
         )}
 
         <button
-          onClick={() => onAdvance()}
-          className="mt-3 flex h-11 w-full items-center justify-center rounded-2xl border border-gray-200 bg-white px-6 text-sm font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+          onClick={() => onAdvance({ skipped: pathActionable })}
+          disabled={trailingDisabled}
+          className="mt-3 flex h-11 w-full items-center justify-center rounded-2xl border border-gray-200 bg-white px-6 text-sm font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
         >
-          {pathDone ? 'Continue →' : 'Skip'}
+          {trailingLabel}
         </button>
+        {pathNeedsAck && !pathAcknowledged && (
+          <p className="mt-2 text-center text-xs text-gray-400 dark:text-gray-500">
+            Try &quot;Add automatically&quot; or &quot;Show me the command&quot; above before continuing.
+          </p>
+        )}
       </div>
-    ),
+      );
+    },
+
+    'github-cli': () => {
+      const selectedCommand = GH_INSTALL_COMMANDS.find((c) => c.key === ghSelectedKey) ?? null;
+      const ghPlatform = ghState?.platform ?? browserToGhPlatform(normalizePlatform(navigator.platform));
+      const isLinux = ghPlatform === 'linux';
+      const ghReady = ghState?.ok === true && !ghError;
+      return (
+        <div>
+          <div className="mb-8 flex flex-col items-center gap-3 text-center">
+            <div className="flex items-center justify-center rounded-2xl bg-primary/10 p-4">
+              <GitPullRequest className="h-8 w-8 text-primary" />
+            </div>
+            <h1 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">
+              Connect the GitHub CLI
+            </h1>
+            <p className="text-sm text-gray-500 dark:text-gray-400 max-w-sm">
+              Event Horizon uses <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs dark:bg-white/10">gh</code> to create, review, and merge PRs, and to keep ticket status in sync with PR state. Without it: agent-driven PR create/review/merge, PR-state reconcile, and merged-branch pruning are disabled.
+            </p>
+          </div>
+
+          {ghChecking && ghState === null && !ghError ? (
+            <div className="flex justify-center py-4">
+              <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+            </div>
+          ) : ghReady ? (
+            <div className="mb-2 flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400">
+              <CheckCircle className="h-5 w-5 shrink-0" />
+              <span>Signed in and ready.</span>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3">
+              <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>
+                  {ghError
+                    ? `Couldn't check the GitHub CLI status (${ghError}). Install and sign in manually, then Re-check.`
+                    : ghState?.reason === 'not-authenticated'
+                    ? 'gh is installed but not signed in.'
+                    : 'gh is not installed.'}
+                </span>
+              </div>
+
+              {ghState?.reason === 'not-authenticated' ? (
+                <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-white/10 dark:bg-white/5">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                      Run this, then Re-check (default scopes include repo and read:org — enough for Event Horizon)
+                    </span>
+                    <button
+                      onClick={() => handleCopyGhCommand('gh auth login')}
+                      className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+                    >
+                      {ghCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                      {ghCopied ? 'Copied!' : 'Copy'}
+                    </button>
+                  </div>
+                  <code className="block break-all font-mono text-xs text-gray-800 dark:text-gray-200">gh auth login</code>
+                </div>
+              ) : (
+                <>
+                  <div className="flex flex-wrap gap-2">
+                    {GH_INSTALL_COMMANDS.map((c) => (
+                      <button
+                        key={c.key}
+                        onClick={() => setGhSelectedKey(c.key)}
+                        className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                          c.key === ghSelectedKey
+                            ? 'border-primary bg-primary/10 text-primary'
+                            : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10'
+                        }`}
+                      >
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {selectedCommand && (
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-white/10 dark:bg-white/5">
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Run this in your terminal</span>
+                        <button
+                          onClick={() => handleCopyGhCommand(selectedCommand.command)}
+                          className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+                        >
+                          {ghCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                          {ghCopied ? 'Copied!' : 'Copy'}
+                        </button>
+                      </div>
+                      <code className="block break-all font-mono text-xs text-gray-800 dark:text-gray-200">{selectedCommand.command}</code>
+                    </div>
+                  )}
+
+                  {isLinux && (
+                    <a
+                      href={GH_INSTALL_LINUX_DOCS_URL}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-center text-xs font-medium text-primary hover:underline"
+                    >
+                      Other Linux distros / install methods →
+                    </a>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          <div className="mt-3 flex gap-2">
+            <button
+              onClick={() => void handleGhRecheck()}
+              disabled={ghChecking}
+              className="flex h-11 flex-1 items-center justify-center gap-2 rounded-2xl border border-gray-200 bg-white px-6 text-sm font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+            >
+              {ghChecking ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Re-check
+            </button>
+            <button
+              onClick={() => onAdvance()}
+              className="flex h-11 flex-1 items-center justify-center rounded-2xl bg-primary px-6 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover"
+            >
+              {ghReady ? 'Continue →' : 'Skip'}
+            </button>
+          </div>
+        </div>
+      );
+    },
 
     'completion': () => (
       <div>
@@ -795,7 +1103,7 @@ export function OnboardingWizard() {
         <p className="mt-4 text-center text-xs text-gray-400 dark:text-gray-500">
           Working across several repos that form one product? You can link them into a
           <button
-            onClick={() => { markOnboardingComplete(); setView('settings'); }}
+            onClick={() => { completeAbandoningRemaining(); setView('settings'); }}
             className="ml-1 font-medium text-primary hover:underline"
           >
             multi-repo group
@@ -814,7 +1122,7 @@ export function OnboardingWizard() {
     advance: () => onAdvance(),
     'open-docs': () => handleGoDocs(),
     'first-ticket': () => handleFirstTicket(),
-    'open-group': () => { markOnboardingComplete(); setView('settings'); },
+    'open-group': () => { completeAbandoningRemaining(); setView('settings'); },
   };
 
   /**
@@ -842,15 +1150,60 @@ export function OnboardingWizard() {
           ? WIDGET_RENDERERS[page.widget]()
           : renderContentPage(page))}
 
-        {/* Global skip link */}
-        <div className="mt-6 text-center">
-          <button
-            onClick={skip}
-            className="text-xs text-gray-400 hover:text-gray-600 dark:text-gray-600 dark:hover:text-gray-400 transition-colors"
-          >
-            Skip setup
-          </button>
-        </div>
+        {/* FLUX-1684: step-scoped skip (only when the page doesn't already render its own)
+            + the "skip all" control, kept visually subordinate below a divider. Neither
+            renders on a required/mandatory/last page; every skippable page in today's
+            shipped flow already owns an inline skip, so the step-scoped control here is
+            an invariant for a future/author-added widget, not something visible today. */}
+        {!confirmSkipAll && (canSkipCurrent && page && !pageOwnsSkip(page)) && (
+          <div className="mt-6 text-center">
+            <button
+              onClick={() => onAdvance({ skipped: true })}
+              className="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors"
+            >
+              Skip this step →
+            </button>
+          </div>
+        )}
+        {!confirmSkipAll && canSkipAll && (
+          <div className={`text-center ${canSkipCurrent && page && !pageOwnsSkip(page) ? 'mt-2' : 'mt-6'}`}>
+            <button
+              onClick={() => setConfirmSkipAll(true)}
+              className="text-xs text-gray-400 hover:text-gray-600 dark:text-gray-600 dark:hover:text-gray-400 transition-colors"
+            >
+              Skip all remaining setup
+            </button>
+          </div>
+        )}
+        {confirmSkipAll && (
+          <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">
+            <p className="mb-3">
+              This abandons: {abandonedSteps.map((p) => p.title).join(', ')}
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => setConfirmSkipAll(false)}
+                className="flex h-9 items-center justify-center rounded-xl border border-gray-200 bg-white px-4 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+              >
+                Keep setting up
+              </button>
+              {canSkipCurrent && (
+                <button
+                  onClick={() => { onAdvance({ skipped: true }); setConfirmSkipAll(false); }}
+                  className="flex h-9 items-center justify-center rounded-xl border border-red-200 bg-white px-4 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 dark:border-red-500/30 dark:bg-white/5 dark:text-red-400 dark:hover:bg-red-500/10"
+                >
+                  Skip just this step
+                </button>
+              )}
+              <button
+                onClick={completeAbandoningRemaining}
+                className="flex h-9 items-center justify-center rounded-xl bg-red-600 px-4 text-xs font-semibold text-white transition-colors hover:bg-red-700"
+              >
+                Skip all {abandonedSteps.length} and finish
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* FLUX-758: in-app folder browser (replaces the native OS dialog). */}

@@ -56,6 +56,17 @@ export interface ModuleDeclaration {
   scaffold?: {
     dirs: string[];
   };
+  /** FLUX-1656: env var NAMES (never values) this connector needs to authenticate. Declared
+   *  explicitly here for connectors whose secret isn't a self-referential `${VAR}` passthrough in
+   *  `mcpServer.env` (deriveConnectorEnvVars below already picks those up) — union of both feeds the
+   *  Connectors settings panel's presence check. */
+  requiredEnv?: string[];
+  /** FLUX-1656: name of ONE MCP tool the Connectors panel may call (with empty/static args) after a
+   *  successful `initialize` handshake, for connectors that only reveal a bad auth token on a real
+   *  call (handshake alone succeeds). Generic mechanism — no bespoke per-connector probe code.
+   *  MUST be read-only/idempotent: it fires automatically on every Settings-tab mount and every
+   *  manual "Test" click, with no per-call user confirmation. */
+  authProbe?: string;
 }
 
 const MAX_PROMPT_FRAGMENT_LENGTH = 2000;
@@ -123,7 +134,7 @@ export function getActiveModules(phase?: string, tags?: string[], isScratch?: bo
   });
 }
 
-function resolveEnvVars(env: Record<string, string>, vars: Record<string, string>): Record<string, string> {
+export function resolveEnvVars(env: Record<string, string>, vars: Record<string, string>): Record<string, string> {
   const result: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) {
     result[k] = v.replace(/\$\{(\w+)\}/g, (_, name) => vars[name] ?? `\${${name}}`);
@@ -171,6 +182,96 @@ const SERENA_CONTEXT_BY_FRAMEWORK: Record<string, string> = {
 };
 export function serenaContextFor(framework?: string): string {
   return (framework && SERENA_CONTEXT_BY_FRAMEWORK[framework]) || 'claude-code';
+}
+
+// FLUX-1656: EH-internal template placeholders the engine itself resolves before spawn
+// (resolveEnvVars / substituteArgs above) — never a real OS env var the user needs to set. Excluded
+// from deriveConnectorEnvVars so e.g. basic-memory's `${ACTIVE_FLUX_DIR}` or a shared-http module's
+// `${PROJECT}`/`${PORT}`/`${SERENA_CONTEXT}` never show up as a "missing" required connector env var.
+const INTERNAL_TEMPLATE_VARS = new Set(['ACTIVE_FLUX_DIR', 'PROJECT', 'PORT', 'SERENA_CONTEXT']);
+
+/** Auto-derive required env var NAMES from `${VAR}` placeholders in a server's env values, args,
+ *  and url — the passthrough idiom BUILTIN_MODULES already uses (e.g. mem0's
+ *  `env: { MEM0_API_KEY: '${MEM0_API_KEY}' }`). Never returns a value, only the name. */
+function deriveConnectorEnvVars(env?: Record<string, string>, args?: string[], url?: string): string[] {
+  const names = new Set<string>();
+  const scan = (s: string) => {
+    for (const m of s.matchAll(/\$\{(\w+)\}/g)) {
+      const name = m[1];
+      if (name && !INTERNAL_TEMPLATE_VARS.has(name)) names.add(name);
+    }
+  };
+  for (const v of Object.values(env ?? {})) scan(v);
+  for (const a of args ?? []) scan(a);
+  if (url) scan(url);
+  return [...names];
+}
+
+/** A connector for the Settings → Connectors trust panel (FLUX-1656): either a configured module
+ *  server or a workspace `.mcp.json` server, tagged with its origin. */
+export interface ConnectorInfo {
+  id: string;
+  name: string;
+  source: 'module' | 'workspace';
+  mcpServer?: ModuleDeclaration['mcpServer'];
+  sharedHttp?: ModuleDeclaration['sharedHttp'];
+  /** Set only for a workspace `.mcp.json` server declared as a remote streamable-http endpoint
+   *  (`{ "type": "http", "url": "..." }`) rather than a spawned stdio process. */
+  url?: string;
+  requiredEnv: string[];
+  authProbe?: string;
+}
+
+// The engine's own self-server (http://127.0.0.1:<port>/mcp in every workspace's `.mcp.json`) isn't
+// an external connector to audit — exclude it from the unified list below.
+const SELF_SERVER_ID = 'event-horizon';
+
+/** Unified connector list: every configured module server (`loadModules()` — opted-in via config,
+ *  not the full catalog) that declares `mcpServer`/`sharedHttp`, plus every workspace `.mcp.json`
+ *  server except the engine's own self-server. Does NOT probe anything — see probeConnector /
+ *  probeAllConnectors in module-probe.ts for the live auth check this list feeds. */
+export function getConnectors(): ConnectorInfo[] {
+  // Built with conditional property assignment (not `field: possiblyUndefined` in the literal) so an
+  // absent value is an ABSENT key, never a present key holding `undefined` — required under this
+  // repo's `exactOptionalPropertyTypes`, and matches the conditional-assign convention already used
+  // for `resolved.env` above in getModuleMcpServers.
+  const moduleConnectors: ConnectorInfo[] = loadModules()
+    .filter((m) => m.mcpServer || m.sharedHttp)
+    .map((m) => {
+      const connector: ConnectorInfo = {
+        id: m.id,
+        name: m.name,
+        source: 'module',
+        requiredEnv: [...new Set([
+          ...(m.requiredEnv ?? []),
+          ...deriveConnectorEnvVars(m.mcpServer?.env, [...(m.mcpServer?.args ?? []), ...(m.sharedHttp?.args ?? [])]),
+        ])],
+      };
+      if (m.mcpServer) connector.mcpServer = m.mcpServer;
+      if (m.sharedHttp) connector.sharedHttp = m.sharedHttp;
+      if (m.authProbe) connector.authProbe = m.authProbe;
+      return connector;
+    });
+
+  const workspaceConnectors: ConnectorInfo[] = Object.entries(getWorkspaceMcpServers())
+    .filter(([id]) => id !== SELF_SERVER_ID)
+    .map(([id, raw]) => {
+      const command = typeof raw.command === 'string' ? raw.command : undefined;
+      const args = Array.isArray(raw.args) ? raw.args.filter((a): a is string => typeof a === 'string') : [];
+      const env = raw.env && typeof raw.env === 'object' && !Array.isArray(raw.env) ? raw.env as Record<string, string> : undefined;
+      const url = typeof raw.url === 'string' ? raw.url : undefined;
+      const connector: ConnectorInfo = {
+        id,
+        name: id,
+        source: 'workspace',
+        requiredEnv: deriveConnectorEnvVars(env, args, url),
+      };
+      if (command) connector.mcpServer = env ? { command, args, env } : { command, args };
+      if (url) connector.url = url;
+      return connector;
+    });
+
+  return [...moduleConnectors, ...workspaceConnectors];
 }
 
 export function getModulePromptFragments(phase?: string, tags?: string[], isScratch?: boolean): string {
@@ -255,6 +356,7 @@ export const BUILTIN_MODULES: ModuleDeclaration[] = [
       args: ['-y', '@mem0/mcp-server'],
       env: { MEM0_API_KEY: '${MEM0_API_KEY}' },
     },
+    requiredEnv: ['MEM0_API_KEY'],
     promptFragment: 'Mem0 memory tools are available if you need cross-session recall. Use them to persist key architectural decisions or patterns when they are worth remembering beyond this session. Don\'t use them for ephemeral state or things already tracked in the ticket.',
   },
   {

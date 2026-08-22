@@ -5,7 +5,7 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { setWorkspaceRoot } from './workspace.js';
-import { deleteTicketBranch, planFinishPr, checkGhAuth, isMergeConflict, evaluateCiGate, runConfiguredCheckCommand, type PrStatus } from './branch-manager.js';
+import { createTicketBranch, deleteTicketBranch, planFinishPr, checkGhAuth, isMergeConflict, evaluateCiGate, runConfiguredCheckCommand, type PrStatus } from './branch-manager.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -137,6 +137,59 @@ describe('deleteTicketBranch', () => {
     await expect(deleteTicketBranch(BRANCH, false)).rejects.toThrow();
     // The refused `-d` leaves the local branch intact (no data loss).
     expect(await localBranchExists(BRANCH)).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLUX-1638 (incident FLUX-1635 -> PR #700) — createTicketBranch is the actual dispatch-path
+// culprit: it used to base a new branch on the bare LOCAL default (`getDefaultBranch()`), so a
+// commit sitting on local master but never pushed to origin/master rode into every
+// subsequently-created ticket branch's PR. It must now prefer the remote-tracking ref.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('createTicketBranch', () => {
+  it('does not inherit a commit that is on local master but not yet pushed to origin', async () => {
+    // Stray commit lands on local master WITHOUT ever being pushed (mirrors a branchless
+    // single-shot session committing directly to master).
+    await fs.writeFile(path.join(repo, 'stray.txt'), 'oops\n', 'utf8');
+    await gitC(repo, ['add', 'stray.txt']);
+    await gitC(repo, ['commit', '-m', 'stray unpushed commit']);
+    const straySha = await gitC(repo, ['rev-parse', 'HEAD']);
+
+    const name = await createTicketBranch('FLUX-1638', 'stray commit test');
+
+    const isAncestor = await gitC(repo, ['merge-base', '--is-ancestor', straySha, name])
+      .then(() => true)
+      .catch(() => false);
+    expect(isAncestor).toBe(false);
+    // The branch was still created and pushed successfully off origin/master.
+    expect(await remoteBranchExists(name)).toBe(true);
+  });
+
+  it('warns (does not throw) when local master has diverged ahead of origin/master at creation time', async () => {
+    await fs.writeFile(path.join(repo, 'stray.txt'), 'oops\n', 'utf8');
+    await gitC(repo, ['add', 'stray.txt']);
+    await gitC(repo, ['commit', '-m', 'stray unpushed commit']);
+
+    const stderr: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    try {
+      await createTicketBranch('FLUX-1638', 'divergence warning test');
+    } finally {
+      stderrSpy.mockRestore();
+    }
+    const logged = stderr.join('');
+    expect(logged).toContain('[warn]');
+    expect(logged).toMatch(/ahead of.*origin\/master.*by 1 commit/i);
+  });
+
+  it('still creates and pushes the branch when local == origin (no divergence, no warning)', async () => {
+    const name = await createTicketBranch('FLUX-1638', 'no divergence test');
+    expect(await remoteBranchExists(name)).toBe(true);
+    expect(await localBranchExists(name)).toBe(true);
   });
 });
 

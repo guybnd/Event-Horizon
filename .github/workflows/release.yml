@@ -150,13 +150,53 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # FLUX-1694: Linux artifacts — SEA-style standalone binary zip (same @yao-pkg/pkg path as
+  # macOS) plus the Electron AppImage. Built natively on an ubuntu runner; runs after `release`
+  # so the draft GitHub Release already exists, then appends (action-gh-release upserts by tag).
+  release-linux:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Linux executable
+        run: npm run dist:linux
+
+      - name: Build Linux desktop app (Electron AppImage)
+        continue-on-error: true # non-blocking, same policy as the mac/win desktop steps
+        run: |
+          npm ci --prefix electron
+          VER="${GITHUB_REF_NAME#v}"
+          npm --prefix electron version "$VER" --no-git-tag-version --allow-same-version
+          npm --prefix electron run build:linux -- --publish never
+
+      - name: Append Linux artifacts to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            releases/event-horizon-linux-*.zip
+            electron/dist/*.AppImage
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # FLUX-835: the gate between "assets attached" and "release visible as Latest". Runs after
   # both asset-producing jobs so it sees the final asset list regardless of which one finishes
   # last. Core artifacts (source zip + both SEA zips) are required — release.yml's Electron
   # steps are continue-on-error, so without this gate a missing .dmg/.exe (or a build-side glob
   # miss on a core zip) could go public unnoticed, same as the "green but wrong" v1.0.0 miss.
   finalize:
-    needs: [release, release-windows]
+    needs: [release, release-windows, release-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -176,6 +216,7 @@ jobs:
           echo "$assets" | grep -qx 'event-horizon-source.zip' || missing_core="$missing_core event-horizon-source.zip"
           echo "$assets" | grep -q '^event-horizon-macos-.*\.zip$' || missing_core="$missing_core event-horizon-macos-*.zip"
           echo "$assets" | grep -q '^event-horizon-win-.*\.zip$' || missing_core="$missing_core event-horizon-win-*.zip"
+          echo "$assets" | grep -q '^event-horizon-linux-.*\.zip$' || missing_core="$missing_core event-horizon-linux-*.zip"
 
           if [ -n "$missing_core" ]; then
             echo "::error::Release $VERSION is missing core artifact(s):$missing_core — leaving as draft."
@@ -185,6 +226,7 @@ jobs:
           missing_desktop=""
           echo "$assets" | grep -q '\.dmg$' || missing_desktop="$missing_desktop macOS .dmg"
           echo "$assets" | grep -q '\.exe$' || missing_desktop="$missing_desktop Windows .exe"
+          echo "$assets" | grep -q '\.AppImage$' || missing_desktop="$missing_desktop Linux .AppImage"
 
           if [ -n "$missing_desktop" ]; then
             echo "::warning::Release $VERSION is missing desktop artifact(s):$missing_desktop — publishing as a partial release."

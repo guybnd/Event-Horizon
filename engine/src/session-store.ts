@@ -7,7 +7,7 @@ import { CLI_CAPABILITIES as capabilities } from './agents/types.js';
 import { killProcessTree } from './kill-process-tree.js';
 import { clearHoldsForSession } from './background-process-holds.js';
 import { settleOpenPromptsForConversation } from './hitl-prompts.js';
-import { getActiveFluxDir } from './workspace.js';
+import { getActiveFluxDir, pathsEqual } from './workspace.js';
 import { getWorkspace, type Workspace } from './workspace-context.js';
 import { isVirtualConversationId } from './agents/board.js';
 import { broadcastEvent } from './events.js';
@@ -176,8 +176,8 @@ export function getAllSessionsForTask(taskId: string): CliSessionRecord[] {
   return ids.map(id => cliSessionsById.get(id)).filter((s): s is CliSessionRecord => !!s);
 }
 
-// Max `liveOutput` length (chars) retained per session on the LIST endpoint.
-// Cards only need a short preview; the detail endpoint keeps the full buffer.
+// Max `liveOutput` length (chars) retained per session on the LIST endpoint, and (FLUX-1685)
+// per terminal session on the DETAIL endpoint too — see `truncateTerminalLiveOutput` below.
 const LIST_LIVE_OUTPUT_TAIL = 2048;
 // FLUX-1390: 'scheduled' (a sleeping, honored-ScheduleWakeup session) is active/alive — no live proc,
 // but not terminal either; it must survive list-scoping and eviction the same way 'waiting-input' does.
@@ -188,6 +188,55 @@ function truncateLiveOutput(summary: CliSessionSummary): CliSessionSummary {
     summary.liveOutput = summary.liveOutput.slice(-LIST_LIVE_OUTPUT_TAIL);
   }
   return summary;
+}
+
+/**
+ * FLUX-1685: detail-payload truncation for TERMINAL sessions only — unlike
+ * {@link truncateLiveOutput} (list endpoint, every session), active sessions keep their full
+ * buffer here since the detail view is where a running session's live console is read. Records
+ * the original length in `liveOutputChars` before slicing so the client can render a size hint
+ * and fetch the full buffer on demand (see `getFullLiveOutputForSession`). Mutates `summary` in
+ * place, same as `truncateLiveOutput` — only safe because callers pass a freshly built summary.
+ */
+function truncateTerminalLiveOutput(summary: CliSessionSummary): CliSessionSummary {
+  if (!ACTIVE_STATUSES.has(summary.status) && summary.liveOutput && summary.liveOutput.length > LIST_LIVE_OUTPUT_TAIL) {
+    summary.liveOutputChars = summary.liveOutput.length;
+    summary.liveOutput = summary.liveOutput.slice(-LIST_LIVE_OUTPUT_TAIL);
+  }
+  return summary;
+}
+
+/**
+ * Detail-scoped variant of {@link getCliSessionSummaryForTask} (FLUX-1685): truncates
+ * `liveOutput` when the resolved session is terminal, mirroring how
+ * {@link getListCliSessionSummaryForTask} wraps the same singular getter for the list endpoint.
+ */
+export function getDetailCliSessionSummaryForTask(taskId: string): CliSessionSummary | undefined {
+  const summary = getCliSessionSummaryForTask(taskId);
+  return summary ? truncateTerminalLiveOutput(summary) : undefined;
+}
+
+/**
+ * Detail-scoped variant of {@link getAllSessionSummariesForTask} (FLUX-1685): every session for
+ * the task, with terminal sessions' `liveOutput` truncated to the same tail used elsewhere. This
+ * is what `serializeTaskForApi` (task-serialize.ts) now uses for the `cliSessions[]` field —
+ * `getAllSessionSummariesForTask` itself stays untruncated for engine-internal callers and the
+ * `/:id/cli-sessions` route.
+ */
+export function getDetailSessionSummariesForTask(taskId: string): CliSessionSummary[] {
+  return getAllSessionSummariesForTask(taskId).map(truncateTerminalLiveOutput);
+}
+
+/**
+ * FLUX-1685: full untruncated `liveOutput` buffer for one session, for the on-demand
+ * `/:id/cli-sessions/:sessionId/output` route. Reads the in-memory record directly (there is no
+ * disk copy — an engine restart loses it, same as today). Requires `session.taskId === taskId` so
+ * a session id can't be used to read another ticket's output.
+ */
+export function getFullLiveOutputForSession(taskId: string, sessionId: string): string | undefined {
+  const session = cliSessionsById.get(sessionId);
+  if (!session || session.taskId !== taskId) return undefined;
+  return session.liveOutputBuffer;
 }
 
 /**
@@ -207,8 +256,9 @@ export function slimSessionSummaryForAgent(summary: CliSessionSummary): Omit<Cli
  * List-scoped session summaries: bounds the payload of `GET /api/tasks` so it
  * doesn't grow with completed-session history. Returns every **active** session
  * plus only the **most-recent completed group** (or solo session), with each
- * `liveOutput` truncated to a short tail. The detail endpoint (`/:id`) still
- * uses {@link getAllSessionSummariesForTask} for the full set.
+ * `liveOutput` truncated to a short tail. The detail endpoint (`/:id`) uses
+ * {@link getDetailSessionSummariesForTask} instead (FLUX-1685) — every session,
+ * with only terminal ones truncated.
  */
 export function getListSessionSummariesForTask(taskId: string): CliSessionSummary[] {
   const ids = cliSessionsByTaskId.get(taskId);
@@ -924,6 +974,20 @@ export function getLiveProcessSessionCount(): number {
  * FLUX-1531 (multi-workspace S13, mirrors `batchBelongsToWorkspaceRoot` — models/furnace.ts): a
  * session tagged with its own `workspaceRoot` belongs to that root; an untagged legacy/rehydrated
  * session falls back to `defaultWorkspaceRoot`.
+ *
+ * FLUX-1642 audit: this raw `===` has the same latent path-form-mismatch risk as
+ * `rehydrateSessionStubs`'s tagged-stub compare (case, 8.3 short names — `pathsEqual`,
+ * workspace.ts, exists precisely because `canonicalizeWorkspaceRoot` isn't a universal
+ * byte-identity guarantee). Left as `===` here deliberately: (1) both sides are in-memory
+ * `workspaceRoot` strings produced by THIS engine process's own canonicalization at session
+ * creation, not read back from an on-disk stub that another process/version may have written in a
+ * different form, so the mismatch window is far narrower; (2) every caller below iterates
+ * `cliSessionsById` in hot paths (`getLiveProcessSessionCount*`, `stopCliSessionsForWorkspace`),
+ * and `pathsEqual` does a sync `realpathSync.native` per comparison — swapping it in would cost a
+ * syscall per session on every reconcile tick; (3) a false negative here only narrows a filter (a
+ * session transiently reads as belonging to the wrong/no board), which self-heals next tick — it
+ * is never a delete, unlike the stub case this ticket fixes. Revisit if `canonicalizeWorkspaceRoot`
+ * is ever shown to disagree with itself within one process.
  */
 export function sessionBelongsToWorkspaceRoot(
   session: CliSessionSummary,
@@ -1017,6 +1081,13 @@ interface SessionStub {
    * for those (see its Fix A1 doc comment) rather than assuming default-workspace ownership.
    */
   workspaceRoot?: string;
+  /**
+   * FLUX-1642: ISO timestamp set the first time `rehydrateSessionStubs` judges this stub foreign
+   * to the board reading it. Never set by `stubFor`/`syncActiveSessionStubs` — only the rehydrate
+   * pass's quarantine path writes it, and only onto a stub it is NOT deleting this pass. See that
+   * function's doc comment for the two-pass delete rule.
+   */
+  ownershipMismatchAt?: string;
 }
 
 // Guard so a sync can't wipe the on-disk stubs before boot rehydration has read them back: an
@@ -1174,6 +1245,18 @@ export async function syncActiveSessionStubs(workspaceRoot: string | null, defau
  * board's own cache (`ws.tasks`, already populated — `initDir()` runs before `startWatchers()`) is
  * the next-best signal — a taskId this board has never heard of is unambiguously some other
  * board's residue, never a real ticket that simply hasn't loaded yet.
+ *
+ * FLUX-1642 (Fix A1 follow-up): the tagged-stub compare now uses `pathsEqual`, not raw `===` — an
+ * 8.3 short name or drive-letter-case difference between the process that WROTE the stub and the
+ * process/board reading it back here would otherwise byte-mismatch a stub that genuinely belongs
+ * to this board (exactly the failure `canonicalizeWorkspaceRoot`'s own doc comment names). And a
+ * mismatch — from EITHER branch — is no longer deleted on the first sighting: it is quarantined by
+ * stamping `ownershipMismatchAt` and re-checked on this function's NEXT invocation (this board's
+ * next watcher-`ready` pass); only a stub that fails ownership on TWO CONSECUTIVE passes is
+ * unlinked. A transient path-form false-negative self-heals on the very next pass once quarantined
+ * (nothing deletes it), while genuine foreign residue still gets cleaned up, just one pass later.
+ * Both the quarantine-write and the eventual unlink log via `console.warn` — no more
+ * `.catch(() => {})`-swallowed silent deletes.
  */
 export async function rehydrateSessionStubs(ws: Workspace = getWorkspace()): Promise<number> {
   let count = 0;
@@ -1191,10 +1274,27 @@ export async function rehydrateSessionStubs(ws: Workspace = getWorkspace()): Pro
           if (isVirtualConversationId(stub.taskId)) continue;
           if (cliSessionsById.has(stub.id)) continue; // a live session already owns this id
           const belongsHere = stub.workspaceRoot !== undefined
-            ? stub.workspaceRoot === ws.root
+            ? stub.workspaceRoot != null && ws.root != null && pathsEqual(stub.workspaceRoot, ws.root)
             : Object.prototype.hasOwnProperty.call(ws.tasks, stub.taskId);
           if (!belongsHere) {
-            await fs.unlink(filePath).catch(() => {});
+            const taggedRoot = stub.workspaceRoot ?? '(untagged, taskId unknown to this board)';
+            if (stub.ownershipMismatchAt) {
+              // Second consecutive mismatch — confirmed foreign, safe to delete now.
+              console.warn(
+                `[session] deleting stub ${stub.id} (task ${stub.taskId}): ownership mismatch confirmed on a ` +
+                `second pass (first flagged ${stub.ownershipMismatchAt}) — stub tag ${taggedRoot} vs this board's root ${ws.root ?? '(none)'}`,
+              );
+              await fs.unlink(filePath).catch((err) => console.warn(`[session] failed to delete foreign stub ${filePath}:`, err));
+            } else {
+              // First mismatch: never delete outright — quarantine and re-check next pass.
+              console.warn(
+                `[session] stub ${stub.id} (task ${stub.taskId}) failed ownership check against this board's root ` +
+                `${ws.root ?? '(none)'} (stub tag ${taggedRoot}) — quarantining, will delete next pass if still mismatched`,
+              );
+              const flagged: SessionStub = { ...stub, ownershipMismatchAt: new Date().toISOString() };
+              await fs.writeFile(filePath, JSON.stringify(flagged, null, 2), 'utf-8')
+                .catch((err) => console.warn(`[session] failed to flag mismatched stub ${filePath}:`, err));
+            }
             continue;
           }
           cliSessionsById.set(stub.id, rehydratedRecord(stub));

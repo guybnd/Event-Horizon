@@ -15,12 +15,13 @@ import express from 'express';
 import { setWorkspaceRoot } from '../workspace.js';
 import { requireWorkspace, attachWorkspace } from '../middleware.js';
 
-import { cliSessionsById, cliSessionsByTaskId } from '../session-store.js';
+import { cliSessionsById, cliSessionsByTaskId, registerSession } from '../session-store.js';
 import { ensureTicketIsolation } from '../ticket-isolation.js';
 import { getAdapter, getBoardAdapter } from '../agents/index.js';
 import { BOARD_CONVERSATION_ID, virtualConversationSessionKey, type BoardAdapter } from '../agents/board.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from '../agents/types.js';
 import { appendTranscriptEvent, flushTranscript, readTurns } from '../transcript.js';
+import { broadcastEvent } from '../events.js';
 
 // A concrete framework value is unavoidable to drive the route, but the adapter-boundary guard
 // (check-adapter-boundary.mjs) bans repeating the 'claude' literal outside engine/src/agents/ — a
@@ -48,6 +49,10 @@ vi.mock('../agents/index.js', () => ({
   resolveDefaultFramework: () => TEST_FRAMEWORK,
   isKnownFramework: (v: string) => v === TEST_FRAMEWORK,
   getRuntimeFrameworks: () => [TEST_FRAMEWORK],
+}));
+
+vi.mock('../events.js', () => ({
+  broadcastEvent: vi.fn(),
 }));
 
 async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
@@ -229,9 +234,11 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
 
     // User hits stop before ensureTicketIsolation (the backgrounded git push + worktree add)
     // has resolved — mirrors clicking "stop" on a session still reading "Preparing workspace…".
+    vi.mocked(broadcastEvent).mockClear();
     const stopRes = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/stop`, { method: 'POST' });
     expect(stopRes.status).toBe(200);
     expect(cliSessionsById.get(session.id)?.status).toBe('cancelled');
+    expect(broadcastEvent).toHaveBeenCalledExactlyOnceWith('taskUpdated', { id: 'FLUX-1' });
 
     // Now let the backgrounded isolation resolve — the adapter must NOT spawn a session the
     // user already cancelled, and 'cancelled' must not be silently reverted to 'running'.
@@ -946,6 +953,133 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
       sendBoardInputMock.mockResolvedValueOnce(undefined);
       const retryRes = await sendBoardMessage();
       expect(retryRes.status).toBe(200);
+    });
+  });
+
+  describe('ticket-session stop refresh (FLUX-1680)', () => {
+    function seedActiveSession(id: string, over: Partial<CliSessionRecord> = {}): CliSessionRecord {
+      const session = {
+        id, taskId: 'FLUX-1', framework: TEST_FRAMEWORK, status: 'running', command: 'claude', args: [],
+        startedAt: new Date().toISOString(), label: `Claude Code ${id}`, outputBuffer: '', liveOutputBuffer: '',
+        pendingAssistantText: '', skipPermissions: true, requestedStop: false, writeQueue: Promise.resolve(),
+        inputTokens: 0, outputTokens: 0, costUSD: 0,
+        ...over,
+      } as unknown as CliSessionRecord;
+      cliSessionsById.set(id, session);
+      const registered = cliSessionsByTaskId.get('FLUX-1') ?? [];
+      registered.push(id);
+      cliSessionsByTaskId.set('FLUX-1', registered);
+      return session;
+    }
+
+    it('broadcasts once after an explicitly targeted session is terminalized', async () => {
+      const session = seedActiveSession('target');
+
+      const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/stop`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: session.id }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(session.status).toBe('cancelled');
+      expect(session.requestedStop).toBe(true);
+      expect(broadcastEvent).toHaveBeenCalledExactlyOnceWith('taskUpdated', { id: 'FLUX-1' });
+    });
+
+    it('broadcasts once after terminalizing every active session in a group', async () => {
+      const first = seedActiveSession('group-1', { groupId: 'review' });
+      const second = seedActiveSession('group-2', { groupId: 'review', status: 'waiting-input' });
+      const other = seedActiveSession('other', { groupId: 'other' });
+
+      const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/stop`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ groupId: 'review' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(first.status).toBe('cancelled');
+      expect(second.status).toBe('cancelled');
+      expect(other.status).toBe('running');
+      expect(broadcastEvent).toHaveBeenCalledExactlyOnceWith('taskUpdated', { id: 'FLUX-1' });
+    });
+
+    it('broadcasts once for stopAll, but not for a rejected request with no active target', async () => {
+      const first = seedActiveSession('all-1');
+      const second = seedActiveSession('all-2', { status: 'scheduled' });
+
+      const stopAll = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/stop`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stopAll: true }),
+      });
+
+      expect(stopAll.status).toBe(200);
+      expect(first.status).toBe('cancelled');
+      expect(second.status).toBe('cancelled');
+      expect(broadcastEvent).toHaveBeenCalledExactlyOnceWith('taskUpdated', { id: 'FLUX-1' });
+
+      vi.mocked(broadcastEvent).mockClear();
+      const rejected = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/stop`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stopAll: true }),
+      });
+
+      expect(rejected.status).toBe(409);
+      expect(broadcastEvent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /:id/cli-sessions/:sessionId/output (FLUX-1685)', () => {
+    function seedSession(id: string, taskId: string, over: Partial<CliSessionRecord> = {}): CliSessionRecord {
+      const session = {
+        id, taskId, framework: TEST_FRAMEWORK, status: 'completed', command: 'claude', args: [],
+        startedAt: new Date().toISOString(), label: `Claude Code ${id}`, outputBuffer: '', liveOutputBuffer: '',
+        pendingAssistantText: '', skipPermissions: true, requestedStop: false, writeQueue: Promise.resolve(),
+        inputTokens: 0, outputTokens: 0, costUSD: 0,
+        ...over,
+      } as unknown as CliSessionRecord;
+      cliSessionsById.set(id, session);
+      registerSession(taskId, id);
+      return session;
+    }
+
+    it('returns the full untruncated buffer for a session belonging to the requested task', async () => {
+      const fullOutput = 'x'.repeat(5000);
+      seedSession('out-1', 'FLUX-1', { liveOutputBuffer: fullOutput });
+
+      const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-sessions/out-1/output`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.output).toBe(fullOutput);
+      expect(body.output).toHaveLength(5000);
+    });
+
+    it('404s with a session-specific message for an unknown session id', async () => {
+      const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-sessions/does-not-exist/output`);
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Session output not available');
+    });
+
+    it('404s (not another task\'s output) when the session id belongs to a DIFFERENT task', async () => {
+      getWorkspace().tasks['FLUX-2'] = {
+        id: 'FLUX-2',
+        title: 'Other ticket',
+        status: 'Todo',
+        _path: path.join(root, '.flux', 'FLUX-2.md'),
+      };
+      seedSession('out-other-task', 'FLUX-2', { liveOutputBuffer: 'secret output from another ticket' });
+
+      const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-sessions/out-other-task/output`);
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Session output not available');
+    });
+
+    it('404s with the task-not-found message when the task itself does not exist', async () => {
+      const res = await fetch(`${baseUrl}/api/tasks/FLUX-does-not-exist/cli-sessions/out-1/output`);
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Task not found');
     });
   });
 });

@@ -108,7 +108,7 @@ describe('checkFurnaceSlotHealth (FLUX-1217)', () => {
     expect(notification.type).toBe('error');
     expect(notification.title).toMatch(/slots exhausted/i);
     for (let i = 0; i < FURNACE_SLOT_CAP; i++) {
-      expect(notification.message).toContain(`LEAKED-${i}`);
+      expect(notification.message).toContain(`LEAKED-${i} (unknown) — idle — not yet reclaimed`);
     }
   });
 
@@ -165,9 +165,9 @@ describe('checkFurnaceSlotHealth (FLUX-1217)', () => {
 
     expect(addNotificationMock).toHaveBeenCalledTimes(1);
     const notification = addNotificationMock.mock.calls[0]![0];
-    expect(notification.message).toContain('TEMPER-1');
+    expect(notification.message).toContain('TEMPER-1 (unknown) — Temper-reserved — worktree not yet created');
     for (let i = 0; i < leakedCount; i++) {
-      expect(notification.message).toContain(`LEAKED-${i}`);
+      expect(notification.message).toContain(`LEAKED-${i} (unknown) — idle — not yet reclaimed`);
     }
   });
 });

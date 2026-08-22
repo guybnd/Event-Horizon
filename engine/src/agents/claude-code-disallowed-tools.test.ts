@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { getConfig } from '../config.js';
 import { disallowedToolsArgs, isChatEditGated, FILE_MUTATION_TOOLS, stampDisallowedEhTools } from './claude-code.js';
 import * as orchestrationPersonas from '../orchestration-personas.js';
+import { setCachedToolNames, clearToolNameCache } from '../mcp-readonly.js';
 
 // FLUX-926: ticket chat may edit files only while the ticket is In Progress. Enforcement is via
 // --disallowed-tools (permission-mode-independent — covers the default 'skip' chat path where
@@ -336,6 +337,44 @@ describe('disallowedToolsArgs / stampDisallowedEhTools honor a phase handoff (FL
     expect(session.disallowedEhTools).toEqual(expect.arrayContaining(['branch', 'finish_ticket', 'merge_tickets']));
     const args = disallowedToolsArgs({ phase: 'chat', handoffPhase: 'grooming' }, { status: 'In Progress' });
     expect(args).toEqual(expect.arrayContaining(['mcp__event-horizon__branch', 'mcp__event-horizon__finish_ticket', 'mcp__event-horizon__merge_tickets']));
+  });
+});
+
+// FLUX-1657: per-connector read/write scoping — disallowedToolsArgs appends mcp-readonly.ts's
+// resolved mutating tool names (see mcp-readonly.test.ts for the decision-function coverage; this
+// only asserts the wiring reaches the CLI's --disallowed-tools flag with the right effective phase).
+describe('disallowedToolsArgs wires in mcp-readonly.ts per-connector scoping (FLUX-1657)', () => {
+  afterEach(() => {
+    clearToolNameCache();
+    delete getConfig().mcpServerReadOnly;
+  });
+
+  it('appends a read-only connector\'s mutating tools, prefixed for the CLI flag', () => {
+    getConfig().mcpServerReadOnly = { jira: true };
+    setCachedToolNames('jira', ['createIssue', 'getIssue']);
+    const args = disallowedToolsArgs({ phase: 'implementation' }, { status: 'In Progress' });
+    expect(args).toEqual(expect.arrayContaining(['mcp__jira__createIssue']));
+    expect(args).not.toEqual(expect.arrayContaining([expect.stringContaining('getIssue')]));
+  });
+
+  it('honors exceptPhases against the effective (handoff) phase, not the literal session.phase', () => {
+    getConfig().mcpServerReadOnly = { doc360: { exceptPhases: ['finalize'] } };
+    setCachedToolNames('doc360', ['publishPage']);
+    const finalize = disallowedToolsArgs({ phase: 'chat', handoffPhase: 'finalize' }, { status: 'In Progress' });
+    expect(finalize).not.toEqual(expect.arrayContaining([expect.stringContaining('publishPage')]));
+    const grooming = disallowedToolsArgs({ phase: 'chat', handoffPhase: 'grooming' }, { status: 'In Progress' });
+    expect(grooming).toEqual(expect.arrayContaining(['mcp__doc360__publishPage']));
+  });
+
+  it('fails open when the connector has no cached tool names yet', () => {
+    getConfig().mcpServerReadOnly = { jira: true };
+    const args = disallowedToolsArgs({ phase: 'implementation' }, { status: 'In Progress' });
+    expect(args).not.toEqual(expect.arrayContaining([expect.stringContaining('mcp__jira__')]));
+  });
+
+  it('is a no-op with no mcpServerReadOnly config at all (byte-identical to before this ticket)', () => {
+    const args = disallowedToolsArgs({ phase: 'implementation' }, { status: 'In Progress' });
+    expect(args).toEqual(['--disallowed-tools', 'AskUserQuestion', 'ScheduleWakeup']);
   });
 });
 

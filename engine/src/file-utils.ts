@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { createHash } from 'crypto';
 import matter from 'gray-matter';
 import { getActiveFluxDir, getTaskAssetsDir, getWorkspaceRoot } from './workspace.js';
 import { getConfig } from './config.js';
@@ -77,6 +78,14 @@ export interface DocRecord {
   group?: boolean;
   /** True when this group doc is editable but its writes route through the group parent (bound member, FLUX-419). */
   viaParent?: boolean;
+  /** Front-matter keys other than `title`/`order`, retained verbatim across saves (FLUX-1650). */
+  extraFrontmatter?: Record<string, unknown>;
+  /**
+   * Hash of the raw on-disk markdown as of the last load (FLUX-1655). The portal echoes this back
+   * as `baseHash` on `PUT /api/docs/*` so the engine can detect an external edit that landed since
+   * the editor loaded the doc — see `hashDocContent` and the PUT handler's conflict check.
+   */
+  hash?: string;
 }
 
 export interface StoredDoc extends DocRecord {
@@ -245,6 +254,11 @@ export function parseDocOrder(value: unknown) {
   return undefined;
 }
 
+/** sha256 hex digest of a doc's raw on-disk markdown, used as the optimistic-concurrency `hash`/`baseHash` (FLUX-1655). */
+export function hashDocContent(content: string): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
 export function serializeDoc(doc: StoredDoc): DocRecord {
   const { _path, ...publicDoc } = doc;
   return publicDoc;
@@ -260,25 +274,26 @@ export function getDocPathFromRequestPath(requestPath: string) {
   }
 }
 
-export function buildDocFrontmatter(title: string, order: number | undefined) {
+export function buildDocFrontmatter(title: string, order: number | undefined, extra: Record<string, unknown> = {}) {
   return {
+    ...extra,
     title,
     ...(order !== undefined ? { order } : {}),
   };
 }
 
 /** Serialize a doc to its on-disk markdown form (frontmatter + body). */
-export function buildDocMarkdown(title: string, order: number | undefined, body: string): string {
-  return matter.stringify(body, buildDocFrontmatter(title, order));
+export function buildDocMarkdown(title: string, order: number | undefined, body: string, extra: Record<string, unknown> = {}): string {
+  return matter.stringify(body, buildDocFrontmatter(title, order, extra));
 }
 
 export function sortDocs(docs: DocRecord[]) {
   return [...docs].sort((left, right) => left.path.localeCompare(right.path, undefined, { sensitivity: 'base' }));
 }
 
-export async function writeDocFile(filePath: string, title: string, order: number | undefined, body: string) {
+export async function writeDocFile(filePath: string, title: string, order: number | undefined, body: string, extra: Record<string, unknown> = {}) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, buildDocMarkdown(title, order, body), 'utf-8');
+  await fs.writeFile(filePath, buildDocMarkdown(title, order, body, extra), 'utf-8');
 }
 
 export async function removeEmptyDocDirectories(startingFilePath: string) {

@@ -29,8 +29,8 @@ vi.mock('./task-worktree.js', async (importOriginal) => {
 });
 
 let sessionSeq = 0;
-// dispatchSession returns a classified DispatchOutcome (FLUX-1235) — { sid } on success, { sid: null } on refusal.
-const dispatchSession = vi.fn(async (_ticketId: string, _phase: string, _opts?: unknown): Promise<{ sid: string | null }> => ({ sid: `sess-${++sessionSeq}` }));
+// dispatchSession returns a classified DispatchOutcome (FLUX-1235) — { sid } on success, { sid: null, status?, ... } on refusal.
+const dispatchSession = vi.fn(async (_ticketId: string, _phase: string, _opts?: unknown): Promise<{ sid: string | null; status?: number; error?: string; sessionLabel?: string; sessionStatus?: string }> => ({ sid: `sess-${++sessionSeq}` }));
 const parkTicketOnBoard = vi.fn(async (_ticketId: string, _reason: string) => {});
 const clearReviewState = vi.fn(async (_ticketId: string) => {});
 
@@ -76,7 +76,7 @@ import { cliSessionsById, registerSession } from './session-store.js';
 import { __resetFurnaceStoreForTests, createFurnaceBatch, mutateFurnaceBatch, setObservedWorktrees, FURNACE_SLOT_CAP } from './furnace-store.js';
 import { newBatchTicket } from './models/furnace.js';
 import { getConfig } from './config.js';
-import { maybeStartTemper, temperTick, isTempering, rehydrateTemper, __resetTemperForTests, disarmTemperForExternalStop } from './temper.js';
+import { maybeStartTemper, temperTick, isTempering, rehydrateTemper, __resetTemperForTests, disarmTemperForExternalStop, isChangesRequestedBounceOwned } from './temper.js';
 
 function putSession(id: string, phase: 'review' | 'implementation', status: CliSessionStatus): void {
   cliSessionsById.set(id, { id, phase, status } as unknown as ReturnType<typeof cliSessionsById.get> & object);
@@ -181,6 +181,29 @@ describe('Temper (FLUX-1071) — single-ticket auto-review loop', () => {
     expect(dispatchSession).not.toHaveBeenCalled();
   });
 
+  // FLUX-1681 (Fix B): mcp-server's change_status handler asks this predicate whether a
+  // changes-requested bounce off Ready is already someone's job — it must say yes for exactly the two
+  // existing continuation owners (Temper mid-loop, an active Furnace batch) and no otherwise, so a
+  // genuinely unowned bounce (e.g. review gate not 'auto', or branchless) gets flagged Needs-Action
+  // instead of racing/duplicating a driver that's already on it.
+  describe('isChangesRequestedBounceOwned (FLUX-1681 Fix B)', () => {
+    it('is true while Temper is actively looping the ticket', async () => {
+      await enterReady('OWNED-TEMPER');
+      expect(isChangesRequestedBounceOwned('OWNED-TEMPER')).toBe(true);
+    });
+
+    it('is true for a ticket owned by an active Furnace batch', async () => {
+      const batch = await createFurnaceBatch({ title: 'b', tickets: [newBatchTicket('OWNED-FURNACE', 0, 'OWNED-FURNACE')] });
+      await mutateFurnaceBatch(batch.id, (b) => { b.status = 'burning'; b.tickets[0]!.state = 'implementing'; });
+      expect(isChangesRequestedBounceOwned('OWNED-FURNACE')).toBe(true);
+    });
+
+    it('is false for a ticket no engine-owned driver is tracking (review gate not auto, or never armed)', () => {
+      getWorkspace().tasks['UNOWNED-1'] = { id: 'UNOWNED-1', status: 'In Progress', title: 'UNOWNED-1', branch: 'flux/UNOWNED-1' };
+      expect(isChangesRequestedBounceOwned('UNOWNED-1')).toBe(false);
+    });
+  });
+
   it('stops the loop and leaves the PR at Ready (never merged) once the review approves', async () => {
     await enterReady('AP-1');
     // The review session completed and the reviewer recorded approval.
@@ -202,6 +225,32 @@ describe('Temper (FLUX-1071) — single-ticket auto-review loop', () => {
     expect(dispatchSession).toHaveBeenCalledWith('CR-1', 'implementation', expect.anything());
     expect(getWorkspace().tasks['CR-1'].temperAttempts).toBe(1);
     expect(isTempering('CR-1')).toBe(true);
+  });
+
+  // FLUX-1681 (Fix A): the reimplement dispatch's cold-fallback path (this suite's resumeOrDispatchSession
+  // mock always falls through to dispatchSession — see the vi.mock above) must pin the ticket's ORIGINATING
+  // implementation framework, never let the start route fall back to the board default.
+  it('preserves the originating implementation framework on the reimplement cold fallback', async () => {
+    await enterReady('CR-FW-CODEX');
+    cliSessionsById.set('impl-codex', { id: 'impl-codex', taskId: 'CR-FW-CODEX', phase: 'implementation', status: 'completed', framework: 'codex' } as unknown as ReturnType<typeof cliSessionsById.get> & object);
+    registerSession('CR-FW-CODEX', 'impl-codex');
+    putSession('sess-1', 'review', 'completed');
+    getWorkspace().tasks['CR-FW-CODEX'].reviewState = 'changes-requested';
+    dispatchSession.mockClear();
+    await temperTick();
+    expect(dispatchSession).toHaveBeenCalledWith('CR-FW-CODEX', 'implementation', expect.objectContaining({ framework: 'codex' }));
+  });
+
+  it('never adopts a delegate/worker session\'s framework — resolves undefined instead (mirrors the resume filter)', async () => {
+    await enterReady('CR-FW-DELEGATE');
+    cliSessionsById.set('impl-delegate', { id: 'impl-delegate', taskId: 'CR-FW-DELEGATE', phase: 'implementation', status: 'completed', framework: 'codex', patternPosition: 'step' } as unknown as ReturnType<typeof cliSessionsById.get> & object);
+    registerSession('CR-FW-DELEGATE', 'impl-delegate');
+    putSession('sess-1', 'review', 'completed');
+    getWorkspace().tasks['CR-FW-DELEGATE'].reviewState = 'changes-requested';
+    dispatchSession.mockClear();
+    await temperTick();
+    const call = dispatchSession.mock.calls.find((c) => c[0] === 'CR-FW-DELEGATE');
+    expect(call?.[2]).not.toHaveProperty('framework');
   });
 
   it('parks the ticket (Require Input) when its review session dies', async () => {
@@ -373,6 +422,29 @@ describe('Temper (FLUX-1071) — single-ticket auto-review loop', () => {
     expect(dispatchSession).not.toHaveBeenCalled();
     expect(parkTicketOnBoard).not.toHaveBeenCalled();
     expect(isTempering('RACE-1')).toBe(true);
+  });
+
+  // Mirrors gate-runner's spawnGate 409-wait (the same false-park shape as the ANZUBRAI-7/-9 plan-gate
+  // incidents, 2026-08-09): when the blocking live session is NOT phase-matched (e.g. the implementing
+  // or chat session whose change_status → Ready armed this loop, still finishing its turn tail), the
+  // adoption path above can never short-circuit the climb — so the 409 itself must not count toward
+  // MAX_TEMPER_SPAWN_ATTEMPTS.
+  it('a live-session 409 refusal waits instead of counting toward the spawn-failure park cap', async () => {
+    // enterReady + 7 ticks = 8 consecutive 409s — past MAX_TEMPER_SPAWN_ATTEMPTS (6).
+    for (let i = 0; i < 8; i++) {
+      dispatchSession.mockImplementationOnce(async () => ({ sid: null, status: 409, error: 'Task already has a live CLI session. Use role/pattern params for multi-session.', sessionStatus: 'running' }));
+    }
+    await enterReady('W409-1');
+    for (let i = 0; i < 7; i++) await temperTick();
+    expect(parkTicketOnBoard).not.toHaveBeenCalled();
+    expect(isTempering('W409-1')).toBe(true);
+
+    // Blocker ended (the Once queue drained — the base mock dispatches for real): the next redrive succeeds.
+    dispatchSession.mockClear();
+    await temperTick();
+    expect(dispatchSession).toHaveBeenCalledWith('W409-1', 'review', expect.anything());
+    expect(parkTicketOnBoard).not.toHaveBeenCalled();
+    expect(isTempering('W409-1')).toBe(true);
   });
 
   // FLUX-519 gap: once a Temper loop rests a ticket at Ready (approved → pr-open → stopTemper), the

@@ -4,6 +4,7 @@ import { broadcastEvent } from './events.js';
 import { TERMINAL_TICKET_STATUSES } from './schema.js';
 import { runGh } from './git-exec.js';
 import { isSyncUnhealthy } from './sync-watcher.js';
+import { emitDocRecapForBranch } from './doc-recap-emit.js';
 
 // Membership is WORK-GATED (FLUX-565 decision #4): a ticket folds into a PR only once it's
 // being developed on the branch. Todo/Grooming/Backlog tickets that merely point at the
@@ -291,6 +292,10 @@ export async function syncPrTickets(workspaceRoot: string, ws: Workspace = getWo
     // differs, so a null/empty description coerces to '' and never churns.
     const body = pr.body ?? '';
     await upsertManagedTicket(id, fields, body, ws).catch(() => {});
+    // FLUX-1670: keep the PR ticket's OWN doc-recap current too — so its Docs surface stays
+    // populated even after every member's worktree is reclaimed. Fire-and-forget, same convention
+    // as emitDocRecap's other call sites (it never throws internally; the .catch is a backstop).
+    await emitDocRecapForBranch(pr.headRefName, ws).catch(() => {});
     // Review-fail bounce (FLUX-569 / decision #3): when a PR has changes requested, unwind its
     // worked members back to In Progress so they're directly workable again (the deck stays,
     // unwind to fix; a push re-folds + re-reviews). Idempotent — only Ready members move, and

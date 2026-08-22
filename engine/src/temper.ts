@@ -44,6 +44,7 @@ import {
   type FurnacePhase,
 } from './models/furnace.js';
 import { resolveGateValue } from './models/gate-policy.js';
+import type { CliFramework } from './agents/types.js';
 import {
   decideTicketAction,
   dispatchSession,
@@ -51,10 +52,13 @@ import {
   parkTicketOnBoard,
   clearReviewState,
   extractPrUrl,
+  isLiveSessionRefusal,
+  describeBlockingSession,
   findSessionOutcome,
   lastCommentMatchesVerdictMarker,
   pickSessionForPhase,
   refreshWorktreePool,
+  resolveOriginatingFramework,
   SOLE_REVIEWER_FOCUS,
   deltaReviewFocus,
   REIMPLEMENT_FOCUS,
@@ -120,6 +124,26 @@ export function isTicketInActiveFurnaceBatch(ticketId: string): boolean {
     if (t && !isTerminalTicketState(t.state)) return true;
   }
   return false;
+}
+
+/**
+ * FLUX-1681 (Fix B): does an engine-owned driver already own the re-implementation that must follow
+ * THIS `changes-requested` verdict, so the caller (mcp-server's `change_status`) must NOT flag the
+ * ticket Needs-Action? True when either Temper is already looping it, or an active Furnace batch drives
+ * it — the two existing continuation owners.
+ *
+ * Deliberately mirrors `maybeStartTemper`'s own "already looping" guard (`task.tempering === true ||
+ * isTempering(...)`) rather than re-deriving ownership from the gate value: `maybeStartTemper` only ARMS
+ * Temper on a non-Ready -> Ready move, never on the Ready -> non-Ready bounce this predicate is checked
+ * against, so by the time a Temper-owned ticket's own review records `changes-requested`, Temper armed
+ * it back when it FIRST entered Ready — it is already tempering, not about to start. A ticket that will
+ * genuinely be picked up going forward is therefore always already reflected here; re-checking the gate
+ * value instead would risk racing Temper's own arming/rehydration and either double-drive or falsely
+ * park a ticket Temper already owns.
+ */
+export function isChangesRequestedBounceOwned(ticketId: string, ws: Workspace = getWorkspace()): boolean {
+  const task = ws.tasks[ticketId];
+  return task?.tempering === true || isTempering(ticketId, ws) || isTicketInActiveFurnaceBatch(ticketId);
 }
 
 const readyStatus = (): string => getConfig().readyForMergeStatus || 'Ready';
@@ -257,7 +281,7 @@ async function parkTemper(ticketId: string, reason: string, ws: Workspace): Prom
  * FLUX-1237: a full shared worktree pool is NOT a spawn failure — it returns early (a `wait`) without
  * touching `spawnFailures`, so contention with the Furnace for slots can never park a ticket.
  */
-async function spawnTemper(ticket: TemperEntry, phase: FurnacePhase, focusComment?: string, useResume = false): Promise<void> {
+async function spawnTemper(ticket: TemperEntry, phase: FurnacePhase, focusComment?: string, useResume = false, framework?: CliFramework): Promise<void> {
   // FLUX-1237: Temper and the Furnace draw from the SAME global worktree pool, so gate the isolated
   // dispatch on slot availability exactly as the Stoker does (`freeSlots`, see furnace-stoker.ts). Without
   // this, a burst of branch tickets entering Ready could each try to grab a slot and, after
@@ -289,21 +313,37 @@ async function spawnTemper(ticket: TemperEntry, phase: FurnacePhase, focusCommen
   // only needs the session id (null = refused). A refusal here is a genuine spawn failure — the pool-full
   // case already returned above. FLUX-1378: `useResume` (currently only the 're-implement' dispatch, mirroring
   // gate-runner/furnace-stoker) tries resuming the implementer's prior session before falling back to cold.
-  const { sid } = useResume && focusComment
-    ? await resumeOrDispatchSession(ticket.ticketId, phase, { focusComment, resumeMessage: focusComment, workspaceRoot: ticket.ws.root })
-    : await dispatchSession(ticket.ticketId, phase, { ...(focusComment ? { focusComment } : {}), workspaceRoot: ticket.ws.root });
-  if (sid) {
-    ticket.currentSessionId = sid;
-    if (!ticket.sessionIds.includes(sid)) ticket.sessionIds.push(sid);
+  // FLUX-1681 (Fix A): `framework`, when the caller resolved one, pins a COLD dispatch to the ticket's
+  // originating framework — a successful RESUME already preserves it via the session record, so this
+  // only matters on the fallback path (a non-resumable prior session).
+  const outcome = useResume && focusComment
+    ? await resumeOrDispatchSession(ticket.ticketId, phase, { focusComment, resumeMessage: focusComment, workspaceRoot: ticket.ws.root, ...(framework ? { framework } : {}) })
+    : await dispatchSession(ticket.ticketId, phase, { ...(focusComment ? { focusComment } : {}), workspaceRoot: ticket.ws.root, ...(framework ? { framework } : {}) });
+  if (outcome.sid) {
+    ticket.currentSessionId = outcome.sid;
+    if (!ticket.sessionIds.includes(outcome.sid)) ticket.sessionIds.push(outcome.sid);
     ticket.sessionStartedAt = nowIso();
     ticket.spawnFailures = 0;
     return;
   }
   // No worktree was actually claimed — release the reservation so it doesn't eat a slot indefinitely.
   setTemperReserved(ticket.ws.root, ticket.ticketId, false);
+  // A live-session 409 is a WAIT, not a spawn failure (mirrors gate-runner's spawnGate — the same
+  // false-park shape as the ANZUBRAI-7/-9 plan-gate incidents, 2026-08-09): adoption in
+  // `reconcileTemperTicket` only short-circuits the climb when the blocker is a phase-MATCHED session;
+  // a live grooming/chat/implementation session still finishing the turn whose `change_status` armed
+  // this loop can never be adopted, so counting its deterministic 409s toward
+  // MAX_TEMPER_SPAWN_ATTEMPTS falsely parked the ticket ~30s in. The next tick redrives; the dispatch
+  // succeeds once the blocker ends. Resetting the counter is deliberate — a classified refusal proves
+  // the engine reachable, disproving the broken-environment hypothesis the cap exists to catch.
+  if (isLiveSessionRefusal(outcome)) {
+    ticket.spawnFailures = 0;
+    log.info(`[temper] ${ticket.ticketId} ${phase} dispatch blocked by a live session${describeBlockingSession(outcome)} — waiting for it to end.`);
+    return;
+  }
   ticket.spawnFailures = (ticket.spawnFailures || 0) + 1;
   if (ticket.spawnFailures >= MAX_TEMPER_SPAWN_ATTEMPTS) {
-    await parkTemper(ticket.ticketId, `could not start a ${phase} session after ${MAX_TEMPER_SPAWN_ATTEMPTS} attempts (the environment may be broken)`, ticket.ws);
+    await parkTemper(ticket.ticketId, `could not start a ${phase} session after ${MAX_TEMPER_SPAWN_ATTEMPTS} attempts (the environment may be broken${outcome.error ? ` — last error: ${outcome.error}` : ''})`, ticket.ws);
   }
 }
 
@@ -360,7 +400,9 @@ async function advanceTemperTicket(ticketId: string, ws: Workspace, action: Tick
       delete ticket.currentSessionId;
       delete ticket.sessionStartedAt;
       await persistTemperAttempts(ticketId, action.attempt, ws);
-      await spawnTemper(ticket, 'implementation', REIMPLEMENT_FOCUS, true);
+      // FLUX-1681 (Fix A): resolve the ticket's originating implementation framework so a cold
+      // fallback (no viable resume candidate) never silently adopts the board default.
+      await spawnTemper(ticket, 'implementation', REIMPLEMENT_FOCUS, true, resolveOriginatingFramework(ticketId, 'implementation'));
       break;
     }
 
@@ -371,7 +413,10 @@ async function advanceTemperTicket(ticketId: string, ws: Workspace, action: Tick
       const focus = action.phase === 'review'
         ? SOLE_REVIEWER_FOCUS + deltaReviewFocus(ticketId, ws)
         : ticket.state === 'reimplementing' ? REIMPLEMENT_FOCUS : undefined;
-      await spawnTemper(ticket, action.phase, focus);
+      // FLUX-1681 (Fix A): same framework continuity for the redrive-implementation path (a review
+      // redrive has no notion of "originating implementation framework" to preserve).
+      const framework = action.phase === 'implementation' ? resolveOriginatingFramework(ticketId, 'implementation') : undefined;
+      await spawnTemper(ticket, action.phase, focus, false, framework);
       break;
     }
 

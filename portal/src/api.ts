@@ -411,6 +411,39 @@ export async function saveMcpPhases(mcpServerPhases: Record<string, string[]>): 
   return res.json();
 }
 
+/** A connector marked `true` is read-only in every phase; a rule object carries phase exceptions
+ *  (e.g. `{ exceptPhases: ['finalize'] }`) plus per-server tool allow/deny overrides. */
+export interface McpReadOnlyRule {
+  exceptPhases?: string[];
+  allow?: string[];
+  deny?: string[];
+}
+
+export type McpServerReadOnlyMap = Record<string, boolean | McpReadOnlyRule>;
+
+export interface McpReadOnlyConfig {
+  servers: string[];
+  phases: string[];
+  mcpServerReadOnly: McpServerReadOnlyMap;
+}
+
+/** Per-connector read/write scoping config (FLUX-1657) — mirrors fetchMcpPhases/saveMcpPhases. */
+export async function fetchMcpReadOnly(): Promise<McpReadOnlyConfig> {
+  const res = await ehFetch(`/config/mcp-readonly`);
+  if (!res.ok) throw new Error('Failed to fetch MCP read-only config');
+  return res.json();
+}
+
+export async function saveMcpReadOnly(mcpServerReadOnly: McpServerReadOnlyMap): Promise<{ mcpServerReadOnly: McpServerReadOnlyMap }> {
+  const res = await ehFetch(`/config/mcp-readonly`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpServerReadOnly }),
+  });
+  if (!res.ok) throw new Error('Failed to save MCP read-only config');
+  return res.json();
+}
+
 export async function updateTask(id: string, updates: Partial<Task> & { skipCommentRequirement?: boolean; appendHistory?: HistoryEntryDraft[]; baseBodyVersion?: string }): Promise<Task> {
   // FLUX-1485: 15s ceiling matching resolveBoardRebase (api.ts, FLUX-773) so a wedged engine can
   // never hold this connection open forever — every Approve surface (plan panel, AttentionDock,
@@ -731,6 +764,16 @@ export async function triggerModuleProbe(id: string): Promise<void> {
   await ehFetch(`/config/modules/${encodeURIComponent(id)}/probe`, { method: 'POST' });
 }
 
+export async function fetchConnectors(): Promise<import('./types').ConnectorStatus[]> {
+  const res = await ehFetch(`/config/connectors`);
+  if (!res.ok) throw new Error('Failed to fetch connectors');
+  return res.json();
+}
+
+export async function triggerConnectorProbe(id: string): Promise<void> {
+  await ehFetch(`/config/connectors/${encodeURIComponent(id)}/probe`, { method: 'POST' });
+}
+
 export async function fetchDocs(): Promise<Doc[]> {
   const res = await ehFetch(`/docs`);
   if (!res.ok) throw new Error('Failed to fetch docs');
@@ -753,13 +796,35 @@ export async function createDoc(payload: { path: string; title?: string; body?: 
   return res.json();
 }
 
-export async function updateDoc(docPath: string, payload: { title?: string; body?: string; order?: number | null }): Promise<Doc> {
+/**
+ * A viewer save was rejected because the doc changed on disk since the editor loaded it
+ * (FLUX-1655's optimistic-concurrency guard, `PUT /api/docs/*` → 409 `code: 'doc-conflict'`).
+ * The file was left untouched — the caller should offer to reload rather than retry the save.
+ */
+export class DocConflictError extends Error {
+  code = 'doc-conflict' as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'DocConflictError';
+  }
+}
+
+export async function updateDoc(
+  docPath: string,
+  payload: { title?: string; body?: string; order?: number | null; revisionMessage?: string; author?: string; baseHash?: string },
+): Promise<Doc> {
   const res = await ehFetch(`/docs/${encodeDocPath(docPath)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error('Failed to save doc');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({} as { error?: string; code?: string }));
+    if (res.status === 409 && err.code === 'doc-conflict') {
+      throw new DocConflictError(err.error || 'This doc changed on disk since you loaded it.');
+    }
+    throw new Error(err.error || 'Failed to save doc');
+  }
   return res.json();
 }
 
@@ -1282,6 +1347,16 @@ export async function fetchTaskCliSessions(taskId: string): Promise<CliSessionSu
   return payload.sessions || [];
 }
 
+/** FLUX-1685: fetch the full untruncated `liveOutput` buffer for one session, on demand — the
+ *  detail payload tails terminal sessions to 2KB (`liveOutputChars` marks it), so an expanded
+ *  session fetches the rest here rather than shipping every session's full buffer up front. */
+export async function fetchSessionOutput(taskId: string, sessionId: string): Promise<string> {
+  const res = await ehFetch(`/tasks/${encodeURIComponent(taskId)}/cli-sessions/${encodeURIComponent(sessionId)}/output`);
+  if (!res.ok) throw new Error('Failed to fetch session output');
+  const payload = await res.json();
+  return payload.output;
+}
+
 /** FLUX-604: reserved conversation id for the board-level orchestrator chat.
  *  FLUX-906 (audit E.1/E.8): this is the portal's single SYNC source — 30+ call sites compare against
  *  it at render/handler time and can't await /api/config, so the constant stays. It mirrors
@@ -1607,6 +1682,29 @@ export async function sendTaskCliInput(taskId: string, message: string, user: st
 export async function fetchPathInfo(): Promise<{ binaryDir: string | null; isPkg: boolean; platform: string }> {
   const res = await ehFetch(`/path-info`);
   if (!res.ok) throw new Error('Failed to fetch path info');
+  return res.json();
+}
+
+export interface GhRecheckResult {
+  ok: boolean;
+  reason?: 'not-found' | 'not-authenticated';
+  platform: string;
+  linuxPackageManager: 'pacman' | 'apt' | 'dnf' | 'zypper' | null;
+  lastCheckedAt: number | null;
+}
+
+export async function recheckGh(): Promise<GhRecheckResult> {
+  const res = await ehFetch(`/gh/recheck`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to recheck GitHub CLI');
+  return res.json();
+}
+
+// FLUX-1686: respects the engine's freshness policy (gh-availability.ts) rather than always
+// re-probing — safe to call every time a launch dialog opens. 503 (availability never
+// determined) surfaces as a thrown Error, same as any other failed fetch.
+export async function fetchGhStatus(): Promise<GhRecheckResult> {
+  const res = await ehFetch(`/gh/status`);
+  if (!res.ok) throw new Error('Failed to fetch GitHub CLI status');
   return res.json();
 }
 
@@ -2252,6 +2350,9 @@ export interface DiffChangedFile {
   /** True when the file carries uncommitted (staged/unstaged/untracked) work in its checkout —
    *  a working-tree discard applies. Absent/false for committed-only files (FLUX-1333). */
   uncommitted?: boolean;
+  /** True when this is a markdown doc under the workspace's configured docsRoot — drives the
+   *  Raw↔Rendered toggle and inline-edit affordance in the Changes screen (FLUX-1653). */
+  isDoc?: boolean;
 }
 
 export interface DiffGroup {
@@ -2286,6 +2387,71 @@ export async function fetchDiffFile(ref: string, path: string): Promise<string |
   const res = await ehFetch(`/diffs/file?${params.toString()}`);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error('Failed to fetch file diff');
+  return res.text();
+}
+
+/** One doc file's raw before/after content in the right root — for a RENDERED (not
+ *  unified-diff) preview of a changed docsRoot .md file in the Changes screen (FLUX-1653). */
+export async function fetchDiffFileContent(ref: string, path: string): Promise<{ before: string; after: string }> {
+  const params = new URLSearchParams({ ref, path });
+  const res = await ehFetch(`/diffs/file/content?${params.toString()}`);
+  if (!res.ok) throw new Error('Failed to fetch file content');
+  return res.json();
+}
+
+/** Edit a changed docsRoot .md file inline from the Changes screen and commit it straight into
+ *  the branch's worktree (FLUX-1653). Refused (409) for `ref === 'main'`, an unresolvable
+ *  worktree, or an actively-working agent session. `push` defaults true (commit-and-push). */
+export async function commitDiffFileEdit(
+  ref: string,
+  path: string,
+  content: string,
+  message: string,
+  push = true,
+): Promise<{ hash: string; pushed: boolean; pushError?: string }> {
+  const res = await ehFetch(`/diffs/file/commit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ref, path, content, message, push }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to commit the edit');
+  }
+  return res.json();
+}
+
+// ─── Doc revision history (git-backed, FLUX-1653) ──────────────────────────────
+
+export interface DocRevision {
+  hash: string;
+  author: string;
+  date: string;
+  message: string;
+  /** Ticket key parsed from the commit subject (any project, not just this board's), or null. */
+  ticketId: string | null;
+}
+
+/** Every commit touching this doc (including across renames), newest first. Empty on a non-git
+ *  workspace or an untracked/group doc — never throws for those (engine degrades gracefully). */
+export async function fetchDocRevisions(docPath: string): Promise<DocRevision[]> {
+  const res = await ehFetch(`/docs/${encodeDocPath(docPath)}/revisions`);
+  if (!res.ok) throw new Error('Failed to fetch doc revisions');
+  const data = await res.json();
+  return Array.isArray(data?.revisions) ? data.revisions : [];
+}
+
+/** The doc's content as of one past revision, shaped like `fetchDoc`'s `Doc` record. */
+export async function fetchDocRevision(docPath: string, hash: string): Promise<Doc> {
+  const res = await ehFetch(`/docs/${encodeDocPath(docPath)}/revisions/${encodeURIComponent(hash)}`);
+  if (!res.ok) throw new Error('Failed to fetch that revision');
+  return res.json();
+}
+
+/** The unified diff for one revision's own commit. */
+export async function fetchDocRevisionDiff(docPath: string, hash: string): Promise<string> {
+  const res = await ehFetch(`/docs/${encodeDocPath(docPath)}/revisions/${encodeURIComponent(hash)}/diff`);
+  if (!res.ok) throw new Error('Failed to fetch that revision’s diff');
   return res.text();
 }
 

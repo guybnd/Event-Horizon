@@ -122,7 +122,7 @@ describe('surfaceResumeFailure (FLUX-1120)', () => {
     raiseNeedsAction.mockClear();
     const session = fakeSession({ sessionHistoryEntry: { sessionId: 'sess-1', progress: [] } as never });
 
-    await expect(surfaceResumeFailure(session, 'FLUX-1120', new Error('worktree reclaimed'))).rejects.toThrow(
+    await expect(surfaceResumeFailure(session, 'FLUX-1120', new Error('worktree reclaimed'), '/tmp/board-root')).rejects.toThrow(
       'worktree reclaimed',
     );
 
@@ -144,7 +144,7 @@ describe('surfaceResumeFailure (FLUX-1120)', () => {
     raiseNeedsAction.mockClear();
     const session = fakeSession();
 
-    await expect(surfaceResumeFailure(session, 'FLUX-1120', new Error('boom'))).rejects.toThrow('boom');
+    await expect(surfaceResumeFailure(session, 'FLUX-1120', new Error('boom'), '/tmp/board-root')).rejects.toThrow('boom');
 
     expect(updateAgentSession).not.toHaveBeenCalled();
     expect(updateTaskWithHistory).toHaveBeenCalledTimes(1);
@@ -152,7 +152,7 @@ describe('surfaceResumeFailure (FLUX-1120)', () => {
 
   it('rethrows a non-Error value wrapped in an Error', async () => {
     const session = fakeSession();
-    await expect(surfaceResumeFailure(session, 'FLUX-1120', 'plain string failure')).rejects.toThrow(
+    await expect(surfaceResumeFailure(session, 'FLUX-1120', 'plain string failure', '/tmp/board-root')).rejects.toThrow(
       'plain string failure',
     );
   });
@@ -169,7 +169,7 @@ describe('surfaceResumeFailure (FLUX-1120)', () => {
       sessionHistoryEntry: { sessionId: 'sess-1', progress: [] } as never,
     });
 
-    await expect(surfaceResumeFailure(session, 'FLUX-1120', new Error('worktree reclaimed'))).rejects.toThrow(
+    await expect(surfaceResumeFailure(session, 'FLUX-1120', new Error('worktree reclaimed'), '/tmp/board-root')).rejects.toThrow(
       'worktree reclaimed',
     );
 
@@ -188,7 +188,7 @@ describe('surfaceResumeFailure (FLUX-1120)', () => {
     updateAgentSession.mockRejectedValueOnce(new Error('disk full'));
     const session = fakeSession({ sessionHistoryEntry: { sessionId: 'sess-1', progress: [] } as never });
 
-    await expect(surfaceResumeFailure(session, 'FLUX-1120', new Error('worktree reclaimed'))).rejects.toThrow(
+    await expect(surfaceResumeFailure(session, 'FLUX-1120', new Error('worktree reclaimed'), '/tmp/board-root')).rejects.toThrow(
       'worktree reclaimed',
     );
     updateAgentSession.mockResolvedValue(undefined);

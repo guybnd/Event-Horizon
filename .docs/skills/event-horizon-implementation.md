@@ -13,7 +13,7 @@ Scope: Write code, validate logic, format commits, and close tickets during the 
 
 # Event Horizon Agent — Implementation Skill
 
-Version: 2.17.0
+Version: 2.18.0
 
 ## When This Skill Applies
 
@@ -82,6 +82,7 @@ Not required for every `Ready` move — keep it the exception, not ceremony. Def
 
 - **Emit when** the change is UI/UX, touches a data model / API shape, or is otherwise structurally interesting — anything where a rendered "what changed" surface helps the reviewer more than the raw diff.
 - **Skip when** it's a bug fix, an XS/S-effort ticket, or a trivial diff with no shape worth visualizing. A plain completion comment is the right output for these.
+- **Skip when the ticket's branch touches a docsRoot `.md` file (FLUX-1662).** The engine auto-publishes a `kind:'doc-recap'` artifact on the same Ready move — a changed-files header plus the rendered after-state of each changed doc, with its own self-serve inline editor. Don't also hand-build a manual Visual Recap for the same docs change; it would just add a visually-indistinguishable duplicate artifact.
 
 **How to emit** (do this *before* `change_status → Ready`, so the recap is present when the PR opens):
 1. Build the diff against base — `git diff <baselineCommit>...HEAD` (branch/worktree tickets) or `git diff` on the uncommitted working tree (branchless). Pull out the touched-file list and the key hunks (the ones a reviewer actually needs — not the full raw patch).

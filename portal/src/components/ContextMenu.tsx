@@ -15,6 +15,7 @@ import { searchTasks } from '../taskSearch';
 import { useTicketActions } from '../hooks/useTicketActions';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { isPlanApprovalPending, dismissPlanReview } from './pendingInteractions';
+import { ACTIVE_SESSION_STATUSES } from '../orchestration';
 
 interface Props {
   task: Task;
@@ -26,11 +27,6 @@ interface Props {
 
 type TopMenu = 'launch' | 'transition' | 'worktree' | 'attachParent' | 'addFurnace' | null;
 type WtMenu = 'attachWorktree' | 'attachBranch' | null;
-
-// The CLI-session statuses that count as "still active" (mirrors the engine's stop-route filter
-// and CardSessionRow's gating) — used to decide whether to show "Stop agent session" and whether
-// the card carries a cluster of sessions.
-const ACTIVE_SESSION_STATUSES = ['pending', 'running', 'waiting-input'];
 
 const PRIMARY_LABEL: Record<string, string> = {
   Grooming: 'Start grooming',
@@ -192,7 +188,7 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   // FLUX-918 (m3): an orchestration/cluster card runs several sessions at once. A bare
   // stopTaskCliSession(task.id) only cancels the most-recent one, leaving siblings live; when more
   // than one session is active, scope the stop to ALL of them (the route's stopAll path) instead.
-  const activeSessionCount = (task.cliSessions ?? []).filter((s) => ACTIVE_SESSION_STATUSES.includes(s.status)).length;
+  const activeSessionCount = (task.cliSessions ?? []).filter((s) => (ACTIVE_SESSION_STATUSES as readonly string[]).includes(s.status)).length;
   const handleStopSession = async () => {
     onClose();
     try {
@@ -205,7 +201,8 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   // — so the menu item and the pill can't disagree at a turn boundary (the polled cliSession.status
   // lags the live status). Fall back to the polled status when no live slice exists yet.
   const liveSessionStatus = liveSession?.status ?? task.cliSession?.status;
-  const hasActiveSession = !!task.cliSession && !!liveSessionStatus && ACTIVE_SESSION_STATUSES.includes(liveSessionStatus);
+  const hasActiveSession =
+    !!task.cliSession && !!liveSessionStatus && (ACTIVE_SESSION_STATUSES as readonly string[]).includes(liveSessionStatus);
 
   // Worktree/PR actions — run the registry op (which refreshes), then close. On failure, surface
   // the message in the menu (it stays open) instead of failing silently (FLUX-561).

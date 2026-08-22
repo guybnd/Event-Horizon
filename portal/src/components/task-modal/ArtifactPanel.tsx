@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AlertTriangle, ChevronLeft, ChevronRight, Info, Loader2, Maximize2, Minimize2, Send } from 'lucide-react';
+import { AlertTriangle, ChevronLeft, ChevronRight, Info, Loader2, Maximize2, Minimize2, Send, X } from 'lucide-react';
 import { useAppActions, useAppSelector } from '../../store/useAppSelector';
 import { useDebouncedArtifactReload } from '../../hooks/useDebouncedArtifactReload';
 import { triggerEscape, useEscapeKey } from '../../hooks/useEscapeKey';
 import { AnnotationPill } from './AnnotationPill';
 import { formatArtifactAnnotations, type ArtifactAnnotation } from '../../lib/planAnnotations';
-import { ehEventSourceUrl } from '../../api';
-import type { Task } from '../../types';
+import { ehEventSourceUrl, fetchDiffOverview, fetchDiffFileContent, commitDiffFileEdit, fetchDocs, fetchBranchDiff } from '../../api';
+import { DocMarkdownPreview } from '../DocMarkdownPreview';
+import type { Task, Doc } from '../../types';
 
 /**
  * FLUX-873 (Tier 1): viewer for a ticket's rich grooming artifact, rendered in a **sandboxed iframe**
@@ -65,13 +66,23 @@ type InboundMessage =
   | { ns: typeof NS; type: 'ready'; hasGuidedControls?: boolean }
   | { ns: typeof NS; type: 'annotations'; items: AnnotationItem[] }
   | { ns: typeof NS; type: 'layout-audit'; ok: boolean; warnings: LayoutWarning[] }
-  | { ns: typeof NS; type: 'escape' };
+  | { ns: typeof NS; type: 'escape' }
+  /** FLUX-1662 (Phase B): the doc-recap's injected per-section Edit button, clicked inside the
+   *  sandboxed iframe. Opens the host-side inline editor drawer for this doc path — no agent. */
+  | { ns: typeof NS; type: 'doc-edit-request'; path: string };
 
 /** Messages the host sends down to the iframe. */
 type OutboundMessage =
   | { ns: typeof NS; type: 'request-audit' }
   | { ns: typeof NS; type: 'remove-pin'; id: number }
-  | { ns: typeof NS; type: 'update-pin'; id: number; note: string };
+  | { ns: typeof NS; type: 'update-pin'; id: number; note: string }
+  /** FLUX-1667: the Docs panel's per-doc tab strip — shows exactly the section for `path` inside
+   *  the doc-recap artifact (ARTIFACT_DOC_TABS_SCRIPT), hiding the rest. */
+  | { ns: typeof NS; type: 'show-doc'; path: string }
+  /** FLUX-1670: hides/shows the doc-recap's injected per-section Edit button — sent once the
+   *  branch's live-worktree status is known, so the button never invites a click that can only
+   *  ever land on the "unavailable" message `openDocEdit` already shows. */
+  | { ns: typeof NS; type: 'set-doc-edit-availability'; available: boolean };
 
 /** State of the open-time layout-audit for the currently-shown revision (advisory, non-blocking). */
 type AuditState =
@@ -149,6 +160,7 @@ export function ArtifactPanel({
   collapsed = false,
   headerStart,
   headerEnd,
+  channel = 'plan',
 }: {
   task: Task;
   onSendToChat?: (text: string) => void;
@@ -182,13 +194,21 @@ export function ArtifactPanel({
   /** FLUX-1474: appended to the header's action cluster, before the fullscreen toggle — the
    *  sideview's "View Plan" entry point. */
   headerEnd?: ReactNode;
+  /** FLUX-1667: which typed artifact channel to bind to — `'plan'` (default, `task.artifacts`) or
+   *  `'doc-recap'` (`task.docRecap`, the Docs tab). Drives the revision source, the served URL's
+   *  `?channel=`, and (only for `'doc-recap'`) the per-doc tab strip. */
+  channel?: 'plan' | 'doc-recap';
 }) {
   const { subscribeToEvent } = useAppActions();
   const isWindowVisible = useAppSelector((s) => s.isWindowVisible);
   const effectiveVisible = visible && isWindowVisible;
 
-  const revisions = task.artifacts?.revisions ?? [];
-  const latest = task.artifacts?.latest ?? (revisions.length > 0 ? revisions[revisions.length - 1]!.rev : 0);
+  // FLUX-1667: the doc-recap channel lives at task.docRecap, independent of the plan channel's
+  // task.artifacts — same pointer shape, so everything below (rev state, picker, reload wiring)
+  // is unchanged regardless of which one this instance is bound to.
+  const pointer = channel === 'doc-recap' ? task.docRecap : task.artifacts;
+  const revisions = pointer?.revisions ?? [];
+  const latest = pointer?.latest ?? (revisions.length > 0 ? revisions[revisions.length - 1]!.rev : 0);
 
   const [rev, setRev] = useState<number>(latest);
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -206,6 +226,99 @@ export function ArtifactPanel({
   // FLUX-1440: whether the currently-shown revision's annotator reports guided controls (sliders /
   // pickers). Reported once per iframe mount via `type:'ready'`; false until that arrives.
   const [hasGuidedControls, setHasGuidedControls] = useState(false);
+  // FLUX-1667: the Docs panel's per-doc tab strip — which of the SELECTED revision's `docPaths`
+  // is currently shown inside the iframe. `undefined` defers to the iframe's own default (the
+  // first section present, via ARTIFACT_DOC_TABS_SCRIPT) rather than duplicating that default
+  // here. Reset on every revision switch below (the fresh iframe reverts to its own default too).
+  const [activeDocPath, setActiveDocPath] = useState<string | undefined>(undefined);
+
+  // FLUX-1670: whether the doc-recap's injected per-section Edit button should show itself —
+  // mirrors `openDocEdit`'s own live-worktree gate, one step earlier (before the user ever
+  // clicks). Defaults to `true` (available) until the fetch resolves, so the common case (a live
+  // worktree) never flashes hidden→shown; only a positively-confirmed missing worktree hides it.
+  // Only meaningful for the doc-recap channel — the plan/Visual-Recap artifact never renders this
+  // button, so there's nothing to fetch/post for that channel.
+  const [docEditAvailable, setDocEditAvailable] = useState(true);
+  useEffect(() => {
+    if (channel !== 'doc-recap' || !task.branch) { setDocEditAvailable(true); return undefined; }
+    let cancelled = false;
+    fetchBranchDiff(task.id)
+      .then((summary) => {
+        if (!cancelled) setDocEditAvailable(summary.worktree !== null);
+      })
+      .catch(() => {
+        // Best-effort — keep the default (available) so a transient fetch failure doesn't hide a
+        // button that may well work; `openDocEdit`'s own check remains the source of truth.
+      });
+    return () => { cancelled = true; };
+  }, [channel, task.id, task.branch]);
+
+  // FLUX-1662 (Phase B): the doc-recap's self-serve inline editor drawer, opened by a
+  // `doc-edit-request` from the injected per-section Edit button. `availability` mirrors the
+  // Changes screen's `source.kind === 'live'` gate (constraint 3): editing is only wired to a
+  // branch with an active worktree, so a raced/removed worktree degrades to read-only rather than
+  // letting the commit 409 be the user's first signal.
+  const [docEdit, setDocEdit] = useState<{
+    path: string;
+    availability: 'checking' | 'available' | 'unavailable';
+    unavailableReason?: string;
+    draft: string;
+    commitMessage: string;
+    committing: boolean;
+    commitError: string | null;
+  } | null>(null);
+  const [docsForPreview, setDocsForPreview] = useState<Doc[]>([]);
+
+  useEffect(() => {
+    fetchDocs().then(setDocsForPreview).catch(() => {});
+  }, []);
+
+  const openDocEdit = useCallback((path: string) => {
+    setDocEdit({ path, availability: 'checking', draft: '', commitMessage: '', committing: false, commitError: null });
+    const branch = task.branch;
+    if (!branch) {
+      setDocEdit((prev) => (prev && prev.path === path
+        ? { ...prev, availability: 'unavailable', unavailableReason: 'This ticket has no branch to edit.' }
+        : prev));
+      return;
+    }
+    Promise.all([fetchDiffOverview().catch(() => null), fetchDiffFileContent(branch, path)])
+      .then(([overview, pair]) => {
+        const live = !!overview?.groups.some((g) => g.kind === 'worktree' && g.branch === branch);
+        setDocEdit((prev) => (prev && prev.path === path
+          ? {
+              ...prev,
+              availability: live ? 'available' : 'unavailable',
+              unavailableReason: live
+                ? undefined
+                : 'This branch has no active worktree — self-serve edits are unavailable. Annotate above to have an agent make the edit instead.',
+              draft: pair.after,
+            }
+          : prev));
+      })
+      .catch((err) => {
+        setDocEdit((prev) => (prev && prev.path === path
+          ? { ...prev, availability: 'unavailable', unavailableReason: err instanceof Error ? err.message : 'Failed to load doc content.' }
+          : prev));
+      });
+  }, [task.branch]);
+  const openDocEditRef = useRef(openDocEdit);
+  useEffect(() => { openDocEditRef.current = openDocEdit; }, [openDocEdit]);
+
+  const submitDocEdit = useCallback(async () => {
+    if (!docEdit || docEdit.availability !== 'available' || !task.branch || !docEdit.commitMessage.trim()) return;
+    setDocEdit((prev) => (prev ? { ...prev, committing: true, commitError: null } : prev));
+    try {
+      // The 409 guards (main ref / no worktree / active session) surface here VERBATIM on a race —
+      // the availability check above is a best-effort UI gate, not the source of truth (plan step 9).
+      await commitDiffFileEdit(task.branch, docEdit.path, docEdit.draft, docEdit.commitMessage.trim());
+      // Re-emit happens engine-side (POST /diffs/file/commit); the existing artifactReady subscription
+      // above reloads the iframe to the new revision — no manual refetch needed here.
+      setDocEdit(null);
+    } catch (err) {
+      setDocEdit((prev) => (prev ? { ...prev, committing: false, commitError: err instanceof Error ? err.message : 'Failed to commit the edit' } : prev));
+    }
+  }, [docEdit, task.branch]);
 
   // FLUX-1362: the unified artifact-annotation list. CONTROLLED by the plan panel when
   // `onArtifactAnnotationsChange` is given; otherwise owned here (standalone artifact-only view).
@@ -246,12 +359,17 @@ export function ArtifactPanel({
 
   useEffect(() => {
     const off = subscribeToEvent('artifactReady', (data) => {
-      const payload = data as { ticketId?: string; rev?: number };
+      const payload = data as { ticketId?: string; rev?: number; channel?: 'plan' | 'doc-recap' };
       if (payload?.ticketId !== task.id) return;
+      // FLUX-1667: both channels share one ascending rev counter, so an unfiltered reload here
+      // would swing THIS panel's `rev` state to the OTHER channel's newly-published revision
+      // number — a revision its own pointer doesn't contain. Every emitter now stamps `channel`
+      // (defaulting 'plan' for a pre-FLUX-1667 payload that somehow omits it).
+      if ((payload.channel ?? 'plan') !== channel) return;
       notifyArtifactReady(payload.rev);
     });
     return off;
-  }, [subscribeToEvent, task.id, notifyArtifactReady]);
+  }, [subscribeToEvent, task.id, notifyArtifactReady, channel]);
 
   useEffect(() => {
     if (effectiveVisible) {
@@ -266,6 +384,21 @@ export function ArtifactPanel({
     iframeRef.current?.contentWindow?.postMessage(msg, '*');
   }, []);
 
+  // FLUX-1670: tracks whether the CURRENT iframe has announced `'ready'` — posting
+  // `set-doc-edit-availability` before that would land on a not-yet-mounted document. Reset to
+  // `false` on every iframe remount (the revision-switch effect below), same lifecycle as the
+  // other per-mount iframe state (`hasGuidedControls`, `activeDocPath`).
+  const iframeReadyRef = useRef(false);
+  const docEditAvailableRef = useRef(docEditAvailable);
+  useEffect(() => { docEditAvailableRef.current = docEditAvailable; }, [docEditAvailable]);
+  // Posts on every `docEditAvailable` change once the iframe is ready (guarded by the ref so an
+  // early change — before 'ready' — doesn't post into a not-yet-mounted document; the 'ready'
+  // handler below posts the then-current value itself).
+  useEffect(() => {
+    if (channel !== 'doc-recap' || !iframeReadyRef.current) return;
+    postToIframe({ ns: NS, type: 'set-doc-edit-availability', available: docEditAvailable });
+  }, [channel, docEditAvailable, postToIframe]);
+
   // FLUX-1362: ingest the iframe's LIVE annotation mirror. Sanitize (trust boundary), stamp the
   // current rev, record what the iframe now holds, and push into the (own or lifted) list.
   const applyItemsRef = useRef(applyItems);
@@ -279,6 +412,10 @@ export function ArtifactPanel({
   // `applyItemsRef`.
   const onHasGuidedControlsChangeRef = useRef(onHasGuidedControlsChange);
   useEffect(() => { onHasGuidedControlsChangeRef.current = onHasGuidedControlsChange; }, [onHasGuidedControlsChange]);
+  // FLUX-1670: `channel` is a prop read inside the same stable (no-deps) message-listener effect —
+  // mirror it into a ref so the closure sees the current value rather than the one from first mount.
+  const channelRef = useRef(channel);
+  useEffect(() => { channelRef.current = channel; }, [channel]);
 
   // Host-side message listener — the trust boundary. Validate `source` (our iframe) over the opaque
   // origin string, then the `ns`/`type` allowlist. Stable (no deps) — reads live values via refs.
@@ -296,6 +433,13 @@ export function ArtifactPanel({
         const value = !!d.hasGuidedControls;
         setHasGuidedControls(value);
         onHasGuidedControlsChangeRef.current?.(value);
+        // FLUX-1670: the iframe is now mounted and listening — flip the ready flag and post the
+        // CURRENT availability immediately (the effect above only fires on a later *change*, so
+        // this is what delivers the initial value to a fresh iframe).
+        iframeReadyRef.current = true;
+        if (channelRef.current === 'doc-recap') {
+          postToIframe({ ns: NS, type: 'set-doc-edit-availability', available: docEditAvailableRef.current });
+        }
       } else if (d.type === 'layout-audit') {
         // Advisory only now — never masks. A late clean re-audit still upgrades the icon away.
         const warnings = sanitizeWarnings(Array.isArray(d.warnings) ? d.warnings : []);
@@ -308,11 +452,13 @@ export function ArtifactPanel({
         );
       } else if (d.type === 'escape') {
         triggerEscape();
+      } else if (d.type === 'doc-edit-request') {
+        if (typeof d.path === 'string' && d.path) openDocEditRef.current(d.path);
       }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [ingestAnnotations]);
+  }, [ingestAnnotations, postToIframe]);
 
   // FLUX-1362: reverse-sync host-side edits/removals to the in-iframe pins. Diff what the iframe holds
   // (`iframeLiveRef`) against the host-authoritative `items`: an id the iframe still has but the host
@@ -339,7 +485,9 @@ export function ArtifactPanel({
   // Board-scoped via `?ws=` (ehEventSourceUrl) — an iframe navigation can't carry the
   // X-EH-Workspace header, so without the param the engine would serve the artifact from
   // whichever board was most recently opened (epic FLUX-1230 S10 switcher), 404-ing this one.
-  const src = ehEventSourceUrl(`/tasks/${encodeURIComponent(task.id)}/artifact?rev=${rev}&_n=${reloadNonce}`);
+  const src = ehEventSourceUrl(
+    `/tasks/${encodeURIComponent(task.id)}/artifact?rev=${rev}&_n=${reloadNonce}${channel === 'doc-recap' ? '&channel=doc-recap' : ''}`,
+  );
   useEffect(() => {
     if (!iframeMounted) return;
     setAudit({ status: 'pending' });
@@ -348,9 +496,20 @@ export function ArtifactPanel({
     // guided-controls signal over.
     setHasGuidedControls(false);
     onHasGuidedControlsChangeRef.current?.(false);
+    // FLUX-1670: same reasoning — the fresh iframe hasn't announced 'ready' yet, so hold off
+    // posting `set-doc-edit-availability` until it does (the 'ready' handler posts the current
+    // value itself once it fires).
+    iframeReadyRef.current = false;
     // The fresh iframe holds no pins; drop any stale host list + live map so counts start clean.
     iframeLiveRef.current = new Map();
     applyItemsRef.current([]);
+    // FLUX-1662: a revision switch (incl. the re-emit after this drawer's own commit) invalidates
+    // any open doc-edit drawer — its `before` snapshot no longer matches what's on screen.
+    setDocEdit(null);
+    // FLUX-1667: the fresh iframe defaults to its own first-section behavior; forget which tab was
+    // active on the PREVIOUS revision rather than carrying a path the new revision's docPaths may
+    // not even contain (FLUX-1667's guard against a `show-doc` targeting an absent section).
+    setActiveDocPath(undefined);
     const t = window.setTimeout(() => {
       setAudit((a) => (a.status === 'pending' ? { status: 'skipped' } : a));
     }, 4000);
@@ -391,6 +550,19 @@ export function ArtifactPanel({
   const stepTo = (i: number) => {
     const target = revisions[i];
     if (target) setRev(target.rev);
+  };
+
+  // FLUX-1667: the per-doc tab strip reads the CURRENTLY-SELECTED revision's `docPaths` — never
+  // `revisions[latest]` — so switching to an older rev via the picker above can't leave a
+  // `show-doc` targeting a path this revision's HTML never rendered a section for (FLUX-1662's
+  // self-edit re-emit creates new recap revisions routinely, so an older one is a normal, reachable
+  // state, not an edge case). `undefined` when no explicit tab has been picked defers to the
+  // iframe's own default (first section) instead of duplicating that default host-side.
+  const docPaths = channel === 'doc-recap' ? current?.docPaths ?? [] : [];
+  const effectiveActiveDocPath = activeDocPath && docPaths.includes(activeDocPath) ? activeDocPath : docPaths[0];
+  const selectDoc = (path: string) => {
+    setActiveDocPath(path);
+    postToIframe({ ns: NS, type: 'show-doc', path });
   };
 
   // The fix-instruction message for a failed layout audit (reused by copy-to-clipboard + send-to-agent).
@@ -578,6 +750,30 @@ export function ArtifactPanel({
         </div>
       </div>
 
+      {/* FLUX-1667: one sub-tab per doc rendered inline in this recap revision — built from the
+          SELECTED revision's `docPaths` (see the derivation above), so it always matches what the
+          iframe can actually show. Hidden entirely for a single-doc recap (nothing to switch between)
+          and for the plan channel (docPaths is always [] there). */}
+      {!collapsed && docPaths.length > 1 && (
+        <div className="eh-border flex flex-shrink-0 flex-wrap gap-1 border-b pb-2 text-[11px]">
+          {docPaths.map((path) => (
+            <button
+              key={path}
+              type="button"
+              onClick={() => selectDoc(path)}
+              title={path}
+              className={`max-w-[14rem] truncate rounded-full px-2 py-0.5 font-mono transition-colors ${
+                path === effectiveActiveDocPath
+                  ? 'bg-primary text-white'
+                  : 'bg-[var(--eh-input-bg)] text-[var(--eh-text-muted)] hover:text-[var(--eh-text-secondary)]'
+              }`}
+            >
+              {path.split('/').pop()}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* FLUX-1474: the body (iframe + note/tip + pill) — hidden via `display:none` rather than
           unmounted when the caller's section is collapsed, preserving FLUX-1136's "stay mounted"
           contract (an instant unmount would eat an in-progress annotation batch living inside the
@@ -616,6 +812,79 @@ export function ArtifactPanel({
             </div>
           )}
 
+          {/* FLUX-1662 (Phase B): the doc-recap's self-serve inline editor drawer — opened by the
+              in-iframe Edit button (`doc-edit-request`), never an agent. Overlays the iframe rather
+              than replacing it so closing/committing just drops back to the (possibly now stale,
+              soon re-emitted) recap underneath. */}
+          {docEdit && (
+            <div className="eh-border absolute inset-0 z-[110] flex flex-col gap-2 rounded-lg border bg-white p-3 dark:bg-[var(--eh-surface)]">
+              <div className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-gray-700 dark:text-gray-200" title={docEdit.path}>
+                  {docEdit.path}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setDocEdit(null)}
+                  disabled={docEdit.committing}
+                  title="Close"
+                  className="rounded p-1 text-gray-400 hover:text-gray-600 disabled:opacity-50 dark:hover:text-gray-200"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {docEdit.availability === 'checking' && (
+                <p className="text-xs text-[var(--eh-text-muted)]">Checking edit availability…</p>
+              )}
+              {docEdit.availability === 'unavailable' && (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  {docEdit.unavailableReason || 'Self-serve edit is unavailable for this branch.'}
+                </p>
+              )}
+              {docEdit.availability !== 'checking' && (
+                <div className="flex min-h-0 flex-1 flex-col gap-2">
+                  <div className="grid min-h-[12rem] flex-1 gap-2 md:grid-cols-2">
+                    <textarea
+                      value={docEdit.draft}
+                      onChange={(e) => setDocEdit((prev) => (prev ? { ...prev, draft: e.target.value } : prev))}
+                      disabled={docEdit.availability !== 'available' || docEdit.committing}
+                      className="min-h-[12rem] w-full resize-none rounded-xl border border-gray-200 bg-white p-2.5 font-mono text-xs text-gray-800 outline-none focus:border-primary disabled:opacity-60 dark:border-white/10 dark:bg-black/20 dark:text-gray-100"
+                      spellCheck={false}
+                    />
+                    <div className="min-h-[12rem] overflow-auto rounded-xl border border-gray-200 bg-white p-2.5 dark:border-white/10 dark:bg-black/20">
+                      <DocMarkdownPreview markdown={docEdit.draft} docs={docsForPreview} />
+                    </div>
+                  </div>
+                  {docEdit.commitError && <p className="text-xs text-red-500">{docEdit.commitError}</p>}
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={docEdit.commitMessage}
+                      onChange={(e) => setDocEdit((prev) => (prev ? { ...prev, commitMessage: e.target.value } : prev))}
+                      placeholder="Commit message…"
+                      disabled={docEdit.availability !== 'available' || docEdit.committing}
+                      className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-800 outline-none focus:border-primary disabled:opacity-60 dark:border-white/10 dark:bg-black/20 dark:text-gray-100"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void submitDocEdit()}
+                      disabled={docEdit.availability !== 'available' || docEdit.committing || !docEdit.commitMessage.trim()}
+                      className="flex-none rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                    >
+                      {docEdit.committing ? 'Committing…' : 'Commit to branch & push'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDocEdit(null)}
+                      disabled={docEdit.committing}
+                      className="flex-none rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-50 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/10"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* FLUX-1362: the floating unified list. Standalone (artifact-only) view owns + renders it
               with a Send action; in controlled mode the plan-review panel renders the pill (with
               plan-text items merged in), so this panel only bridges the iframe. Lives INSIDE this
@@ -628,7 +897,13 @@ export function ArtifactPanel({
               onEditArtifact={(id, note) => applyItems(items.map((a) => (a.id === id ? { ...a, note } : a)))}
               onRemoveArtifact={(id) => applyItems(items.filter((a) => a.id !== id))}
               onSend={onSendToChat ? () => {
-                const message = formatArtifactAnnotations(items);
+                // FLUX-1667: name the channel + active doc so a Docs-panel annotation batch reads
+                // distinctly from a Plan-channel one instead of an identical `🎯` message. Omitted
+                // for the plan channel — that call site's message stays byte-for-byte unchanged.
+                const message = formatArtifactAnnotations(
+                  items,
+                  channel === 'doc-recap' ? { channelLabel: 'Docs', docPath: effectiveActiveDocPath } : undefined,
+                );
                 if (message) { onSendToChat(message); setSentCount(items.length); applyItems([]); }
               } : undefined}
               sendDisabled={items.length === 0}

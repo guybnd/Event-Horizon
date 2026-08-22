@@ -5,7 +5,10 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { createTaskWorktree, listTaskWorktrees } from './task-worktree.js';
-import { buildDiffOverview, diffFileContent, diffFilesForBranch, changedFilesMasterSideOfBranch, computeCollisions, parseStatusPorcelain, type DiffGroup } from './diff-aggregator.js';
+import {
+  buildDiffOverview, diffFileContent, diffFilesForBranch, changedFilesMasterSideOfBranch,
+  computeCollisions, parseStatusPorcelain, isDocsRootMarkdownFile, fileContentPair, type DiffGroup,
+} from './diff-aggregator.js';
 
 // Real git worktree ops are slow on Windows under parallel suite load — the default 5000ms
 // testTimeout intermittently overruns when the full engine suite runs concurrently (FLUX-749).
@@ -223,6 +226,91 @@ describe('diff-aggregator', () => {
     expect(byFile['feat.txt']).toBe('added');
   });
 
+  it('diffFileContent falls back to the committed range for a branch with no worktree (FLUX-1670)', async () => {
+    await git(repo, ['checkout', '-b', 'feature/x']);
+    await fs.writeFile(path.join(repo, 'feat.txt'), 'hello\n', 'utf8');
+    await git(repo, ['add', 'feat.txt']);
+    await git(repo, ['commit', '-m', 'feat']);
+    await git(repo, ['checkout', 'master']);
+
+    const diff = await diffFileContent(repo, 'feature/x', 'feat.txt');
+    expect(diff).toContain('feat.txt');
+    expect(diff).toContain('hello');
+
+    // Unknown branch still yields '' rather than a spurious diff.
+    expect(await diffFileContent(repo, 'feature/does-not-exist', 'feat.txt')).toBe('');
+  });
+
+  it('fileContentPair falls back to the committed range for a branch with no worktree (FLUX-1670)', async () => {
+    await git(repo, ['checkout', '-b', 'feature/y']);
+    await fs.writeFile(path.join(repo, 'feat.txt'), 'v2\n', 'utf8');
+    await git(repo, ['add', 'feat.txt']);
+    await git(repo, ['commit', '-m', 'feat v2']);
+    await git(repo, ['checkout', 'master']);
+
+    const pair = await fileContentPair(repo, 'feature/y', 'feat.txt');
+    expect(pair.before).toBe(''); // file didn't exist at the merge-base
+    expect(pair.after).toBe('v2\n');
+
+    // Unknown branch still yields empty content rather than throwing.
+    const unknown = await fileContentPair(repo, 'feature/does-not-exist', 'feat.txt');
+    expect(unknown).toEqual({ before: '', after: '' });
+  });
+
+  it('diffFilesForBranch prefers the stored baselineCommit over merge-base once the branch is merged (FLUX-1676)', async () => {
+    // Reproduce the reported drift: branch a ticket branch off master, commit on it, merge it back
+    // into master (fast-forward), then diff with no dedicated worktree — exactly a merged PR ticket
+    // whose worktree has been reclaimed. Once merged, master contains the branch's own tip as an
+    // ancestor, so a live `merge-base(master, branch)` recompute now returns the branch tip itself
+    // (not the pre-merge divergence point) and `<tip>..<tip>` collapses to an empty range.
+    const baselineCommit = await git(repo, ['rev-parse', 'master']).then((r) => r.stdout.trim());
+    await git(repo, ['checkout', '-b', 'flux/merged-pr']);
+    await fs.writeFile(path.join(repo, 'feat.txt'), 'hello\n', 'utf8');
+    await git(repo, ['add', 'feat.txt']);
+    await git(repo, ['commit', '-m', 'feat']);
+    await git(repo, ['checkout', 'master']);
+    await git(repo, ['merge', '--ff-only', 'flux/merged-pr']);
+
+    // Confirm the drift actually reproduces: merge-base now equals the branch tip.
+    const branchTip = await git(repo, ['rev-parse', 'flux/merged-pr']).then((r) => r.stdout.trim());
+    const mergeBase = await git(repo, ['merge-base', 'master', 'flux/merged-pr']).then((r) => r.stdout.trim());
+    expect(mergeBase).toBe(branchTip);
+
+    // Without baselineCommit: the drifted merge-base still yields an empty summary (the bug).
+    const drifted = await diffFilesForBranch(repo, 'flux/merged-pr');
+    expect(drifted.files).toEqual([]);
+
+    // With the ticket's stored baselineCommit: the pre-merge divergence point is used instead,
+    // and the branch's file shows up again.
+    const fixed = await diffFilesForBranch(repo, 'flux/merged-pr', { baselineCommit });
+    expect(fixed.base).toBe(`${baselineCommit}..flux/merged-pr`);
+    const byFile = Object.fromEntries(fixed.files.map((f) => [f.file, f.status]));
+    expect(byFile['feat.txt']).toBe('added');
+  });
+
+  it('diffFileContent and fileContentPair also prefer baselineCommit once the branch is merged (FLUX-1676)', async () => {
+    const baselineCommit = await git(repo, ['rev-parse', 'master']).then((r) => r.stdout.trim());
+    await git(repo, ['checkout', '-b', 'flux/merged-pr-2']);
+    await fs.writeFile(path.join(repo, 'feat2.txt'), 'v1\n', 'utf8');
+    await git(repo, ['add', 'feat2.txt']);
+    await git(repo, ['commit', '-m', 'feat2']);
+    await git(repo, ['checkout', 'master']);
+    await git(repo, ['merge', '--ff-only', 'flux/merged-pr-2']);
+
+    expect(await diffFileContent(repo, 'flux/merged-pr-2', 'feat2.txt')).toBe('');
+    const diff = await diffFileContent(repo, 'flux/merged-pr-2', 'feat2.txt', { baselineCommit });
+    expect(diff).toContain('feat2.txt');
+    expect(diff).toContain('v1');
+
+    // Drifted merge-base equals the branch tip, so before/after both read the same post-merge
+    // content — no visible change, masking that the file was ever added (the bug).
+    const driftedPair = await fileContentPair(repo, 'flux/merged-pr-2', 'feat2.txt');
+    expect(driftedPair).toEqual({ before: 'v1\n', after: 'v1\n' });
+    const pair = await fileContentPair(repo, 'flux/merged-pr-2', 'feat2.txt', { baselineCommit });
+    expect(pair.before).toBe('');
+    expect(pair.after).toBe('v1\n');
+  });
+
   it('diffFilesForBranch returns an empty summary for an unknown branch (FLUX-615)', async () => {
     const summary = await diffFilesForBranch(repo, 'flux/does-not-exist');
     expect(summary.worktree).toBeNull();
@@ -270,6 +358,61 @@ describe('diff-aggregator', () => {
     expect(collisions[0]!.refs).toEqual(['b1', 'main']);
     expect(groups[0]!.files.find((f) => f.file === 'x.ts')!.collidesWith).toEqual(['main']);
     expect(groups[0]!.files.find((f) => f.file === 'only-a.ts')!.collidesWith).toBeUndefined();
+  });
+
+  it('flags docsRoot markdown files with isDoc:true and leaves other files unflagged (FLUX-1653)', async () => {
+    const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1-doc', { linkDependencies: false });
+    await fs.mkdir(path.join(wt, '.docs'), { recursive: true });
+    await fs.writeFile(path.join(wt, '.docs', 'guide.md'), '# guide\n', 'utf8');
+    await fs.writeFile(path.join(wt, 'src.ts'), 'export {};\n', 'utf8');
+
+    const { groups } = await buildDiffOverview(repo);
+    const g = groups.find((x) => x.kind === 'worktree' && x.branch === 'flux/FLUX-1-doc');
+    const byFile = Object.fromEntries(g!.files.map((f) => [f.file, f]));
+    expect(byFile['.docs/guide.md']!.isDoc).toBe(true);
+    expect(byFile['src.ts']!.isDoc).toBeUndefined();
+  });
+
+  it('fileContentPair returns before/after raw content, empty on add/delete', async () => {
+    const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1-pair', { linkDependencies: false });
+    // modified: README.md exists at the merge-base and is edited loose in the worktree.
+    await fs.writeFile(path.join(wt, 'README.md'), '# changed\n', 'utf8');
+    // added: a brand-new untracked file has no merge-base content.
+    await fs.writeFile(path.join(wt, 'new.md'), '# new\n', 'utf8');
+
+    const modified = await fileContentPair(repo, 'flux/FLUX-1-pair', 'README.md');
+    expect(modified.before).toContain('# test');
+    expect(modified.after).toContain('# changed');
+
+    const added = await fileContentPair(repo, 'flux/FLUX-1-pair', 'new.md');
+    expect(added.before).toBe('');
+    expect(added.after).toContain('# new');
+
+    // deleted: remove README.md entirely — `after` reads live off disk and finds nothing.
+    await fs.rm(path.join(wt, 'README.md'));
+    const deleted = await fileContentPair(repo, 'flux/FLUX-1-pair', 'README.md');
+    expect(deleted.before).toContain('# test');
+    expect(deleted.after).toBe('');
+  });
+
+  it('fileContentPair(main) reads the engine root vs HEAD', async () => {
+    await fs.writeFile(path.join(repo, 'README.md'), '# root edit\n', 'utf8');
+    const pair = await fileContentPair(repo, 'main', 'README.md');
+    expect(pair.before).toContain('# test');
+    expect(pair.after).toContain('# root edit');
+  });
+});
+
+describe('isDocsRootMarkdownFile (FLUX-1653)', () => {
+  it('matches a .md file under the default .docs root', () => {
+    expect(isDocsRootMarkdownFile('.docs/guide.md')).toBe(true);
+    expect(isDocsRootMarkdownFile('.docs/nested/guide.md')).toBe(true);
+  });
+
+  it('rejects non-.md files and files outside the docs root', () => {
+    expect(isDocsRootMarkdownFile('.docs/image.png')).toBe(false);
+    expect(isDocsRootMarkdownFile('src/index.ts')).toBe(false);
+    expect(isDocsRootMarkdownFile('docsRoot-lookalike/guide.md')).toBe(false);
   });
 });
 

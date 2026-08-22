@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import { Play, FolderGit2, Check } from 'lucide-react';
 import type { Task } from '../../types';
 import {
-  fetchHealth, fetchConfig, openWorktreeWindow,
+  fetchConfig, openWorktreeWindow,
   fetchWorktrees, joinWorktree, type WorktreeInfo,
 } from '../../api';
 import { BranchSection, type StartMode } from './BranchSection';
 import { useEscapeKey } from '../../hooks/useEscapeKey';
+import { useGhStatus } from '../../hooks/useGhStatus';
 import type { StartSelection } from '../../agentActions';
 
 interface StartTaskPromptProps {
@@ -26,11 +27,14 @@ export function StartTaskPrompt({ task, onConfirm, onCancel }: StartTaskPromptPr
   const [joinBranch, setJoinBranch] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [ghAvailable, setGhAvailable] = useState<boolean | null>(null);
   const [windowMsg, setWindowMsg] = useState<string | null>(null);
 
+  // FLUX-1686: StartTaskPrompt is conditionally rendered at both its call sites (TaskModal.tsx,
+  // TicketActions.tsx), so mount time IS open time here — `true` is correct, unlike
+  // OrchestrationLauncher which stays mounted while closed.
+  const { gh, checking: ghChecking, settled: ghSettled, error: ghError, recheck: recheckGh } = useGhStatus(true);
+
   useEffect(() => {
-    fetchHealth().then((h) => setGhAvailable(h.ghAuthAvailable)).catch(() => setGhAvailable(null));
     // Default to a dedicated worktree when the workspace setting opts in (FLUX-521).
     fetchConfig().then((c) => { if (c.worktreeByDefault && !isXs) setMode('worktree'); }).catch(() => {});
     fetchWorktrees().then(setWorktrees).catch(() => {});
@@ -104,7 +108,11 @@ export function StartTaskPrompt({ task, onConfirm, onCancel }: StartTaskPromptPr
               taskId={task.id}
               taskTitle={task.title || task.id}
               effort={task.effort}
-              ghAvailable={ghAvailable}
+              gh={gh}
+              ghChecking={ghChecking}
+              ghSettled={ghSettled}
+              ghError={ghError}
+              onRecheckGh={recheckGh}
               mode={mode}
               setMode={setMode}
               worktrees={worktrees}

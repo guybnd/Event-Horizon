@@ -30,6 +30,7 @@ import {
 } from './task-worktree.js';
 import { cliSessionsById, armReclaimGrace, __resetSessionStubStateForTests } from './session-store.js';
 import type { CliSessionRecord } from './agents/types.js';
+import { createGitFixture } from './test-helpers/git-fixture.js';
 
 // Real git worktree ops are slow on Windows under parallel suite load — the default 5000ms
 // testTimeout intermittently overruns when the full engine suite runs concurrently (FLUX-749).
@@ -47,18 +48,17 @@ async function makeParent(): Promise<string> {
 
 /** git init on `master` with one committed file so the repo has a HEAD. */
 async function gitInit(root: string): Promise<void> {
-  await fs.mkdir(root, { recursive: true });
-  await execFileAsync('git', ['-C', root, 'init', '-b', 'master'], { windowsHide: true });
-  await execFileAsync('git', ['-C', root, 'config', 'user.email', 'test@test.com'], { windowsHide: true });
-  await execFileAsync('git', ['-C', root, 'config', 'user.name', 'Test'], { windowsHide: true });
-  await fs.writeFile(path.join(root, 'README.md'), '# test\n', 'utf8');
-  // Mirror the real repo's committed `.serena/.gitignore` so the per-worktree
-  // Serena override (`project.local.yml`, FLUX-843) is gitignored and never
-  // registers as a dirty/untracked change in the worktree.
-  await fs.mkdir(path.join(root, '.serena'), { recursive: true });
-  await fs.writeFile(path.join(root, '.serena', '.gitignore'), '/cache\n/project.local.yml\n', 'utf8');
-  await execFileAsync('git', ['-C', root, 'add', '.'], { windowsHide: true });
-  await execFileAsync('git', ['-C', root, 'commit', '-m', 'init'], { windowsHide: true });
+  await createGitFixture({
+    dest: root,
+    templateKey: 'task-worktree::with-serena',
+    // Mirror the real repo's committed `.serena/.gitignore` so the per-worktree
+    // Serena override (`project.local.yml`, FLUX-843) is gitignored and never
+    // registers as a dirty/untracked change in the worktree.
+    populate: async (dir) => {
+      await fs.mkdir(path.join(dir, '.serena'), { recursive: true });
+      await fs.writeFile(path.join(dir, '.serena', '.gitignore'), '/cache\n/project.local.yml\n', 'utf8');
+    },
+  });
 }
 
 async function currentBranch(root: string): Promise<string> {
@@ -72,13 +72,7 @@ async function currentBranch(root: string): Promise<string> {
  * which never adopted that convention (FLUX-1155).
  */
 async function gitInitPlain(root: string): Promise<void> {
-  await fs.mkdir(root, { recursive: true });
-  await execFileAsync('git', ['-C', root, 'init', '-b', 'master'], { windowsHide: true });
-  await execFileAsync('git', ['-C', root, 'config', 'user.email', 'test@test.com'], { windowsHide: true });
-  await execFileAsync('git', ['-C', root, 'config', 'user.name', 'Test'], { windowsHide: true });
-  await fs.writeFile(path.join(root, 'README.md'), '# test\n', 'utf8');
-  await execFileAsync('git', ['-C', root, 'add', '.'], { windowsHide: true });
-  await execFileAsync('git', ['-C', root, 'commit', '-m', 'init'], { windowsHide: true });
+  await createGitFixture({ dest: root, templateKey: 'task-worktree::plain' });
 }
 
 /**
@@ -490,6 +484,35 @@ describe('task-worktree', () => {
       await fs.rm(remoteParent, { recursive: true, force: true }).catch(() => {});
     });
 
+    // FLUX-1638 (incident FLUX-1635 -> PR #700): resolveDefaultBaseBranch used to prefer the bare
+    // LOCAL default branch, so a commit sitting on local master but never pushed to origin/master
+    // rode into every subsequently-created task branch's `-b <base>` worktree-add — and from there
+    // into that branch's PR diff. Prove the stray commit is now excluded.
+    it('does not inherit a commit that is on local master but not yet pushed to origin', async () => {
+      const bareRemote = path.join(parent, 'remote.git');
+      await execFileAsync('git', ['init', '--bare', bareRemote], { windowsHide: true });
+      await execFileAsync('git', ['-C', repo, 'remote', 'add', 'origin', bareRemote], { windowsHide: true });
+      await execFileAsync('git', ['-C', repo, 'push', '-u', 'origin', 'master'], { windowsHide: true });
+
+      // Stray commit lands on local master WITHOUT ever being pushed.
+      await fs.writeFile(path.join(repo, 'stray.txt'), 'oops\n', 'utf8');
+      await execFileAsync('git', ['-C', repo, 'add', 'stray.txt'], { windowsHide: true });
+      await execFileAsync('git', ['-C', repo, 'commit', '-m', 'stray unpushed commit'], { windowsHide: true });
+      const { stdout: strayShaOut } = await execFileAsync('git', ['-C', repo, 'rev-parse', 'HEAD'], { windowsHide: true });
+      const straySha = strayShaOut.trim();
+
+      const wt = await createTaskWorktree(repo, 'FLUX-1638', 'flux/FLUX-1638-fresh');
+      expect(existsSync(wt)).toBe(true);
+      expect(await currentBranch(wt)).toBe('flux/FLUX-1638-fresh');
+
+      // The stray commit is absent from the new branch's working tree and history.
+      expect(existsSync(path.join(wt, 'stray.txt'))).toBe(false);
+      const isAncestor = await execFileAsync('git', ['-C', wt, 'merge-base', '--is-ancestor', straySha, 'HEAD'], { windowsHide: true })
+        .then(() => true)
+        .catch(() => false);
+      expect(isAncestor).toBe(false);
+    });
+
     it('is idempotent: returns the same path for the same ticket + branch', async () => {
       const a = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1-demo');
       const b = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1-demo');
@@ -810,9 +833,11 @@ describe('task-worktree', () => {
       await expect(
         createTaskWorktree(repo, 'FLUX-2', 'flux/b', {
           maxWorktrees: 1,
-          describeSlotHolders: async () => [{ ticketId: 'FLUX-1', reason: 'ticket status is not yet reclaimable (not Ready/terminal)' }],
+          describeSlotHolders: async () => [
+            { ticketId: 'FLUX-1', status: 'Done', reason: 'ticket status is not yet reclaimable (not Ready/terminal)' },
+          ],
         }),
-      ).rejects.toThrow(/limit reached \(1\/1\).*FLUX-1 \(ticket status is not yet reclaimable/s);
+      ).rejects.toThrow(/limit reached \(1\/1\).*FLUX-1 \(Done\) — ticket status is not yet reclaimable/s);
     });
 
     it('does not let a describer failure hide the underlying limit error', async () => {
@@ -1356,9 +1381,11 @@ describe('task-worktree', () => {
       await expect(
         resolveTaskExecutionRoot({ id: 'FLUX-15', branch: 'flux/FLUX-15' }, repo, {
           maxWorktrees: 1,
-          describeSlotHolders: async () => [{ ticketId: 'FLUX-14', reason: 'a session is still live on its branch' }],
+          describeSlotHolders: async () => [
+            { ticketId: 'FLUX-14', status: 'In Progress', reason: 'a session is still live on its branch' },
+          ],
         }),
-      ).rejects.toThrow(/FLUX-14 \(a session is still live on its branch\)/);
+      ).rejects.toThrow(/FLUX-14 \(In Progress\) — a session is still live on its branch/);
     });
 
     // FLUX-167 follow-up: a branch checked out in the MAIN checkout is the

@@ -10,6 +10,7 @@ import {
   normalizeReleaseVersion,
   bumpPackageJsonVersions,
   bumpLockfileVersion,
+  bumpElectronLockfileVersion,
   type ReleaseTask,
 } from './release.js';
 
@@ -254,6 +255,53 @@ describe('bumpLockfileVersion', () => {
     const fixture = lockfileFixture('1.5.0', '3.2.1');
     await fs.writeFile(lockPath, fixture);
     await bumpLockfileVersion(dir, '1.5.0');
+    expect(await fs.readFile(lockPath, 'utf-8')).toBe(fixture);
+  });
+});
+
+describe('bumpElectronLockfileVersion', () => {
+  function electronLockfileFixture(version: string, depVersion: string): string {
+    return JSON.stringify(
+      {
+        name: 'event-horizon-desktop',
+        version,
+        lockfileVersion: 3,
+        requires: true,
+        packages: {
+          '': { name: 'event-horizon-desktop', version, devDependencies: { electron: '^33.2.0' } },
+          'node_modules/some-dep': { version: depVersion, license: 'MIT' },
+        },
+      },
+      null,
+      2,
+    ) + '\n';
+  }
+
+  it('bumps both root event-horizon-desktop entries but leaves a dependency version untouched', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-release-'));
+    await fs.mkdir(path.join(dir, 'electron'));
+    const lockPath = path.join(dir, 'electron', 'package-lock.json');
+    await fs.writeFile(lockPath, electronLockfileFixture('1.9.1', '3.2.1'));
+    await bumpElectronLockfileVersion(dir, '1.10.0');
+    const parsed = JSON.parse(await fs.readFile(lockPath, 'utf-8'));
+    expect(parsed.version).toBe('1.10.0');
+    expect(parsed.packages[''].version).toBe('1.10.0');
+    expect(parsed.packages['node_modules/some-dep'].version).toBe('3.2.1');
+  });
+
+  it('is a no-op for a missing electron/package-lock.json without throwing', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-release-'));
+    // electron/ directory deliberately absent.
+    await expect(bumpElectronLockfileVersion(dir, '1.10.0')).resolves.toBeUndefined();
+  });
+
+  it('is a no-op when already at the target version', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-release-'));
+    await fs.mkdir(path.join(dir, 'electron'));
+    const lockPath = path.join(dir, 'electron', 'package-lock.json');
+    const fixture = electronLockfileFixture('1.10.0', '3.2.1');
+    await fs.writeFile(lockPath, fixture);
+    await bumpElectronLockfileVersion(dir, '1.10.0');
     expect(await fs.readFile(lockPath, 'utf-8')).toBe(fixture);
   });
 });

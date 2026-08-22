@@ -51,6 +51,8 @@ import {
   resumeOrDispatchSession,
   parkTicketOnBoard,
   findSessionOutcome,
+  isLiveSessionRefusal,
+  describeBlockingSession,
   lastCommentMatchesVerdictMarker,
   pickSessionForPhase,
   type TicketAction,
@@ -378,19 +380,34 @@ async function spawnGate(entry: GateRunEntry, phase: FurnacePhase | 'grooming', 
   // ordinary `review.lead` via deriveTaskKey's phase+position rule). Pin `planReview` explicitly;
   // the 'grooming' revise-pass dispatch is left alone (derives `grooming.lead` normally).
   const taskKey = phase === 'review' ? 'planReview' : undefined;
-  const { sid } = useResume
+  const outcome = useResume
     ? await resumeOrDispatchSession(ticket.ticketId, phase, { focusComment, skipIsolation: spec.skipIsolation, resumeMessage: focusComment, workspaceRoot: ws.root })
     : await dispatchSession(ticket.ticketId, phase, { focusComment, skipIsolation: spec.skipIsolation, workspaceRoot: ws.root, ...(taskKey ? { taskKey } : {}) });
-  if (sid) {
-    ticket.currentSessionId = sid;
-    if (!ticket.sessionIds.includes(sid)) ticket.sessionIds.push(sid);
+  if (outcome.sid) {
+    ticket.currentSessionId = outcome.sid;
+    if (!ticket.sessionIds.includes(outcome.sid)) ticket.sessionIds.push(outcome.sid);
     ticket.sessionStartedAt = nowIso();
     ticket.spawnFailures = 0;
     return;
   }
+  // A live-session 409 is a WAIT, not a spawn failure (observed as the ANZUBRAI-7/-9 false parks,
+  // 2026-08-09): the blocker is routinely the very session whose `change_status` triggered this gate,
+  // still finishing its turn tail — and `reconcileGateTicket` can never adopt it (`pickSessionForPhase`
+  // matches the dispatched phase; the blocker is a grooming/chat session), so counting these
+  // deterministic refusals toward MAX_GATE_SPAWN_ATTEMPTS parked the ticket ~25-30s after gate start
+  // with a misleading "environment may be broken". Leave the run in place instead: the next tick
+  // redrives (`decideTicketAction`'s `sessionStatus === undefined` branch) and the dispatch succeeds
+  // once the blocker ends. Resetting the counter — not just skipping the increment — is deliberate:
+  // a classified refusal proves the engine reachable, disproving the broken-environment hypothesis
+  // the cap exists to catch.
+  if (isLiveSessionRefusal(outcome)) {
+    ticket.spawnFailures = 0;
+    log.info(`[gate:${spec.gate}] ${ticket.ticketId} ${phase} dispatch blocked by a live session${describeBlockingSession(outcome)} — waiting for it to end.`);
+    return;
+  }
   ticket.spawnFailures = (ticket.spawnFailures || 0) + 1;
   if (ticket.spawnFailures >= MAX_GATE_SPAWN_ATTEMPTS) {
-    await parkGate(spec, ticket.ticketId, `could not start a ${phase} session after ${MAX_GATE_SPAWN_ATTEMPTS} attempts (the environment may be broken)`, ws);
+    await parkGate(spec, ticket.ticketId, `could not start a ${phase} session after ${MAX_GATE_SPAWN_ATTEMPTS} attempts (the environment may be broken${outcome.error ? ` — last error: ${outcome.error}` : ''})`, ws);
   }
 }
 

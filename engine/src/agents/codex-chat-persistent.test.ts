@@ -54,6 +54,13 @@ vi.mock('../parked-ticket.js', () => ({
   flagIfParked: vi.fn().mockResolvedValue(undefined),
   raiseNeedsAction: vi.fn().mockResolvedValue(undefined),
 }));
+// FLUX-1641: codex.ts now prechecks the `codex` binary via shared.ts's checkBinaryInstalled before
+// spawning — stub it so this test isn't at the mercy of whether `codex` is actually on the test
+// machine's PATH.
+vi.mock('./shared.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./shared.js')>();
+  return { ...actual, checkBinaryInstalled: vi.fn().mockResolvedValue(undefined) };
+});
 
 function fakeChildProcess() {
   const proc = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; stdin: { on: ReturnType<typeof vi.fn>; write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> }; pid: number };

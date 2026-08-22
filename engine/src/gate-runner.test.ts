@@ -15,7 +15,8 @@ import { setWorkspaceRoot } from './workspace.js';
 import type { CliSessionStatus } from './agents/types.js';
 
 let sessionSeq = 0;
-const dispatchSession = vi.fn(async (_ticketId: string, _phase: string, _opts?: unknown) => ({ sid: `sess-${++sessionSeq}` }));
+// Mirrors DispatchOutcome (FLUX-1235): { sid } on success; refusal tests queue { sid: null, status?, ... }.
+const dispatchSession = vi.fn(async (_ticketId: string, _phase: string, _opts?: unknown): Promise<{ sid: string | null; status?: number; error?: string; sessionLabel?: string; sessionStatus?: string }> => ({ sid: `sess-${++sessionSeq}` }));
 const parkTicketOnBoard = vi.fn(async (_ticketId: string, _reason: string, _opts?: unknown) => {});
 // FLUX-1304: `decideTicketAction`'s 'yield' branch requires the ticket's board status to already be
 // Done/Released, which `reconcileGateTicket`'s own "left Grooming" guard stops the run for BEFORE it
@@ -809,6 +810,73 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
       expect(isGateRunning('PW-3')).toBe(false); // left alone — the sweep did not re-register it
       expect(dispatchSession).not.toHaveBeenCalled();
       cliSessionsByTaskId.delete('PW-3');
+    });
+  });
+
+  // ── Spawn refusals: a live-session 409 is a WAIT, not an environment failure ────────────────────
+  // Observed as ANZUBRAI-7/ANZUBRAI-9 on the anzu-brain board (2026-08-09): the grooming session whose
+  // change_status triggered the gate was still finishing its turn tail, so every dispatch 409'd
+  // ("Task already has a live CLI session") and the gate parked the ticket ~25s after starting with the
+  // misleading "could not start a review session after 6 attempts (the environment may be broken)" —
+  // while a later manual start_plan_review, with no live session left, dispatched first-try and approved.
+  describe('spawn refusals — a live-session 409 waits instead of false-parking', () => {
+    const LIVE_409 = {
+      sid: null,
+      status: 409,
+      error: 'Task already has a live CLI session. Use role/pattern params for multi-session.',
+      sessionLabel: 'Grooming',
+      sessionStatus: 'running',
+    };
+
+    it('never counts 409 live-session refusals toward the park cap, and dispatches once the blocker ends', async () => {
+      // Start + 8 ticks = 9 consecutive 409s — well past MAX_GATE_SPAWN_ATTEMPTS (6).
+      for (let i = 0; i < 9; i++) dispatchSession.mockImplementationOnce(async () => LIVE_409);
+      seedGrooming('SR-1');
+      const res = await startPlanGateNow('SR-1', { mode: 'loop-auto' });
+      expect(res.ok).toBe(true);
+      for (let i = 0; i < 8; i++) await gateRunnerTick();
+      expect(parkTicketOnBoard).not.toHaveBeenCalled();
+      expect(isGateRunning('SR-1')).toBe(true);
+      expect(getWorkspace().tasks['SR-1'].planGateRunning).toBe(true);
+
+      // The blocking session ended (the Once queue is drained — the base mock dispatches for real):
+      // the very next tick's redrive succeeds and the run keeps going.
+      dispatchSession.mockClear();
+      await gateRunnerTick();
+      expect(dispatchSession).toHaveBeenCalledWith('SR-1', 'review', expect.objectContaining({ skipIsolation: true }));
+      expect(parkTicketOnBoard).not.toHaveBeenCalled();
+      expect(isGateRunning('SR-1')).toBe(true);
+    });
+
+    it('genuine transient failures still park after MAX_GATE_SPAWN_ATTEMPTS, naming the last error', async () => {
+      for (let i = 0; i < 6; i++) dispatchSession.mockImplementationOnce(async () => ({ sid: null, status: 500, error: 'self-dispatch unreachable' }));
+      seedGrooming('SR-2');
+      await startPlanGateNow('SR-2', { mode: 'loop-auto' }); // attempt 1
+      for (let i = 0; i < 5; i++) await gateRunnerTick();    // attempts 2-6 — the 6th parks
+      expect(parkTicketOnBoard).toHaveBeenCalledTimes(1);
+      const reason = parkTicketOnBoard.mock.calls[0]![1];
+      expect(reason).toContain('after 6 attempts');
+      expect(reason).toContain('self-dispatch unreachable');
+      expect(isGateRunning('SR-2')).toBe(false);
+    });
+
+    it('a 409 resets the consecutive-failure count (the engine answered — not a broken environment)', async () => {
+      // 5 transient failures (one short of the cap), a 409, then 5 more transients: never parks —
+      // the 409 proved the engine reachable and routing, so the consecutive count restarts.
+      for (let i = 0; i < 5; i++) dispatchSession.mockImplementationOnce(async () => ({ sid: null, error: 'fetch failed' }));
+      dispatchSession.mockImplementationOnce(async () => LIVE_409);
+      for (let i = 0; i < 5; i++) dispatchSession.mockImplementationOnce(async () => ({ sid: null, error: 'fetch failed' }));
+      seedGrooming('SR-3');
+      await startPlanGateNow('SR-3', { mode: 'loop-auto' }); // transient failure #1
+      for (let i = 0; i < 10; i++) await gateRunnerTick();   // failures #2-#5, the 409, then 5 fresh failures
+      expect(parkTicketOnBoard).not.toHaveBeenCalled();
+      expect(isGateRunning('SR-3')).toBe(true);
+
+      // The 6th consecutive transient failure since the 409 crosses the cap and parks.
+      dispatchSession.mockImplementationOnce(async () => ({ sid: null, error: 'fetch failed' }));
+      await gateRunnerTick();
+      expect(parkTicketOnBoard).toHaveBeenCalledTimes(1);
+      expect(isGateRunning('SR-3')).toBe(false);
     });
   });
 });

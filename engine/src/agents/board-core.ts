@@ -19,6 +19,10 @@ import { checkBinaryInstalled, appendSessionOutput, flushSessionOutput, resolveA
 import { invalidateClaudeBinaryDarwinCache } from './claude-binary-darwin.js';
 import { BOARD_CONVERSATION_ID, type BoardAdapter, type BoardSpec } from './board.js';
 
+async function checkBoardBinaryInstalled(spec: BoardSpec): Promise<void> {
+  await (spec.checkBinary ? spec.checkBinary() : checkBinaryInstalled(spec.binary));
+}
+
 // FLUX-1175: the default identity block, extracted to a function of the project key so a
 // persona-primed board turn (e.g. the Smelter, launched from the Furnace drawer) can swap in
 // its own resolved prompt instead (see the `identity` param on buildBoardPrompt below).
@@ -141,7 +145,7 @@ function wireBoardProc(spec: BoardSpec, proc: ReturnType<typeof spawn>, session:
 }
 
 async function startBoardSession(spec: BoardSpec, session: CliSessionRecord, firstMessage: string, workspaceRoot: string, opts?: SendInputOptions) {
-  await checkBinaryInstalled(spec.binary);
+  await checkBoardBinaryInstalled(spec);
   session.executionRoot = workspaceRoot;
   // FLUX-579: ensure the workspace-root shared server(s) exist before building the board MCP config
   // (Claude-only today — other frameworks load MCP from workspace .mcp.json, see BoardSpec.ensureMcp).
@@ -203,7 +207,7 @@ async function startBoardSession(spec: BoardSpec, session: CliSessionRecord, fir
 }
 
 async function sendBoardInput(spec: BoardSpec, session: CliSessionRecord, message: string, workspaceRoot: string, opts?: SendInputOptions) {
-  await checkBinaryInstalled(spec.binary);
+  await checkBoardBinaryInstalled(spec);
   const inputAt = new Date().toISOString();
   // FLUX-1209: see startBoardSession — the board-only digest/re-prime machinery below is scoped
   // to the real board conversation, not a Furnace-chat (or any other virtual conversation) turn.

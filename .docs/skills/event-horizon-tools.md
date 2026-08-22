@@ -30,6 +30,12 @@ Active-by-default and bounded (a deliberate FLUX-489 guardrail): with no explici
 
 Agent-facing projection of board config — Tailwind color classes are stripped (agents never render them) since this re-bills every session an orchestrator reads it.
 
+**Workspace-binding disclosure (FLUX-1573).** `workspaceRoot`/`binding`/`storeMode` tell you which board this session is actually talking to and how confident to be about it. A session launched from a repo's static `.mcp.json` (no engine-injected `X-EH-Workspace` header) silently resolves to the boot/default board with `binding:'default-fallback'` — treat that as an unverified guess, not a fact, before creating/moving/igniting anything; a dispatched session normally gets `binding:'header'` (verified). If a connected engine's response has NONE of these three fields, it predates FLUX-1573 — same rule applies: don't state your binding as fact, and don't expect `list_workspaces` to exist either. Cross-check against `list_workspaces`'s `canonicalRoot` list when in doubt.
+
+## list_workspaces
+
+Read-only registry listing (no relation to `get_project_group`'s multi-repo groups). Mirrors REST `GET /api/workspaces` — same `enrichList`/`enrichEntry` projection, so the two can't drift. Use `canonicalRoot` (not `path`) when constructing an `X-EH-Workspace` header for a session you're about to launch against a specific board: `path` is only `path.resolve()`d, so an 8.3 short name or a differently-cased-but-identical root would byte-mismatch the registry key and silently misroute to the default board (the FLUX-1571 failure this field exists to prevent). This tool is discovery-only — it cannot rebind the calling session; see `get_board_config`'s `workspaceRoot`/`binding` for that.
+
 ## get_project_group
 
 Reports `membership` (role: parent vs member, group name, parent root) only when the current workspace is actually bound into a multi-repo group; otherwise returns a clear "no group configured" notice rather than an empty/ambiguous payload.
@@ -77,6 +83,8 @@ A swimlane is orthogonal to status — the ticket stays in its status column but
 ## publish_artifact
 
 A concrete rendering instead of prose, for plan-time mockups or Ready-time diff recaps. Every call adds a new revision — publishing never overwrites a prior one. The HTML must be fully self-contained (inline CSS/JS; Mermaid via a CDN script tag is allowed for diagrams; the Tailwind Play CDN is allowed but is a heavy last resort, not the default) because it renders inside a sandboxed opaque-origin iframe that cannot reach the portal, cookies, or storage, and cannot make network requests at all (`connect-src` is blocked) — everything the artifact needs must be inlined or loaded from an allowed CDN. Emit for UI/architecture work; skip it for bug fixes, XS/S-effort tickets, and backend plumbing with no visual shape to show.
+
+**`channel` (FLUX-1667, optional, default `"plan"`):** which typed artifact stream this revision publishes into. `"plan"` (the default, unchanged behavior) is grooming mockups and Ready-time Visual Recaps, surfaced in the ticket's **Plan** tab. `"doc-recap"` targets the same channel the automatic doc-recap (FLUX-1662) uses, surfaced in the **Docs** tab — an agent normally never needs to pass this explicitly, since the engine already auto-publishes a doc-recap when a docsRoot-touching branch reaches Ready; it exists for hand-authoring a recap outside that automatic flow. The two channels have independent revision histories and rev pickers. A concrete `?rev=N` fetch of `/api/tasks/:id/artifact` is channel-agnostic (both channels share one ascending rev counter), but resolving `latest` needs `?channel=doc-recap` for the doc-recap stream.
 
 **Guided-annotation controls (FLUX-1440):** the viewer upgrades specific markup into interactive controls that auto-stage annotations the user sends back:
 - `<div data-eh-feel data-eh-label data-eh-min data-eh-max data-eh-default data-eh-unit>` becomes a live slider.

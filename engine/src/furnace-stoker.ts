@@ -30,7 +30,7 @@ import { getConfig } from './config.js';
 import { updateTaskWithHistory } from './task-store.js';
 import { addNotification } from './notifications.js';
 import { cliSessionsById, getActiveSessionsForTaskInWorkspace, getAllSessionsForTask, isResumable, stopAllSessionsForTask } from './session-store.js';
-import type { CliSessionRecord, CliSessionStatus, TaskKey } from './agents/types.js';
+import type { CliSessionRecord, CliSessionStatus, TaskKey, CliFramework } from './agents/types.js';
 import type { AuthDiagnosis } from './agents/auth-diagnostics.js';
 import { formatAuthDiagnosisMessage } from './agents/auth-diagnostics.js';
 import {
@@ -487,7 +487,12 @@ export async function dispatchSession(
   // `getWorkspaceRoot()` (correct when the caller is ALS-bound, e.g. inside `runWithWorkspace`), but
   // callers driving MULTIPLE workspaces from one background tick (Temper, the gate runner) pass it
   // explicitly so the self-dispatch is never accidentally stamped with whichever board is "active".
-  opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean; taskKey?: TaskKey; enableTools?: string[]; workspaceRoot?: string | null } = {},
+  // FLUX-1681: `framework`, when set, pins this dispatch to a specific CLI framework instead of
+  // letting the start route fall back to the board default (`routes/cli-session.ts`'s
+  // `req.body?.framework || resolveDefaultFramework()`) — callers resolving a ticket's ORIGINATING
+  // framework for a continuation dispatch (Temper/Furnace re-implement) pass it so a cold spawn never
+  // silently switches a Codex-implemented ticket to the board default.
+  opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean; taskKey?: TaskKey; enableTools?: string[]; workspaceRoot?: string | null; framework?: CliFramework } = {},
 ): Promise<DispatchOutcome> {
   // A sequential follower reuses the anchor's shared worktree (resolved server-side by the shared
   // branch), so it must NOT request isolation — that would check the same branch out twice.
@@ -505,6 +510,7 @@ export async function dispatchSession(
   if (opts.focusComment) body.focusComment = opts.focusComment;
   if (opts.taskKey) body.taskKey = opts.taskKey;
   if (opts.enableTools && opts.enableTools.length > 0) body.enableTools = opts.enableTools;
+  if (opts.framework) body.framework = opts.framework;
   const workspaceRoot = opts.workspaceRoot ?? getWorkspaceRoot();
   try {
     const res = await fetch(`${engineBase()}/api/tasks/${encodeURIComponent(ticketId)}/cli-session/start`, {
@@ -643,6 +649,28 @@ async function findResumeCandidate(ticketId: string, phase: FurnacePhase | 'groo
   return { session: candidate, worktreeRecreated };
 }
 
+/**
+ * FLUX-1681 (Fix A): the framework a ticket has actually been implemented in, resolved from its most
+ * recent standalone/lead session for `phase` — same selection filter as `findResumeCandidate`'s
+ * `patternPosition` guard (a delegate/worker session's framework must never be adopted; its context
+ * belonged to whatever lead spawned it, not to the ticket's own continuation). A RESUMED continuation
+ * already preserves framework implicitly (the session record carries it) — this is only needed for a
+ * COLD dispatch, where nothing else pins the framework and the start route would otherwise fall back
+ * to the board default (`routes/cli-session.ts`'s `req.body?.framework || resolveDefaultFramework()`).
+ * Returns `undefined` when no qualifying prior session exists — callers fall through to that existing
+ * default behavior, never failing the dispatch over an unresolvable framework.
+ */
+export function resolveOriginatingFramework(ticketId: string, phase: FurnacePhase | 'grooming'): CliFramework | undefined {
+  const sessions = getAllSessionsForTask(ticketId);
+  for (let i = sessions.length - 1; i >= 0; i--) {
+    const s = sessions[i]!;
+    if (s.phase !== phase) continue;
+    if (s.patternPosition === 'assistant' || s.patternPosition === 'step') continue;
+    return s.framework;
+  }
+  return undefined;
+}
+
 /** POST a resumed turn to the existing session — mirrors `dispatchSession`'s self-fetch pattern.
  *  FLUX-1548: `workspaceRoot` mirrors `dispatchSession`'s opt — same X-EH-Workspace routing need. */
 async function postResumeInput(ticketId: string, sessionId: string, message: string, workspaceRoot?: string | null): Promise<DispatchOutcome> {
@@ -679,7 +707,9 @@ export interface ResumeDispatchOutcome extends DispatchOutcome {
 export async function resumeOrDispatchSession(
   ticketId: string,
   phase: FurnacePhase | 'grooming',
-  opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean; resumeMessage: string; enableTools?: string[]; workspaceRoot?: string | null },
+  // FLUX-1681: `framework` is forwarded verbatim to the cold-fallback `dispatchSession` call below —
+  // a successful RESUME never needs it (the resumed session already carries its own framework).
+  opts: { personaId?: string; focusComment?: string; skipIsolation?: boolean; resumeMessage: string; enableTools?: string[]; workspaceRoot?: string | null; framework?: CliFramework },
 ): Promise<ResumeDispatchOutcome> {
   const candidate = await findResumeCandidate(ticketId, phase);
   if (candidate) {
@@ -1242,6 +1272,27 @@ async function parkTicket(batchId: string, ticketId: string, reason: string, fai
 }
 
 /**
+ * True when a dispatch refusal is the start route's "ticket already has a live (running/pending)
+ * session" 409 (routes/cli-session.ts — including its path-conflict variant). Deterministic AND
+ * self-resolving: the refusal disappears the moment that session ends, so it is never evidence of a
+ * broken environment. The long-lived loop-drivers (the plan-gate runner, Temper) treat it as a WAIT —
+ * the blocker is routinely the very session whose `change_status` triggered them, still finishing its
+ * turn tail, which their phase-keyed adoption can never pick up — while the Furnace batch driver
+ * (`spawnOrCount`, via `classifySpawnRefusal` below) parks immediately instead: a live foreign session
+ * on a batch-owned ticket means a human stepped in, which genuinely needs that human to resolve
+ * (FLUX-1235).
+ */
+export function isLiveSessionRefusal(outcome: DispatchOutcome): boolean {
+  return outcome.sid === null && outcome.status === 409;
+}
+
+/** Format the blocking session a 409 refusal named (" (label, status)"), or '' when unnamed. */
+export function describeBlockingSession(outcome: DispatchOutcome): string {
+  const who = [outcome.sessionLabel, outcome.sessionStatus].filter(Boolean).join(', ');
+  return who ? ` (${who})` : '';
+}
+
+/**
  * Classify a dispatch refusal as DETERMINISTIC (retrying can't help → park immediately with the real
  * reason) or transient (`null` → keep counting toward MAX_SPAWN_ATTEMPTS). FLUX-1235: this is what stops
  * a ticket that merely has a live chat session from spinning 6 pointless retries and parking with the
@@ -1260,12 +1311,9 @@ export function classifySpawnRefusal(
   outcome: DispatchOutcome,
 ): { reason: string; failureClass: FailureClass; stopSessions: boolean } | null {
   const { status, error } = outcome;
-  if (status === 409) {
-    const who = outcome.sessionLabel || outcome.sessionStatus
-      ? ` (${[outcome.sessionLabel, outcome.sessionStatus].filter(Boolean).join(', ')})`
-      : '';
+  if (isLiveSessionRefusal(outcome)) {
     return {
-      reason: `ticket already has a live session${who} — resolve it before burning`,
+      reason: `ticket already has a live session${describeBlockingSession(outcome)} — resolve it before burning`,
       failureClass: 'needs-input',
       stopSessions: false, // never kill the live session we are refusing to clobber
     };
@@ -1290,7 +1338,7 @@ async function spawnOrCount(
   batchId: string,
   ticketId: string,
   phase: FurnacePhase,
-  opts: { personaId?: string; focusComment?: string; resumeMessage?: string; enableTools?: string[] } = {},
+  opts: { personaId?: string; focusComment?: string; resumeMessage?: string; enableTools?: string[]; framework?: CliFramework } = {},
 ): Promise<{ sid: string | null; parked: boolean }> {
   const batch0 = getFurnaceBatch(batchId);
   const t0 = batch0 ? findTicket(batch0, ticketId) : undefined;
@@ -1411,9 +1459,14 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
 
     case 'reimplement': {
       await advanceState(batchId, ticketId, 'reimplementing', action.attempt);
+      // FLUX-1681 (Fix A): preserve the ticket's originating implementation framework on a COLD
+      // fallback — a resume (the common case) already carries it via the session record; only the
+      // cold spawn needs it pinned explicitly so the start route doesn't fall back to the board default.
+      const framework = resolveOriginatingFramework(ticketId, 'implementation');
       const r = await spawnOrCount(batchId, ticketId, 'implementation', {
         focusComment: REIMPLEMENT_FOCUS,
         resumeMessage: REIMPLEMENT_FOCUS,
+        ...(framework ? { framework } : {}),
       });
       if (r.sid) await recordSession(batchId, ticketId, r.sid);
       break;
@@ -1984,6 +2037,7 @@ export function hasScannedWorktreePool(root: string | null = requireWorkspaceRoo
 /** A ticket currently holding a worktree slot, with why — see {@link describeSlotHolders}. */
 export interface FurnaceSlotHolder {
   ticketId: string;
+  status: string;
   reason: string;
 }
 
@@ -2007,18 +2061,22 @@ export async function describeSlotHolders(workspaceRoot: string): Promise<Furnac
   const worktrees = await listTaskWorktrees(workspaceRoot).catch(() => []);
   const holders: FurnaceSlotHolder[] = [];
   const seen = new Set<string>();
+  const ws = getWorkspace();
+  const ticketStatus = (ticketId: string) => ws.tasks[ticketId]?.status ?? 'unknown';
   for (const wt of worktrees) {
     const ticketId = ticketIdFromWorktreePath(workspaceRoot, wt.path);
     if (!ticketId) continue;
+    const status = ticketStatus(ticketId);
     seen.add(ticketId);
-    if (burning.has(ticketId)) { holders.push({ ticketId, reason: 'actively burning' }); continue; }
+    if (burning.has(ticketId)) { holders.push({ ticketId, status, reason: 'actively burning' }); continue; }
     const unreclaimable = worktreeUnreclaimableReason(ticketId);
-    if (unreclaimable) { holders.push({ ticketId, reason: UNRECLAIMABLE_LABEL[unreclaimable] }); continue; }
+    if (unreclaimable) { holders.push({ ticketId, status, reason: UNRECLAIMABLE_LABEL[unreclaimable] }); continue; }
     // Reclaimable by status/session, yet still on disk — the only reason reclaimWorktrees would have
     // skipped it is a dirty tree (uncommitted work reclaim never discards).
     const { stdout } = await runGit(['status', '--porcelain'], { cwd: wt.path }).catch(() => ({ stdout: '' }));
     holders.push({
       ticketId,
+      status,
       reason: stdout.trim().length > 0 ? 'uncommitted changes (dirty tree) — reclaim left it alone' : 'idle — not yet reclaimed',
     });
   }
@@ -2033,6 +2091,7 @@ export async function describeSlotHolders(workspaceRoot: string): Promise<Furnac
     if (!seen.has(ticketId)) {
       holders.push({
         ticketId,
+        status: ticketStatus(ticketId),
         reason: burning.has(ticketId) ? 'reserved — worktree not yet created' : 'Temper-reserved — worktree not yet created',
       });
     }
@@ -2083,7 +2142,7 @@ export async function checkFurnaceSlotHealth(): Promise<void> {
     /* best-effort — still warn even if we can't name the holders */
   }
   const holderList = holders.length
-    ? holders.map((h) => `${h.ticketId} (${h.reason})`).join(', ')
+    ? holders.map((h) => `${h.ticketId} (${h.status}) — ${h.reason}`).join(', ')
     : 'none observed — check `git worktree list` directly';
   const message = `${used}/${FURNACE_SLOT_CAP} worktree slots in use but no batch is burning. Holding: ${holderList}`;
   log.warn(`[furnace] slot pool exhausted with nothing burning — ${message}`);

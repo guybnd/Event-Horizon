@@ -92,7 +92,9 @@ import devOnboardingFlowRouter from './routes/dev-onboarding-flow.js';
 import devOnboardingAssetsRouter from './routes/dev-onboarding-assets.js';
 import devOnboardingDraftRouter from './routes/dev-onboarding-draft.js';
 import { checkForUpdate, getCachedUpdateInfo, getLocalVersion } from './update-check.js';
-import { checkGhAuth } from './branch-manager.js';
+import { isGhAvailable, refreshGhAvailability, ensureGhAvailabilityFresh } from './gh-availability.js';
+import healthRouter from './routes/health.js';
+import ghRouter from './routes/gh.js';
 import terminalRouter, { handleTerminalUpgrade } from './routes/terminal.js';
 import { reconcileOrphanedTerminalSessions, destroyAllTerminalSessions } from './terminal-session-store.js';
 import { reconcilePullRequests, pruneMergedBranches, reclaimReadyWorktrees, recheckDependentBranches } from './pr-cleanup.js';
@@ -229,6 +231,9 @@ app.use('/api/agents', requireWorkspace, agentsRouter);
 app.use('/api/bootstrap', requireWorkspace, bootstrapRouter);
 app.use('/api/group', requireWorkspace, groupRouter);
 app.use('/api/terminal', requireWorkspace, terminalRouter);
+// No requireWorkspace: health must answer with no workspace, and the gh probe is workspace-independent.
+app.use('/api/health', healthRouter);
+app.use('/api/gh', ghRouter);
 
 // S9 (epic FLUX-996): install the real git-exec telemetry sink once at bootstrap — before this,
 // setGitOperationSink() had zero call sites and every hardened git/gh call's timing/outcome was
@@ -446,8 +451,6 @@ app.post('/api/board/board-rebase-resolve', requireWorkspace, async (req, res) =
   res.json(result);
 });
 
-let ghAuthAvailable: boolean | null = null;
-
 // How often to poll gh for out-of-band PR state (FLUX-557). 90s balances freshness against
 // gh process churn — branch tickets in review are few.
 const PR_RECONCILE_INTERVAL_MS = 90_000;
@@ -477,10 +480,6 @@ const holdSweepTimer = setInterval(() => {
   sweepHolds(Date.now(), { kill: forceKillHeldSubtree }).catch((err) => console.error('[background-process-holds] sweep failed', err));
 }, BACKGROUND_HOLD_SWEEP_INTERVAL_MS);
 holdSweepTimer.unref();
-
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', workspace: getWorkspaceRoot(), ghAuthAvailable });
-});
 
 app.post('/api/shutdown', (_req, res) => {
   stopAllCliSessions('shutdown');
@@ -638,7 +637,20 @@ async function initTray(port: number): Promise<void> {
     }
   });
 
-  trayProc.on('exit', () => { process.exit(0); });
+  trayProc.on('error', (e: Error) => {
+    console.warn('Tray helper failed to start — continuing without tray:', e.message);
+  });
+  // Tray-exit means "Quit" only if the tray actually came up (menuSent). On Linux the helper
+  // exits immediately when no tray host exists (headless, GNOME without the extension, sandbox)
+  // — that must NOT take the engine down with it, which shipped as a silent instant exit 0 of
+  // the packaged Linux binary (FLUX-1694).
+  trayProc.on('exit', () => {
+    if (!menuSent) {
+      console.warn('Tray helper exited before becoming ready — no system tray available; continuing without tray.');
+      return;
+    }
+    process.exit(0);
+  });
   process.on('exit', () => { try { trayProc.kill(); } catch {} });
 }
 
@@ -755,7 +767,7 @@ async function startServer() {
     // FLUX-1001: in-flight guard — if a prior tick's sweep is still running (e.g. slow GitHub
     // API), skip the new tick entirely so ticks can't pile up and saturate the event loop.
     let prReconcileInFlight = false;
-    const runPrReconcileTick = () => {
+    const runPrReconcileTick = async () => {
       if (prReconcileInFlight) return;
       // FLUX-1452: iterate every LIVE workspace (the S1 registry, unioned with the single default
       // workspace so an unrouted/not-yet-opened deployment still reconciles — see
@@ -766,63 +778,83 @@ async function startServer() {
       if (workspaces.length === 0) return;
       const defaultWorkspaceRoot = getDefaultWorkspace().root;
       prReconcileInFlight = true;
-      Promise.all([
-        ...workspaces.flatMap((ws) => {
-          const workspaceRoot = ws.root as string;
-          return [
-            // FLUX-1556: refresh the on-disk active-session stubs (write current running/waiting-
-            // input task sessions belonging to THIS board, prune ended ones) so the reclaim guard
-            // survives an engine restart. Bound via `runWithWorkspace` so `sessionStubsDir()`
-            // resolves to `ws`'s own store — previously this ran once, unbound, outside this loop,
-            // so every board's sessions got written into whichever board happened to be ambiently
-            // active, and a restart with a different board active saw an empty stub dir and freed
-            // that board's live worktrees (the FLUX-1556 data-loss bug). Runs alongside the reclaim
-            // below — reclaim reads the in-memory map, this just keeps the disk mirror ≤ one tick
-            // stale for the NEXT restart.
-            runWithWorkspace(ws, () => syncActiveSessionStubs(workspaceRoot, defaultWorkspaceRoot)),
-            // FLUX-1645: same restart-durability refresh for background-process holds.
-            runWithWorkspace(ws, () => syncHoldStubs(workspaceRoot)),
-            // FLUX-1031: proactively free task-worktree slots held by tickets resting at Ready
-            // (or terminal) with no live session, so the board-wide pool doesn't exhaust while
-            // PRs await review. Independent of gh — reclamation is a local git/worktree op — so
-            // it runs even when GitHub CLI is unconfigured.
-            // FLUX-1579: every reconciler below is now wrapped in `runWithWorkspace(ws, …)` too
-            // (belt + suspenders alongside the `upsertManagedTicket` path fix) — any ambient
-            // getActiveFluxDir()/getWorkspace() call reached from inside these must resolve to
-            // `ws`, not whichever board happens to be ambiently active during this tick.
-            runWithWorkspace(ws, () => reclaimReadyWorktrees(workspaceRoot, ws)),
-            // The remaining reconcilers depend on gh; skip them when it's unavailable.
-            ...(ghAuthAvailable
-              ? [
-                  runWithWorkspace(ws, () => reconcilePullRequests(workspaceRoot, ws)),
-                  // FLUX-566: maintain the engine-managed PR-<n> tickets (the PR-as-first-class entity).
-                  runWithWorkspace(ws, () => syncPrTickets(workspaceRoot, ws)),
-                  // FLUX-599: backstop — reclaim merged branches whose merge-time delete was missed.
-                  runWithWorkspace(ws, () => pruneMergedBranches(workspaceRoot, ws)),
-                  // FLUX-1326: retry branches cleanupMergedBranch kept alive under its dependent-PR
-                  // guard (FLUX-1270) — reconcilePullRequests's non-terminal grouping never revisits
-                  // them on its own once their tickets reach Done.
-                  runWithWorkspace(ws, () => recheckDependentBranches(workspaceRoot, ws)),
-                ]
-              : []),
-          ];
-        }),
-      ]).catch(() => {}).finally(() => { prReconcileInFlight = false; });
+      try {
+        // FLUX-1686: self-heal — re-probe gh (respecting gh-availability.ts's freshness policy,
+        // so a healthy gh costs no subprocess per tick) BEFORE the gate below reads isGhAvailable(),
+        // so `gh auth login` run mid-session flips the gate on THIS tick, not the next. Awaited,
+        // not fire-and-forget: `isGhAvailable()` is read synchronously when the reconciler array is
+        // built, so a fire-and-forget refresh would leave that read on the pre-probe value and defer
+        // the gh reconcilers to the FOLLOWING tick. Sequenced before the local reconcilers (rather
+        // than started alongside them) so an escaping rejection always has this tick's `try/catch`
+        // attached — kicking them off in parallel would open a window where the probe's rejection
+        // has no handler yet. Bounded by GIT_SYNC_TIMEOUT_MS (FLUX-989), so a hung `gh auth status`
+        // delays the local reconcilers by at most that long on this tick, not indefinitely, and
+        // `prReconcileInFlight` now covers the probe too, so probes across ticks can't overlap.
+        await ensureGhAvailabilityFresh();
+        await Promise.all([
+          ...workspaces.flatMap((ws) => {
+            const workspaceRoot = ws.root as string;
+            return [
+              // FLUX-1556: refresh the on-disk active-session stubs (write current running/waiting-
+              // input task sessions belonging to THIS board, prune ended ones) so the reclaim guard
+              // survives an engine restart. Bound via `runWithWorkspace` so `sessionStubsDir()`
+              // resolves to `ws`'s own store — previously this ran once, unbound, outside this loop,
+              // so every board's sessions got written into whichever board happened to be ambiently
+              // active, and a restart with a different board active saw an empty stub dir and freed
+              // that board's live worktrees (the FLUX-1556 data-loss bug). Runs alongside the reclaim
+              // below — reclaim reads the in-memory map, this just keeps the disk mirror ≤ one tick
+              // stale for the NEXT restart.
+              runWithWorkspace(ws, () => syncActiveSessionStubs(workspaceRoot, defaultWorkspaceRoot)),
+              // FLUX-1645: same restart-durability refresh for background-process holds.
+              runWithWorkspace(ws, () => syncHoldStubs(workspaceRoot)),
+              // FLUX-1031: proactively free task-worktree slots held by tickets resting at Ready
+              // (or terminal) with no live session, so the board-wide pool doesn't exhaust while
+              // PRs await review. Independent of gh — reclamation is a local git/worktree op — so
+              // it runs even when GitHub CLI is unconfigured.
+              // FLUX-1579: every reconciler below is now wrapped in `runWithWorkspace(ws, …)` too
+              // (belt + suspenders alongside the `upsertManagedTicket` path fix) — any ambient
+              // getActiveFluxDir()/getWorkspace() call reached from inside these must resolve to
+              // `ws`, not whichever board happens to be ambiently active during this tick.
+              runWithWorkspace(ws, () => reclaimReadyWorktrees(workspaceRoot, ws)),
+              // The remaining reconcilers depend on gh; skip them when it's unavailable. Reads
+              // through gh-availability.ts (FLUX-1683/FLUX-1686), which this tick just refreshed
+              // above, so both a mid-run Re-check AND this tick's own self-heal are picked up
+              // immediately, instead of the old ghAuthAvailable local that was set once at boot.
+              ...(isGhAvailable()
+                ? [
+                    runWithWorkspace(ws, () => reconcilePullRequests(workspaceRoot, ws)),
+                    // FLUX-566: maintain the engine-managed PR-<n> tickets (the PR-as-first-class entity).
+                    runWithWorkspace(ws, () => syncPrTickets(workspaceRoot, ws)),
+                    // FLUX-599: backstop — reclaim merged branches whose merge-time delete was missed.
+                    runWithWorkspace(ws, () => pruneMergedBranches(workspaceRoot, ws)),
+                    // FLUX-1326: retry branches cleanupMergedBranch kept alive under its dependent-PR
+                    // guard (FLUX-1270) — reconcilePullRequests's non-terminal grouping never revisits
+                    // them on its own once their tickets reach Done.
+                    runWithWorkspace(ws, () => recheckDependentBranches(workspaceRoot, ws)),
+                  ]
+                : []),
+            ];
+          }),
+        ]);
+      } catch {
+        // best-effort reconcile tick; individual reconcilers already guard their own errors.
+      } finally {
+        prReconcileInFlight = false;
+      }
     };
 
-    // FLUX-1318: fire a leading-edge reconcile as soon as ghAuthAvailable resolves, instead of
+    // FLUX-1318: fire a leading-edge reconcile as soon as the boot gh probe resolves, instead of
     // waiting for the first PR_RECONCILE_INTERVAL_MS tick — otherwise PR-<n> cards are missing/stale
-    // for up to 90s after every engine boot. Sequenced inside the checkGhAuth() continuation (not
-    // right after setInterval below) so this first run reads a resolved ghAuthAvailable rather than
-    // its `null` initial value — a naive immediate call would silently skip reconcilePullRequests/
-    // syncPrTickets/pruneMergedBranches, which are gated on ghAuthAvailable being truthy.
-    checkGhAuth().then(ok => {
-      ghAuthAvailable = ok;
-      if (!ok) {
+    // for up to 90s after every engine boot. Sequenced inside the refreshGhAvailability() continuation
+    // (not right after setInterval below) so this first run reads a resolved isGhAvailable() rather
+    // than the pre-probe `null` cache — a naive immediate call would silently skip
+    // reconcilePullRequests/syncPrTickets/pruneMergedBranches, which are gated on it (FLUX-1683).
+    refreshGhAvailability().then(result => {
+      if (!result.ok) {
         console.warn('[branch] GitHub CLI not configured — PR creation unavailable. Run `gh auth login` to enable.');
       }
       runPrReconcileTick();
-    }).catch(() => { ghAuthAvailable = false; runPrReconcileTick(); });
+    }).catch(() => { runPrReconcileTick(); });
 
     setInterval(runPrReconcileTick, PR_RECONCILE_INTERVAL_MS);
 

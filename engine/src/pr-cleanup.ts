@@ -189,15 +189,16 @@ const UNRECLAIMABLE_LABEL: Record<UnreclaimableReason, string> = {
 export async function describeWorktreeSlotHolders(
   workspaceRoot: string,
   ws: Workspace = getWorkspace(),
-): Promise<Array<{ ticketId: string; reason: string }>> {
+): Promise<Array<{ ticketId: string; status: string; reason: string }>> {
   const worktrees = await listTaskWorktrees(workspaceRoot).catch(() => []);
-  const holders: Array<{ ticketId: string; reason: string }> = [];
+  const holders: Array<{ ticketId: string; status: string; reason: string }> = [];
   for (const wt of worktrees) {
     const ticketId = ticketIdFromWorktreePath(workspaceRoot, wt.path);
     if (!ticketId) continue;
+    const status = (ws.tasks as Record<string, CachedTicket>)[ticketId]?.status ?? 'unknown';
     const unreclaimable = worktreeUnreclaimableReason(ticketId, {}, ws);
     if (unreclaimable) {
-      holders.push({ ticketId, reason: UNRECLAIMABLE_LABEL[unreclaimable] });
+      holders.push({ ticketId, status, reason: UNRECLAIMABLE_LABEL[unreclaimable] });
       continue;
     }
     // Reclaimable by status/session, yet still on disk — the only reason reclaimWorktrees would
@@ -205,6 +206,7 @@ export async function describeWorktreeSlotHolders(
     const { stdout } = await runGit(['status', '--porcelain'], { cwd: wt.path }).catch(() => ({ stdout: '' }));
     holders.push({
       ticketId,
+      status,
       reason: stdout.trim().length > 0 ? 'uncommitted changes (dirty tree) — reclaim left it alone' : 'idle — not yet reclaimed',
     });
   }
@@ -221,7 +223,7 @@ export async function describeWorktreeSlotHolders(
 export function resolveExecutionRootReclaimOpts(workspaceRoot: string): {
   isReclaimable: (ticketId: string) => boolean;
   isTerminal: (ticketId: string) => boolean;
-  describeSlotHolders: () => Promise<Array<{ ticketId: string; reason: string }>>;
+  describeSlotHolders: () => Promise<Array<{ ticketId: string; status: string; reason: string }>>;
 } {
   return {
     // FLUX-1112: bypass the always-on Ready-worktree grace here — this is the LAST-RESORT backstop

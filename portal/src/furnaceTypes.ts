@@ -148,6 +148,7 @@ export interface SlotInfo {
 /** A ticket holding a worktree slot on a `no_slots` refusal, with why reclaim didn't free it (FLUX-1157). */
 export interface FurnaceSlotHolder {
   ticketId: string;
+  status: string;
   reason: string;
 }
 

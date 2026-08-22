@@ -122,6 +122,83 @@ describe('config routes (FLUX-1492)', () => {
     expect(onDisk.gatePolicy.boardDefault).toEqual({ plan: 'auto-then-you', review: 'auto' });
   });
 
+  // FLUX-1657: per-connector read/write scoping config round-trip, mirroring the /mcp-phases
+  // tests above — same targeted-patch-not-clobber shape via `patchConfig`.
+  it('GET /mcp-readonly returns current mcpServerReadOnly and the full LaunchPhase set (incl. finalize)', async () => {
+    const onDiskBefore = JSON.parse(await fs.readFile(getConfigFile(), 'utf-8'));
+    onDiskBefore.mcpServerReadOnly = { jira: true };
+    await fs.writeFile(getConfigFile(), JSON.stringify(onDiskBefore), 'utf-8');
+    await loadConfig();
+
+    const res = await fetch(`${baseUrl}/api/config/mcp-readonly`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.mcpServerReadOnly).toEqual({ jira: true });
+    // The headline reason this route can't reuse SCOPE_PHASES (routes/config.ts) — it omits 'finalize'.
+    expect(body.phases).toEqual(expect.arrayContaining(['finalize']));
+  });
+
+  it('PUT /mcp-readonly patches only mcpServerReadOnly, preserving a gatePolicy change made since load', async () => {
+    const onDiskBefore = JSON.parse(await fs.readFile(getConfigFile(), 'utf-8'));
+    onDiskBefore.gatePolicy = { boardDefault: { plan: 'auto-then-you', review: 'auto' } };
+    await fs.writeFile(getConfigFile(), JSON.stringify(onDiskBefore), 'utf-8');
+
+    const putRes = await fetch(`${baseUrl}/api/config/mcp-readonly`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcpServerReadOnly: { doc360: { exceptPhases: ['finalize'] } } }),
+    });
+    expect(putRes.status).toBe(200);
+    expect(await putRes.json()).toEqual({ mcpServerReadOnly: { doc360: { exceptPhases: ['finalize'] } } });
+
+    const onDisk = JSON.parse(await fs.readFile(getConfigFile(), 'utf-8'));
+    expect(onDisk.mcpServerReadOnly).toEqual({ doc360: { exceptPhases: ['finalize'] } });
+    expect(onDisk.gatePolicy.boardDefault).toEqual({ plan: 'auto-then-you', review: 'auto' });
+  });
+
+  it('PUT /mcp-readonly rejects a non-LaunchPhase exceptPhases entry rather than persisting it malformed', async () => {
+    const putRes = await fetch(`${baseUrl}/api/config/mcp-readonly`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mcpServerReadOnly: {
+          doc360: { exceptPhases: ['finalize'] }, // valid — kept
+          jira: { exceptPhases: ['not-a-real-phase'] }, // invalid — dropped
+          slack: 'true', // invalid shape (string, not boolean/object) — dropped
+        },
+      }),
+    });
+    expect(putRes.status).toBe(200);
+    const body = await putRes.json();
+    expect(body.mcpServerReadOnly).toEqual({ doc360: { exceptPhases: ['finalize'] } });
+
+    const onDisk = JSON.parse(await fs.readFile(getConfigFile(), 'utf-8'));
+    expect(onDisk.mcpServerReadOnly).toEqual({ doc360: { exceptPhases: ['finalize'] } });
+  });
+
+  it('returns 503 with no write on GET/PUT /mcp-readonly while the workspace is activating', async () => {
+    const rawBefore = await fs.readFile(getConfigFile(), 'utf-8');
+    getWorkspace().isActivating = true;
+    try {
+      const getRes = await fetch(`${baseUrl}/api/config/mcp-readonly`);
+      expect(getRes.status).toBe(503);
+      await getRes.text();
+
+      const putRes = await fetch(`${baseUrl}/api/config/mcp-readonly`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mcpServerReadOnly: {} }),
+      });
+      expect(putRes.status).toBe(503);
+      await putRes.text();
+
+      const rawAfter = await fs.readFile(getConfigFile(), 'utf-8');
+      expect(rawAfter).toBe(rawBefore);
+    } finally {
+      getWorkspace().isActivating = false;
+    }
+  });
+
   it('returns 503 with no write on GET/PUT / and GET/PUT /mcp-phases while the workspace is activating', async () => {
     const rawBefore = await fs.readFile(getConfigFile(), 'utf-8');
     getWorkspace().isActivating = true;

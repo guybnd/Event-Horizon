@@ -1,10 +1,11 @@
 import express from 'express';
-import { getConfig, patchConfig, GET_COMPUTED_CONFIG_KEYS } from '../config.js';
-import { BUILTIN_MODULES, getWorkspaceMcpServers, getModuleMcpServers, type ModuleDeclaration } from '../modules.js';
-import { probeModule, probeAllEnabled, getAllProbeStatuses } from '../module-probe.js';
+import { getConfig, patchConfig, GET_COMPUTED_CONFIG_KEYS, isDocsCommitOnSaveEnabled } from '../config.js';
+import { BUILTIN_MODULES, getWorkspaceMcpServers, getModuleMcpServers, getConnectors, type ModuleDeclaration } from '../modules.js';
+import { probeModule, probeAllEnabled, getAllProbeStatuses, probeConnector, getAllConnectorProbeStatuses } from '../module-probe.js';
 import { scaffoldModuleDirs } from '../storage-sync.js';
 import { isOrphanMode, getFluxStoreDir } from '../workspace.js';
-import { CLI_CAPABILITIES } from '../agents/types.js';
+import { CLI_CAPABILITIES, type LaunchPhase } from '../agents/types.js';
+import type { McpReadOnlyRule, McpServerReadOnlyConfig } from '../mcp-readonly.js';
 import { resolveDefaultFramework, getRuntimeFrameworks } from '../agents/index.js';
 import { BOARD_CONVERSATION_ID, FURNACE_CONVERSATION_ID } from '../agents/board.js';
 import { getWorkspace } from '../workspace-context.js';
@@ -36,6 +37,10 @@ router.get('/', (req, res) => {
     boardConversationId: BOARD_CONVERSATION_ID,
     furnaceConversationId: FURNACE_CONVERSATION_ID,
     runtimeFrameworks: getRuntimeFrameworks(),
+    // FLUX-1655: resolves the repo-backed-workspace default when the user hasn't made an explicit
+    // choice yet — NOT a GET_COMPUTED_CONFIG_KEYS entry, since an explicit true/false the user saved
+    // still round-trips through here unchanged and IS real config.json content.
+    docsCommitOnSave: isDocsCommitOnSaveEnabled(),
   });
 });
 
@@ -80,6 +85,57 @@ router.put('/mcp-phases', async (req, res) => {
   // that still leaked the whole-file clobber (comment above predates the fix).
   await patchConfig({ mcpServerPhases: clean });
   res.json({ mcpServerPhases: clean });
+});
+
+const ALL_LAUNCH_PHASES: LaunchPhase[] = ['grooming', 'implementation', 'review', 'finalize', 'chat', 'fast-path', 'batch-grooming'];
+
+// Per-connector read/write scoping for agent sessions (FLUX-1657). Deliberately keyed off the full
+// `LaunchPhase` set, NOT `SCOPE_PHASES` above — `SCOPE_PHASES` omits `finalize`, which would make
+// the headline "read-only except in finalize" use case unvalidatable. See engine/src/mcp-readonly.ts
+// for the enforcement (deny-list) side; this route only persists the config.
+router.get('/mcp-readonly', (_req, res) => {
+  if (getWorkspace().isActivating) return res.status(503).json({ error: 'Workspace is activating, please retry' });
+  const ids = new Set<string>([
+    ...getConnectors().map((c) => c.id),
+    ...Object.keys((getConfig().mcpServerReadOnly as McpServerReadOnlyConfig) ?? {}),
+  ]);
+  res.json({
+    servers: [...ids].sort(),
+    phases: ALL_LAUNCH_PHASES,
+    mcpServerReadOnly: (getConfig().mcpServerReadOnly as McpServerReadOnlyConfig) ?? {},
+  });
+});
+
+const ALL_LAUNCH_PHASES_SET = new Set<string>(ALL_LAUNCH_PHASES);
+
+function isValidReadOnlyRule(value: unknown): value is McpReadOnlyRule {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const rule = value as Record<string, unknown>;
+  for (const key of ['exceptPhases', 'allow', 'deny']) {
+    if (key in rule && rule[key] !== undefined && !Array.isArray(rule[key])) return false;
+  }
+  if (Array.isArray(rule.exceptPhases) && !rule.exceptPhases.every((p) => typeof p === 'string' && ALL_LAUNCH_PHASES_SET.has(p))) return false;
+  if (Array.isArray(rule.allow) && !rule.allow.every((t) => typeof t === 'string')) return false;
+  if (Array.isArray(rule.deny) && !rule.deny.every((t) => typeof t === 'string')) return false;
+  return true;
+}
+
+// Targeted update of only `mcpServerReadOnly` (same "patch, don't clobber" shape as PUT
+// /mcp-phases). A server entry is either `true` (read-only, no exceptions) or a rule object;
+// anything else is dropped rather than persisted malformed.
+router.put('/mcp-readonly', async (req, res) => {
+  if (getWorkspace().isActivating) return res.status(503).json({ error: 'Workspace is activating, please retry' });
+  const raw = req.body?.mcpServerReadOnly;
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return res.status(400).json({ error: 'Body must be { mcpServerReadOnly: { [serverId]: true | { exceptPhases?, allow?, deny? } } }' });
+  }
+  const clean: McpServerReadOnlyConfig = {};
+  for (const [id, entry] of Object.entries(raw)) {
+    if (entry === true) clean[id] = true;
+    else if (isValidReadOnlyRule(entry)) clean[id] = entry;
+  }
+  await patchConfig({ mcpServerReadOnly: clean });
+  res.json({ mcpServerReadOnly: clean });
 });
 
 router.put('/', async (req, res) => {
@@ -128,6 +184,7 @@ router.put('/', async (req, res) => {
       boardConversationId: BOARD_CONVERSATION_ID,
       furnaceConversationId: FURNACE_CONVERSATION_ID,
       runtimeFrameworks: getRuntimeFrameworks(),
+      docsCommitOnSave: isDocsCommitOnSaveEnabled(),
     });
   } catch {
     res.status(500).json({ error: 'Failed to save config' });
@@ -152,6 +209,31 @@ router.post('/modules/:id/probe', (req, res) => {
     return res.status(400).json({ error: 'Module has no MCP server' });
   }
   probeModule(module).catch(() => {});
+  res.status(202).json({ queued: true });
+});
+
+// FLUX-1656: Connectors settings panel — union of configured module servers + workspace
+// `.mcp.json` servers (see getConnectors), each with a live auth probe + env-var presence check.
+// A separate id-space and cache from /modules/* above (see module-probe.ts comment) so a workspace
+// server sharing a bare name with a module never collides with it.
+router.get('/connectors', (_req, res) => {
+  const connectors = getConnectors();
+  const statuses = getAllConnectorProbeStatuses();
+  res.json(connectors.map((c) => ({
+    id: c.id,
+    name: c.name,
+    source: c.source,
+    requiredEnv: c.requiredEnv,
+    probe: statuses[c.id],
+  })));
+});
+
+router.post('/connectors/:id/probe', (req, res) => {
+  const connector = getConnectors().find((c) => c.id === req.params.id);
+  if (!connector) {
+    return res.status(404).json({ error: 'Connector not found' });
+  }
+  probeConnector(connector).catch(() => {});
   res.status(202).json({ queued: true });
 });
 

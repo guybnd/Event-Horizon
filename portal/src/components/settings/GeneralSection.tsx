@@ -1,6 +1,58 @@
+import { useEffect, useState } from 'react';
 import { useDesktopNotifications } from '../../hooks/useDesktopNotifications';
 import { useNotificationPrefs } from '../../hooks/useNotificationPrefs';
 import { SettingToggleCard } from './shared';
+import { validateFlow } from '../../config/onboardingFlow';
+import rawFlow from '../../config/onboardingFlow.json';
+import { actionableSteps, readSkippedSteps, setResumeStep } from '../../config/onboardingSkips';
+
+/**
+ * FLUX-1684: recovery for a wizard abandoned mid-setup via "Skip all remaining setup" or
+ * install-skill's "Skip for now". Renders only when an actionable step is actually
+ * recorded skipped — reads localStorage in an effect (not during render) since it's a
+ * browser-only concern with no server-config counterpart. Sibling to (and unaffected by)
+ * "Restart Onboarding Wizard" below, which replays from the folder picker instead.
+ */
+function FinishSetupCard() {
+  const [skippedPages, setSkippedPages] = useState<{ id: string; title: string }[]>([]);
+
+  useEffect(() => {
+    const ids = new Set(readSkippedSteps());
+    if (ids.size === 0) {
+      setSkippedPages([]);
+      return;
+    }
+    const flow = validateFlow(rawFlow);
+    const matched = actionableSteps(flow.pages).filter((p) => ids.has(p.id));
+    setSkippedPages(matched.map((p) => ({ id: p.id, title: p.title })));
+  }, []);
+
+  if (skippedPages.length === 0) return null;
+
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <span className="block text-sm font-bold text-gray-800 dark:text-gray-200 mb-0.5">
+            Finish setup — {skippedPages.length} step{skippedPages.length !== 1 ? 's' : ''} skipped
+          </span>
+          <span className="text-xs text-gray-500">{skippedPages.map((p) => p.title).join(' · ')}</span>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setResumeStep(skippedPages[0].id);
+            localStorage.removeItem('eh-onboarding-complete');
+            window.location.reload();
+          }}
+          className="shrink-0 rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+        >
+          Finish setup
+        </button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * FLUX-695: toggle for OS notifications on turn completion in an unfocused chat. Self-contained —
@@ -162,6 +214,7 @@ export function GeneralSection({
         <div>
           <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Maintenance</h3>
         </div>
+        <FinishSetupCard />
         <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>

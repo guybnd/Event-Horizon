@@ -108,6 +108,11 @@ describe('copilot.ts resumed-turn tokenMetadata flush (FLUX-1375)', () => {
     }) as typeof spawn);
     for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     getWorkspace().tasks[TASK_ID] = { status: 'In Progress' };
+    // FLUX-1641: startCliSession/sendCliSessionInput now precheck the resolved copilot binary
+    // before spawning — prime a fake "found" resolution so that precheck doesn't shell out to a
+    // real `which copilot` (absent on the test machine) and throw before spawn is ever reached.
+    const { primeCopilotBinaryForTest } = await import('./copilot.js');
+    primeCopilotBinaryForTest();
   });
 
   it('flushes the initial turn, persists session.model, then flushes ONLY the resumed turn delta (no double-count)', async () => {

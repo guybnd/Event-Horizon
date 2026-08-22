@@ -1538,6 +1538,22 @@ button:not(:disabled):active {
   @apply pointer-events-none float-left h-0 text-gray-400;
 }
 
+/* FLUX-1674: Mermaid diagrams render into a `.mermaid-diagram` wrapper (SVG) replacing the
+   `<pre>` for a ```mermaid fence. Constrain the SVG so wide diagrams don't overflow the panel. */
+.docs-editor-content .mermaid-diagram {
+  @apply my-4 overflow-x-auto;
+}
+
+.docs-editor-content .mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Invalid Mermaid syntax degrades to the original code block plus this note, in both themes. */
+.docs-editor-content .mermaid-error {
+  @apply my-2 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300;
+}
+
 /* ─── Column fire badge ─────────────────────────────────────────────────── */
 /* FLUX-1140: these tiers key off ticket COUNT (a static fact, re-evaluated only when a
    card enters/leaves the column), not "something is happening right now" — yet the old

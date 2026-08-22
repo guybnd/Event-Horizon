@@ -36,7 +36,11 @@ const SCAN_ROOT = join('engine', 'src');
 // The sanctioned home for git/gh spawning. runGit()/runGh() live here; nothing else may spawn.
 const EXCLUDE_FILES = [join('engine', 'src', 'git-exec.ts')];
 const FILE_EXT = /\.ts$/;
-const EXCLUDE_FILE = /\.d\.ts$|\.test\.ts$/; // declarations + tests (tests may spawn stand-ins)
+// Declarations, tests (tests may spawn stand-ins), and shared test-fixture helpers (FLUX-1665:
+// engine/src/test-helpers/ exists purely to build real git repos FOR tests — same rationale as
+// the .test.ts exclusion, just factored out of the individual test files).
+const EXCLUDE_FILE = /\.d\.ts$|\.test\.ts$/;
+const EXCLUDE_DIR = [join('engine', 'src', 'test-helpers')];
 
 // A bare git/gh spawn: an exec/spawn-family call whose first string argument starts with the
 // command `git` or `gh`. Covers BOTH the argv form (execFile('git', […])) and the idiomatic
@@ -63,7 +67,10 @@ function walk(dir, out) {
 }
 
 function isExcluded(relNative) {
-  return EXCLUDE_FILES.some((p) => relNative === p);
+  return (
+    EXCLUDE_FILES.some((p) => relNative === p) ||
+    EXCLUDE_DIR.some((d) => relNative === d || relNative.startsWith(d + sep))
+  );
 }
 
 // Collect current bare spawns as { fingerprint -> { count, samples:[{line,text}] } }.

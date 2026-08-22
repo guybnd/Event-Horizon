@@ -59,6 +59,20 @@
       ]
     },
     {
+      "id": "github-cli",
+      "kind": "widget",
+      "title": "Connect the GitHub CLI",
+      "widget": "github-cli",
+      "subtitle": "Event Horizon uses the gh CLI to create, review, and merge PRs, and to keep ticket status in sync with PR state. You can skip this and connect it later.",
+      "icon": "GitPullRequest",
+      "system": true,
+      "required": false,
+      "locked": true,
+      "dependsOn": [
+        "pick-folder"
+      ]
+    },
+    {
       "id": "install-skill",
       "kind": "widget",
       "title": "Install the integration",

@@ -88,12 +88,16 @@ export function buildDoneIndexBlock(version: string, tasks: ReleaseTask[]): stri
  * against a previously indexed longer one (e.g. `v2.0.0` or `v1.0.1`) and silently drops a release.
  */
 export function hasExistingVersionBlock(existingContent: string, version: string): boolean {
-  const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = escapeRegExp(version);
   return new RegExp(`^## Release ${escaped}(?:\\s|$)`, 'm').test(existingContent);
 }
 
 /** Semver core with optional prerelease/build metadata — permissive enough for our release tags. */
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 /** The canonical version forms derived from a release arg (FLUX-1317). */
 export interface NormalizedVersion {
@@ -162,20 +166,24 @@ export async function bumpPackageJsonVersions(repoRoot: string, bareVersion: str
 }
 
 /**
- * Bump only the root `event-horizon` package's two `"version"` entries in `package-lock.json` —
- * the top-level one and `packages[""]` — to `bareVersion` (FLUX-1424). `package-lock.json` also
- * carries a `"version"` for every dependency, so this deliberately does NOT do a blanket
- * `"version": "<cur>"` replace; each anchor pins on the preceding `"name": "event-horizon",` line
- * so only the root package's own entries move. Missing file, unparseable JSON, an already-current
- * version, or anchors that can't be located are all silent no-ops (mirrors `bumpPackageJsonVersions`).
+ * Bump only the named root package's two `"version"` entries in a lockfile — the top-level one
+ * and `packages[""]` — to `bareVersion` (FLUX-1424). A lockfile also carries a `"version"` for
+ * every dependency, so this deliberately does NOT do a blanket `"version": "<cur>"` replace; each
+ * anchor pins on the preceding `"name": "<packageName>",` line so only the root package's own
+ * entries move. Missing file, unparseable JSON, an already-current version, or anchors that can't
+ * be located are all silent no-ops (mirrors `bumpPackageJsonVersions`).
  */
-export async function bumpLockfileVersion(repoRoot: string, bareVersion: string): Promise<void> {
-  const lockPath = path.join(repoRoot, 'package-lock.json');
+async function bumpNamedLockfileVersion(
+  repoRoot: string,
+  lockPath: string,
+  packageName: string,
+  bareVersion: string,
+): Promise<void> {
   let content: string;
   try {
     content = await fs.readFile(lockPath, 'utf-8');
   } catch {
-    log.warn(`package-lock.json not found at ${lockPath} — skipping lockfile version bump.`);
+    log.warn(`Lockfile not found at ${lockPath} — skipping lockfile version bump.`);
     return;
   }
   let current: unknown;
@@ -187,18 +195,38 @@ export async function bumpLockfileVersion(repoRoot: string, bareVersion: string)
   }
   if (current === bareVersion) return;
   if (typeof current !== 'string') {
-    log.warn(`Could not locate the root "event-horizon" version in ${lockPath} — left unchanged.`);
+    log.warn(`Could not locate the root "${packageName}" version in ${lockPath} — left unchanged.`);
     return;
   }
-  const escapedCurrent = current.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const anchorPattern = new RegExp(`("name": "event-horizon",\\r?\\n\\s+"version": ")${escapedCurrent}(")`, 'g');
+  const escapedPackageName = escapeRegExp(packageName);
+  const escapedCurrent = escapeRegExp(current);
+  const anchorPattern = new RegExp(`("name": "${escapedPackageName}",\\r?\\n\\s+"version": ")${escapedCurrent}(")`, 'g');
   const updated = content.replace(anchorPattern, `$1${bareVersion}$2`);
   if (updated === content) {
-    log.warn(`Could not locate the root "event-horizon" version fields to bump in ${lockPath} — left unchanged.`);
+    log.warn(`Could not locate the root "${packageName}" version fields to bump in ${lockPath} — left unchanged.`);
     return;
   }
   await fs.writeFile(lockPath, updated, 'utf-8');
   log.info(`Bumped ${path.relative(repoRoot, lockPath)} → ${bareVersion} (root entries only)`);
+}
+
+/** Bump the root `event-horizon` package's version entries in the workspace `package-lock.json`. */
+export async function bumpLockfileVersion(repoRoot: string, bareVersion: string): Promise<void> {
+  await bumpNamedLockfileVersion(repoRoot, path.join(repoRoot, 'package-lock.json'), 'event-horizon', bareVersion);
+}
+
+/**
+ * Bump the `event-horizon-desktop` package's version entries in `electron/package-lock.json`
+ * (FLUX-1622) — the electron lockfile drifted a version behind root/portal/engine after every
+ * automated release because only the root lockfile was bumped.
+ */
+export async function bumpElectronLockfileVersion(repoRoot: string, bareVersion: string): Promise<void> {
+  await bumpNamedLockfileVersion(
+    repoRoot,
+    path.join(repoRoot, 'electron', 'package-lock.json'),
+    'event-horizon-desktop',
+    bareVersion,
+  );
 }
 
 /** Resolve release settings with per-field defaults (a raw config may only set one field). */
@@ -278,6 +306,7 @@ async function run() {
   if (normVersion.valid) {
     await bumpPackageJsonVersions(REPO_ROOT, normVersion.bare);
     await bumpLockfileVersion(REPO_ROOT, normVersion.bare);
+    await bumpElectronLockfileVersion(REPO_ROOT, normVersion.bare);
   } else {
     log.warn(
       `"${rawVersion}" is not valid semver — skipping package.json version bump (release notes and ticket release still proceed).`,

@@ -2,10 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { addOrphanWorktree, isWorktreeOnBranch, type GitRunner } from './git-worktree.js';
+import { createGitFixture } from './test-helpers/git-fixture.js';
 
 const execFileAsync = promisify(execFile);
 const realGit: GitRunner = (cwd, args) => execFileAsync('git', args, { cwd, windowsHide: true });
@@ -19,13 +19,7 @@ describe('addOrphanWorktree (FLUX-297)', () => {
   let storeDir: string;
 
   beforeEach(async () => {
-    repo = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-orphan-wt-'));
-    await realGit(repo, ['init', '-b', 'master']);
-    await realGit(repo, ['config', 'user.email', 'test@test.com']);
-    await realGit(repo, ['config', 'user.name', 'Test']);
-    await fs.writeFile(path.join(repo, 'README.md'), '# test\n', 'utf8');
-    await realGit(repo, ['add', '.']);
-    await realGit(repo, ['commit', '-m', 'init']);
+    repo = await createGitFixture();
     storeDir = path.join(repo, '.flux-store');
   });
 

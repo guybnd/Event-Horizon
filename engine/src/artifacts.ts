@@ -25,10 +25,17 @@ export interface ArtifactRevision {
   rev: number;
   title?: string;
   note?: string;
+  /** Discriminant for artifact revisions produced by a specific emitter (FLUX-1662: 'doc-recap'). */
+  kind?: 'doc-recap';
   /** ISO timestamp of publish. */
   createdAt: string;
   /** Size of the stored HTML in bytes (for the picker / digest, avoids re-reading the file). */
   bytes: number;
+  /** FLUX-1667: for a `kind:'doc-recap'` revision, the ordered set of doc paths actually rendered
+   *  as a `<section data-eh-doc-path>` in this revision's HTML — the portal's per-doc tab strip
+   *  reads this (from the currently-selected revision, not always latest) rather than re-deriving
+   *  it from the HTML. */
+  docPaths?: string[];
 }
 
 export interface ArtifactPointer {
@@ -147,7 +154,7 @@ export async function listArtifactRevisionsOnDisk(ticketId: string): Promise<num
 export async function writeArtifactRevision(
   ticketId: string,
   html: string,
-  meta: { title?: string | undefined; note?: string | undefined },
+  meta: { title?: string | undefined; note?: string | undefined; kind?: ArtifactRevision['kind']; docPaths?: string[] | undefined },
   existing: ArtifactPointer | undefined,
 ): Promise<{ rev: number; pointer: ArtifactPointer; bytes: number }> {
   if (!isSafeTicketId(ticketId)) throw new Error(`Unsafe ticket id: ${ticketId}`);
@@ -162,7 +169,7 @@ export async function writeArtifactRevision(
 export async function writeArtifactRevisionInPublication(
   ticketId: string,
   html: string,
-  meta: { title?: string | undefined; note?: string | undefined },
+  meta: { title?: string | undefined; note?: string | undefined; kind?: ArtifactRevision['kind']; docPaths?: string[] | undefined },
   existing: ArtifactPointer | undefined,
 ): Promise<{ rev: number; pointer: ArtifactPointer; bytes: number }> {
   const root = getArtifactsRoot();
@@ -186,6 +193,8 @@ export async function writeArtifactRevisionInPublication(
       bytes,
       ...(meta.title ? { title: meta.title } : {}),
       ...(meta.note ? { note: meta.note } : {}),
+      ...(meta.kind ? { kind: meta.kind } : {}),
+      ...(meta.docPaths ? { docPaths: meta.docPaths } : {}),
     };
     const priorRevisions = Array.isArray(existing?.revisions) ? existing!.revisions : [];
     const pointer: ArtifactPointer = { latest: rev, revisions: [...priorRevisions, revision] };
@@ -894,6 +903,99 @@ export const ARTIFACT_LAYOUT_AUDIT_SCRIPT = String.raw`
 })();
 `;
 
+/**
+ * FLUX-1662 (Phase B step 7) — injects a per-section **Edit** button into every element carrying
+ * `data-eh-doc-path` (only the auto doc-recap artifact ever emits that attribute, so this is a
+ * no-op on any other artifact, including a manual Visual Recap). Clicking posts
+ * `{ns:'eh-artifact', type:'doc-edit-request', path}` up to the host — same postMessage channel as
+ * the annotator — which opens the inline editor drawer in `ArtifactPanel.tsx`. The button itself
+ * is tagged `data-eh-ui` so the Tier-3 layout-audit gate ({@link ARTIFACT_LAYOUT_AUDIT_SCRIPT})
+ * skips it.
+ */
+export const ARTIFACT_DOC_EDIT_SCRIPT = String.raw`
+(function () {
+  'use strict';
+  var NS = 'eh-artifact';
+  var buttons = [];
+  var available = true;
+  function post(msg) { try { (window.parent || window.top).postMessage(msg, '*'); } catch (e) {} }
+  function addEditButtons() {
+    var sections = document.querySelectorAll('[data-eh-doc-path]');
+    for (var i = 0; i < sections.length; i++) {
+      var el = sections[i];
+      if (el.getAttribute('data-eh-edit-injected')) continue;
+      el.setAttribute('data-eh-edit-injected', '1');
+      var docPath = el.getAttribute('data-eh-doc-path');
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.setAttribute('data-eh-ui', '1');
+      btn.textContent = 'Edit';
+      btn.style.cssText = 'position:absolute;top:8px;right:8px;z-index:2;font:600 11px system-ui,sans-serif;' +
+        'padding:4px 10px;border-radius:8px;border:1px solid rgba(0,0,0,.15);background:#fff;color:#333;cursor:pointer;';
+      btn.addEventListener('click', (function (p) { return function () { post({ ns: NS, type: 'doc-edit-request', path: p }); }; })(docPath));
+      if (window.getComputedStyle(el).position === 'static') el.style.position = 'relative';
+      btn.style.display = available ? '' : 'none';
+      el.appendChild(btn);
+      buttons.push(btn);
+    }
+  }
+  if (document.readyState !== 'loading') addEditButtons();
+  else document.addEventListener('DOMContentLoaded', addEditButtons);
+  window.addEventListener('load', addEditButtons);
+  // FLUX-1670: the host (ArtifactPanel.tsx) tells us whether the owning branch still has a live
+  // worktree -- self-serve editing only makes sense while one exists. Toggle every button injected
+  // so far, and any injected later (addEditButtons can re-run on DOMContentLoaded/load) picks up
+  // the current available value immediately above.
+  window.addEventListener('message', function (e) {
+    var d = e.data;
+    if (!d || typeof d !== 'object' || d.ns !== NS || d.type !== 'set-doc-edit-availability') return;
+    available = !!d.available;
+    for (var i = 0; i < buttons.length; i++) buttons[i].style.display = available ? '' : 'none';
+  });
+})();
+`;
+
+/**
+ * FLUX-1667 — per-doc tab switching for the doc-recap artifact. The portal's Docs panel builds a
+ * tab strip from the currently-selected revision's `docPaths` (ArtifactRevision.docPaths) and,
+ * on a tab click, posts `{ns:'eh-artifact', type:'show-doc', path}` into this iframe. Shows
+ * exactly one `[data-eh-doc-path="..."]` section at a time (default: the first section present),
+ * hiding the rest — a no-op on any artifact that never carries the attribute (only the auto
+ * doc-recap emitter does, same guard as {@link ARTIFACT_DOC_EDIT_SCRIPT}).
+ */
+export const ARTIFACT_DOC_TABS_SCRIPT = String.raw`
+(function () {
+  'use strict';
+  var NS = 'eh-artifact';
+  function sections() { return document.querySelectorAll('[data-eh-doc-path]'); }
+  function showDoc(path) {
+    var all = sections();
+    if (!all.length) return;
+    var matched = false;
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      var isMatch = el.getAttribute('data-eh-doc-path') === path;
+      if (isMatch) matched = true;
+      el.style.display = isMatch ? '' : 'none';
+    }
+    if (!matched) all[0].style.display = '';
+  }
+  function showDefault() {
+    var all = sections();
+    if (!all.length) return;
+    for (var i = 1; i < all.length; i++) all[i].style.display = 'none';
+    all[0].style.display = '';
+  }
+  window.addEventListener('message', function (e) {
+    var d = e && e.data;
+    if (!d || typeof d !== 'object' || d.ns !== NS || d.type !== 'show-doc') return;
+    showDoc(d.path);
+  });
+  if (document.readyState !== 'loading') showDefault();
+  else document.addEventListener('DOMContentLoaded', showDefault);
+})();
+`;
+
 /** Place a `<script>…</script>` tag just before `</body>` (so it runs after the document parses),
  * falling back to `</html>` then a plain append for fragment-ish HTML. Case-insensitive. */
 function placeScriptTag(html: string, tag: string): string {
@@ -924,6 +1026,6 @@ export function injectAnnotatorScript(html: string): string {
  * never disables the other.
  */
 export function injectArtifactScripts(html: string): string {
-  const tag = `<script>${ARTIFACT_ANNOTATOR_SCRIPT}</script><script>${ARTIFACT_LAYOUT_AUDIT_SCRIPT}</script>`;
+  const tag = `<script>${ARTIFACT_ANNOTATOR_SCRIPT}</script><script>${ARTIFACT_LAYOUT_AUDIT_SCRIPT}</script><script>${ARTIFACT_DOC_EDIT_SCRIPT}</script><script>${ARTIFACT_DOC_TABS_SCRIPT}</script>`;
   return placeScriptTag(html, tag);
 }

@@ -1172,6 +1172,7 @@ function NoSlotPopup({ slots, holders, onClose }: { slots: SlotInfo; holders: Fu
               {holders.map((h) => (
                 <li key={h.ticketId} className="text-[10px]" style={{ color: 'var(--eh-text-primary)' }}>
                   <span className="font-semibold">{h.ticketId}</span>{' '}
+                  <span style={{ color: 'var(--eh-text-secondary)' }}>({h.status})</span>{' '}
                   <span style={{ color: 'var(--eh-text-secondary)' }}>— {h.reason}</span>
                 </li>
               ))}

@@ -5,8 +5,8 @@ import path from 'path';
 import os from 'os';
 import matter from 'gray-matter';
 import { activateWorkspace, openWorkspaceLive } from '../task-store.js';
-import { listWorkspaces, closeWorkspace } from '../workspace-context.js';
-import { enrichEntry } from './workspaces.js';
+import { listWorkspaces, closeWorkspace, canonicalizeWorkspaceRoot } from '../workspace-context.js';
+import { enrichEntry, enrichList } from './workspaces.js';
 
 /**
  * FLUX-1455 review fix. Before this fix, `enrichEntry`'s `open`/`closable` were derived from
@@ -86,4 +86,51 @@ describe('enrichEntry: registry-key casing must match the live board (FLUX-1571)
     },
     20_000,
   );
+});
+
+/**
+ * FLUX-1573: `list_workspaces` (MCP) copies `canonicalRoot`, not `path`, into an
+ * `X-EH-Workspace` header — `path` is only `path.resolve()`d, never realpath'd, so a
+ * short-name/differently-cased/symlinked entry would route to the WRONG registry key (the
+ * FLUX-1571 miss this ticket's plan calls out). This pins that `canonicalRoot` always equals
+ * `canonicalizeWorkspaceRoot(path)`, and diverges from `path` on a realpath-divergent input.
+ */
+describe('enrichEntry/enrichList: canonicalRoot is the realpath, not the resolved path (FLUX-1573)', () => {
+  const roots: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(listWorkspaces().map((ws) => ws.root && closeWorkspace(ws.root)));
+    await Promise.all(roots.splice(0).map((r) => fs.rm(r, { recursive: true, force: true }).catch(() => {})));
+  }, 20_000);
+
+  it('canonicalRoot equals canonicalizeWorkspaceRoot(path) for a plain, already-canonical root', async () => {
+    const root = await makeBoard('canon-plain', 'FLUX-1', 'Board ticket');
+    roots.push(root);
+
+    const info = enrichEntry({ path: root }, new Map());
+    expect(info.canonicalRoot).toBe(canonicalizeWorkspaceRoot(root));
+  });
+
+  it.skipIf(process.platform !== 'win32')(
+    'canonicalRoot resolves to the true on-disk casing even when the registered path is cased differently',
+    async () => {
+      const root = await makeBoard('canon-casing', 'FLUX-1', 'Board ticket');
+      roots.push(root);
+
+      const differentlyCased = root === root.toUpperCase() ? root.toLowerCase() : root.toUpperCase();
+      const info = enrichEntry({ path: differentlyCased }, new Map());
+
+      expect(info.canonicalRoot).toBe(canonicalizeWorkspaceRoot(root));
+      expect(info.canonicalRoot).not.toBe(info.path);
+    },
+    20_000,
+  );
+
+  it('enrichList threads canonicalRoot through for every entry', async () => {
+    const root = await makeBoard('canon-list', 'FLUX-1', 'Board ticket');
+    roots.push(root);
+
+    const list = await enrichList([{ path: root }]);
+    expect(list[0]?.canonicalRoot).toBe(canonicalizeWorkspaceRoot(root));
+  });
 });

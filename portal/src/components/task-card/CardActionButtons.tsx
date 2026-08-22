@@ -7,10 +7,12 @@
 // FLUX-1603: while a session is LIVE on the ticket, the normal action cluster (Implement/Continue/
 // Review/Finish/Move-to…) is irrelevant — launching another agent would 409/supersede the live one,
 // and moving status mid-run is wrong. Swap the whole cluster for a single Stop button instead, in
-// the same hover-reveal slot. Gate on `c.sessionState` (the live-SSE-derived signal `CardSessionRow`'s
-// pill and ContextMenu's "Stop agent session" item already key off) rather than the polled
-// `task.cliSession.status`, so this can't disagree with those at a turn boundary. `failed` is
-// deliberately excluded — the normal buttons + CardSessionRow's Retry affordance stay.
+// the same hover-reveal slot. Gate on `c.hasActiveSession` (FLUX-1604: the same live-SSE-derived
+// ACTIVE_SESSION_STATUSES check ContextMenu's "Stop agent session" item uses) rather than the polled
+// `task.cliSession.status`, so this can't disagree with that menu item at a turn boundary — including
+// the lone-`scheduled`-session case, which `c.sessionState` (CardSessionRow's pill classification)
+// intentionally maps to 'none'. `failed` is deliberately excluded — the normal buttons + CardSessionRow's
+// Retry affordance stay.
 import { useState } from 'react';
 import { Loader2, Square } from 'lucide-react';
 import type { Task } from '../../types';
@@ -20,7 +22,7 @@ import { stopTaskCliSession } from '../../api';
 import { ACTIVE_SESSION_STATUSES } from '../../orchestration';
 
 export function CardActionButtons({ task, c }: { task: Task; c: TaskCardController }) {
-  const sessionLive = (c.sessionState !== 'none' && c.sessionState !== 'failed') || !!c.clusterGroup;
+  const sessionLive = c.hasActiveSession || !!c.clusterGroup;
 
   if (!sessionLive) {
     return <TicketActionsView ctl={c.ticketActions} variant="card" onActiveChange={c.setActionMenuActive} />;

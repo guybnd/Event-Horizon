@@ -9,6 +9,7 @@ import { getActiveFluxDir, getWorkspaceRoot } from '../../workspace.js';
 
 import { extractFileFromDiff, captureDiff } from '../../branch-manager.js';
 import { diffFilesForBranch } from '../../diff-aggregator.js';
+import { resolveBaselineCommitForBranch } from '../../doc-recap-emit.js';
 import { ARTIFACT_CSP, injectArtifactScripts, isSafeTicketId, parseRevParam, readArtifactRevision } from '../../artifacts.js';
 import { errorMessage } from './helpers.js';
 
@@ -74,7 +75,13 @@ router.get('/:id/artifact', async (req, res) => {
     return res.status(400).json({ error: 'Invalid rev — must be a positive integer or "latest"' });
   }
 
-  const result = await readArtifactRevision(id, rev, task.artifacts);
+  // FLUX-1667: the doc-recap channel lives at task.docRecap, independent of the plan channel's
+  // task.artifacts pointer — a concrete `?rev=N` already resolves off disk regardless of channel
+  // (shared rev-number space), so channel only matters for resolving 'latest'.
+  const channel = req.query.channel === 'doc-recap' ? 'doc-recap' : 'plan';
+  const pointer = channel === 'doc-recap' ? task.docRecap : task.artifacts;
+
+  const result = await readArtifactRevision(id, rev, pointer);
   if (!result) return res.status(404).json({ error: 'No artifact stored for this ticket/revision' });
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -99,7 +106,8 @@ router.get('/:id/branch-diff', async (req, res) => {
   if (!task.branch) return res.json({ branch: null, worktree: null, base: null, files: [] });
 
   try {
-    const summary = await diffFilesForBranch(getWorkspaceRoot()!, task.branch);
+    const baselineCommit = resolveBaselineCommitForBranch(task.branch, req.workspace ?? getWorkspace());
+    const summary = await diffFilesForBranch(getWorkspaceRoot()!, task.branch, { baselineCommit });
     res.json(summary);
   } catch (err: unknown) {
     res.status(500).json({ error: errorMessage(err) });

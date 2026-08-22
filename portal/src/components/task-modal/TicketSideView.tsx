@@ -1,8 +1,9 @@
 import type { ReactNode } from 'react';
-import { AlignLeft, ClipboardCheck, ListTree, MessageSquare } from 'lucide-react';
+import { AlignLeft, ClipboardCheck, FileText, GitCompare, ListTree, MessageSquare } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { SubtasksPanel } from './SubtasksPanel';
 import { ArtifactPanel } from './ArtifactPanel';
+import { BranchChangesPanel } from './BranchChangesPanel';
 import { HistoryList } from './HistoryList';
 import { CommentBox } from './CommentBox';
 import { ActivityFilterTabs } from './ActivityFilterTabs';
@@ -36,7 +37,7 @@ import type { useTicketSideView } from '../../hooks/useTicketSideView';
 
 type SideViewController = ReturnType<typeof useTicketSideView>;
 
-type TabId = 'description' | 'plan' | 'activity' | 'hierarchy';
+type TabId = 'description' | 'plan' | 'docs' | 'changes' | 'activity' | 'hierarchy';
 
 /** Small numeric pill for a tab's availability count (unread comments / subtask count). Renders
  *  nothing at zero — an empty tab carries no badge, only its (possibly dimmed) label. */
@@ -94,10 +95,17 @@ function TabButton({
 /** FLUX-1515: the default-tab precedence — artifact present wins outright (Guy: the plan is the
  *  default whenever there's one to show), then a Grooming ticket with a plan review awaiting
  *  confirm (which may have no artifact, e.g. a text-only plan revision), then live/unread activity,
- *  else Description. Only consulted when the ticket has no persisted `selectedTab` entry. */
+ *  else Description. Only consulted when the ticket has no persisted `selectedTab` entry.
+ *
+ *  FLUX-1667: `docRecap` moved out of `artifacts` into its own channel, so a docs-only ticket (no
+ *  plan mockup ever published, e.g. one whose only branch activity is a docsRoot edit) now has
+ *  NOTHING in `artifacts` at all — it would otherwise fall through this precedence straight to
+ *  Description/Activity despite having a recap to show. Docs slots in right after Plan's own
+ *  presence check, still behind an unresolved plan review (a pending human decision always wins). */
 function computeDefaultTab(c: SideViewController): TabId {
   if ((c.task.artifacts?.revisions?.length ?? 0) > 0) return 'plan';
   if (isPlanApprovalPending(c.task, c.config)) return 'plan';
+  if ((c.task.docRecap?.revisions?.length ?? 0) > 0) return 'docs';
   const liveSession = !!(c.task.cliSession && isActiveSession(c.task.cliSession));
   if (liveSession || c.unreadCommentCount > 0) return 'activity';
   return 'description';
@@ -118,9 +126,20 @@ export function TicketSideView({ c, onSendToChat }: { c: SideViewController; onS
   const hasArtifact = revisions.length > 0;
   const latestRevNum = c.task.artifacts?.latest ?? (hasArtifact ? revisions[revisions.length - 1]!.rev : 0);
   const latestRev = revisions.find((r) => r.rev === latestRevNum) ?? revisions[revisions.length - 1];
+  // FLUX-1667: the auto doc-recap now publishes into its own `docRecap` channel (below), so the
+  // `plan` channel's `artifacts` never carries a `kind:'doc-recap'` revision going forward — the
+  // engine's read-path migration (`partitionArtifactChannels`) splits any legacy mixed stream out
+  // before the portal ever sees it. The `/recap/i` title/note check remains the only signal for an
+  // agent-authored *Visual Recap*, which is still a `plan`-channel artifact by design.
   const isRecap = latestRev ? /recap/i.test(`${latestRev.title ?? ''} ${latestRev.note ?? ''}`) : false;
   const planLabel = isRecap ? 'Recap' : 'Plan';
   const planPending = isPlanApprovalPending(c.task, c.config);
+
+  // FLUX-1667: the `doc-recap` channel — independent revision history from Plan's.
+  const docRevisions = c.task.docRecap?.revisions ?? [];
+  const hasDocRecap = docRevisions.length > 0;
+  const docLatestRevNum = c.task.docRecap?.latest ?? (hasDocRecap ? docRevisions[docRevisions.length - 1]!.rev : 0);
+
   const liveSession = !!(c.task.cliSession && isActiveSession(c.task.cliSession));
   const subtaskCount = c.subtasks.length;
   const hierarchyDim = !c.parentId && subtaskCount === 0;
@@ -155,6 +174,24 @@ export function TicketSideView({ c, onSendToChat }: { c: SideViewController; onS
             </span>
           </span>
         </TabButton>
+        {c.task.branch && (
+          <TabButton active={activeTab === 'changes'} onClick={() => selectTab('changes')} icon={GitCompare}>
+            Changes
+          </TabButton>
+        )}
+        {hasDocRecap && (
+          <TabButton
+            active={activeTab === 'docs'}
+            onClick={() => selectTab('docs')}
+            icon={FileText}
+            title={`Docs — rev ${docLatestRevNum}`}
+          >
+            <span className="flex flex-col items-center leading-tight">
+              <span className="text-[8px] font-bold uppercase tracking-wide opacity-70">v{docLatestRevNum}</span>
+              <span>Docs</span>
+            </span>
+          </TabButton>
+        )}
         <TabButton active={activeTab === 'activity'} onClick={() => selectTab('activity')} icon={MessageSquare}>
           <span className="flex items-center gap-1">
             Activity
@@ -236,6 +273,29 @@ export function TicketSideView({ c, onSendToChat }: { c: SideViewController; onS
                 <span>View Plan</span>
               </button>
             )}
+          </div>
+        )}
+
+        {activeTab === 'changes' && c.task.branch && (
+          <div className="flex min-h-0 flex-1 flex-col px-3 py-3">
+            <BranchChangesPanel task={c.task} />
+          </div>
+        )}
+
+        {activeTab === 'docs' && hasDocRecap && (
+          <div className="flex min-h-0 flex-1 flex-col px-3 py-3">
+            <ArtifactPanel
+              task={c.task}
+              channel="doc-recap"
+              onSendToChat={onSendToChat}
+              visible
+              fillHeight
+              headerStart={
+                <span className="flex flex-shrink-0 items-center gap-1.5 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">
+                  <span>Doc Recap</span>
+                </span>
+              }
+            />
           </div>
         )}
 

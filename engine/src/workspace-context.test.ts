@@ -5,6 +5,7 @@ import {
   getWorkspace,
   getWorkspaceByRoot,
   runWithWorkspace,
+  getRequestBinding,
   openWorkspace,
   closeWorkspace,
   evictWorkspace,
@@ -401,5 +402,30 @@ describe('getWorkspace() unbound fallback (FLUX-1557)', () => {
     getWorkspace(); // second call within the throttle window must not double-log
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toContain('getWorkspace()');
+  });
+});
+
+/**
+ * FLUX-1573: `getRequestBinding()` is what lets a workspace-binding disclosure surface
+ * (`get_board_config`, the MCP `instructions` block) tell an agent whether its binding was
+ * actually verified (a header-bound `runWithWorkspace` call) or merely assumed (no header —
+ * the unbound path silently resolves to the default board per FLUX-1557).
+ */
+describe('getRequestBinding (FLUX-1573)', () => {
+  afterEach(async () => {
+    await Promise.all(listWorkspaces().map((ws) => ws.root && closeWorkspace(ws.root)));
+  });
+
+  it("reports 'header' inside a non-null runWithWorkspace binding", () => {
+    const ws = openWorkspace(tmpRoot('binding-header'));
+    expect(runWithWorkspace(ws, () => getRequestBinding())).toBe('header');
+  });
+
+  it("reports 'default-fallback' when unbound", () => {
+    expect(getRequestBinding()).toBe('default-fallback');
+  });
+
+  it("reports 'default-fallback' inside an explicit runWithWorkspace(null, …) call", () => {
+    expect(runWithWorkspace(null, () => getRequestBinding())).toBe('default-fallback');
   });
 });

@@ -20,7 +20,7 @@ vi.mock('./task-worktree.js', async (importOriginal) => {
 });
 
 import { isRegisteredWorktree, resolveTaskExecutionRoot } from './task-worktree.js';
-import { resumeOrDispatchSession, deltaReviewFocus } from './furnace-stoker.js';
+import { resumeOrDispatchSession, deltaReviewFocus, dispatchSession, resolveOriginatingFramework } from './furnace-stoker.js';
 
 interface FetchCall {
   url: string;
@@ -389,6 +389,57 @@ describe('resumeOrDispatchSession (FLUX-1378)', () => {
     registerTicketSession(session);
     await resumeOrDispatchSession(ticketId, 'implementation', { resumeMessage: 'go' });
     expect(session.resumeTurnCount).toBe(3);
+  });
+
+  // FLUX-1681 (Fix A): a COLD spawn must never silently switch a ticket's implementation framework
+  // to the board default — the start route (`routes/cli-session.ts`) falls back to
+  // `resolveDefaultFramework()` only when the POST body carries no `framework` at all.
+  describe('framework continuity on cold fallback (FLUX-1681)', () => {
+    it('dispatchSession includes framework in the POST body when the caller sets it', async () => {
+      const ticketId = 'FW-1';
+      getWorkspace().tasks[ticketId] = { id: ticketId, status: 'In Progress' };
+      await dispatchSession(ticketId, 'implementation', { framework: 'codex' });
+      const startCall = calls().find((c) => c.url.includes('/cli-session/start'));
+      expect(startCall?.body.framework).toBe('codex');
+    });
+
+    it('dispatchSession omits framework from the POST body when unset (today\'s board-default behavior)', async () => {
+      const ticketId = 'FW-2';
+      getWorkspace().tasks[ticketId] = { id: ticketId, status: 'In Progress' };
+      await dispatchSession(ticketId, 'implementation', {});
+      const startCall = calls().find((c) => c.url.includes('/cli-session/start'));
+      expect(startCall?.body).not.toHaveProperty('framework');
+    });
+
+    it('resumeOrDispatchSession forwards framework into the cold-fallback dispatch when no resume candidate exists', async () => {
+      const ticketId = 'FW-3';
+      getWorkspace().tasks[ticketId] = { id: ticketId, status: 'In Progress' }; // no prior session -> cold
+      const outcome = await resumeOrDispatchSession(ticketId, 'implementation', { resumeMessage: 'go', framework: 'codex' });
+      expect(outcome.resumed).toBe(false);
+      const startCall = calls().find((c) => c.url.includes('/cli-session/start'));
+      expect(startCall?.body.framework).toBe('codex');
+    });
+
+    it('resolveOriginatingFramework resolves the most recent standalone session\'s framework for the given phase', () => {
+      const ticketId = 'FW-4';
+      getWorkspace().tasks[ticketId] = { id: ticketId, status: 'In Progress' };
+      registerTicketSession(makeSession({ id: 'sess-fw4', taskId: ticketId, phase: 'implementation', framework: 'codex' }));
+      expect(resolveOriginatingFramework(ticketId, 'implementation')).toBe('codex');
+    });
+
+    it('resolveOriginatingFramework skips a trailing delegate/worker session and finds the standalone one', () => {
+      const ticketId = 'FW-5';
+      getWorkspace().tasks[ticketId] = { id: ticketId, status: 'In Progress' };
+      registerTicketSession(makeSession({ id: 'sess-fw5-standalone', taskId: ticketId, phase: 'implementation', framework: 'codex' }));
+      registerTicketSession(makeSession({ id: 'sess-fw5-delegate', taskId: ticketId, phase: 'implementation', framework: 'gemini', patternPosition: 'step' }));
+      expect(resolveOriginatingFramework(ticketId, 'implementation')).toBe('codex');
+    });
+
+    it('resolveOriginatingFramework returns undefined with no qualifying prior session (never fails the dispatch)', () => {
+      const ticketId = 'FW-6';
+      getWorkspace().tasks[ticketId] = { id: ticketId, status: 'In Progress' };
+      expect(resolveOriginatingFramework(ticketId, 'implementation')).toBeUndefined();
+    });
   });
 });
 

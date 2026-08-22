@@ -1,4 +1,4 @@
-import { getWorkspace, getDefaultWorkspace, runWithWorkspace, type Workspace } from './workspace-context.js';
+import { getWorkspace, getDefaultWorkspace, runWithWorkspace, getRequestBinding, canonicalizeWorkspaceRoot, type Workspace } from './workspace-context.js';
 import { resolveWorkspaceFromRoot } from './middleware.js';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -19,6 +19,7 @@ import { normalizeDocPathInput, type StoredDoc } from './file-utils.js';
 import { resolveDefaultFramework } from './agents/index.js';
 import { buildCoreInstructionsBlock } from './skill-core.js';
 import { broadcastEvent } from './events.js';
+import { emitDocRecap, emitDocRecapForBranch } from './doc-recap-emit.js';
 // FLUX-1044: the status-transition rulebook shared with the REST PUT route — comment gates,
 // schema-validation + tag-registration sequencing, and the MCP-only commit-before-Ready
 // precondition all live there now (one seam for both write paths).
@@ -27,7 +28,8 @@ import { extractTicket } from './extract.js';
 import { mergeTickets } from './merge.js';
 import { buildActivityEntry, type AgentSessionEntry, type AgentSessionProgress } from './history.js';
 import { sanitizeCompletion, completionInputSchema } from './completion-payload.js';
-import { getActiveFluxDir, getWorkspacesList, getWorkspaceRoot, resolveSkillSourceRoot } from './workspace.js';
+import { getActiveFluxDir, getWorkspacesList, getWorkspaceRoot, resolveSkillSourceRoot, isOrphanMode } from './workspace.js';
+import { enrichList } from './routes/workspaces.js';
 import { log } from './log.js';
 import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, getGhAvailability, ghUnavailableMessage, captureDiff, resolveCommit, planFinishPr, evaluateCiGate, type DiffFileSummary } from './branch-manager.js';
 import { detachTaskWorktree, resolveTaskWorktreePath, findWorktreeForBranch, worktreeUncommittedCount, reclaimWorktrees } from './task-worktree.js';
@@ -48,7 +50,7 @@ import {
 } from './background-process-holds.js';
 import { handoffChatSessionPhase } from './agents/shared.js';
 import { SKILL_MODULES, type SkillModule } from './workflow-installer.js';
-import { generatePromptNotification, generateReviewNotification, dismissNotificationsForTicket, addNotification } from './notifications.js';
+import { generatePromptNotification, generateReviewNotification, generateNeedsActionNotification, dismissNotificationsForTicket, addNotification } from './notifications.js';
 import { groupDocsLabel, summarizeGroup, groupDocPathToStoreRelative } from './group.js';
 import type { GroupContext } from './group.js';
 import { submitGroupEdit } from './group-edit.js';
@@ -57,7 +59,7 @@ import { ensureFurnaceLoaded, getFurnaceBatch, getFurnaceBatchesCache, getFurnac
 import { buildBatchTickets, toBuildCandidate, validateBatchTickets } from './furnace-builder.js';
 import { igniteBatch, stopBatch, burnRateClampWarning, retryTicket, resumeBatch, dismissTicketFlag, takeoverTicket, handBackTicket, reconcileBatchCached, reconcileAllBatchesCached, refreshWorktreePool, isDispatching, clearTakeoverTracking, evictReconcileReadCache } from './furnace-stoker.js';
 import { newBatchTicket, isBatchActive, isTerminalTicketState, validateBatchTrigger, batchBelongsToWorkspaceRoot, DEFAULT_RETRY_CAP, type BatchKind, type BatchTrigger, type FurnaceBatch } from './models/furnace.js';
-import { maybeStartTemper } from './temper.js';
+import { maybeStartTemper, isChangesRequestedBounceOwned } from './temper.js';
 import { planBodyHash, resolveGateValue, hasHumanGateTouch, SELF_ATTESTED_AUTHOR_FIELD } from './models/gate-policy.js';
 import { planLint, formatLintFindings, BODY_WARN_CHARS } from './models/plan-lint.js';
 import { startPlanGateNow, resolvePlanVerdictNow, type PlanGateMode } from './gate-runner.js';
@@ -115,9 +117,9 @@ function errMessage(err: unknown): string {
 }
 
 /** FLUX-1157: render a `no_slots` refusal's slot holders as a human-readable suffix, or '' when none. */
-function formatSlotHolders(holders?: { ticketId: string; reason: string }[]): string {
+function formatSlotHolders(holders?: { ticketId: string; status: string; reason: string }[]): string {
   if (!holders || holders.length === 0) return '';
-  return ` Holding the slots: ${holders.map((h) => `${h.ticketId} (${h.reason})`).join(', ')}.`;
+  return ` Holding the slots: ${holders.map((h) => `${h.ticketId} (${h.status}) — ${h.reason}`).join(', ')}.`;
 }
 
 function jsonResult(data: unknown) {
@@ -217,6 +219,25 @@ export function resolvePlanReviewStateOnMove(
 }
 
 /**
+ * FLUX-1681 (Fix B): does a `changes-requested` verdict bouncing this ticket away from Ready warrant a
+ * visible Needs-Action flag? Pure (mirrors `resolveReviewStateOnMove`'s idiom) — the impure ownership
+ * check (`isChangesRequestedBounceOwned`, temper.ts: is Temper already looping it, or an active Furnace
+ * batch driving it) is passed in as `owned` so this stays unit-testable without spinning up Temper/
+ * Furnace state. True exactly on the verdict-carrying Ready -> non-Ready bounce with no owner — never
+ * for an approval (stays at Ready), a re-affirm, or a bounce Temper/Furnace already owns.
+ */
+export function shouldFlagUnownedChangesRequested(input: {
+  reviewStateThisMove: 'approved' | 'changes-requested' | null | undefined;
+  priorStatus: string;
+  newStatus: string;
+  readyStatus: string;
+  owned: boolean;
+}): boolean {
+  const { reviewStateThisMove, priorStatus, newStatus, readyStatus, owned } = input;
+  return reviewStateThisMove === 'changes-requested' && priorStatus === readyStatus && newStatus !== readyStatus && !owned;
+}
+
+/**
  * FLUX-1263: should `change_status` REFUSE a direct Grooming -> Todo move and redirect it through the
  * plan-review gate instead? Pure (mirrors `evaluateWorktreeReadyRefusal`'s idiom) so the trigger-per-gate-
  * value behavior (AC: "trigger behavior exactly matches the gate value for all three states") is unit
@@ -279,7 +300,7 @@ export function resolvePlanGateMode(gateValue: 'auto' | 'auto-then-you' | 'you')
 
 const SAFE_PERMISSION_TOOLS = new Set([
   'get_ticket', 'list_tickets', 'get_board_config', 'get_project_group', 'get_board_state',
-  'list_available_agents', 'get_session_log', 'read_skill',
+  'list_available_agents', 'get_session_log', 'read_skill', 'list_workspaces',
   // The proposal path is always safe — it parks a batch for human approval, never mutates.
   'propose_board_rebase',
   'Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebSearch', 'TodoWrite', 'NotebookRead',
@@ -632,7 +653,17 @@ export function buildBoardConfigProjection() {
   const agentPriorities = (priorities || [])
     .filter((p: ConfigPriorityEntry): p is ConfigPriorityEntry & { name: string } => !!p && typeof p.name === 'string')
     .map((p: ConfigPriorityEntry & { name: string }) => ({ name: p.name, icon: typeof p.icon === 'string' ? p.icon : undefined }));
-  return { statuses, projects, tags: agentTags, priorities: agentPriorities, users, requireInputStatus, readyForMergeStatus };
+  // FLUX-1573: workspace-binding disclosure — a hand-launched session's static .mcp.json sends no
+  // X-EH-Workspace header and silently binds to the boot/default board (FLUX-1557's deterministic
+  // fallback). Surface the bound root + how it was resolved + storage mode so an agent can tell
+  // "verified by header" from "assumed via fallback" before it mutates anything. A pre-fix engine
+  // (no workspaceRoot/binding field at all) should be treated as unverified — see get_board_config's
+  // tool description.
+  const root = getWorkspaceRoot();
+  const workspaceRoot = root !== null ? canonicalizeWorkspaceRoot(root) : null;
+  const binding = getRequestBinding();
+  const storeMode = isOrphanMode() ? 'orphan' : 'in-repo';
+  return { statuses, projects, tags: agentTags, priorities: agentPriorities, users, requireInputStatus, readyForMergeStatus, workspaceRoot, binding, storeMode };
 }
 
 /**
@@ -816,6 +847,25 @@ async function buildTicketPhasePrompt(
 }
 
 /**
+ * FLUX-1573: one line stamping this session's workspace binding onto the `instructions` block —
+ * bound canonical root, how it was resolved (`header` = a dispatched session's X-EH-Workspace,
+ * `default-fallback` = a hand-launched session's static .mcp.json sent no header and silently
+ * landed on the boot board), and storage mode. `buildMcpServer()` runs per connection (see the
+ * memo above `skillModuleBodyMemo`) inside the initialize POST's `runWithWorkspace(boundWs, …)`
+ * binding (`handleMcpHttpRequest`), so these values are live per-session, not a boot-time constant
+ * — deliberately kept OUT of `buildCoreInstructionsBlock()` (skill-core.ts), which is shared with
+ * the static installed `.claude/rules/event-horizon.md` doc that has no per-connection binding to
+ * report.
+ */
+function buildWorkspaceBindingLine(): string {
+  const root = getWorkspaceRoot();
+  const workspaceRoot = root !== null ? canonicalizeWorkspaceRoot(root) : '<unset>';
+  const binding = getRequestBinding();
+  const storeMode = isOrphanMode() ? 'orphan' : 'in-repo';
+  return `This session is bound to workspace \`${workspaceRoot}\` (binding: ${binding}, storeMode: ${storeMode}). A \`binding\` of \`default-fallback\` means no X-EH-Workspace header was sent — verify with \`list_workspaces\` before any board mutation.`;
+}
+
+/**
  * Build a fully-configured Event Horizon MCP server with every tool registered, WITHOUT
  * connecting a transport. HTTP-only (FLUX-646): the sole caller is the in-process
  * Streamable-HTTP mount on the engine (`handleMcpHttpRequest`, FLUX-645). The caller owns
@@ -836,7 +886,7 @@ export function buildMcpServer(): McpServer {
       // from CORE_INVARIANTS so the two can never drift), so clients that never load
       // that rules file (Cursor, raw SDK agents, …) still get the non-negotiable
       // workflow rules. Keep it short — it bills every session.
-      instructions: buildCoreInstructionsBlock(),
+      instructions: `${buildCoreInstructionsBlock()}\n\n${buildWorkspaceBindingLine()}`,
     },
   );
 
@@ -1039,7 +1089,10 @@ export function buildMcpServer(): McpServer {
     'get_board_config',
     {
       title: 'Get board config',
-      description: 'Read board configuration — statuses, tags, priorities, project key',
+      description:
+        'Read board configuration — statuses, tags, priorities, project key, plus this session\'s workspace binding ' +
+        '(workspaceRoot, binding, storeMode). Missing fields mean a pre-fix engine — treat the binding as unverified. ' +
+        'Full lore: read_skill(\'tools\', \'get_board_config\').',
       // FLUX-950: shallow/permissive output schema (all fields optional) — documents
       // the agent-facing projection (FLUX-928) without coupling to getConfig().
       outputSchema: z.object({
@@ -1050,6 +1103,11 @@ export function buildMcpServer(): McpServer {
         users: z.array(z.unknown()).optional(),
         requireInputStatus: z.string().optional(),
         readyForMergeStatus: z.string().optional(),
+        workspaceRoot: z.string().nullable().optional().describe('Canonical (realpath\'d) root this session is bound to (FLUX-1573)'),
+        binding: z.enum(['header', 'default-fallback']).optional().describe(
+          '"header" = bound via X-EH-Workspace (verified); "default-fallback" = no header, resolved to the boot board (unverified) (FLUX-1573)',
+        ),
+        storeMode: z.enum(['in-repo', 'orphan']).optional().describe('Ticket storage mode for the bound workspace (FLUX-1573)'),
       }).catchall(z.unknown()),
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -1091,6 +1149,43 @@ export function buildMcpServer(): McpServer {
         return jsonResult(summary);
       }
       return jsonResult(summarizeGroup(null, registeredPaths));
+    },
+  );
+
+  server.registerTool(
+    'list_workspaces',
+    {
+      title: 'List workspaces',
+      description:
+        'Read-only: list every registered workspace (path, displayName, status, live session count, group info) plus ' +
+        'canonicalRoot — the realpath\'d key to copy byte-exactly into an X-EH-Workspace header. Never rebinds this ' +
+        'session. Full lore: read_skill(\'tools\', \'list_workspaces\').',
+      outputSchema: z.object({
+        workspaces: z.array(
+          z.object({
+            path: z.string(),
+            canonicalRoot: z.string(),
+            label: z.string().optional(),
+            displayName: z.string(),
+            active: z.boolean(),
+            available: z.boolean(),
+            open: z.boolean(),
+            closable: z.boolean(),
+            liveSessionCount: z.number(),
+            group: z.object({
+              groupName: z.string(),
+              role: z.enum(['parent', 'member']),
+              parentPath: z.string(),
+              memberName: z.string().optional(),
+            }).optional(),
+          }),
+        ),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async () => {
+      const workspaces = await enrichList(await getWorkspacesList());
+      return structuredResult({ workspaces });
     },
   );
 
@@ -1553,6 +1648,29 @@ export function buildMcpServer(): McpServer {
         dismissNotificationsForTicket(ticketId);
       }
 
+      // FLUX-1681 (Fix B): a `changes-requested` verdict bouncing this ticket away from Ready with NO
+      // engine-owned continuation driver would otherwise sit silently unattended in In Progress,
+      // indistinguishable from a healthy card (the reported ANZUBRAI-51 stall). Deliberately does NOT
+      // add autonomous continuation for this path — that's a manual/human-led review, out of scope per
+      // the ticket's Open Questions — it only makes the ticket visibly actionable: a durable
+      // `needsAction` reason plus the `require-input` swimlane, the same convention
+      // `parkTicketOnBoard`/`stopGateRun` already use for Furnace/Temper/gate parks. Runs AFTER the
+      // swimlane-clear above so it is never immediately undone by it.
+      const unownedChangesRequestedReason = shouldFlagUnownedChangesRequested({
+        reviewStateThisMove: extraFields.reviewState as 'approved' | 'changes-requested' | null | undefined,
+        priorStatus: task.status,
+        newStatus,
+        readyStatus,
+        owned: isChangesRequestedBounceOwned(ticketId),
+      })
+        ? `Review requested changes, but no engine-owned continuation is driving ${ticketId} (Temper is off for it, or it has no branch) and it is not in an active Furnace batch. A human needs to dispatch or resume an implementation session — or set the ticket's review gate to auto for engine-owned continuation.`
+        : null;
+      if (unownedChangesRequestedReason) {
+        extraFields.needsAction = unownedChangesRequestedReason;
+        extraFields.swimlane = 'require-input';
+        entries.push({ type: 'comment', user: 'Agent', comment: `⚠️ ${unownedChangesRequestedReason}`, date: new Date().toISOString() });
+      }
+
       // When moving to Ready with a branch, push and create a PR for review (FLUX-555).
       // The work MUST be committed before Ready — a branch with no commits ahead of base
       // can't open a PR.
@@ -1678,6 +1796,21 @@ export function buildMcpServer(): McpServer {
 
       broadcastEvent('taskUpdated', { id: ticketId });
 
+      // FLUX-1662: auto doc-recap — if this Ready move's branch touches a docsRoot .md file, publish
+      // a kind:'doc-recap' artifact revision so the ticket surface shows the rendered doc changes
+      // without an agent having to build one manually. Fire-and-forget: emitDocRecap already swallows
+      // its own errors (never blocks/fails this status move); the .catch here is a defensive backstop.
+      if (newStatus === readyStatus && task.branch) {
+        await emitDocRecap(ticketId, task.branch, task.baselineCommit ?? '', boundWorkspace()).catch((err) =>
+          console.error(`[mcp] doc-recap emit for ${ticketId} failed:`, err),
+        );
+        // FLUX-1670: also refresh the PR ticket's own doc-recap (if one owns this branch) — so its
+        // Docs surface stays populated once this member's worktree is reclaimed below.
+        await emitDocRecapForBranch(task.branch, boundWorkspace()).catch((err) =>
+          console.error(`[mcp] doc-recap emit for PR ticket on branch ${task.branch} failed:`, err),
+        );
+      }
+
       // FLUX-1031: reclaim this ticket's worktree the moment it reaches Ready — its work is
       // committed (commit-before-Ready invariant, enforced above) and pushed to the PR branch,
       // so freeing the slot from the board-wide pool loses nothing (resolveTaskExecutionRoot
@@ -1701,6 +1834,13 @@ export function buildMcpServer(): McpServer {
       // re-mark the card unread).
       if ((reviewState === 'approved' || reviewState === 'changes-requested') && reviewState !== priorReviewState) {
         generateReviewNotification(ticketId, task.title || ticketId, reviewState);
+      }
+
+      // FLUX-1681 (Fix B): the unowned-changes-requested reason computed above — raise it as a
+      // first-class "needs action" notification (not just the swimlane flag) so it reaches the
+      // Updates panel the same way an unattended-park does elsewhere in the engine.
+      if (unownedChangesRequestedReason) {
+        generateNeedsActionNotification(ticketId, task.title || ticketId, newStatus, unownedChangesRequestedReason);
       }
 
       // FLUX-1071 (Temper): a ticket entering Ready with Temper on kicks off the auto-review loop.
@@ -2098,21 +2238,31 @@ export function buildMcpServer(): McpServer {
       html: z.string().describe('Self-contained HTML (inline styles/scripts; Mermaid/Tailwind CDN allowed). Rendered sandboxed with no network access — everything must be inlined or CDN-loaded.'),
       title: z.string().optional().describe('Short label for this artifact/revision (shown above the viewer).'),
       note: z.string().optional().describe('Optional note about what changed in this revision or what to look at.'),
+      channel: z.enum(['plan', 'doc-recap']).optional().describe('Which artifact channel to publish into (default "plan"). "doc-recap" is the auto doc-recap channel — an agent normally only targets it to hand-author a recap outside the automatic Ready-move flow.'),
     },
-    async ({ ticketId, html, title, note }) => {
+    async ({ ticketId, html, title, note, channel }) => {
       const task = boundWorkspace().tasks[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
       if (!isSafeTicketId(ticketId)) return errorResult(`Invalid ticket id ${ticketId}`);
       if (!html || !html.trim()) return errorResult('html is required and must be a non-empty self-contained HTML document');
 
+      const isDocRecap = channel === 'doc-recap';
+      const pointerField = isDocRecap ? 'docRecap' : 'artifacts';
+
       try {
         const { rev, result } = await withArtifactPublication(ticketId, async () => {
           const current = boundWorkspace().tasks[ticketId];
           if (!current) throw new Error(`Ticket ${ticketId} no longer exists`);
-          const publication = await writeArtifactRevisionInPublication(ticketId, html, { title, note }, current.artifacts);
+          const existingPointer = isDocRecap ? current.docRecap : current.artifacts;
+          const publication = await writeArtifactRevisionInPublication(
+            ticketId,
+            html,
+            { title, note, ...(isDocRecap ? { kind: 'doc-recap' as const } : {}) },
+            existingPointer,
+          );
           const result = await updateTaskWithHistory(ticketId, {
             updatedBy: 'Agent',
-            extraFields: { artifacts: publication.pointer },
+            extraFields: { [pointerField]: publication.pointer },
             entries: [{
               type: 'activity',
               user: 'Agent',
@@ -2126,9 +2276,9 @@ export function buildMcpServer(): McpServer {
         // taskUpdated refreshes the card/sideview pointer; artifactReady tells an open viewer to
         // jump to the new revision (FLUX-873).
         broadcastEvent('taskUpdated', { id: ticketId });
-        broadcastEvent('artifactReady', { ticketId, rev });
+        broadcastEvent('artifactReady', { ticketId, rev, channel: channel ?? 'plan' });
         return textResult(
-          `Published artifact revision ${rev} for ${ticketId}. It appears in the ticket's artifact panel (served at /api/tasks/${ticketId}/artifact?rev=${rev}). ` +
+          `Published artifact revision ${rev} for ${ticketId}. It appears in the ticket's ${isDocRecap ? 'Docs' : 'artifact'} panel (served at /api/tasks/${ticketId}/artifact?rev=${rev}${isDocRecap ? '&channel=doc-recap' : ''}). ` +
           `Prior revisions are kept — re-publishing always creates a new revision, never overwrites.`,
         );
       } catch (err: unknown) {
@@ -3560,33 +3710,6 @@ export async function handleMcpHttpRequest(req: IncomingMessage, res: ServerResp
   const sessionId = Array.isArray(headerId) ? headerId[0] : headerId;
   let transport = sessionId ? httpTransports.get(sessionId) : undefined;
 
-  if (!transport) {
-    // Only a POST may open a session — it must carry the `initialize` request. A GET/DELETE
-    // (or a POST with an unknown session id) has no live transport to attach to.
-    if (req.method !== 'POST') {
-      res.statusCode = 400;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: no valid MCP session' }, id: null }));
-      return;
-    }
-    // New session: fresh server + transport. The transport assigns the session id on
-    // `initialize` (and rejects a non-initialize first message itself), so we never pre-parse
-    // the body — pre-parsing would also let express.json consume the stream (see index.ts).
-    const newTransport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (sid) => { httpTransports.set(sid, newTransport); },
-    });
-    newTransport.onclose = () => {
-      const sid = newTransport.sessionId;
-      if (sid) httpTransports.delete(sid);
-    };
-    // Cast: StreamableHTTPServerTransport `implements Transport`, but its getter/setter `onclose`
-    // is `(() => void) | undefined` which trips exactOptionalPropertyTypes against Transport's
-    // optional `onclose?`. The instance genuinely is a Transport.
-    await buildMcpServer().connect(newTransport as Transport);
-    transport = newTransport;
-  }
-
   // FLUX-1213: this session's own claimed identity travels on EVERY request (not just
   // `initialize`) — the actual tool call that reads it happens on a later POST reusing this same
   // transport, keyed by Mcp-Session-Id.
@@ -3598,7 +3721,41 @@ export async function handleMcpHttpRequest(req: IncomingMessage, res: ServerResp
   // tool handler resolve to this connection's board too — not just the sites that call
   // boundWorkspace() explicitly.
   const boundWs = extractBoundWorkspaceFromRequest(req);
-  await boundConversationALS.run(bound, () => runWithWorkspace(boundWs, () => transport!.handleRequest(req, res)));
+
+  await boundConversationALS.run(bound, () => runWithWorkspace(boundWs, async () => {
+    if (!transport) {
+      // Only a POST may open a session — it must carry the `initialize` request. A GET/DELETE
+      // (or a POST with an unknown session id) has no live transport to attach to.
+      if (req.method !== 'POST') {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: no valid MCP session' }, id: null }));
+        return;
+      }
+      // New session: fresh server + transport. The transport assigns the session id on
+      // `initialize` (and rejects a non-initialize first message itself), so we never pre-parse
+      // the body — pre-parsing would also let express.json consume the stream (see index.ts).
+      const newTransport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sid) => { httpTransports.set(sid, newTransport); },
+      });
+      newTransport.onclose = () => {
+        const sid = newTransport.sessionId;
+        if (sid) httpTransports.delete(sid);
+      };
+      // Cast: StreamableHTTPServerTransport `implements Transport`, but its getter/setter `onclose`
+      // is `(() => void) | undefined` which trips exactOptionalPropertyTypes against Transport's
+      // optional `onclose?`. The instance genuinely is a Transport.
+      // FLUX-1573: buildMcpServer() must run INSIDE this runWithWorkspace binding — it composes
+      // the `instructions` block via buildWorkspaceBindingLine(), which reads getWorkspace()/
+      // getRequestBinding() synchronously at construction time. Building the server before
+      // entering the binding (the pre-FLUX-1573 order) would stamp every session's instructions
+      // with the unbound `default-fallback` reading regardless of the actual X-EH-Workspace header.
+      await buildMcpServer().connect(newTransport as Transport);
+      transport = newTransport;
+    }
+    return transport!.handleRequest(req, res);
+  }));
 }
 
 // NOTE (FLUX-705): no self-start-on-direct-invocation block here. This module is now

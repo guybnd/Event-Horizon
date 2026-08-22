@@ -3,6 +3,7 @@ import path from 'path';
 import { existsSync } from 'fs';
 import { getWorkspacesList, addWorkspaceEntry, removeWorkspaceEntry, updateWorkspaceLabel, saveAppSettings, loadAppSettings, autoRegisterWorkspace, getWorkspaceRoot, pathsEqual } from '../workspace.js';
 import { activateWorkspace, openWorkspaceLive } from '../task-store.js';
+import { isAgentAuthenticatedRequest } from '../middleware.js';
 import { getLiveProcessSessionCountForWorkspace, stopCliSessionsForWorkspace } from '../session-store.js';
 import { resolveWorkspaceGroups, type WorkspaceGroupInfo } from '../group.js';
 import { getDefaultWorkspace, getWorkspaceByRoot, closeWorkspace, canonicalizeWorkspaceRoot } from '../workspace-context.js';
@@ -11,6 +12,9 @@ const router = express.Router();
 
 export interface WorkspaceInfo {
   path: string;
+  /** Realpath'd registry key (FLUX-1573) — the value an MCP client copies into `X-EH-Workspace`
+   *  routes byte-exactly, unlike `path` (which is only `path.resolve`d, not realpath'd). */
+  canonicalRoot: string;
   label?: string;
   displayName: string;
   active: boolean;
@@ -50,6 +54,7 @@ export function enrichEntry(entry: { path: string; label?: string }, groups: Map
   const isDefaultRoot = defaultRoot !== null && pathsEqual(defaultRoot, normalized);
   const info: WorkspaceInfo = {
     path: normalized,
+    canonicalRoot: canonical,
     displayName: entry.label || path.basename(normalized),
     active,
     available: existsSync(normalized),
@@ -65,7 +70,7 @@ export function enrichEntry(entry: { path: string; label?: string }, groups: Map
   return info;
 }
 
-async function enrichList(list: { path: string; label?: string }[]): Promise<WorkspaceInfo[]> {
+export async function enrichList(list: { path: string; label?: string }[]): Promise<WorkspaceInfo[]> {
   const groups = await resolveWorkspaceGroups(list.map((w) => w.path));
   return list.map((entry) => enrichEntry(entry, groups));
 }
@@ -108,6 +113,15 @@ router.put('/:index', async (req, res) => {
 });
 
 router.post('/switch', async (req, res) => {
+  // FLUX-1678 (decided in FLUX-1675): switching the active board mutates global, all-clients-
+  // visible state and must be a portal/human-only action — an agent should route by
+  // `X-EH-Workspace` instead of rebinding the shared board under the user.
+  if (isAgentAuthenticatedRequest(req)) {
+    return res.status(403).json({
+      code: 'SWITCH_PORTAL_ONLY',
+      error: 'Switching the active board is a portal-only action — route your request to a board with the X-EH-Workspace header instead of switching the shared active board.',
+    });
+  }
   const { path: wsPath, force } = req.body ?? {};
   if (typeof wsPath !== 'string' || !wsPath.trim()) {
     return res.status(400).json({ error: 'path is required' });
@@ -166,7 +180,7 @@ router.post('/open', async (req, res) => {
     return res.status(400).json({ error: `Folder not found: ${resolved}` });
   }
   try {
-    await openWorkspaceLive(resolved);
+    await openWorkspaceLive(resolved, { reload: true });
     const list = await getWorkspacesList();
     res.json(await enrichList(list));
   } catch (err) {

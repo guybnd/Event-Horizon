@@ -5,7 +5,7 @@ import { findWorktreeForBranch } from './task-worktree.js';
 // prompt hung branch create/push/PR-raise/merge forever (the spawn/Ready/finish paths). Route
 // everything through the S1 runner (runGit/runGh), which always applies a bounded timeout,
 // buildGitSyncEnv's non-interactive+gh-authed env, and tree-kill on timeout/abort.
-import { runGit, runGh } from './git-exec.js';
+import { runGit, runGh, resolveBranchCreationBase, warnIfLocalAheadOfOrigin } from './git-exec.js';
 import { log } from './log.js';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -74,7 +74,14 @@ export function branchName(ticketId: string, title: string): string {
 }
 
 export async function createTicketBranch(ticketId: string, title: string, baseBranch?: string): Promise<string> {
-  if (!baseBranch) baseBranch = await getDefaultBranch();
+  if (!baseBranch) {
+    // FLUX-1638: prefer the remote-tracking ref over the bare local default so a stray unpushed
+    // commit on local master/main doesn't ride into this new branch's PR. Surface the divergence
+    // (best-effort) so a local default ahead of origin isn't silently invisible.
+    baseBranch = await resolveBranchCreationBase((args) => git(args));
+    const localDefault = await getDefaultBranch();
+    await warnIfLocalAheadOfOrigin((args) => git(args), localDefault, (message) => log.warn(`[branch] ${message}`));
+  }
   const name = branchName(ticketId, title);
   // Idempotent: only create the local ref if it doesn't already exist (e.g. a prior
   // worktree-open already created it). Use `git branch` (not checkout) — the engine

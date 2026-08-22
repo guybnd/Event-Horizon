@@ -245,7 +245,7 @@ describe('Furnace integration (FLUX-1057)', () => {
       expect(body.used).toBe(FURNACE_SLOT_CAP);
       expect(body.max).toBe(FURNACE_SLOT_CAP);
       expect(body.holders).toHaveLength(FURNACE_SLOT_CAP);
-      expect(body.holders.every((h: { reason: string }) => h.reason === 'reserved — worktree not yet created')).toBe(true);
+      expect(body.holders.every((h: { status: string; reason: string }) => h.status === 'unknown' && h.reason === 'reserved — worktree not yet created')).toBe(true);
       expect(getFurnaceBatch(draft.id)?.status).toBe('draft'); // never claimed
     });
   });

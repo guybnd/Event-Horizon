@@ -8,6 +8,7 @@ import { promisify } from 'util';
 import { syncGroup } from './group-sync.js';
 import { submitGroupEdit } from './group-edit.js';
 import { GROUP_DOCS_BRANCH, getGroupStoreDir, type GroupContext, type ResolvedMember } from './group.js';
+import { createGitFixture } from './test-helpers/git-fixture.js';
 
 /**
  * Real-git end-to-end integration test for the multi-repo group fan-out flow
@@ -49,13 +50,14 @@ async function makeHarness(): Promise<Harness> {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-integ-'));
 
   // Parent repo: the EH project that owns the canonical group store.
-  const parent = path.join(base, 'parent');
-  await fs.mkdir(parent, { recursive: true });
-  await git(parent, ['init', '-b', 'master']);
+  const parent = await createGitFixture({
+    dest: path.join(base, 'parent'),
+    templateKey: 'group-integration::parent',
+    populate: async (dir) => {
+      await fs.writeFile(path.join(dir, 'README.md'), '# parent\n');
+    },
+  });
   await setIdentity(parent);
-  await fs.writeFile(path.join(parent, 'README.md'), '# parent\n');
-  await git(parent, ['add', '-A']);
-  await git(parent, ['commit', '-m', 'init parent']);
 
   // Bare member repo standing in for a real member's git remote.
   const memberBare = path.join(base, 'member.git');

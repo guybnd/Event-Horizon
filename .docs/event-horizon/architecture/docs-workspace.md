@@ -13,7 +13,9 @@ rendering and editing files that live beside the rest of the project.
 
 - Each page is a markdown file under `.docs/`.
 - Nested folders define the wiki hierarchy.
-- Lightweight frontmatter stores `title` and `order`.
+- Frontmatter stores `title` and `order`; any other key (`sources`,
+  `last_verified`, `publish`, …) is retained verbatim across saves rather than
+  being dropped (FLUX-1650) — `title`/`order` always override retained values.
 - Markdown remains the durable source of truth even though authoring happens in
   a WYSIWYG editor.
 
@@ -55,6 +57,53 @@ rendering and editing files that live beside the rest of the project.
   normalization.
 - Reset restores the editor to the last loaded file state.
 - Save writes the current title and markdown body back to the selected doc.
+
+## Rich text vs. Markdown mode (FLUX-1654)
+
+The WYSIWYG editor always serializes its full document back to markdown via
+TipTap → turndown on save, which reformats markdown it never touched (bullet
+markers, emphasis delimiters, ordered-list renumbering, table padding) — a
+one-word edit could otherwise produce a whole-file diff. To keep saves
+diff-clean for docs-as-code content, the editor supports a second mode:
+
+- **Rich text** — the existing WYSIWYG editor (TipTap). Unchanged behavior.
+- **Markdown** — a plain textarea bound to the doc's body markdown with zero
+  transformation on load or save. It never runs marked or turndown, so a no-op
+  save round-trips to a byte-identical file and a single-line edit diffs only
+  that line.
+- The mode defaults per doc from front-matter: a doc carrying front-matter keys
+  beyond `title`/`order` (the retained-extras signal from FLUX-1650, the
+  docs-as-code population) opens in **Markdown**; other docs open in
+  **Rich text**.
+- A segmented toggle next to the Editor/History tabs lets any doc switch modes.
+  Switching carries content across without loss (Rich text → Markdown mirrors
+  the turndown-rendered markdown already kept in sync via edits; Markdown →
+  Rich text renders the current markdown draft back into TipTap). Saving after
+  a switch into Rich text re-applies turndown normalization by design — the
+  byte-identical guarantee only holds for edits made entirely in Markdown mode.
+- Front matter stays out of the body editor in both modes; it is rebuilt
+  engine-side from the retained `extraFrontmatter` (FLUX-1650), independent of
+  this toggle.
+
+## Save as revision (FLUX-1655)
+
+When `docsCommitOnSave` resolves true (see below), Save prompts for a short
+message and turns the write into a git commit — pathspec-scoped to that one
+file — so it shows up as its own entry in the doc's History tab (FLUX-1653)
+instead of a silent overwrite.
+
+- `docsCommitOnSave` has no static default: an explicit choice saved in
+  Settings always wins; otherwise the engine resolves it to whether the
+  workspace root is itself a git working tree (an orphan `.flux-store`
+  workspace has no repo at its root to commit into). Off, or on a group doc,
+  Save behaves exactly as before this ticket — no prompt, no commit.
+- The commit author is the current portal user; the commit message is
+  whatever the user typed in the prompt.
+- **Conflict guard:** the doc's `hash` (a hash of the on-disk markdown as of
+  load) is echoed back on save as `baseHash`. If the file changed on disk
+  since the editor loaded it (an edit landed outside the viewer), the save is
+  rejected with a "doc changed on disk" banner offering **Reload doc** instead
+  of silently overwriting the other edit.
 
 ## Permissions
 

@@ -88,6 +88,8 @@ export interface BoardSpec {
   readonly framework: CliFramework;
   /** Binary name tag for checkBinaryInstalled() and cleanChildEnv()'s EVENT_HORIZON_FRAMEWORK. */
   readonly binary: string;
+  /** Optional resolver-aware precheck for CLIs whose spawn path accepts more than a PATH binary. */
+  checkBinary?(): Promise<void>;
   buildArgs(ctx: BoardSpawnContext): string[] | Promise<string[]>;
   // FLUX-1003: Claude/Gemini resolve a cached binary path before spawning (async); Copilot spawns
   // directly (sync). board-core.ts awaits either — `await` on a non-Promise resolves immediately.

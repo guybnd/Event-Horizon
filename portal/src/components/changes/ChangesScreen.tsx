@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   GitCompare, RefreshCw, FolderGit2, GitBranch, History, AlertTriangle,
-  ChevronDown, ChevronRight, Undo2,
+  ChevronDown, ChevronRight, Undo2, Code2, Eye, Pencil,
 } from 'lucide-react';
 import {
   fetchDiffOverview, fetchDiffFile, fetchTaskDiff, discardFiles,
+  fetchDiffFileContent, commitDiffFileEdit, fetchDocs,
   type DiffOverview, type DiffGroup, type DiffChangedFile,
 } from '../../api';
 import { useAppActions, useAppSelector } from '../../store/useAppSelector';
 import { getTaskActivityTimestamp } from '../../taskSearch';
 import { DiffLines } from '../DiffLines';
+import { DocMarkdownPreview } from '../DocMarkdownPreview';
 import { SkeletonLines } from '../ui/Skeleton';
 import { ConfirmDiscardDialog } from '../ConfirmDiscardDialog';
-import type { Task } from '../../types';
+import type { Task, Doc } from '../../types';
 
 const POLL_MS = 6000;
 const DONE_LIMIT = 15;
@@ -30,6 +32,9 @@ interface FileRow {
   committed?: boolean;
   /** True when the file carries uncommitted work — a Discard control applies (FLUX-1333). */
   uncommitted?: boolean;
+  /** True when this is a markdown doc under the workspace's docsRoot — offers a Raw↔Rendered
+   *  toggle and (for a live branch worktree) an inline-edit-and-commit affordance (FLUX-1653). */
+  isDoc?: boolean;
 }
 
 type FetchSource = { kind: 'live'; ref: string } | { kind: 'done'; ticketId: string };
@@ -85,6 +90,24 @@ export function ChangesScreen({ active = true }: { active?: boolean } = {}) {
   const [confirmDiscard, setConfirmDiscard] = useState<{ ref: string; files: string[]; scopeLabel: string } | null>(null);
   const [discarding, setDiscarding] = useState(false);
   const [discardError, setDiscardError] = useState<string | null>(null);
+
+  // Rendered doc preview + inline-edit-to-PR (FLUX-1653). `docsForPreview` feeds wiki-link
+  // resolution in `DocMarkdownPreview` — fetched once, best-effort (a failed fetch just means
+  // wiki-links render unresolved, never blocks the preview itself).
+  const [docsForPreview, setDocsForPreview] = useState<Doc[]>([]);
+  const [previewMode, setPreviewMode] = useState<'raw' | 'rendered'>('raw');
+  const [contentPair, setContentPair] = useState<{ before: string; after: string } | null>(null);
+  const [contentError, setContentError] = useState<string | null>(null);
+  const [editingFile, setEditingFile] = useState(false);
+  const [editDraft, setEditDraft] = useState('');
+  const [commitMessage, setCommitMessage] = useState('');
+  const [committing, setCommitting] = useState(false);
+  const [commitError, setCommitError] = useState<string | null>(null);
+  const [commitNotice, setCommitNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchDocs().then(setDocsForPreview).catch(() => {});
+  }, []);
 
   // Monotonic load counter — drop any poll response superseded by a newer load
   // (out-of-order responses would otherwise clobber fresher data).
@@ -156,6 +179,7 @@ export function ChangesScreen({ active = true }: { active?: boolean } = {}) {
           ...(f.collidesWith ? { collidesWith: f.collidesWith } : {}),
           ...(f.committed ? { committed: true } : {}),
           ...(f.uncommitted ? { uncommitted: true } : {}),
+          ...(f.isDoc ? { isDoc: true } : {}),
         })),
         source: { kind: 'live', ref: fetchRef },
         // FLUX-1333: worktree checkout → the owning ticket's session; the shared main tree →
@@ -226,6 +250,75 @@ export function ChangesScreen({ active = true }: { active?: boolean } = {}) {
       .catch((err) => { if (!cancelled) setFileError(err instanceof Error ? err.message : 'Failed to load diff'); });
     return () => { cancelled = true; };
   }, [selected]);
+
+  // A new selection drops any in-progress rendered preview / inline edit — never carries stale
+  // draft content across files (FLUX-1653).
+  useEffect(() => {
+    setPreviewMode('raw');
+    setContentPair(null);
+    setContentError(null);
+    setEditingFile(false);
+    setEditDraft('');
+    setCommitMessage('');
+    setCommitError(null);
+    setCommitNotice(null);
+  }, [selected]);
+
+  const selectedFileRow = useMemo(() => {
+    if (!selected) return null;
+    const section = sections.find((s) => s.key === selected.sectionKey);
+    return section?.files.find((f) => f.file === selected.path) ?? null;
+  }, [selected, sections]);
+
+  const canEditSelectedFile = Boolean(
+    selected && selectedFileRow?.isDoc && selected.source.kind === 'live' && selected.source.ref !== 'main',
+  );
+
+  // Load the selected doc's raw before/after content for the Rendered toggle (FLUX-1653) —
+  // only ever for a live doc file, and only once Rendered mode is actually picked.
+  useEffect(() => {
+    if (!selected || selected.source.kind !== 'live' || previewMode !== 'rendered' || !selectedFileRow?.isDoc) return undefined;
+    let cancelled = false;
+    setContentPair(null);
+    setContentError(null);
+    fetchDiffFileContent(selected.source.ref, selected.path)
+      .then((pair) => { if (!cancelled) setContentPair(pair); })
+      .catch((err) => { if (!cancelled) setContentError(err instanceof Error ? err.message : 'Failed to load content'); });
+    return () => { cancelled = true; };
+  }, [selected, previewMode, selectedFileRow?.isDoc]);
+
+  const startEditing = useCallback(() => {
+    if (!contentPair) return;
+    setEditDraft(contentPair.after);
+    setCommitMessage('');
+    setCommitError(null);
+    setCommitNotice(null);
+    setEditingFile(true);
+  }, [contentPair]);
+
+  const submitCommit = useCallback(async () => {
+    if (!selected || selected.source.kind !== 'live') return;
+    if (!commitMessage.trim()) { setCommitError('Commit message is required.'); return; }
+    setCommitting(true);
+    setCommitError(null);
+    try {
+      const result = await commitDiffFileEdit(selected.source.ref, selected.path, editDraft, commitMessage.trim());
+      setEditingFile(false);
+      setCommitNotice(
+        result.pushed
+          ? `Committed ${result.hash} and pushed to the PR branch.`
+          : result.pushError
+            ? `Committed ${result.hash} locally — push failed: ${result.pushError}`
+            : `Committed ${result.hash} locally.`,
+      );
+      setContentPair((prev) => (prev ? { ...prev, after: editDraft } : prev));
+      void load();
+    } catch (err) {
+      setCommitError(err instanceof Error ? err.message : 'Failed to commit the edit');
+    } finally {
+      setCommitting(false);
+    }
+  }, [selected, commitMessage, editDraft, load]);
 
   const collisionCount = overview?.collisions.length ?? 0;
   const availableStatuses = useMemo(
@@ -537,13 +630,112 @@ export function ChangesScreen({ active = true }: { active?: boolean } = {}) {
               <div className="flex items-center gap-2 border-b border-gray-200 px-4 py-2.5 dark:border-white/10">
                 <span className="flex-none rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">{selected.label}</span>
                 <span className="min-w-0 truncate font-mono text-xs text-gray-700 dark:text-gray-200" title={selected.path}>{selected.path}</span>
+                {selectedFileRow?.isDoc && (
+                  <div className="ml-auto flex flex-none items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewMode('raw')}
+                      className={`flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold transition-colors ${previewMode === 'raw' ? 'bg-primary/10 text-primary' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/5'}`}
+                    >
+                      <Code2 className="h-3 w-3" /> Raw
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewMode('rendered')}
+                      className={`flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold transition-colors ${previewMode === 'rendered' ? 'bg-primary/10 text-primary' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-white/5'}`}
+                    >
+                      <Eye className="h-3 w-3" /> Rendered
+                    </button>
+                    {canEditSelectedFile && previewMode === 'rendered' && !editingFile && (
+                      <button
+                        type="button"
+                        onClick={startEditing}
+                        disabled={!contentPair}
+                        className="flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-semibold text-gray-500 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:text-gray-400 dark:hover:bg-white/5"
+                      >
+                        <Pencil className="h-3 w-3" /> Edit
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="flex-1 overflow-auto px-4 py-3">
-                {fileError && <p className="text-xs text-red-500">{fileError}</p>}
-                {!fileError && fileDiff === null && (
-                  <SkeletonLines count={8} />
+                {previewMode === 'raw' ? (
+                  <>
+                    {fileError && <p className="text-xs text-red-500">{fileError}</p>}
+                    {!fileError && fileDiff === null && (
+                      <SkeletonLines count={8} />
+                    )}
+                    {!fileError && fileDiff !== null && <DiffLines content={fileDiff} />}
+                  </>
+                ) : (
+                  <>
+                    {commitNotice && (
+                      <div className="mb-3 rounded-lg border border-emerald-300/50 bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300">
+                        {commitNotice}
+                      </div>
+                    )}
+                    {contentError && <p className="text-xs text-red-500">{contentError}</p>}
+                    {!contentError && contentPair === null && <SkeletonLines count={8} />}
+                    {!contentError && contentPair !== null && (
+                      editingFile ? (
+                        <div className="flex h-full flex-col gap-3">
+                          <div className="grid min-h-[16rem] flex-1 gap-3 md:grid-cols-2">
+                            <textarea
+                              value={editDraft}
+                              onChange={(e) => setEditDraft(e.target.value)}
+                              className="min-h-[16rem] w-full resize-none rounded-xl border border-gray-200 bg-white p-3 font-mono text-xs text-gray-800 outline-none focus:border-primary dark:border-white/10 dark:bg-black/20 dark:text-gray-100"
+                              spellCheck={false}
+                            />
+                            <div className="min-h-[16rem] overflow-auto rounded-xl border border-gray-200 bg-white p-3 dark:border-white/10 dark:bg-black/20">
+                              <DocMarkdownPreview markdown={editDraft} docs={docsForPreview} />
+                            </div>
+                          </div>
+                          {commitError && <p className="text-xs text-red-500">{commitError}</p>}
+                          <div className="flex items-center gap-2">
+                            <input
+                              value={commitMessage}
+                              onChange={(e) => setCommitMessage(e.target.value)}
+                              placeholder="Commit message…"
+                              className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-800 outline-none focus:border-primary dark:border-white/10 dark:bg-black/20 dark:text-gray-100"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => void submitCommit()}
+                              disabled={committing || !commitMessage.trim()}
+                              className="flex-none rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                            >
+                              {committing ? 'Committing…' : `Commit to ${selected.label}`}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingFile(false)}
+                              disabled={committing}
+                              className="flex-none rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-50 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/10"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div>
+                            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">Before</div>
+                            <div className="rounded-xl border border-gray-200 bg-white p-3 dark:border-white/10 dark:bg-black/20">
+                              {contentPair.before ? <DocMarkdownPreview markdown={contentPair.before} docs={docsForPreview} /> : <p className="text-xs text-gray-400">(file didn't exist)</p>}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">After</div>
+                            <div className="rounded-xl border border-gray-200 bg-white p-3 dark:border-white/10 dark:bg-black/20">
+                              {contentPair.after ? <DocMarkdownPreview markdown={contentPair.after} docs={docsForPreview} /> : <p className="text-xs text-gray-400">(file deleted)</p>}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    )}
+                  </>
                 )}
-                {!fileError && fileDiff !== null && <DiffLines content={fileDiff} />}
               </div>
             </>
           )}

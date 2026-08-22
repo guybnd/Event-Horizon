@@ -5,6 +5,7 @@ import { FRAMEWORK_ICONS } from '../../constants';
 import { OrchestrationTopology, TopologyGlyph } from '../OrchestrationTopology';
 import { OutputTail } from './OutputTail';
 import { useLiveSession } from '../../store/useAppSelector';
+import { useSessionOutput } from '../../hooks/useSessionOutput';
 import {
   type SessionGroup,
   aggregateGroup,
@@ -153,6 +154,7 @@ function DelegateRow({ session, isLead, live, onStopSession }: {
   const active = isActiveSession(session);
   const activity = liveActivityFor(session, isLead, live);
   const hasOutput = Boolean(session.liveOutput);
+  const output = useSessionOutput(session, open);
 
   return (
     <div className={`rounded-lg border ${isLead ? 'border-violet-200 bg-violet-50/40 dark:border-violet-500/20 dark:bg-violet-500/5' : 'border-gray-200 bg-white dark:border-white/10 dark:bg-white/5'}`}>
@@ -193,7 +195,7 @@ function DelegateRow({ session, isLead, live, onStopSession }: {
       </div>
       {open && hasOutput && (
         <div className="px-2 pb-2">
-          <OutputTail text={session.liveOutput!} />
+          <OutputTail text={output.text} notice={output.notice} />
         </div>
       )}
     </div>

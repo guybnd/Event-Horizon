@@ -26,6 +26,7 @@ import { buildMcpServerEntry } from '../workflow-installer.js';
 import { ensureSharedServer, getSharedServerUrl, isSharedHttpPlatformProven } from '../shared-mcp-server.js';
 import { buildResumePreamble } from '../resume-preamble.js';
 import { disallowedEhToolsForPersona, resolveSoloChatPersona } from '../orchestration-personas.js';
+import { allReadOnlyDisallowedTools } from '../mcp-readonly.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest, SendInputOptions } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
 import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, resolveEffectivePhase, buildPhaseHandoffNote } from './shared.js';
@@ -928,6 +929,11 @@ export function disallowedToolsArgs(
     focusComment: session.focusComment,
   });
   if (ehDisallowed && ehDisallowed.length > 0) tools.push(...ehDisallowed.map((t) => `mcp__event-horizon__${t}`));
+  // FLUX-1657: per-connector read/write scoping — a connector marked read-only in `mcpServerReadOnly`
+  // (config.ts) has its mutating tool names appended here too, same deny-list layer and same
+  // effective-phase source as the EH scoping above. Reads a pre-populated cache only (never probes
+  // synchronously at spawn) and fails open ([]) for any connector whose tools aren't cached yet.
+  tools.push(...allReadOnlyDisallowedTools(effectivePhase));
   return ['--disallowed-tools', ...tools];
 }
 
@@ -1636,7 +1642,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     // whose worktree was reclaimed otherwise surfaces via raiseNeedsAction + the ticket chat
     // but leaves no 'failed' chip in the orchestrator thread.
     teeDispatchActivityToBoard(session, id, 'failed', DISPATCH_LIFECYCLE_LABEL['failed']);
-    return surfaceResumeFailure(session, id, error);
+    return surfaceResumeFailure(session, id, error, workspaceRoot);
   }
 
   await checkBinaryInstalled(binaryName);
