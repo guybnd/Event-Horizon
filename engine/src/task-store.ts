@@ -1694,10 +1694,24 @@ export async function reconcileBackgroundPull(storeDir: string, changedRelativeP
   }
 }
 
-export async function startWatchers(ws: Workspace = getWorkspace()) {
+/** Close a workspace's file watchers (idempotent). Split out of startWatchers so activation can
+ *  drop the OLD board's watchers up front — see doActivateWorkspace (FLUX-1707). */
+export async function stopWatchers(ws: Workspace = getWorkspace()): Promise<void> {
   if (ws.fluxWatcher) { await ws.fluxWatcher.close(); ws.fluxWatcher = null; }
   if (ws.docsWatcher) { await ws.docsWatcher.close(); ws.docsWatcher = null; }
   if (ws.groupDocsWatcher) { await ws.groupDocsWatcher.close(); ws.groupDocsWatcher = null; }
+}
+
+export async function startWatchers(ws: Workspace = getWorkspace()) {
+  await stopWatchers(ws);
+
+  // FLUX-1707: chokidar dispatches events asynchronously, so a watcher armed for one board can
+  // still fire after activateWorkspace() has re-pointed `ws` at a DIFFERENT root — its upserts
+  // would resurrect the old board's tickets after reloadWorkspaceIndex()'s prune (the cross-board
+  // leak the FLUX-1678 test caught on slow CI runners). Every handler below no-ops once ws.root
+  // has moved on from the root this watcher was armed for; the new root's own watchers take over.
+  const watcherRoot = ws.root;
+  const stale = () => ws.root !== watcherRoot;
 
   const fluxDir = getActiveFluxDir();
   const configFile = path.join(fluxDir, 'config.json');
@@ -1727,16 +1741,19 @@ export async function startWatchers(ws: Workspace = getWorkspace()) {
 
   ws.fluxWatcher
     .on('add', (filePath) => {
+      if (stale()) return; // FLUX-1707
       // FLUX-1132: count reload events the watcher actually triggers (not every fs event chokidar
       // sees — e.g. our own write-back is filtered out inside loadTask, not here).
       if (isTopLevelTaskFile(filePath)) { recordWatchEvent(); void loadTask(filePath, ws); }
       if (filePath === configFile) void loadConfig();
     })
     .on('change', (filePath) => {
+      if (stale()) return; // FLUX-1707
       if (isTopLevelTaskFile(filePath)) { recordWatchEvent(); void loadTask(filePath, ws); }
       if (filePath === configFile) void loadConfig();
     })
     .on('ready', () => {
+      if (stale()) return; // FLUX-1707 — the new root's own watcher runs its own ready work
       // FLUX-1556: bind the whole handler to the watcher's OWN workspace (`ws`, already the
       // `startWatchers(ws)` closure param) — chokidar's `ready` fires asynchronously, so without
       // this the handler's `getActiveFluxDir()` calls resolve against whichever board happens to be
@@ -1763,6 +1780,7 @@ export async function startWatchers(ws: Workspace = getWorkspace()) {
       });
     })
     .on('unlink', (filePath) => {
+      if (stale()) return; // FLUX-1707
       if (isTopLevelTaskFile(filePath)) {
         const id = findTaskIdForPath(filePath, ws);
         delete ws.tasks[id];
@@ -1788,9 +1806,10 @@ export async function startWatchers(ws: Workspace = getWorkspace()) {
   const isPricingFile = (filePath: string) => path.basename(filePath) === 'model-pricing.md';
 
   ws.docsWatcher
-    .on('add', (filePath) => { if (isDocFile(filePath)) { void loadDoc(filePath, ws); if (isPricingFile(filePath)) void loadPricingDoc(); } })
-    .on('change', (filePath) => { if (isDocFile(filePath)) { void loadDoc(filePath, ws); if (isPricingFile(filePath)) void loadPricingDoc(); } })
+    .on('add', (filePath) => { if (stale()) return; if (isDocFile(filePath)) { void loadDoc(filePath, ws); if (isPricingFile(filePath)) void loadPricingDoc(); } })
+    .on('change', (filePath) => { if (stale()) return; if (isDocFile(filePath)) { void loadDoc(filePath, ws); if (isPricingFile(filePath)) void loadPricingDoc(); } })
     .on('unlink', (filePath) => {
+      if (stale()) return; // FLUX-1707
       const docPath = getDocPathFromFile(filePath);
       if (docPath) { delete ws.docs[docPath]; log.info(`Removed doc: ${docPath}`); }
     })
@@ -1870,6 +1889,12 @@ async function doActivateWorkspace(newRoot: string, ws: Workspace): Promise<stri
     // value share the one canonical form — callers persist/compare that, so the registry "active"
     // flag can't diverge for a short/symlinked root (FLUX-711). Throws if missing, so guard it.
     try { newRoot = realpathSync.native(newRoot); } catch { /* missing/unresolvable — keep as given */ }
+    // FLUX-1707: drop the OLD board's watchers before re-pointing ws.root — a queued chokidar
+    // event dispatched between here and startWatchers() would otherwise upsert the old board's
+    // tickets back into ws.tasks after reloadWorkspaceIndex()'s prune (the cross-board leak the
+    // FLUX-1678 test caught on slow CI runners). startWatchers' stale() guard is the second
+    // layer for events already dispatched into the microtask queue.
+    await stopWatchers(ws);
     setWorkspaceRoot(newRoot);
     // FLUX-1678: ws.tasks/ws.parseErrors are deliberately NOT cleared here — hydrateWorkspace's
     // reloadWorkspaceIndex() upserts the new board's tickets in place and then prunes whatever

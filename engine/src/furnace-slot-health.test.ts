@@ -62,7 +62,10 @@ describe('checkFurnaceSlotHealth (FLUX-1217)', () => {
   }
 
   beforeEach(async () => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-furnace-slot-health-'));
+    // realpath: macOS's tmpdir is a symlink (/var → /private/var). isUnder() canonicalizes only
+    // paths that EXIST, so once any suite has created <tmp>/.eh-worktrees on disk, a symlink-form
+    // root here makes ticketIdFromWorktreePath drop every fake holder (FLUX-1708).
+    root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'eh-furnace-slot-health-')));
     await fs.mkdir(path.join(root, '.flux'), { recursive: true });
     setWorkspaceRoot(root);
     __resetFurnaceStoreForTests();

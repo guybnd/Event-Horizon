@@ -52,7 +52,9 @@ describe('Furnace ignite-time reclaim + slot-holder naming (FLUX-1157)', () => {
   let root: string;
 
   beforeEach(async () => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-furnace-reclaim-'));
+    // realpath: see furnace-slot-health.test.ts — symlink-form tmp roots break holder naming on
+    // macOS once <tmp>/.eh-worktrees exists (FLUX-1708).
+    root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'eh-furnace-reclaim-')));
     await fs.mkdir(path.join(root, '.flux'), { recursive: true });
     setWorkspaceRoot(root);
     __resetFurnaceStoreForTests();
