@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { checkBinaryInstalled, resolveClaudeExePath, isDefinitiveNotInstalled, surfaceResumeFailure, isChatEditGated, isScratchSession, chatEditGateNote, prependEditGateNote, resolveModel, derivePhaseFromStatus, resolveEffectivePhase, buildPhaseHandoffNote, handoffChatSessionPhase } from './shared.js';
+import { checkBinaryInstalled, resolveClaudeExePath, isDefinitiveNotInstalled, surfaceResumeFailure, isChatEditGated, isScratchSession, chatEditGateNote, prependEditGateNote, resolveModel, derivePhaseFromStatus, resolveEffectivePhase, buildPhaseHandoffNote, handoffChatSessionPhase, attachStdoutProcessing, stopOutcomeText, stopOutcomeReason } from './shared.js';
 import type { CliSessionRecord } from './types.js';
+import type { ChildProcess } from 'child_process';
+import { PassThrough } from 'stream';
 import { INTEGRATION_TIER_DEFAULTS, MODEL_POLICY_PRESETS } from '../config.js';
 import { cliSessionsById, cliSessionsByTaskId, registerSession } from '../session-store.js';
 
@@ -21,6 +23,23 @@ vi.mock('../parked-ticket.js', () => ({
 vi.mock('../history.js', () => ({
   buildActivityEntry: (...args: [string, string, string]) => buildActivityEntry(...args),
 }));
+
+// FLUX-1623: a Furnace/gate-initiated stop (stopAllSessionsForTask) must not render as "stopped by
+// user" — these two helpers are what every adapter's exit handler now calls instead of inlining the
+// ternary, so covering them here covers every adapter at once.
+describe('stopOutcomeText / stopOutcomeReason (FLUX-1623)', () => {
+  it('names the Furnace/gate reason when stopReason was stamped', () => {
+    const session = fakeSession({ requestedStop: true, stopReason: 'furnace parked ticket' });
+    expect(stopOutcomeText(session)).toBe('furnace parked ticket');
+    expect(stopOutcomeReason(session)).toBe('furnace parked ticket');
+  });
+
+  it('falls back to "by user" / "stopped by user" when no stopReason was set (a real Stop click)', () => {
+    const session = fakeSession({ requestedStop: true });
+    expect(stopOutcomeText(session)).toBe('by user');
+    expect(stopOutcomeReason(session)).toBe('stopped by user');
+  });
+});
 
 function fakeSession(overrides: Partial<CliSessionRecord> = {}): CliSessionRecord {
   return {
@@ -197,23 +216,21 @@ describe('surfaceResumeFailure (FLUX-1120)', () => {
 
 // FLUX-1123: isChatEditGated/chatEditGateNote/prependEditGateNote moved here from claude-code.ts
 // (isChatEditGated) or were added new (the other two) so copilot.ts/gemini.ts can share the same
-// gating decision and get an honest, framework-aware advisory note — neither CLI can actually
-// enforce the FLUX-926 block (no --disallowed-tools equivalent). isChatEditGated's own gating
+// gating decision and get an honest, framework-aware advisory note. Current Copilot can enforce
+// the FLUX-926 block with --deny-tool; Gemini still cannot. isChatEditGated's own gating
 // behavior (chat + non-In-Progress) is still locked by claude-code-disallowed-tools.test.ts, which
 // imports it re-exported from claude-code.ts — not duplicated here.
 describe('chatEditGateNote / prependEditGateNote (FLUX-1123)', () => {
-  it('only Claude gets the "the CLI will refuse them" enforced wording', () => {
+  it('Claude and Copilot get the "the CLI will refuse them" enforced wording', () => {
     expect(chatEditGateNote('claude')).toContain('the CLI will refuse them');
-    expect(chatEditGateNote('copilot')).not.toContain('the CLI will refuse them');
+    expect(chatEditGateNote('copilot')).toContain('the CLI will refuse them');
     expect(chatEditGateNote('gemini')).not.toContain('the CLI will refuse them');
   });
 
-  it('Copilot/Gemini get an honest advisory note that does not overclaim a block', () => {
-    for (const framework of ['copilot', 'gemini'] as const) {
-      const note = chatEditGateNote(framework);
-      expect(note).toContain('no enforced file-edit block');
-      expect(note).toContain('FLUX-926');
-    }
+  it('Gemini gets an honest advisory note that does not overclaim a block', () => {
+    const note = chatEditGateNote('gemini');
+    expect(note).toContain('no enforced file-edit block');
+    expect(note).toContain('FLUX-926');
   });
 
   it('prependEditGateNote only prepends when isChatEditGated is true, and leaves the message untouched otherwise', () => {
@@ -253,7 +270,7 @@ describe('isScratchSession / scratch edit-gate note (FLUX-1443)', () => {
       expect(note).not.toContain('not In Progress');
     }
     expect(chatEditGateNote('claude', 'scratch')).toContain('the CLI will refuse them');
-    expect(chatEditGateNote('copilot', 'scratch')).not.toContain('the CLI will refuse them');
+    expect(chatEditGateNote('copilot', 'scratch')).toContain('the CLI will refuse them');
   });
 
   it('prependEditGateNote prepends the scratch note for a scratch ticket regardless of phase/status', () => {
@@ -464,5 +481,53 @@ describe('handoffChatSessionPhase (FLUX-1479 / FLUX-1226 Phase E)', () => {
     const session = registerChatSession('FLUX-6', { framework: 'copilot' });
     handoffChatSessionPhase('FLUX-6', 'Grooming');
     expect(session.handoffPhase).toBe('grooming');
+  });
+});
+
+// FLUX-1745: the silent-spawn watchdog (reapHungSilentSpawn, session-store.ts) reads session.lastOutputAt
+// off the record — it never parses JSONL itself. So the guard for "does every parsed line stamp
+// liveness" has to be driven at the seam that actually changed: attachStdoutProcessing's parse loop.
+// A fake `proc` with a real PassThrough stdout lets us write a raw JSONL line and observe the effect,
+// same harness shape as claude-code-telemetry-capture.test.ts's `asProc`.
+describe('attachStdoutProcessing stamps lastOutputAt on every parsed line (FLUX-1745)', () => {
+  function fakeProc(): { stdout: PassThrough } & Record<string, unknown> {
+    return { stdout: new PassThrough() };
+  }
+
+  it('stamps lastOutputAt even when onEvent claims the frame and appends nothing', async () => {
+    const session = fakeSession();
+    const proc = fakeProc();
+    attachStdoutProcessing(proc as unknown as ChildProcess, session, {
+      // Mimics a dialect's onVendorEvent claiming the frame (e.g. FLUX-1744's compact_boundary) —
+      // onEvent runs but touches nothing on the session itself.
+      onEvent: () => {},
+      onParseError: () => {},
+    });
+    const before = session.lastOutputAt;
+    expect(before).toBeUndefined();
+    proc.stdout.write(JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n');
+    // Let the 'data' listener's synchronous handler run.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(session.lastOutputAt).toBeDefined();
+    expect(session.lastOutputAt).not.toBe(before);
+  });
+
+  // The skeleton itself does not stamp a parse-error line — every real adapter's onParseError routes to
+  // appendSessionOutput (e.g. anthropic-stream.ts, codex.ts, copilot.ts, antigravity.ts), which DOES stamp
+  // lastOutputAt. This test's no-op onParseError isolates the skeleton's own behavior, not production's.
+  it('stamps only on the parse-success path — parse errors are the adapter onParseError callback\'s job', async () => {
+    const session = fakeSession();
+    const proc = fakeProc();
+    const onParseError = vi.fn();
+    attachStdoutProcessing(proc as unknown as ChildProcess, session, {
+      onEvent: () => {
+        throw new Error('onEvent must not run for an unparseable line');
+      },
+      onParseError,
+    });
+    proc.stdout.write('not json\n');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(onParseError).toHaveBeenCalledWith('not json');
+    expect(session.lastOutputAt).toBeUndefined();
   });
 });

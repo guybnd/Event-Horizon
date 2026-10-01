@@ -850,7 +850,7 @@ export async function renameDocsFolder(from: string, to: string): Promise<void> 
 }
 
 export interface SkillStatus {
-  framework: 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'codex' | 'generic';
+  framework: 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'codex' | 'grok' | 'generic';
   skillSourcePath: string;
   skillSourcePaths: string[];
   skillInstalledPath: string;
@@ -993,10 +993,12 @@ export interface StartSessionOptions {
   supersedeParked?: boolean;
   /** FLUX-1383: for phase:'batch-grooming' — the sibling ticket ids to groom in this one session. */
   batchTicketIds?: string[];
+  /** FLUX-1733: for phase:'fast-path' — pause for in-session plan approval before implementing. */
+  planFirst?: boolean;
 }
 
 export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOptions): Promise<CliSessionSummary> {
-  const { framework, appendPrompt, personaId, focusComment, skipPermissions = true, effortOverride, model, permissionMode, phase, role, pattern, patternPosition, groupId, groupSeq, groupTotal, groupType, groupVariant, lockedPaths, attachments, supersedeParked, batchTicketIds } = opts;
+  const { framework, appendPrompt, personaId, focusComment, skipPermissions = true, effortOverride, model, permissionMode, phase, role, pattern, patternPosition, groupId, groupSeq, groupTotal, groupType, groupVariant, lockedPaths, attachments, supersedeParked, batchTicketIds, planFirst } = opts;
   const body: Record<string, unknown> = { skipPermissions };
   // FLUX-906: omit `framework` when unset so the engine resolves the configured default.
   if (framework) body.framework = framework;
@@ -1019,6 +1021,7 @@ export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOp
   if (lockedPaths?.length) body.lockedPaths = lockedPaths;
   if (supersedeParked) body.supersedeParked = true;
   if (batchTicketIds?.length) body.batchTicketIds = batchTicketIds;
+  if (planFirst) body.planFirst = true;
 
   const res = await ehFetch(`/tasks/${taskId}/cli-session/start`, {
     method: 'POST',
@@ -1031,6 +1034,27 @@ export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOp
   }
   const payload = await res.json();
   return payload.session;
+}
+
+/** FLUX-1733: promote a scratch chat into a Grooming ticket, then start phase:'fast-path'
+ *  on the new card. The scratch is consumed (extract) and never becomes the implementer. */
+export async function oneshotFromScratch(
+  scratchId: string,
+  opts: { title?: string; framework?: CliFramework; planFirst?: boolean; user?: string } = {},
+): Promise<{ ticketId: string; session: CliSessionSummary }> {
+  const body: Record<string, unknown> = {};
+  if (opts.title) body.title = opts.title;
+  if (opts.framework) body.framework = opts.framework;
+  if (opts.planFirst) body.planFirst = true;
+  if (opts.user) body.user = opts.user;
+  const res = await ehFetch(`/tasks/${scratchId}/oneshot-from-scratch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || 'Failed to Oneshot this scratch');
+  return payload as { ticketId: string; session: CliSessionSummary };
 }
 
 /** FLUX-1289: "Re-run review" — the portal's manual entry point for one plan-review pass (the REST
@@ -1391,8 +1415,9 @@ export interface TranscriptMessage {
   /** FLUX-745: subkind of a `note` row. `'context-update'` = warm-resume situational update
    *  (FLUX-655/FLUX-745); `'action'` = the pressed phase-launch action (FLUX-794);
    *  `'permission'` = a gated-tool approval request/decision round-trip (FLUX-833);
-   *  `'dispatch'` = a dispatched session's live activity teed to the board thread (FLUX-849). */
-  kind?: 'context-update' | 'action' | 'permission' | 'dispatch';
+   *  `'dispatch'` = a dispatched session's live activity teed to the board thread (FLUX-849);
+   *  `'compaction'` = a compaction boundary the session just crossed (FLUX-1746). */
+  kind?: 'context-update' | 'action' | 'permission' | 'dispatch' | 'compaction';
   /** FLUX-849: on a `dispatch` note, the source ticket the dispatched session is working. */
   sourceTask?: string;
   /** FLUX-849: on a `dispatch` note, the session-lifecycle stage this row narrates. Mirrors the
@@ -2009,6 +2034,14 @@ export async function confirmBoot(migrate?: boolean): Promise<{ ok: boolean; set
 export async function fetchGlobalSettings(): Promise<GlobalSettings> {
   const res = await ehFetch(`/settings/global`);
   if (!res.ok) throw new Error('Failed to fetch global settings');
+  return res.json();
+}
+
+// FLUX-1747/1748: account-level capacity usage — no `requireWorkspace` on the engine route, same
+// as `/settings/global`, so this is not board-scoped either.
+export async function fetchUsage(): Promise<import('./types').UsageSnapshot> {
+  const res = await ehFetch(`/usage`);
+  if (!res.ok) throw new Error('Failed to fetch usage');
   return res.json();
 }
 
@@ -3381,5 +3414,315 @@ export async function handBackFurnaceTicket(id: string, ticketId: string): Promi
     const err = await res.json().catch(() => ({}));
     throw new Error(err?.error || 'Failed to hand ticket back');
   }
+  return res.json();
+}
+
+// ── Benchmarks (FLUX-1739) ───────────────────────────────────────────────────
+
+export interface BenchmarkCell {
+  framework: string;
+  model?: string;
+  effortOverride?: string;
+  phase: string;
+}
+
+export interface BenchmarkRunRow {
+  runId: string;
+  cell: BenchmarkCell;
+  repetitionIndex: number;
+  ticketId?: string;
+  branch?: string;
+  status: string;
+  failureClass?: string;
+  sessionOutcome?: string;
+  durationMs?: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  costUSD: number | null;
+  changedFileCount?: number;
+  changedPaths?: string[];
+  hasDiff?: boolean;
+  tampered?: boolean;
+  solved?: boolean;
+  validation?: { exitCode: number | null; passed: boolean; timedOut: boolean; durationMs: number; outputTail?: string };
+  regression?: { exitCode: number | null; passed: boolean; timedOut: boolean; durationMs: number; outputTail?: string };
+  regressed?: boolean;
+  friction?: BenchmarkFriction;
+  engine?: { version: string; commit?: string; dirty?: boolean; capturedAt: string };
+  work?: { turns: number; toolCalls: number; linesAdded?: number; linesRemoved?: number };
+  cli?: { framework: string; version: string | null };
+  /** Files preserved from the worktree at collection; served at /api/benchmarks/:id/artifacts/:runId?p=<path>. */
+  artifacts?: { path: string; bytes: number }[];
+}
+
+export interface BenchmarkSignal { count: number; evidence: { locator: string; detail?: string }[] }
+
+export interface BenchmarkFriction {
+  toolFailures: BenchmarkSignal;
+  ehToolFailures: BenchmarkSignal;
+  refusedByDesign: BenchmarkSignal;
+  refusedUnexpected: BenchmarkSignal;
+  repeatCalls: BenchmarkSignal;
+  reReads: BenchmarkSignal;
+  deniedToolAttempts: BenchmarkSignal;
+  protocolViolations: BenchmarkSignal;
+  humanInterrupts: BenchmarkSignal;
+  sessionRestarts: BenchmarkSignal;
+  orientationCost: number | null;
+}
+
+export interface BenchmarkCellReport {
+  cell: BenchmarkCell;
+  scoredRuns: number;
+  solvedRuns: number;
+  solveRate: number | null;
+  solveRateInterval: { low: number; high: number } | null;
+  passAtK: Record<string, number | null>;
+  passHatK: Record<string, number | null>;
+  costUSD: { median: number | null; p25: number | null; p75: number | null };
+  durationMs: { median: number | null; p25: number | null; p75: number | null };
+  costPerSolve: number | null;
+  attritionCostUSD: number;
+  attritionRuns: number;
+  tamperRate: number | null;
+  friction: { scoredRuns: number; runsWithAnyFriction: number; ehToolFailureTotal: number; grade: string };
+}
+
+export interface BenchmarkReportData {
+  suiteId: string;
+  baseCommit: string;
+  generatedAt: string;
+  cells: BenchmarkCellReport[];
+  frontier: number[];
+  zeroSolveCells: number[];
+  totalRuns: number;
+  scoredRuns: number;
+  attritionRuns: number;
+}
+
+export interface BenchmarkSuiteData {
+  id: string;
+  title?: string;
+  seedTitle: string;
+  seedPrompt: string;
+  baseCommit: string;
+  validation?: { command: string; args: string[]; paths: string[]; timeoutMs: number };
+  matrix: BenchmarkCell[];
+  repetitions: number;
+  concurrency?: number;
+  status: string;
+  calibration?: { baseCommit: string; exitCode: number | null; failsAtBase: boolean; outputTail?: string; calibratedAt: string };
+  createdAt: string;
+  startedAt?: string;
+  endedAt?: string;
+  abortReason?: string;
+  analysis?: { ticketId: string; sessionId?: string; requestedAt: string; error?: string; droppedClaims?: number; harvestedAt?: string };
+  archived?: boolean;
+  track?: 'fix' | 'build';
+  artifacts?: string[];
+}
+
+/** Hide a finished suite from the comparison and default listing (or restore it). The sidecar stays. */
+export async function archiveBenchmark(id: string, archived = true): Promise<{ suite?: BenchmarkSuiteData; error?: string }> {
+  const res = await ehFetch(`/benchmarks/${encodeURIComponent(id)}/archive`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ archived }),
+  });
+  const json = (await res.json().catch(() => ({}))) as { suite?: BenchmarkSuiteData; error?: string };
+  if (!res.ok) throw new Error(json.error || 'Failed to archive suite');
+  return json;
+}
+
+export interface BenchmarkNarrativeClaim {
+  statement: string;
+  runId: string;
+  locator: string;
+  attribution: 'eventhorizon' | 'adapter' | 'effort' | 'unknown';
+}
+
+export interface BenchmarkNarrativeData {
+  suiteId: string;
+  generatedAt: string;
+  summary: string;
+  claims: BenchmarkNarrativeClaim[];
+  proposedDefects: string[];
+  dissent?: { cell: BenchmarkCell; grade: string; reasoning: string }[];
+}
+
+export interface BenchmarkRecordData {
+  suite: BenchmarkSuiteData;
+  runs: BenchmarkRunRow[];
+  report?: BenchmarkReportData;
+  narrative?: BenchmarkNarrativeData;
+}
+
+export interface BenchmarkDistribution { median: number | null; p25: number | null; p75: number | null }
+
+export interface BenchmarkComparisonSeedCell {
+  suiteId: string;
+  seedTitle: string;
+  scoredRuns: number;
+  solvedRuns: number;
+  costPerSolve: number | null;
+  durationMedianMs: number | null;
+  frictionGrade: string | null;
+  regressedRuns: number;
+}
+
+export interface BenchmarkComparisonRow {
+  cell: BenchmarkCell;
+  key: string;
+  perSeed: (BenchmarkComparisonSeedCell | null)[];
+  pooled: {
+    seeds: number;
+    scoredRuns: number;
+    solvedRuns: number;
+    attritionRuns: number;
+    solveRate: number | null;
+    solveRateInterval: { low: number; high: number } | null;
+    costPerSolve: number | null;
+    totalCostUSD: number;
+    durationMs: BenchmarkDistribution;
+    turns: BenchmarkDistribution;
+    toolCalls: BenchmarkDistribution;
+    linesChanged: BenchmarkDistribution;
+    ehToolFailureTotal: number;
+    regressedRuns: number;
+    worstFriction: string | null;
+  };
+}
+
+export interface BenchmarkComparisonData {
+  generatedAt: string;
+  seeds: { suiteId: string; seedTitle: string; baseCommit: string; repetitions: number }[];
+  rows: BenchmarkComparisonRow[];
+  excluded: { suiteId: string; reason: string }[];
+}
+
+/** URL of a preserved run artefact. Carries the board as `?ws=` because an <img>/<a> cannot send the workspace header. */
+export function artifactUrl(suiteId: string, runId: string, relPath: string): string {
+  // Path form, not `?p=`: a built page's relative `./game.js` must resolve inside the same artefact dir.
+  const rel = relPath.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+  const base = `${API_URL}/benchmarks/${encodeURIComponent(suiteId)}/artifacts/${encodeURIComponent(runId)}/${rel}`;
+  return activeBoardKey ? `${base}?ws=${encodeURIComponent(activeBoardKey)}` : base;
+}
+
+/** One row per configuration across every finished suite, with pooled numbers. */
+export async function fetchBenchmarkComparison(): Promise<BenchmarkComparisonData> {
+  const res = await ehFetch('/benchmarks/compare');
+  if (!res.ok) throw new Error('Failed to fetch benchmark comparison');
+  return res.json();
+}
+
+export interface BenchmarkSeed {
+  id: string;
+  title: string;
+  track: 'fix' | 'build';
+  seedTitle: string;
+  baseRef: string;
+  baseCommit: string | null;
+  resolveError?: string;
+  prompt: string;
+  validation: { command: string; args: string[]; paths: string[]; timeoutMs: number };
+  regression?: { command: string; args: string[]; timeoutMs: number };
+  defaultMatrix?: BenchmarkCell[];
+  repetitions?: number;
+  concurrency?: number;
+  wallClockBudgetMs?: number;
+  notes?: string;
+}
+
+export async function fetchBenchmarkSeeds(): Promise<{ seeds: BenchmarkSeed[] }> {
+  const res = await ehFetch('/benchmarks/seeds');
+  if (!res.ok) throw new Error('Failed to fetch benchmark seeds');
+  return res.json();
+}
+
+export interface CreateFromSeedBody {
+  seedId: string;
+  suiteId?: string;
+  matrix?: BenchmarkCell[];
+  repetitions?: number;
+  concurrency?: number;
+  wallClockBudgetMs?: number;
+  calibrate?: boolean;
+  start?: boolean;
+}
+
+export interface CreateFromSeedResult {
+  suite?: BenchmarkSuiteData;
+  calibration?: BenchmarkSuiteData['calibration'];
+  started: boolean;
+  refusedStart?: string;
+  error?: string;
+}
+
+/** Create (and optionally calibrate + start) a suite from a curated seed — the "New benchmark" form. */
+export async function createBenchmarkFromSeed(body: CreateFromSeedBody): Promise<CreateFromSeedResult> {
+  const res = await ehFetch('/benchmarks/from-seed', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const json = (await res.json().catch(() => ({}))) as CreateFromSeedResult;
+  if (!res.ok) throw new Error(json.error || 'Failed to create the benchmark');
+  return json;
+}
+
+/** Dispatch the Benchmark Analyst over a finished suite. 202 when a session started; 409 when one is already in flight. */
+export async function requestBenchmarkAnalysis(id: string, opts: { force?: boolean; framework?: string; model?: string } = {}): Promise<{ analysis?: BenchmarkSuiteData['analysis']; error?: string }> {
+  const res = await ehFetch(`/benchmarks/${encodeURIComponent(id)}/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts),
+  });
+  const json = (await res.json().catch(() => ({}))) as { analysis?: BenchmarkSuiteData['analysis']; error?: string };
+  if (!res.ok) throw new Error(json.error || 'Failed to start the analyst');
+  return json;
+}
+
+export async function fetchBenchmarks(): Promise<{ benchmarks: { suite: BenchmarkSuiteData; runCount: number }[] }> {
+  const res = await ehFetch('/benchmarks');
+  if (!res.ok) throw new Error('Failed to fetch benchmarks');
+  return res.json();
+}
+
+export async function fetchBenchmark(id: string): Promise<BenchmarkRecordData> {
+  const res = await ehFetch(`/benchmarks/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`Failed to fetch benchmark ${id}`);
+  return res.json();
+}
+
+export async function rebuildBenchmarkReport(id: string): Promise<{ report: BenchmarkReportData }> {
+  const res = await ehFetch(`/benchmarks/${encodeURIComponent(id)}/report`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to rebuild report');
+  return res.json();
+}
+
+// ── Ticket health (FLUX-1739 follow-on) ──────────────────────────────────────
+
+export interface TicketHealthSignal {
+  key: string;
+  label: string;
+  count: number;
+  locators: string[];
+  detail?: string;
+}
+
+export interface TicketHealthData {
+  ticketId: string;
+  grade: 'clean' | 'noisy' | 'rough' | 'broken';
+  /** Bad regardless of what the ticket was — these set the grade. */
+  unambiguous: TicketHealthSignal[];
+  /** Reported, never graded: a large ticket earns re-reads and repeat calls honestly. */
+  contextual: TicketHealthSignal[];
+  sessionCount: number;
+  summary: string;
+}
+
+export async function fetchTicketHealth(id: string): Promise<TicketHealthData> {
+  const res = await ehFetch(`/tasks/${encodeURIComponent(id)}/health`);
+  if (!res.ok) throw new Error(`Failed to fetch health for ${id}`);
   return res.json();
 }

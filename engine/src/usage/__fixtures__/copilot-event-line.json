@@ -1,0 +1,1 @@
+{"type":"quota_snapshot","data":{"quotaSnapshots":{"chat":{"entitlementRequests":200,"usedRequests":5,"remainingPercentage":97.5,"overage":0,"resetDate":"2999-01-01T00:00:00Z","isUnlimitedEntitlement":false}}},"id":"evt-0001","timestamp":"2026-08-31T12:36:06.431Z","parentId":null}

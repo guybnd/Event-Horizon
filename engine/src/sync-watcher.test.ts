@@ -8,7 +8,7 @@ import { createScheduler, runSync, getSyncStatus, _resetSyncStateForTests, merge
 import { getNotifications, dismissNotification, clearNotifications } from './notifications.js';
 import { setWorkspaceRoot, getWorkspaceRoot } from './workspace.js';
 import { Workspace } from './workspace-context.js';
-import { appendJournalEntry, readJournalEntries, setJournalReplayHandler, setJournalCacheReloadHandler } from './sync-journal.js';
+import { appendJournalEntry, readJournalEntries, setJournalReplayHandler, setJournalCacheReloadHandler, setJournalCreateReplayHandler } from './sync-journal.js';
 
 describe('SyncWorker — per-workspace isolation (FLUX-1453)', () => {
   it('two workers keep independent status, conflicts, and listeners', () => {
@@ -697,6 +697,56 @@ describe('runSync — auto-resolves pure append-only history conflicts (FLUX-107
     expect(committed).not.toMatch(/<{7}/);
     expect(committed).toContain('Remote progress.'); // the winning side's commit
     expect(committed).toContain('Local progress.');  // replayed on top instead of lost to the reset
+    const { stdout: unmerged } = await git(storeDir, ['diff', '--name-only', '--diff-filter=U']);
+    expect(unmerged.trim()).toBe('');
+    expect(await readJournalEntries(storeDir)).toEqual([]); // flushed once the replay's commit pushed clean
+  }, 30_000);
+
+  // FLUX-1634: create_ticket used to write the new ticket's file with NO journal entry at all —
+  // only the (separately journaled) parent-link update was replay-safe. A create caught in the
+  // exact race this suite exercises (local commit rejected, `reset --hard` onto the new remote
+  // head) silently lost the brand-new file while any parent `subtasks` link to it survived,
+  // leaving a dangling reference (the reported FLUX-1633/FLUX-1625 incident). createTaskUnlocked
+  // now journals a `kind: 'create'` entry before writing, and replayJournalEntry recreates the
+  // exact file via the create-replay handler when it's missing after a reset.
+  it('a journaled ticket create lost to a race is replayed and survives (FLUX-1634)', async () => {
+    await fs.writeFile(path.join(storeDir, '.gitignore'), 'sync-journal.jsonl\n', 'utf8');
+    await commitAll(storeDir, 'gitignore the sync journal');
+
+    const newTicketPath = path.join(storeDir, 'FLUX-2.md');
+    const newTicketContent = [
+      '---', 'id: FLUX-2', 'title: New ticket', 'status: Todo', '---', '', 'New ticket body.', '',
+    ].join('\n');
+
+    setJournalCreateReplayHandler(async (taskId, payload) => {
+      const { filePath, fileContent } = payload as { filePath: string; fileContent: string };
+      try {
+        await fs.access(filePath);
+        return; // already there — nothing lost
+      } catch {
+        // fall through and recreate
+      }
+      await fs.writeFile(filePath, fileContent, 'utf8');
+    });
+    setJournalCacheReloadHandler(async () => {}); // no in-memory task cache in this test file
+
+    // What createTaskUnlocked does in order: journal first, THEN write the file (mirrors the real
+    // ordering invariant — see task-store.ts's createTaskUnlocked).
+    await appendJournalEntry(storeDir, {
+      opId: 'test-op-create-1',
+      taskId: 'FLUX-2',
+      kind: 'create',
+      ts: '2026-07-02T00:00:00.000Z',
+      options: { filePath: newTicketPath, fileContent: newTicketContent },
+    });
+    await fs.writeFile(newTicketPath, newTicketContent, 'utf8');
+
+    await runSync(storeDir);
+
+    expect(getSyncStatus().state).not.toBe('conflict');
+    expect(getSyncStatus().state).not.toBe('error');
+    const committed = (await git(storeDir, ['show', 'HEAD:FLUX-2.md'])).stdout;
+    expect(committed).toContain('New ticket body.'); // recreated by replay instead of lost to the reset
     const { stdout: unmerged } = await git(storeDir, ['diff', '--name-only', '--diff-filter=U']);
     expect(unmerged.trim()).toBe('');
     expect(await readJournalEntries(storeDir)).toEqual([]); // flushed once the replay's commit pushed clean

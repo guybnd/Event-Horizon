@@ -183,7 +183,7 @@ async function startBoardSession(spec: BoardSpec, session: CliSessionRecord, fir
   const attachments = opts?.attachments ?? [];
   const attachmentAbsPaths = resolveAttachmentAbsPaths(attachments);
   const prompt = `${buildBoardPrompt(firstMessage, priorContext, opts?.personaPrompt, isBoard)}${attachmentReadInstruction(attachmentAbsPaths)}`;
-  const args = await spec.buildArgs({ session, prompt, workspaceRoot, executionRoot: workspaceRoot, isResume: false });
+  const args = await spec.buildArgs({ session, prompt, attachmentAbsPaths, workspaceRoot, executionRoot: workspaceRoot, isResume: false });
   session.status = 'running';
   session.args = args;
   // FLUX-838: persist the working-tree preamble as a context-update note (mirrors the warm-resume
@@ -256,7 +256,7 @@ async function sendBoardInput(spec: BoardSpec, session: CliSessionRecord, messag
   }
   // FLUX-579: ensure the workspace-root shared server(s) exist for this board turn.
   if (spec.ensureMcp) await spec.ensureMcp(workspaceRoot);
-  const args = await spec.buildArgs({ session, prompt: promptForCli, workspaceRoot, executionRoot: session.executionRoot ?? workspaceRoot, isResume: true });
+  const args = await spec.buildArgs({ session, prompt: promptForCli, attachmentAbsPaths, workspaceRoot, executionRoot: session.executionRoot ?? workspaceRoot, isResume: true });
   session.args = args;
   const proc = await spec.spawn(args, session.executionRoot ?? workspaceRoot, session.taskId);
   wireBoardProc(spec, proc, session, promptForCli, () => { session.status = 'waiting-input'; });

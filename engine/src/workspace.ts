@@ -182,6 +182,101 @@ export async function autoRegisterWorkspace(wsPath: string) {
   }
 }
 
+/** True when `dir` holds an Event Horizon store (`.flux/` in-repo or `.flux-store/` orphan). */
+export function hasWorkspaceStore(dir: string): boolean {
+  return existsSync(path.join(dir, '.flux')) || existsSync(path.join(dir, '.flux-store'));
+}
+
+/**
+ * The registered workspace entry for `rootPath` (same-on-disk match via `pathsEqual`), or `null`
+ * when nothing in the settings registry names it. The "is this a board this engine knows about at
+ * all?" check behind `X-EH-Workspace` auto-open (workspace-binding.ts): a header naming a
+ * registered-but-not-live board is brought up rather than silently falling back to the default one.
+ */
+export async function findRegisteredWorkspace(rootPath: string): Promise<WorkspaceEntry | null> {
+  if (!rootPath) return null;
+  const list = await getWorkspacesList();
+  return list.find((w) => pathsEqual(w.path, rootPath)) ?? null;
+}
+
+/**
+ * Which registered board owns `anyPath` — for MCP `bind_workspace`, where a hand-launched agent
+ * passes its working directory rather than the board root. Pure over `entries` so it's unit-testable
+ * without a settings file. Matches, in order: the entry itself; an entry that is an ANCESTOR of the
+ * path (the agent is somewhere inside the repo); and the task-worktree layout
+ * `<repoParent>/.eh-worktrees/<repo>-<id>` (a worktree is a SIBLING of its repo, so an agent running
+ * inside one maps back to `<repoParent>/<repo>` — see task-worktree.ts's `taskWorktreePath`).
+ * Comparison is by `normalizeWorkspaceKey` (realpath'd + case-folded on win32), same as the registry.
+ */
+export function matchRegisteredWorkspaceForPath(entries: WorkspaceEntry[], anyPath: string): WorkspaceEntry | null {
+  if (!anyPath) return null;
+  const target = normalizeWorkspaceKey(anyPath);
+  const keyed = entries.map((entry) => ({ entry, key: normalizeWorkspaceKey(entry.path) }));
+  const exact = keyed.find(({ key }) => key === target);
+  if (exact) return exact.entry;
+  // Longest registered ancestor wins (a nested board inside another board resolves to the inner one).
+  const ancestors = keyed
+    .filter(({ key }) => target.startsWith(key.endsWith(path.sep) ? key : key + path.sep))
+    .sort((a, b) => b.key.length - a.key.length);
+  if (ancestors[0]) return ancestors[0].entry;
+  // Task worktree: walk up until a segment whose parent dir is `.eh-worktrees`, then map
+  // `<repoParent>/.eh-worktrees/<repo>-<id>` → the registered `<repoParent>/<repo>`.
+  let cursor = path.resolve(anyPath);
+  for (;;) {
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    if (path.basename(parent) === '.eh-worktrees') {
+      const repoParent = normalizeWorkspaceKey(path.dirname(parent));
+      const worktreeName = path.basename(cursor);
+      const fold = (s: string) => (process.platform === 'win32' ? s.toLowerCase() : s);
+      const candidates = keyed
+        .filter(({ key }) => normalizeWorkspaceKey(path.dirname(key)) === repoParent)
+        .filter(({ key }) => fold(worktreeName).startsWith(fold(path.basename(key)) + '-'))
+        .sort((a, b) => path.basename(b.key).length - path.basename(a.key).length);
+      if (candidates[0]) return candidates[0].entry;
+      break;
+    }
+    cursor = parent;
+  }
+  return null;
+}
+
+/** {@link matchRegisteredWorkspaceForPath} against the live settings registry. */
+export async function resolveRegisteredWorkspaceForPath(anyPath: string): Promise<WorkspaceEntry | null> {
+  return matchRegisteredWorkspaceForPath(await getWorkspacesList(), anyPath);
+}
+
+/**
+ * Persisted set of live secondary boards (`GlobalSettings.openWorkspaces`) — the boot restore
+ * (`restoreRememberedOpenWorkspaces`, workspace-binding.ts) reads this so an engine restart brings
+ * every board that was open back up, not just `lastWorkspace`. Stored canonical (true-cased
+ * realpath), deduped by `pathsEqual`. Idempotent.
+ */
+export async function rememberOpenWorkspace(rootPath: string): Promise<void> {
+  const global = await loadGlobalSettings();
+  const canonical = canonicalizeWorkspaceRoot(rootPath);
+  const list = global.openWorkspaces ?? [];
+  if (list.some((p) => pathsEqual(p, canonical))) return;
+  global.openWorkspaces = [...list, canonical];
+  await saveGlobalSettings(global);
+}
+
+/** Inverse of {@link rememberOpenWorkspace}. No-op when `rootPath` isn't remembered. */
+export async function forgetOpenWorkspace(rootPath: string): Promise<void> {
+  const global = await loadGlobalSettings();
+  const list = global.openWorkspaces ?? [];
+  const next = list.filter((p) => !pathsEqual(p, rootPath));
+  if (next.length === list.length) return;
+  global.openWorkspaces = next;
+  await saveGlobalSettings(global);
+}
+
+/** The remembered live-board roots, as stored (canonical). Empty on a fresh install. */
+export async function getRememberedOpenWorkspaces(): Promise<string[]> {
+  const global = await loadGlobalSettings();
+  return [...(global.openWorkspaces ?? [])];
+}
+
 export function getCliWorkspace(): string | null {
   const args = process.argv.slice(2);
   const idx = args.indexOf('--workspace');

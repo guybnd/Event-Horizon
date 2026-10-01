@@ -3,7 +3,7 @@ import { log } from '../log.js';
 import { spawn, execSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getConfig } from '../config.js';
+import { getConfig, COPILOT_MODEL_ALIASES } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentSessionEntry } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, estimateCostUSD } from '../task-store.js';
 import { resolveTaskExecutionRoot, resolveResumeExecutionRoot, assertIsolatedSpawnRoot } from '../task-worktree.js';
@@ -18,9 +18,9 @@ import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { appendTranscriptLine } from '../transcript.js';
 import { buildMcpServerEntry } from '../workflow-installer.js';
-import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
+import type { AgentAdapter, CliSessionRecord, ProviderManifest, SendInputOptions } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, buildPhaseHandoffNote, type CliTask } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, buildPhaseHandoffNote, resolveAttachmentAbsPaths, stopOutcomeText, type CliTask } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   powershell: 'Running command',
@@ -471,6 +471,51 @@ export function buildAdditionalMcpConfigArgs(conversationId?: string, workspaceR
   return ['--additional-mcp-config', JSON.stringify({ mcpServers: { 'event-horizon': buildMcpServerEntry(conversationId, workspaceRoot, sessionId) } })];
 }
 
+interface CopilotPromptArgsOptions {
+  conversationId?: string;
+  workspaceRoot?: string;
+  sessionId?: string;
+  model?: string;
+  resumeSessionId?: string;
+  skipPermissions?: boolean;
+  editsGated?: boolean;
+  attachmentAbsPaths?: readonly string[];
+}
+
+export function resolveCopilotCliModel(model?: string): string | undefined {
+  if (!model) return undefined;
+  return COPILOT_MODEL_ALIASES[model] ?? model;
+}
+
+/** Named `--model` only. `auto` is Copilot's default picker and 404s `--effort` (FLUX-977). */
+export function copilotExplicitModelArg(model?: string): string | undefined {
+  const resolved = resolveCopilotCliModel(model);
+  if (!resolved || resolved.toLowerCase() === 'auto') return undefined;
+  return resolved;
+}
+
+/**
+ * Copilot's `-p/--prompt` is required for non-interactive mode and *requires a value*.
+ * A bare `-p` consumes the next argv token (`--output-format`) and exits 1 with
+ * "your prompt was not quoted" (FLUX-1736). The prompt itself stays on stdin so large
+ * ticket context does not hit Windows CreateProcess limits; `-p` gets an empty placeholder
+ * that current Copilot 1.0.82 merges with piped stdin (same pattern as Gemini).
+ */
+export function buildCopilotPromptArgs(options: CopilotPromptArgsOptions): string[] {
+  const model = copilotExplicitModelArg(options.model);
+  return [
+    '-p', '',
+    ...(model ? ['--model', model] : []),
+    ...(options.resumeSessionId ? ['--resume', options.resumeSessionId] : []),
+    '--output-format', 'json',
+    '--no-ask-user',
+    ...(options.skipPermissions ? ['--yolo'] : ['--allow-all-tools']),
+    ...(options.editsGated ? ['--deny-tool=write', '--deny-tool=shell'] : []),
+    ...(options.attachmentAbsPaths ?? []).flatMap((attachmentPath) => ['--attachment', attachmentPath]),
+    ...buildAdditionalMcpConfigArgs(options.conversationId, options.workspaceRoot, options.sessionId),
+  ];
+}
+
 export async function startCliSession(session: CliSessionRecord, task: CliTask, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
   const label = session.label;
   const id = session.taskId;
@@ -480,7 +525,7 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
   session.executionRoot = executionRoot;
 
   // FLUX-1018 / FLUX-1028: fail closed on the fresh-spawn path (shared helper —
-  // see assertIsolatedSpawnRoot in task-worktree.ts). Copilot's `-p` mode never
+  // see assertIsolatedSpawnRoot in task-worktree.ts). Copilot's programmatic mode never
   // checks the branch out itself, so spawning with cwd = workspaceRoot would
   // commit straight to master (the FLUX-972 incident).
   assertIsolatedSpawnRoot('Copilot', id, task, executionRoot, workspaceRoot);
@@ -498,7 +543,7 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
   // integrations.copilotCli.tiers), superseding the old status-based groomingModel/implementationModel
   // fields. session.taskKey is stamped by createPendingSession at spawn time; a missing value (a
   // pre-migration in-flight session) falls back to implementation.lead.
-  const selectedModel = session.model || resolveModel(session.taskKey ?? 'implementation.lead', 'copilot', getConfig());
+  const selectedModel = resolveCopilotCliModel(session.model || resolveModel(session.taskKey ?? 'implementation.lead', 'copilot', getConfig()));
   // FLUX-1375: persist the resolved model onto the session — previously only a local var, so the
   // fallback cost estimator was passed the literal string 'copilot' instead (never matched any
   // pricing row; harmless today since model-pricing.md has no Copilot rows, but kept consistent
@@ -516,21 +561,18 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
     : task.status === (getConfig()?.readyForMergeStatus || 'Ready') ? 'review'
     : undefined);
 
-  // FLUX-1123: Copilot has no --disallowed-tools equivalent (see FILE_MUTATION_TOOLS's comment in
-  // claude-code.ts), so this can only be an advisory note in the prompt, not a real block.
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'copilot', editsGated: isChatEditGated(session, task) || isScratchSession(task), batchTicketIds: session.batchTicketIds, batchExcluded: session.batchExcluded });
+  const editsGated = isChatEditGated(session, task) || isScratchSession(task);
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'copilot', editsGated, batchTicketIds: session.batchTicketIds, batchExcluded: session.batchExcluded, planFirst: session.planFirst });
 
   const copilotArgs = [
-    ...(selectedModel ? ['--model', selectedModel] : []),
-    // FLUX-1444: `-p` is a bare flag — the prompt is written to stdin after spawn, below. Windows'
-    // CreateProcess caps the command line at 32,767 chars, easily exceeded once a scatter-gather
-    // reviewer's PR diff is inlined; copilot reads the prompt from stdin when no value follows `-p`
-    // (verified live: piped stdin with no `-p` value gets accepted as the prompt).
-    '-p',
-    '--output-format', 'json',
-    ...(session.skipPermissions ? ['--yolo'] : ['--allow-all-tools']),
-    // FLUX-984: explicit MCP config injection — workspace .mcp.json is never auto-loaded in -p mode.
-    ...buildAdditionalMcpConfigArgs(id, workspaceRoot, session.id),
+    ...buildCopilotPromptArgs({
+      conversationId: id,
+      workspaceRoot,
+      sessionId: session.id,
+      ...(selectedModel ? { model: selectedModel } : {}),
+      skipPermissions: session.skipPermissions,
+      editsGated,
+    }),
     // Multi-repo group: put every checked-out member repo in scope (no-op single-repo).
     ...buildMemberScopeArgs(),
     // Member worktree: add local .flux-group/ so the agent reads shared group docs (FLUX-422).
@@ -548,20 +590,19 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
   // default agent, so most users never set integrations.copilotCli) degrades quietly instead of
   // crashing every single Copilot session outright.
   const effortRequested = effortCap.supported && effortCap.flag && EFFORT_LEVELS.includes(effectiveEffort as EffortLevel);
-  if (effortRequested && selectedModel) {
+  const effortModel = copilotExplicitModelArg(selectedModel);
+  if (effortRequested && effortModel) {
     copilotArgs.push(effortCap.flag!, effectiveEffort);
-  } else if (effortRequested && !selectedModel) {
-    // FLUX-977: don't just silently drop the user's requested effort level — that replaces the
-    // old crash with a new, quieter silent-failure pattern (effort visibly requested somewhere,
-    // invisibly ignored here). Log it so "why didn't effort do anything" is answerable from logs.
-    log.info(`[${id}] Dropping --effort "${effectiveEffort}" — no Copilot model configured (integrations.copilotCli); Copilot rejects --effort without an explicit --model.`);
+  } else if (effortRequested) {
+    // FLUX-977: Copilot rejects --effort without a named --model, and also when --model is auto.
+    log.info(`[${id}] Dropping --effort "${effectiveEffort}" — Copilot rejects --effort unless a named --model is set (got ${selectedModel || 'none'}).`);
   }
 
-  // FLUX-1444: the prompt no longer rides argv (delivered via stdin below), so no redaction needed.
+  // The prompt does not ride argv, so no redaction is needed.
   log.info(`[${id}] Args: [${copilotArgs.join(', ')}] (prompt ${initialPrompt.length} chars, via stdin)`);
 
   const proc = spawnCopilot(id, copilotArgs, executionRoot, session.id);
-  // FLUX-1444: deliver the prompt over stdin instead of argv — see the copilotArgs comment above.
+  // `-p ''` selects non-interactive mode; the real prompt is on stdin (see buildCopilotPromptArgs).
   // Attach the stdin error listener before writing — an EPIPE (child exited before the write lands)
   // would otherwise be an unhandled 'error' event; the spawn-level failure is handled by proc.on('error') below.
   proc.stdin.on('error', () => {});
@@ -679,6 +720,9 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
       // persistentChat:false, so a normal chat turn still goes 'completed'.
       session.status = 'waiting-input';
       finalStatus = 'waiting-input';
+    } else if (code === 0 && session.phase === 'chat') {
+      session.status = 'waiting-input';
+      finalStatus = 'waiting-input';
     } else if (code === 0) {
       session.endedAt = new Date().toISOString();
       session.status = 'completed';
@@ -690,7 +734,7 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
     }
 
     const outcome = session.requestedStop
-      ? `${label} session stopped by user.`
+      ? `${label} session stopped ${stopOutcomeText(session)}.`
       : `${label} session ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
 
     // FLUX-1375: delta-based (buildTokenMetadataUpdate advances session.flushed*Tokens), so the
@@ -815,8 +859,8 @@ export class CopilotAdapter implements AgentAdapter {
     return startCliSession(session, task as CliTask, appendPrompt, effortOverride, workspaceRoot);
   }
 
-  async sendInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string): Promise<void> {
-    return sendCliSessionInput(session, message, user, workspaceRoot);
+  async sendInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string, opts?: SendInputOptions): Promise<void> {
+    return sendCliSessionInput(session, message, user, workspaceRoot, opts);
   }
 
   stop(session: CliSessionRecord): void {
@@ -828,7 +872,7 @@ export class CopilotAdapter implements AgentAdapter {
   }
 }
 
-export async function sendCliSessionInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string) {
+export async function sendCliSessionInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string, opts?: SendInputOptions) {
   const id = session.taskId;
   // FLUX-519 review: resume in the SAME root the session started in; refuse to fall
   // back onto master if the worktree was removed (e.g. the ticket was finished).
@@ -860,25 +904,30 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     entries: [buildCommentEntry(user, message, inputAt)],
   });
 
+  const attachments = opts?.attachments ?? [];
+  const attachmentAbsPaths = resolveAttachmentAbsPaths(attachments);
   const safeMessage = message.replace(/\0/g, '');
   const handoffTask = getWorkspace().tasks[id] as CliTask;
-  // FLUX-926 / FLUX-1123: same advisory "why is this blocked" note as the initial spawn,
-  // recomputed per resumed turn (Copilot has no real block — see the editsGated comment above).
+  const editsGated = isChatEditGated(session, handoffTask) || isScratchSession(handoffTask);
   const gatedMessage = prependEditGateNote(session, handoffTask, 'copilot', safeMessage);
   // FLUX-1479 (FLUX-1226 Phase E): a pending phase handoff (mcp-server.ts's change_status handler)
   // announces itself once, on the next resumed turn — see buildPhaseHandoffNote's own doc comment.
   const handoffNote = buildPhaseHandoffNote(session, handoffTask, 'copilot');
   if (handoffNote) session.handoffPhaseAnnounced = true;
   const promptForCli = handoffNote ? `${handoffNote}\n\n---\n\n${gatedMessage}` : gatedMessage;
-  // FLUX-984: explicit MCP config injection on the resume path too — the gap applies to every spawn.
-  // FLUX-1444: `-p` is a bare flag here too — promptForCli is written to stdin after spawn, below.
-  const resumeArgs = session.resumeSessionId
-    ? ['-p', '--resume', session.resumeSessionId, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id, workspaceRoot, session.id)]
-    : ['-p', '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id, workspaceRoot, session.id)];
+  const resumeArgs = buildCopilotPromptArgs({
+    conversationId: id,
+    workspaceRoot,
+    sessionId: session.id,
+    ...(session.resumeSessionId ? { resumeSessionId: session.resumeSessionId } : {}),
+    skipPermissions: true,
+    editsGated,
+    attachmentAbsPaths,
+  });
 
   log.info(`[${id}] Reply spawn, resume=${session.resumeSessionId || 'none'}`);
   const replyProc = spawnCopilot(id, resumeArgs, executionRoot, session.id);
-  // FLUX-1444: deliver the prompt over stdin instead of argv — see the initial-spawn comment above.
+  // `-p ''` selects non-interactive mode; the real prompt is on stdin (see buildCopilotPromptArgs).
   replyProc.stdin.on('error', () => {});
   replyProc.stdin.write(promptForCli);
   replyProc.stdin.end();

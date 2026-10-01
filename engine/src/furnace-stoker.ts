@@ -23,7 +23,7 @@
 //   no verdict, but the last comment looks like a verdict (FLUX-1078) -> ONE corrective nudge, then park
 //   no verdict (no marker) / fail / waiting-input -> park (needs a human; stays In Progress + Require Input swimlane)
 
-import { getWorkspace, getDefaultWorkspace, liveWorkspaces, runWithWorkspace, resolveWorkspaceByRoot, type Workspace } from './workspace-context.js';
+import { getWorkspace, getDefaultWorkspace, liveBoundWorkspaces, runWithWorkspace, resolveWorkspaceByRoot, type Workspace } from './workspace-context.js';
 import { getEnginePort } from './packaged-mode.js';
 import { log } from './log.js';
 import { getConfig } from './config.js';
@@ -78,6 +78,7 @@ import { requireWorkspaceRoot, getWorkspaceRoot } from './workspace.js';
 import { postPrReview } from './branch-manager.js';
 import { reclaimReadyWorktrees, worktreeUnreclaimableReason, resolveExecutionRootReclaimOpts, type UnreclaimableReason } from './pr-cleanup.js';
 import { runGit } from './git-exec.js';
+import { findSessionOutcome } from './history.js';
 
 const STOKE_INTERVAL_MS = 5_000;
 
@@ -197,6 +198,10 @@ function phaseForState(state: BatchTicketState | undefined): FurnacePhase {
 
 // ── Pure decision core (unit-tested) ─────────────────────────────────────────
 
+// FLUX-1745: operator-facing wording for where a cooldown's retry time came from — one alias so the
+// board note, the log line, and noteCooldownOnBoard's cadence text can't drift from each other.
+type RetrySource = 'provider reset time' | 'default interval';
+
 export type TicketAction =
   | { type: 'wait' }
   | { type: 'review' }
@@ -213,7 +218,10 @@ export type TicketAction =
   // FLUX-1063: the ticket's session died from a transient usage/rate limit — enter (or remain in) a
   // cooldown instead of parking. advanceTicket records the cooldown clock + next retry time and moves
   // the ticket to the `cooling-down` state. Does NOT consume retryCap / the circuit breaker.
-  | { type: 'cooldown-rate-limited' }
+  // FLUX-1745: `rateLimitResetsAt` (from the dead session's `lastRateLimit.resetsAt`, FLUX-1744) rides
+  // along on the action itself — `advanceTicket` has no session in scope, only `getFurnaceBatch`, so
+  // this is the only way the provider's own reset time can cross the decide→apply boundary.
+  | { type: 'cooldown-rate-limited'; rateLimitResetsAt?: string }
   // FLUX-1063: a cooling-down ticket's retry window elapsed — restore its phase and spawn a FRESH
   // session (no `--resume`). `attempt` is the new rateLimitAttempts value to persist.
   | { type: 'retry-rate-limited'; phase: FurnacePhase; attempt: number }
@@ -238,6 +246,28 @@ export type TicketAction =
   // the batch immediately (one notification naming re-auth as the fix) instead of letting N tickets each
   // independently park `hard-fail` and trip the generic circuit breaker.
   | { type: 'halt-auth-expired'; reason: string };
+
+/**
+ * FLUX-1745: only the wall that actually killed this turn may set the cooldown retry clock. A dead
+ * session's `lastRateLimit` is NOT necessarily that wall — `recordRateLimit` (agents/shared.ts) fires
+ * for ANY non-'allowed' status (claude-code.ts:520), including a survivable `allowed_warning` the
+ * session kept working through hours earlier, and a terminal `rate-limited` classification also
+ * matches a transient `overloaded` 529 (isRateLimitError). Pairing a stale/warning `resetsAt` with an
+ * unrelated terminal failure would schedule `nextRetryAt` hours/days out; since the ceiling check runs
+ * before the retry wait, the ticket then parks at the ceiling having made zero retries where the
+ * default interval would have recovered in minutes. Require BOTH: the status is an actual rejection
+ * (not `allowed*`), and the observation is recent enough to plausibly be the wall that killed this turn.
+ */
+export function resetsAtForCooldown(
+  rl: { status: string; resetsAt?: string; observedAt: string } | undefined,
+  nowMs = Date.now(),
+): string | undefined {
+  if (!rl?.resetsAt) return undefined;
+  if (rl.status.startsWith('allowed')) return undefined; // a warning the session survived, not a rejection
+  const observed = Date.parse(rl.observedAt);
+  if (!Number.isFinite(observed) || nowMs - observed > 10 * 60_000) return undefined; // too stale to trust
+  return rl.resetsAt;
+}
 
 /**
  * Decide what to do next for a single active ticket, given its session status + the ticket's review
@@ -278,6 +308,9 @@ export function decideTicketAction(input: {
   // (Temper's review loop, the plain Furnace implementation loop) never sets this, so their
   // behavior is unchanged.
   bodyHashDrifted?: boolean;
+  // FLUX-1745: the dead session's own `lastRateLimit.resetsAt` (FLUX-1744) — when present, lets
+  // advanceTicket schedule the retry off the provider's actual wall-reset instead of a fixed guess.
+  rateLimitResetsAt?: string;
 }): TicketAction {
   const { ticket, sessionStatus, terminalReason, reviewState, ticketStatus, retryCap } = input;
   const requireInput = input.requireInputStatus || 'Require Input';
@@ -344,7 +377,7 @@ export function decideTicketAction(input: {
   // The retry cadence + ceiling are handled by the `cooling-down` branch above once advanceTicket moves
   // the ticket there; here we just make the entry decision.
   if (sessionStatus === 'failed' && terminalReason === 'rate-limited') {
-    return { type: 'cooldown-rate-limited' };
+    return { type: 'cooldown-rate-limited', ...(input.rateLimitResetsAt ? { rateLimitResetsAt: input.rateLimitResetsAt } : {}) };
   }
 
   // Terminal but unsuccessful — a crash/cancel is a bad state, not a human question.
@@ -433,25 +466,6 @@ interface TicketWithPrLinks {
 export function extractPrUrl(task: TicketWithPrLinks | null | undefined): string | undefined {
   if (!task) return undefined;
   return task.implementationLink || task.prUrl || task.pr?.url || task.pullRequest?.url || undefined;
-}
-
-/**
- * FLUX-1156: the ticket's own recorded `outcome` for a given session id, read straight off durable
- * history (`tasksCache`, kept current by `updateTaskWithHistory`/`updateAgentSession`) rather than the
- * in-memory `CliSessionRecord` — the adapters only ever mutate the ON-DISK entry's `outcome` via
- * `updateAgentSession` (see claude-code.ts's exit handler), never the in-memory `sessionHistoryEntry`
- * copy, so reading history here is what makes this work uniformly for BOTH a pre-spawn failure (which
- * sets both copies) and an ordinary post-spawn one (which only ever updates the durable copy).
- */
-export function findSessionOutcome(task: { history?: unknown[] } | null | undefined, sessionId: string | undefined): string | undefined {
-  if (!task || !sessionId || !Array.isArray(task.history)) return undefined;
-  for (let i = task.history.length - 1; i >= 0; i--) {
-    const e = task.history[i] as { type?: string; sessionId?: string; outcome?: string } | undefined;
-    if (e?.type === 'agent_session' && e.sessionId === sessionId && typeof e.outcome === 'string' && e.outcome.trim()) {
-      return e.outcome.trim();
-    }
-  }
-  return undefined;
 }
 
 /**
@@ -554,7 +568,10 @@ export async function dispatchSession(
 
 /** Cold-spawn once the session's last recorded context size exceeds this fraction of its known window —
  *  past that point a resumed turn pays a large cache-read bill AND sits near auto-compaction, which
- *  summarizes away the very warm context that made resuming worth it. */
+ *  summarizes away the very warm context that made resuming worth it. A LOW reading here means one of
+ *  two very different things: real headroom, or (FLUX-1745) the warm context was already thrown away
+ *  by a compaction — see the `compactionCount` check below, which must run before this ratio can be
+ *  misread as "plenty of room". */
 const RESUME_CONTEXT_RATIO = 0.6;
 /** Conservative context-window assumption when the adapter/CLI never reported one. */
 const RESUME_CONTEXT_FALLBACK_WINDOW = 150_000;
@@ -607,6 +624,11 @@ async function findResumeCandidate(ticketId: string, phase: FurnacePhase | 'groo
   // never gets a `sessionHistoryEntry` (see rehydratedRecord in session-store.ts), so its absence here
   // is a reliable "this session predates the current engine process" signal.
   if (!candidate.sessionHistoryEntry) return null;
+
+  // FLUX-1745: a session that has compacted at least once reads as tiny-context (the ratio check
+  // below would happily pass it), but that low reading is small precisely because the warm context
+  // was just summarized away, not because there's headroom — the worst possible resume target.
+  if ((candidate.compactionCount ?? 0) >= 1) return null;
 
   // Context headroom, else the no-usage-recorded turn-count proxy.
   if (candidate.lastTurnContextTokens != null) {
@@ -1556,8 +1578,17 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
     case 'cooldown-rate-limited': {
       const batch = getFurnaceBatch(batchId);
       if (!batch) return;
+      // FLUX-1745: prefer the provider's own reset time (+60s margin for clock skew/provider lag) over
+      // the fixed interval guess, but only when it actually parses and is still in the future — an
+      // absent or already-elapsed resetsAt falls back to the default so a stale/bad value can't
+      // schedule an immediate retry that just re-trips the same rate limit.
+      const resetsAtMs = action.rateLimitResetsAt ? Date.parse(action.rateLimitResetsAt) : NaN;
+      const usingResetsAt = Number.isFinite(resetsAtMs) && resetsAtMs > Date.now();
       const intervalMs = batch.rateLimitRetryIntervalMs ?? DEFAULT_RATE_LIMIT_RETRY_INTERVAL_MS;
-      const nextRetryAt = new Date(Date.now() + intervalMs).toISOString();
+      const nextRetryAt = usingResetsAt
+        ? new Date(resetsAtMs + 60_000).toISOString()
+        : new Date(Date.now() + intervalMs).toISOString();
+      const retrySource: RetrySource = usingResetsAt ? 'provider reset time' : 'default interval';
       let firstEntry = false;
       await mutateFurnaceBatch(batchId, (b) => {
         const t = findTicket(b, ticketId);
@@ -1569,14 +1600,14 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
         if (isActiveTicketState(t.state)) t.preCooldownState = t.state;
         t.nextRetryAt = nextRetryAt;
         t.state = 'cooling-down';
-        t.note = `rate-limited — cooling down, next retry ${nextRetryAt}`;
+        t.note = `rate-limited — cooling down, next retry ${nextRetryAt} (${retrySource})`;
         delete t.currentSessionId;
         delete t.sessionStartedAt;
         // Deliberately does NOT touch attempts / exhaustionAttempts / consecutiveFailures.
       });
       try { stopAllSessionsForTask(ticketId, 'furnace cooling down (rate-limited)'); } catch { /* best effort */ }
-      if (firstEntry) await noteCooldownOnBoard(ticketId, nextRetryAt, batch);
-      log.info(`[furnace] ${ticketId} rate-limited — cooling down, next retry ~${nextRetryAt} (ceiling ${Math.round((batch.rateLimitMaxWaitMs ?? DEFAULT_RATE_LIMIT_MAX_WAIT_MS) / 3_600_000)}h).`);
+      if (firstEntry) await noteCooldownOnBoard(ticketId, nextRetryAt, batch, retrySource);
+      log.info(`[furnace] ${ticketId} rate-limited — cooling down, next retry ~${nextRetryAt} via ${retrySource} (ceiling ${Math.round((batch.rateLimitMaxWaitMs ?? DEFAULT_RATE_LIMIT_MAX_WAIT_MS) / 3_600_000)}h).`);
       break;
     }
 
@@ -1615,14 +1646,17 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
  * `require-input` swimlane and needs a human; a cooldown is just waiting, so this only appends an activity
  * note (no status change, no swimlane) so a human watching the ticket sees why it went quiet. Best-effort.
  */
-async function noteCooldownOnBoard(ticketId: string, nextRetryAt: string, batch: FurnaceBatch): Promise<void> {
+async function noteCooldownOnBoard(ticketId: string, nextRetryAt: string, batch: FurnaceBatch, retrySource: RetrySource): Promise<void> {
   const hrs = Math.round((batch.rateLimitMaxWaitMs ?? DEFAULT_RATE_LIMIT_MAX_WAIT_MS) / 3_600_000);
+  const cadence = retrySource === 'provider reset time'
+    ? `next retry ${nextRetryAt} (from the provider's own reset time)`
+    : `auto-retrying every ${Math.round((batch.rateLimitRetryIntervalMs ?? DEFAULT_RATE_LIMIT_RETRY_INTERVAL_MS) / 60_000)}m, next retry ${nextRetryAt}`;
   try {
     await updateTaskWithHistory(ticketId, {
       entries: [{
         type: 'comment',
         user: 'Furnace',
-        comment: `Rate-limited — cooling down (not parked). Auto-retrying every ${Math.round((batch.rateLimitRetryIntervalMs ?? DEFAULT_RATE_LIMIT_RETRY_INTERVAL_MS) / 60_000)}m, next retry ${nextRetryAt}, up to a ${hrs}h ceiling before failing outright.`,
+        comment: `Rate-limited — cooling down (not parked). ${cadence}, up to a ${hrs}h ceiling before failing outright.`,
         date: nowIso(),
       }],
       updatedBy: 'Furnace',
@@ -1659,12 +1693,16 @@ async function reconcileTicket(batchId: string, ticketId: string, ws: Workspace 
   if (!batch) return;
   const prUrl = extractPrUrl(task);
   const sessionOutcome = findSessionOutcome(task, sess?.id ?? ticket.currentSessionId);
+  // FLUX-1745: the dead session's own provider-reported reset time — only when it's a recent, actual
+  // rejection (resetsAtForCooldown), never a stale warning wrongly paired with an unrelated failure.
+  const rateLimitResetsAt = resetsAtForCooldown(sess?.lastRateLimit);
   const action = decideTicketAction({
     ticket,
     ...(sess ? { sessionStatus: sess.status } : {}),
     ...(sess?.terminalReason ? { terminalReason: sess.terminalReason } : {}),
     ...(sess?.authDiagnosis ? { authDiagnosis: sess.authDiagnosis } : {}),
     ...(sessionOutcome ? { sessionOutcome } : {}),
+    ...(rateLimitResetsAt ? { rateLimitResetsAt } : {}),
     reviewState: task?.reviewState ?? null,
     ...(task?.status ? { ticketStatus: task.status } : {}),
     ...(getConfig().requireInputStatus ? { requireInputStatus: getConfig().requireInputStatus } : {}),
@@ -2045,6 +2083,8 @@ const UNRECLAIMABLE_LABEL: Record<UnreclaimableReason, string> = {
   'unknown-ticket': 'ticket not found on the board',
   'live-session': 'a session is still live on its branch',
   'background-process-hold': 'a background-process hold protects this worktree/branch',
+  'worktree-claim': 'a non-EH session holds an active worktree claim',
+  'benchmark-collecting': 'a benchmark run is still being measured (evidence collection in flight)',
   'recent-activity': 'recently active — briefly protected from reclaim',
   status: 'ticket status is not yet reclaimable (not Ready/terminal)',
 };
@@ -2253,12 +2293,37 @@ async function driveBurningBatches(ws: Workspace = getWorkspace()): Promise<void
  * back to the default workspace (`batchBelongsToWorkspaceRoot`), so with exactly one live workspace —
  * still today's most common configuration — this loop runs exactly as it did before.
  */
-async function driveStokeTick(): Promise<void> {
+/** FLUX-1710: true once the "stoker idle, no workspace bound" notice has been logged, so a fresh
+ *  install's 5s tick doesn't repeat it — reset to false the moment a bound tick actually runs, so a
+ *  later unbind (workspace lost mid-run) re-announces once rather than staying silent forever. */
+let unboundStokeNoticed = false;
+
+/** Test-only: reset the FLUX-1710 edge-triggered latch between cases. */
+export function __resetUnboundStokeNoticeForTests(): void {
+  unboundStokeNoticed = false;
+}
+
+export async function driveStokeTick(): Promise<void> {
+  // FLUX-1710: a fresh install has no workspace bound yet — `liveWorkspaces()` still returns the
+  // default workspace (root: null) so the SSE broadcaster keeps working, but every step below resolves
+  // a filesystem path from a workspace root (worktree pool, furnace dir, trigger checks) and throws
+  // through `requireWorkspaceRoot()` on a null root. Skip the tick quietly instead of spamming a
+  // CRITICAL unhandled rejection every 5s — see the ticket for the three throw sites this closes.
+  const boundWorkspaces = liveBoundWorkspaces();
+  if (boundWorkspaces.length === 0) {
+    if (!unboundStokeNoticed) {
+      unboundStokeNoticed = true;
+      log.info('[furnace] stoker idle — no workspace bound yet; ticks resume once a project folder is selected.');
+    }
+    return;
+  }
+  unboundStokeNoticed = false;
+
   // FLUX-1067 / FLUX-1551: observe each LIVE board's own worktree pool once per cycle so the slot gauge
   // + ignite clamp are current — a single call outside this loop (the pre-FLUX-1551 shape) only ever
   // scanned whichever board `requireWorkspaceRoot()` resolved to, so every other board's batch decisions
   // read a stale/foreign census.
-  for (const ws of liveWorkspaces()) {
+  for (const ws of boundWorkspaces) {
     await refreshWorktreePool({ root: ws.root });
   }
   // FLUX-1548: bind each pass to its own workspace — `driveBurningBatches` already threads `ws`
@@ -2266,7 +2331,7 @@ async function driveStokeTick(): Promise<void> {
   // this chain have no `ws` parameter at all and resolve the ambient `getWorkspaceRoot()` instead, so
   // without this ALS binding every dispatch from a non-default board's batch would stamp the wrong (or
   // no) `X-EH-Workspace` header and land on whichever board happens to be "active".
-  for (const ws of liveWorkspaces()) {
+  for (const ws of boundWorkspaces) {
     await runWithWorkspace(ws, () => driveBurningBatches(ws));
   }
   await checkTriggers();
@@ -2314,8 +2379,10 @@ export async function checkTriggers(): Promise<void> {
     // FLUX-1554: iterate a workspace-scoped view and bind each board's pass — the pre-1554 shape read
     // the raw global cache unbound, so an auto-ignite for a non-default board's batch claimed worktree
     // slots / wrote board history against whichever board happened to be ambiently active instead of
-    // the trigger's own board.
-    for (const ws of liveWorkspaces()) {
+    // the trigger's own board. FLUX-1710: filtered to BOUND workspaces — `checkTriggers` is exported
+    // and called directly by tests, so it must not depend on `driveStokeTick`'s unbound guard to stay
+    // safe on a null-root default workspace.
+    for (const ws of liveBoundWorkspaces()) {
       await runWithWorkspace(ws, async () => {
         await ensureFurnaceLoaded();
         for (const batch of getFurnaceBatchesCacheForWorkspace(ws)) {

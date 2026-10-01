@@ -52,18 +52,37 @@ export const GET_COMPUTED_CONFIG_KEYS = [
   'runtimeFrameworks',
 ] as const;
 
+// Named Copilot `--model` ids 404 in non-interactive `-p` on 1.0.82 for this account
+// (`Model "…" from --model flag is not available`), including the help example `gpt-5.4`.
+// `auto` (omit `--model`) works; `--effort` is rejected with auto, so spawn drops both.
+// Used by loadConfig (persist rewrite) and copilot.ts (spawn remap).
+export const COPILOT_MODEL_ALIASES: Record<string, string> = {
+  'gpt-5': 'auto',
+  'gpt-5-mini': 'auto',
+  'gpt-4.1': 'auto',
+  'gpt-5.4': 'auto',
+  'gpt-5.4-mini': 'auto',
+};
+
 // FLUX-1373: shipped per-CLI Tier -> model-id defaults, seeded into `integrations.<cli>.tiers`
 // below and reused by the migration (the "shipped defaults" a blank/legacy field falls back to).
 // Claude uses the CLI's short model aliases (matches the pre-1373 TIER_MODELS convention);
-// Gemini's ids are validated elsewhere against KNOWN_GEMINI_MODELS (agents/gemini.ts); Copilot has
-// no known-model validation list today, so its ids are the plain gpt-5 family.
-export const INTEGRATION_TIER_DEFAULTS: Record<'claudeCode' | 'geminiCli' | 'copilotCli' | 'codexCli', Record<Tier, string>> = {
+// Gemini's ids are validated elsewhere against KNOWN_GEMINI_MODELS (agents/gemini.ts); Copilot CLI
+// Copilot 1.0.82 `-p --model <id>` 404s every named slug we probed; tiers collapse to `auto`.
+export const INTEGRATION_TIER_DEFAULTS: Record<'claudeCode' | 'geminiCli' | 'copilotCli' | 'codexCli' | 'grokCli' | 'antigravityCli', Record<Tier, string>> = {
   claudeCode: { smart: 'opus', efficient: 'sonnet', cheap: 'haiku' },
   geminiCli: { smart: 'gemini-2.5-pro', efficient: 'gemini-2.5-flash', cheap: 'gemini-2.5-flash-lite' },
-  copilotCli: { smart: 'gpt-5', efficient: 'gpt-5-mini', cheap: 'gpt-4.1' },
+  copilotCli: { smart: 'auto', efficient: 'auto', cheap: 'auto' },
   // Codex CLI model availability is account-scoped. These are the live slugs from the
   // supported account cache, not the similarly named Copilot model ids.
   codexCli: { smart: 'gpt-5.6-terra', efficient: 'gpt-5.5', cheap: 'gpt-5.4-mini' },
+  // FLUX-1722: grok models reports exactly grok-4.6 (default) and grok-4.5, so the three-tier
+  // dial collapses at the bottom. Spend lever is `--reasoning-effort`, not the catalogue.
+  grokCli: { smart: 'grok-4.6', efficient: 'grok-4.5', cheap: 'grok-4.5' },
+  // FLUX-1738: live slugs from `agy models` (agy 1.1.26). Antigravity bakes reasoning effort into
+  // most slugs AND exposes `--effort`; these tier ids deliberately pick the model, and the adapter
+  // supplies effort via the flag — so do NOT append a `-high`/`-low` suffix here as well.
+  antigravityCli: { smart: 'gemini-3.1-pro-high', efficient: 'gemini-3.8-flash-medium', cheap: 'gemini-3.8-flash-low' },
 };
 
 // FLUX-1373: the three pinned task->tier presets (ticket plan's Layer 3 table) — single source of
@@ -185,7 +204,13 @@ const CONFIG_DEFAULTS: any = {
     },
     codexCli: {
       tiers: { ...INTEGRATION_TIER_DEFAULTS.codexCli },
-    }
+    },
+    grokCli: {
+      tiers: { ...INTEGRATION_TIER_DEFAULTS.grokCli },
+    },
+    antigravityCli: {
+      tiers: { ...INTEGRATION_TIER_DEFAULTS.antigravityCli },
+    },
   },
   // FLUX-1373: task -> tier assignment policy. `preset` is 'splurge'|'balanced'|'frugal'|'custom'
   // (portal flips to 'custom' the moment any assignment diverges from its preset — derived state,
@@ -198,6 +223,7 @@ const CONFIG_DEFAULTS: any = {
   syncSettings: {
     debounceMs: 30000,
     maxWaitMs: 300000,
+    heartbeatMs: 300000,
   },
   // FLUX-1063: global defaults for the Furnace rate-limit cooldown. A burn session that dies from a
   // transient usage/rate limit (5-hour session limit / 429 / quota) is not parked — the ticket cools
@@ -519,6 +545,47 @@ export async function loadConfig() {
       const modelPolicy = { preset: 'balanced', assignments: { ...MODEL_POLICY_PRESETS.balanced } };
       await applyConfigPatch({ integrations, modelPolicy, modelPolicyMigrated: true });
       log.info('[config] applied model-policy migration (integrations.*.tiers + modelPolicy seeded, legacy model fields dropped)');
+    }
+  }
+
+  // FLUX-1738: seed `integrations.antigravityCli.tiers` on boards that already ran the
+  // modelPolicyMigrated pass above (which is one-shot, so a framework added afterwards is never
+  // seeded by it — the same reason the Copilot remap below is flag-less). Seeds only when the key
+  // is absent or has no tiers, so a deliberate user edit is never clobbered.
+  {
+    const config = getConfig();
+    const integrations: Record<string, unknown> = { ...(config.integrations || {}) };
+    const existing = integrations.antigravityCli as { tiers?: unknown } | undefined;
+    const hasTiers = !!existing && typeof existing.tiers === 'object' && existing.tiers !== null
+      && Object.keys(existing.tiers as Record<string, unknown>).length > 0;
+    if (!hasTiers) {
+      integrations.antigravityCli = { ...(existing || {}), tiers: { ...INTEGRATION_TIER_DEFAULTS.antigravityCli } };
+      await applyConfigPatch({ integrations });
+      log.info('[config] seeded integrations.antigravityCli.tiers');
+    }
+  }
+
+  // Rewrite Copilot tier ids that current CLI 1.0.82 rejects. modelPolicyMigrated already
+  // persisted gpt-5 / gpt-5-mini / gpt-4.1, so a one-shot flag would miss boards that already
+  // migrated — rewrite whenever a known-stale slug is still on disk.
+  {
+    const config = getConfig();
+    const integrations: Record<string, unknown> = { ...(config.integrations || {}) };
+    const copilot = { ...((integrations.copilotCli as Record<string, unknown> | undefined) || {}) };
+    const tiers = { ...((copilot.tiers as Record<string, unknown> | undefined) || {}) };
+    let changed = false;
+    for (const tier of ['smart', 'efficient', 'cheap'] as const) {
+      const current = typeof tiers[tier] === 'string' ? tiers[tier] : '';
+      const next = COPILOT_MODEL_ALIASES[current];
+      if (next) {
+        tiers[tier] = next;
+        changed = true;
+      }
+    }
+    if (changed) {
+      integrations.copilotCli = { ...copilot, tiers };
+      await applyConfigPatch({ integrations });
+      log.info('[config] remapped stale Copilot CLI model ids to auto');
     }
   }
 }

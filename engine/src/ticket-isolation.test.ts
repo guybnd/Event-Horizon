@@ -108,7 +108,10 @@ describe('ensureTicketIsolation (FLUX-845 chokepoint, FLUX-852 hardening)', () =
 
     const res = await ensureTicketIsolation('FLUX-2', { worktree: false });
 
-    expect(createTicketBranch).toHaveBeenCalledWith('FLUX-2', 'Add the thing', undefined);
+    // FLUX-1739 added a `push` option. Asserted explicitly rather than loosened, because the DEFAULT
+    // is the load-bearing part: only a benchmark run passes false, and a silent flip of this default
+    // would stop every real ticket's branch reaching origin with nothing to catch it.
+    expect(createTicketBranch).toHaveBeenCalledWith('FLUX-2', 'Add the thing', undefined, { push: true });
     expect(res.branch).toBe('flux/FLUX-2-add-the-thing');
     // the SAME cache object a same-tick resolveTaskExecutionRoot holds must see the new branch —
     // updateTaskWithHistory replaces the cache entry, so ticket-isolation also mutates the live ref.

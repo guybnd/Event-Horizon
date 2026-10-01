@@ -19,6 +19,7 @@ import { Settings } from './components/Settings';
 import { ReleasesScreen } from './components/ReleasesScreen';
 import { EpicsScreen } from './components/EpicsScreen';
 import { TokenCostsScreen } from './components/TokenCostsScreen';
+import { BenchmarkScreen } from './components/BenchmarkScreen';
 import { WorkflowBuilder } from './components/WorkflowBuilder';
 import { WorkspaceSelector } from './components/WorkspaceSelector';
 import { OnboardingWizard } from './components/OnboardingWizard';
@@ -177,6 +178,11 @@ function AppContent() {
             {view === 'token-costs' && (
               <motion.div key="token-costs" className="h-full min-h-0" variants={crossfadeVariants} initial="initial" animate="animate" exit="exit" transition={tokens.fade}>
                 <TokenCostsScreen />
+              </motion.div>
+            )}
+{view === 'benchmarks' && (
+              <motion.div key="benchmarks" className="h-full min-h-0" variants={crossfadeVariants} initial="initial" animate="animate" exit="exit" transition={tokens.fade}>
+                <BenchmarkScreen />
               </motion.div>
             )}
             {view === 'workflows' && (

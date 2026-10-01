@@ -1,3 +1,5 @@
+import { existsSync } from 'fs';
+import path from 'path';
 import { getWorkspace, getDefaultWorkspace, type Workspace } from './workspace-context.js';
 import { log } from './log.js';
 import { findWorktreeForBranch, removeTaskWorktree, detachTaskWorktree, stashDirtyTree, unlinkWorktreeDependencies, reclaimWorktrees, listTaskWorktrees, ticketIdFromWorktreePath } from './task-worktree.js';
@@ -10,6 +12,8 @@ import { getConfig } from './config.js';
 import { TERMINAL_TICKET_STATUSES } from './schema.js';
 import { buildActivityEntry } from './history.js';
 import { getHoldsForBranch, getHoldsForTask, clearHoldsForBranch, forceKillHeldSubtree } from './background-process-holds.js';
+import { isCollecting } from './benchmark-collection-guard.js';
+import { hasActiveClaim, releaseClaimsForBranch } from './worktree-claims.js';
 // FLUX-1297: disarm Temper before this module stops a ticket's sessions itself (see
 // `disarmTemperForExternalStop`'s doc comment). Deliberately a function-body-only cross-import —
 // furnace-stoker.ts already imports from this module (reclaimReadyWorktrees), so this closes a
@@ -44,8 +48,8 @@ interface TicketHistoryEntry {
   event?: string;
 }
 
-/** Minimal `tasksCache` ticket shape as read/written by this module. */
-interface CachedTicket {
+/** Minimal `tasksCache` ticket shape as read/written by this module. Exported (FLUX-1773) so `commit-close.ts` shares one type instead of leaning on `any`. */
+export interface CachedTicket {
   id: string;
   branch?: string;
   status: string;
@@ -69,7 +73,7 @@ interface CachedTicket {
 const stuckWorktreeSlotsNotified = new Set<string>();
 
 /** Why {@link worktreeUnreclaimableReason} refused — surfaced by the Furnace's slot-holder naming (FLUX-1157). */
-export type UnreclaimableReason = 'unknown-ticket' | 'live-session' | 'background-process-hold' | 'recent-activity' | 'status';
+export type UnreclaimableReason = 'unknown-ticket' | 'live-session' | 'background-process-hold' | 'worktree-claim' | 'benchmark-collecting' | 'recent-activity' | 'status';
 
 /**
  * Why a ticket's task worktree can NOT be reclaimed (its slot returned to the board-wide pool) right
@@ -118,6 +122,13 @@ export function worktreeUnreclaimableReason(
   const t = (ws.tasks as Record<string, CachedTicket>)[ticketId];
   if (!t) return 'unknown-ticket';
   if (hasLiveSessionOnBranch(t.branch, ticketId, ws)) return 'live-session'; // never yank live work
+  // FLUX-1739: a benchmark run is being measured. Checked BEFORE the Ready/terminal return below,
+  // because a finished run sits at Ready with no live session — reclaimable by every rule here —
+  // during exactly the window in which the runner reads its diff, runs validation against the
+  // restored tree, and extracts friction. Deliberately NOT gated on `honorReadyGrace`: the cap
+  // backstop passes `false` to bypass the Ready grace buffer, and that backstop is the most likely
+  // caller to race a collection (it fires when another run of the same suite wants a slot).
+  if (isCollecting(ticketId)) return 'benchmark-collecting';
   // FLUX-1645: a live background-process hold protects this exact physical worktree/branch from
   // reclaim/prune/repair-retry/lock-holder reaping — same branch-scoped resolution as the
   // live-session check above, so a hold registered by a JOINED sibling (riding the same branch)
@@ -127,6 +138,13 @@ export function worktreeUnreclaimableReason(
   if ((t.branch && getHoldsForBranch(ws.root, t.branch).length > 0) || getHoldsForTask(ws.root, ticketId).length > 0) {
     return 'background-process-hold';
   }
+  // FLUX-1771: a non-EH session (no verified EH session id, so invisible to the live-session check
+  // above) holds an explicit, heartbeat-renewed claim on this ticket's worktree. Checked here —
+  // before the Ready/terminal return and `isWorktreeReclaimableForSweep`'s zero-commit backstop —
+  // so it covers every reclaim path, deliberately NOT gated on `opts.honorReadyGrace`: same rule as
+  // the hold check above, the cap backstop must defer too rather than yank a tree an agent is
+  // editing.
+  if (hasActiveClaim(ws.root, ticketId)) return 'worktree-claim';
   // FLUX-1060: within the post-restart grace window, also protect a worktree whose ticket shows
   // very recent session activity. After an engine restart the in-memory session map is empty and
   // rehydrated from persisted stubs (session-store) — but a session that entered `waiting-input`
@@ -175,6 +193,8 @@ const UNRECLAIMABLE_LABEL: Record<UnreclaimableReason, string> = {
   'unknown-ticket': 'ticket not found on the board',
   'live-session': 'a session is still live on its branch',
   'background-process-hold': 'a background-process hold protects this worktree/branch',
+  'worktree-claim': 'a non-EH session holds an active worktree claim',
+  'benchmark-collecting': 'a benchmark run is still being measured (evidence collection in flight)',
   'recent-activity': 'recently active — briefly protected from reclaim',
   status: 'ticket status is not yet reclaimable (not Ready/terminal)',
 };
@@ -449,6 +469,14 @@ export async function reclaimReadyWorktrees(
  * tree off a merged branch (post-merge cleanup MUST proceed), stash any uncommitted work so the
  * switch can't silently discard it, and surface the recoverable stash ref so the work isn't merely
  * "safe but invisible". Best-effort: never throws — a notification failure must not abort cleanup.
+ *
+ * FLUX-1770: this is now used ONLY as a last-resort backstop for the `pre-cleanup` path (main tree
+ * checked out ON the merged branch, about to switch off it) — and only after a plain `git checkout`
+ * has already been tried and refused. `syncDefaultBranch`'s `pre-sync` path no longer calls this at
+ * all: stashing a dirty MAIN checkout that nobody asked to touch is exactly the FLUX-1770 incident
+ * (7 orphaned "EH pre-sync" stashes silently yanking in-progress work off a user's tree) — `merge
+ * --ff-only` already refuses to overwrite local edits on its own, so no stash is needed to make that
+ * path safe.
  */
 async function backstopDirtyRoot(workspaceRoot: string, branch: string, reason: string): Promise<void> {
   try {
@@ -470,6 +498,75 @@ async function backstopDirtyRoot(workspaceRoot: string, branch: string, reason: 
 }
 
 /**
+ * FLUX-1770: op label for whichever in-progress git operation currently occupies `workspaceRoot`
+ * (rebase/merge/cherry-pick/revert/bisect), or `null` when none. The engine must never touch a tree
+ * mid-operation like this — the user (or another agent) is actively resolving it, and a `checkout`/
+ * `merge --ff-only` racing that resolution can corrupt it. Checked before every MAIN-tree
+ * sync/switch. `--git-path` (rather than hand-joining `.git/…`) resolves correctly for a linked
+ * worktree, whose per-worktree state (e.g. `rebase-merge`) lives under `.git/worktrees/<name>/`, not
+ * `.git/` itself.
+ */
+async function detectInProgressGitOperation(workspaceRoot: string): Promise<string | null> {
+  const refs: Array<[string, string]> = [
+    ['MERGE_HEAD', 'merge'],
+    ['CHERRY_PICK_HEAD', 'cherry-pick'],
+    ['REVERT_HEAD', 'revert'],
+  ];
+  for (const [ref, label] of refs) {
+    try {
+      await git(workspaceRoot, ['rev-parse', '--verify', '--quiet', ref]);
+      return label; // resolves ⇒ the ref exists ⇒ that operation is in progress
+    } catch { /* ref doesn't exist — not this operation */ }
+  }
+  const paths: Array<[string, string]> = [
+    ['rebase-merge', 'rebase'],
+    ['rebase-apply', 'rebase'],
+    ['BISECT_LOG', 'bisect'],
+  ];
+  for (const [gitPath, label] of paths) {
+    try {
+      const { stdout } = await git(workspaceRoot, ['rev-parse', '--git-path', gitPath]);
+      // `--git-path` returns a path relative to `workspaceRoot` (git only emits an absolute path
+      // when GIT_DIR is itself set to one) — resolve it against `workspaceRoot`, not `process.cwd()`.
+      if (existsSync(path.resolve(workspaceRoot, stdout.trim()))) return label;
+    } catch { /* best-effort — treat a query failure as "not in progress" */ }
+  }
+  return null;
+}
+
+/**
+ * FLUX-1770: dedupe the "main not synced"/"main not fast-forwarded" notifications per
+ * (workspace, reason) so the ~90s reconcile poller doesn't re-raise the same stuck-sync
+ * notification on every tick while the underlying condition (an in-progress rebase, a
+ * conflicting local edit) persists. Keyed on workspace root; cleared for a reason the moment
+ * that specific condition resolves, so a LATER recurrence of the same reason notifies again.
+ */
+const syncSkipNotified = new Map<string, Set<string>>();
+
+/** The op labels `detectInProgressGitOperation` can return — used to clear every possible
+ *  `in-progress-*`/`pre-cleanup-in-progress-*` dedupe key once the check reports clear again,
+ *  since the caller only knows the PREVIOUSLY-flagged label if it happens to match. */
+const IN_PROGRESS_OP_LABELS = ['merge', 'cherry-pick', 'revert', 'rebase', 'bisect'] as const;
+
+function notifySyncSkipped(workspaceRoot: string, reasonKey: string, title: string, message: string): void {
+  const notified = syncSkipNotified.get(workspaceRoot) ?? new Set<string>();
+  syncSkipNotified.set(workspaceRoot, notified);
+  if (notified.has(reasonKey)) return;
+  notified.add(reasonKey);
+  addNotification({ type: 'info', title, message, actions: [{ label: 'Dismiss', actionId: 'dismiss' }] });
+}
+
+/** Clears just `reasonKey` for `workspaceRoot` — NOT every reason on the workspace — so a still-
+ *  live reason (e.g. an unrelated in-progress rebase) keeps suppressing its own repeat notification. */
+function clearSyncSkipNotified(workspaceRoot: string, reasonKey: string): void {
+  syncSkipNotified.get(workspaceRoot)?.delete(reasonKey);
+}
+
+function clearInProgressSyncSkipNotified(workspaceRoot: string, keyPrefix: string): void {
+  for (const label of IN_PROGRESS_OP_LABELS) clearSyncSkipNotified(workspaceRoot, `${keyPrefix}${label}`);
+}
+
+/**
  * Whether a ticket has ALREADY reached Done at some point — its history records a status_change
  * into Done, or a prior merge-cleanup "advanced to Done" comment. This is how the AUTOMATIC
  * reconcile path tells a FRESH merge (ticket heading to Done for the first time → advance it) from
@@ -481,7 +578,7 @@ async function backstopDirtyRoot(workspaceRoot: string, branch: string, reason: 
  * Explicit callers (finish_ticket, the "Clean up worktree" notification) pass auto=false and bypass
  * this — an explicit finish must always land.
  */
-function hasReachedDoneBefore(t: CachedTicket): boolean {
+export function hasReachedDoneBefore(t: CachedTicket): boolean {
   const history = Array.isArray(t?.history) ? t.history : [];
   return history.some(
     (h: TicketHistoryEntry) =>
@@ -514,18 +611,57 @@ export interface CleanupResult {
  * If master is the branch checked out in the main working tree we ff-merge it in place;
  * otherwise we fast-forward the ref directly (`fetch origin master:master`), which git
  * refuses for a checked-out branch — hence the split.
+ *
+ * FLUX-1770: this NEVER stashes the main tree. `git merge --ff-only` already refuses outright
+ * if fast-forwarding would touch a locally-modified file — the tree is left completely untouched
+ * on refusal — so no backstop is needed to make the fast-forward safe, and stashing here was
+ * actively harmful: it silently yanked in-progress (possibly unrelated) work out of the user's or
+ * another agent's tree on every reconcile poll, leaving orphaned "EH pre-sync" stashes behind (the
+ * reported incident: 7 of them in one repo, one of which undid ~1h of work and interfered with an
+ * in-progress rebase). An in-progress rebase/merge/cherry-pick/revert/bisect is detected up front
+ * and skipped outright — touching such a tree at all, stash or no stash, risks corrupting it.
  */
 export async function syncDefaultBranch(workspaceRoot: string): Promise<boolean> {
   try {
     const def = await getDefaultBranch();
     await git(workspaceRoot, ['fetch', 'origin']);
+    // FLUX-1770: checked BEFORE the `cur.trim() === def` branch below — a rebase/cherry-pick/revert
+    // leaves HEAD DETACHED (not on `def`) while it's paused, so gating this check on "HEAD is on
+    // `def`" would miss exactly the in-progress-rebase case it exists to catch.
+    const inProgress = await detectInProgressGitOperation(workspaceRoot);
+    if (inProgress) {
+      notifySyncSkipped(
+        workspaceRoot,
+        `in-progress-${inProgress}`,
+        'Main branch not synced',
+        `main not synced: ${inProgress} in progress — the main checkout has a ${inProgress} ` +
+          `underway, so syncing \`${def}\` with origin was skipped until it finishes.`,
+      );
+      return false;
+    }
+    // The in-progress condition has resolved (we didn't return above) — drop any dedupe entries it
+    // left behind so a LATER recurrence notifies again, on whichever branch below we take.
+    clearInProgressSyncSkipNotified(workspaceRoot, 'in-progress-');
     const { stdout: cur } = await git(workspaceRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
     if (cur.trim() === def) {
-      // The ff-merge updates working-tree files; a fast-forward that touches a locally-modified
-      // file would abort (or, worse, the surrounding cleanup would later clobber it). Stash any
-      // dirty root work first so nothing is lost (FLUX-741) before fast-forwarding in place.
-      await backstopDirtyRoot(workspaceRoot, def, 'pre-sync');
-      await git(workspaceRoot, ['merge', '--ff-only', `origin/${def}`]);
+      try {
+        await git(workspaceRoot, ['merge', '--ff-only', `origin/${def}`]);
+      } catch {
+        // `merge --ff-only` refused without touching the tree — almost certainly local edits to a
+        // file the incoming commits also touch. Never stash to force it through (FLUX-1770); tell
+        // the user to resolve it themselves.
+        const { stdout: dirty } = await git(workspaceRoot, ['diff', '--name-only']).catch(() => ({ stdout: '' }));
+        const files = dirty.trim().split('\n').filter(Boolean);
+        notifySyncSkipped(
+          workspaceRoot,
+          'ff-conflict',
+          'Main branch not fast-forwarded',
+          `main not fast-forwarded: local edits${files.length ? ` to ${files.join(', ')}` : ''} conflict ` +
+            `with incoming commits on \`${def}\` — commit or stash your changes yourself, then pull.`,
+        );
+        return false;
+      }
+      clearSyncSkipNotified(workspaceRoot, 'ff-conflict');
     } else {
       await git(workspaceRoot, ['fetch', 'origin', `${def}:${def}`]);
     }
@@ -650,12 +786,16 @@ export async function cleanupMergedBranch(
   // stopAllSessionsForTask's own per-session clear, in case a hold's session record was already
   // gone) rather than deferring for it.
   for (const hold of clearHoldsForBranch(ws.root, branch, 'branch merged and cleaned up')) forceKillHeldSubtree(hold);
+  releaseClaimsForBranch(ws.root, branch);
 
   // 3. Fast-forward local master.
   const masterSynced = await syncDefaultBranch(workspaceRoot);
 
-  // 4 + 5. Worktree teardown (gated on a clean tree).
-  const worktree = await findWorktreeForBranch(workspaceRoot, branch).catch(() => null);
+  // 4 + 5. Worktree teardown (gated on a clean tree). `excludeMainTree: true` (FLUX-1776): the
+  // main checkout matching here would misreport it as a dirty task worktree below and make the
+  // main-tree switch-off block further down unreachable — a main-tree branch ticket has no
+  // dedicated worktree to tear down, so it must fall through to that block instead.
+  const worktree = await findWorktreeForBranch(workspaceRoot, branch, { excludeMainTree: true }).catch(() => null);
   let worktreeRemoved = false;
   if (worktree) {
     // FLUX-1018: drop the shared node_modules junctions (FLUX-518) BEFORE the
@@ -701,13 +841,49 @@ export async function cleanupMergedBranch(
   try {
     const { stdout: cur } = await git(workspaceRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
     if (cur.trim() === branch) {
-      const def = await getDefaultBranch();
-      // Dirty-root backstop (FLUX-741, FLUX-734): the main tree is on the merged branch and is
-      // about to be switched off it — `git checkout <def>` would silently discard uncommitted
-      // root edits (the FLUX-739 loss). Stash them first (recoverable) and surface the ref.
-      await backstopDirtyRoot(workspaceRoot, branch, 'pre-cleanup');
-      await git(workspaceRoot, ['checkout', def]);
-      await git(workspaceRoot, ['merge', '--ff-only', `origin/${def}`]).catch(() => {});
+      // FLUX-1770: never touch a tree mid-rebase/merge/cherry-pick/revert/bisect — skip the
+      // switch entirely (leaving the branch checked out) and notify, rather than risk corrupting
+      // whatever the user/another agent is actively resolving.
+      const inProgress = await detectInProgressGitOperation(workspaceRoot);
+      if (inProgress) {
+        notifySyncSkipped(
+          workspaceRoot,
+          `pre-cleanup-in-progress-${inProgress}`,
+          'Main branch not switched',
+          `main not switched off \`${branch}\`: ${inProgress} in progress — merge cleanup left the ` +
+            `branch checked out until it finishes.`,
+        );
+      } else {
+        // The in-progress condition has resolved (we're in the else branch) — drop any dedupe
+        // entries it left behind so a LATER recurrence notifies again (FLUX-1777).
+        clearInProgressSyncSkipNotified(workspaceRoot, 'pre-cleanup-in-progress-');
+        const def = await getDefaultBranch();
+        // FLUX-1770: `git checkout` safely carries non-conflicting local edits — try it first, with
+        // NO stash. Only when checkout itself refuses (it would overwrite a locally-modified file)
+        // does the FLUX-741/734 backstop kick in as a last resort, so real uncommitted root work is
+        // never silently discarded by the branch switch.
+        try {
+          await git(workspaceRoot, ['checkout', def]);
+        } catch {
+          await backstopDirtyRoot(workspaceRoot, branch, 'pre-cleanup');
+          await git(workspaceRoot, ['checkout', def]);
+        }
+        try {
+          await git(workspaceRoot, ['merge', '--ff-only', `origin/${def}`]);
+          clearSyncSkipNotified(workspaceRoot, 'pre-cleanup-ff-conflict');
+        } catch {
+          // The checkout above may have carried a non-conflicting dirty edit onto `def` (FLUX-1770 —
+          // no stash on that path), which can legitimately make this ff refuse. Surface it — silently
+          // swallowing it left main switched but un-synced with no notification anywhere.
+          notifySyncSkipped(
+            workspaceRoot,
+            'pre-cleanup-ff-conflict',
+            'Main branch not fast-forwarded',
+            `main switched off \`${branch}\` but not fast-forwarded to \`origin/${def}\` — local edits ` +
+              `carried over from \`${branch}\` conflict with incoming commits. Resolve manually, then pull.`,
+          );
+        }
+      }
     }
   } catch {
     // Best-effort — if we can't switch off the branch, the delete below just no-ops.
@@ -882,7 +1058,7 @@ export async function reconcilePullRequests(workspaceRoot: string, ws: Workspace
           // Resolve the worktree BY BRANCH (not by an arbitrary branch-ticket's dir) so
           // shared/joined branches detach the worktree that actually holds the branch —
           // mirrors cleanupMergedBranch (reviewer Major, FLUX-557).
-          const wt = await findWorktreeForBranch(workspaceRoot, branch).catch(() => null);
+          const wt = await findWorktreeForBranch(workspaceRoot, branch, { excludeMainTree: true }).catch(() => null);
           if (wt) {
             stopAllSessionsForTask(bounce[0]!.id, 'PR closed — detaching worktree');
             await detachTaskWorktree(workspaceRoot, wt, { ticketId: bounce[0]!.id, applyToMain: false }).catch(() => {});

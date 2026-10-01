@@ -19,7 +19,7 @@ Version: 2.18.0
 
 Load this skill when a ticket's status is `Todo` or `In Progress`.
 
-**Fast-path sessions (FLUX-1380).** A ticket can also reach implementation from `Grooming` in the same session, with no `Todo` handoff, when it was dispatched with `phase:'fast-path'` — one session grooms an XS/S ticket inline and then continues straight into this skill's workflow, per the grooming skill's matching "stop at Todo" exception. This combined groom-then-implement contract is sanctioned only when the launch mission says fast-path; a normally-dispatched implementation session still expects a ticket that already went through a separate grooming pass and reached `Todo`/`In Progress` on its own.
+**Fast-path / Oneshot sessions (FLUX-1380 / FLUX-1733).** A ticket can also reach implementation from `Grooming` in the same session, with no `Todo` handoff, when it was dispatched with `phase:'fast-path'` (user-facing name **Oneshot**) — one session grooms an XS/S ticket inline and then continues straight into this skill's workflow, per the grooming skill's matching "stop at Todo" exception. Before Ready, post an **Oneshot wrap-up** comment covering applicable items (docs updated or "no docs because …"; follow-up tickets created or "none because …"; validation; residual risk). Never `finish_ticket` and never run a product build from this session. If the mission includes PLAN-FIRST, pause for user approval in-session after writing the plan — do not move to Todo. Fast-path sessions get **no** injected implementation skill; the persona mission is the contract. This combined groom-then-implement contract is sanctioned only when the launch mission says fast-path; a normally-dispatched implementation session still expects a ticket that already went through a separate grooming pass and reached `Todo`/`In Progress` on its own.
 
 ## Commit-Before-Ready — CRITICAL (FLUX-730)
 
@@ -131,6 +131,7 @@ Use MCP tools for all ticket interactions. Use Read for source code only.
 - **Branchless tickets:** wait for `finish <ticket>` before committing (commit + implementationLink + Done = atomic).
 - **Branch / worktree tickets:** commit BEFORE moving to `Ready` — the PR opens at `Ready` and needs commits to exist. `finish` then merges that PR.
 - Good: `Add ticket effort field editing`. Bad: `fix stuff`, `updates`.
+- **Committing straight to the default branch (FLUX-1773):** put `Closes: <ID>` (or `Fixes:`/`Resolves:`) in the commit message and the engine advances that ticket to Done within ~90s — no branch or PR needed. A bare `(FLUX-123)` mention never closes anything. Note: a ticket that has already reached Done once is never re-closed by a trailer — reopen it and close it by hand.
 
 ## Comment Conventions
 

@@ -1481,6 +1481,26 @@ button:not(:disabled):active {
   @apply my-1;
 }
 
+.docs-editor-content ul[data-type='taskList'] {
+  @apply list-none pl-0;
+}
+
+.docs-editor-content ul[data-type='taskList'] li[data-type='taskItem'] {
+  @apply flex items-start gap-2;
+}
+
+.docs-editor-content ul[data-type='taskList'] li[data-type='taskItem'] > label {
+  @apply mt-1.5 flex-none select-none;
+}
+
+.docs-editor-content ul[data-type='taskList'] li[data-type='taskItem'] > div {
+  @apply min-w-0 flex-1;
+}
+
+.docs-editor-content ul[data-type='taskList'] li[data-checked='true'] {
+  @apply text-gray-400 line-through dark:text-gray-500;
+}
+
 .docs-editor-content blockquote {
   @apply my-4 rounded-r-2xl border-l-4 border-primary/40 bg-gray-50 px-4 py-3 italic text-gray-700 dark:bg-white/5 dark:text-gray-200;
 }
@@ -1849,4 +1869,46 @@ button:not(:disabled):active {
 :root[data-theme="axis-day"] .eh-wordmark,
 :root[data-theme="axis-day"] .eh-column-title {
   text-shadow: 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/* ─── FLUX-1748: ProvenanceBar / ContextStrip gauge fills ────────────────── */
+/* `floor` (with a denominator): a hatched fill up to the known floor, so it visually reads as
+   "confirmed" without claiming to be `exact`'s solid fill. */
+.eh-provenance-bar__fill--floor {
+  background-color: var(--eh-state-attention);
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.35) 0,
+    rgba(255, 255, 255, 0.35) 3px,
+    transparent 3px,
+    transparent 6px
+  );
+}
+/* The zone past the floor — "could be more than this", lighter and animated so it reads as
+   unsettled rather than a second measured value. */
+.eh-provenance-bar__fill--floor-indeterminate {
+  background-color: var(--eh-state-attention);
+  opacity: 0.28;
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.5) 0,
+    rgba(255, 255, 255, 0.5) 3px,
+    transparent 3px,
+    transparent 6px
+  );
+  background-size: 200% 100%;
+  animation: eh-provenance-indeterminate 1.6s linear infinite;
+}
+@keyframes eh-provenance-indeterminate {
+  from { background-position: 0 0; }
+  to { background-position: -12px 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .eh-provenance-bar__fill--floor-indeterminate { animation: none; }
+}
+
+/* `unknown` track (and a `floor` gauge with no denominator, which renders identically): dashed
+   border, no fill — the visual promise is "we genuinely don't know", never a measured zero. */
+.eh-provenance-bar--unknown {
+  background-color: transparent;
 }

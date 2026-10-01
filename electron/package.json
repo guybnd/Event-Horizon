@@ -1,6 +1,6 @@
 {
   "name": "event-horizon-desktop",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "private": true,
   "description": "Event Horizon desktop app",
   "main": "main.js",
@@ -14,5 +14,7 @@
   "devDependencies": {
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8"
-  }
+  },
+  "homepage": "https://github.com/guybnd/Event-Horizon",
+  "author": "guybnd"
 }

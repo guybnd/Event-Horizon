@@ -7,6 +7,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { handleMcpHttpRequest } from './mcp-server.js';
 import { signConversation } from './session-binding.js';
+import { getWorkspace } from './workspace-context.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -81,12 +82,12 @@ describe('MCP HTTP per-session conversation routing (FLUX-1213)', () => {
     capturedRequests = [];
   });
 
-  async function connectClient(conversationId?: string): Promise<Client> {
+  async function connectClient(conversationId?: string, capabilities: Record<string, unknown> = {}): Promise<Client> {
     const headers = conversationId
       ? { 'x-eh-conversation-id': conversationId, 'x-eh-conversation-token': signConversation(conversationId) }
       : undefined;
     const transport = new StreamableHTTPClientTransport(baseUrl, headers ? { requestInit: { headers } } : undefined);
-    const client = new Client({ name: `eh-routing-test-${conversationId ?? 'unbound'}`, version: '1.0.0' }, { capabilities: {} });
+    const client = new Client({ name: `eh-routing-test-${conversationId ?? 'unbound'}`, version: '1.0.0' }, { capabilities });
     // Cast: same exactOptionalPropertyTypes/sessionId mismatch mcp-schema-probe.ts casts around —
     // StreamableHTTPClientTransport genuinely implements Transport.
     await client.connect(transport as Transport);
@@ -143,6 +144,12 @@ describe('MCP HTTP per-session conversation routing (FLUX-1213)', () => {
     const savedToken = process.env.EH_CONVERSATION_TOKEN;
     delete process.env.EH_CONVERSATION_ID;
     delete process.env.EH_CONVERSATION_TOKEN;
+    // FLUX-1774: this client has no elicitation capability either, so with zero portal SSE
+    // clients watching the board it would now fail fast (rule 4) instead of reaching the fetch
+    // this test asserts on. Seed a fake portal watcher so rule 3 still routes through the fetch —
+    // the behavior this test actually verifies (unbound resolves to null, not process.env).
+    const fakeSseClient = {} as unknown as import('express').Response;
+    getWorkspace().sseClients.add(fakeSseClient);
     try {
       const client = await connectClient(undefined);
       try {
@@ -151,12 +158,27 @@ describe('MCP HTTP per-session conversation routing (FLUX-1213)', () => {
         await client.close().catch(() => {});
       }
     } finally {
+      getWorkspace().sseClients.delete(fakeSseClient);
       if (savedId !== undefined) process.env.EH_CONVERSATION_ID = savedId;
       if (savedToken !== undefined) process.env.EH_CONVERSATION_TOKEN = savedToken;
     }
 
     const call = capturedRequests.find((r) => r.url.includes('/api/board/ask-question'));
     expect(call?.body.conversationId).toBeNull();
+  });
+
+  it('FLUX-1774: an EH-spawned session (bound conversationId + token) still parks via the fetch even when the client advertises elicitation — rule 1 wins over rule 2', async () => {
+    capturedRequests = [];
+    const client = await connectClient('FLUX-DDD', { elicitation: {} });
+    try {
+      await askQuestion(client);
+    } finally {
+      await client.close().catch(() => {});
+    }
+
+    const askCalls = capturedRequests.filter((r) => r.url.includes('/api/board/ask-question'));
+    expect(askCalls).toHaveLength(1);
+    expect(askCalls[0]?.body.conversationId).toBe('FLUX-DDD');
   });
 
   it('the board orchestrator session (__board__) still routes to __board__', async () => {

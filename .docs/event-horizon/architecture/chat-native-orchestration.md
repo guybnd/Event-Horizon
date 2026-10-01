@@ -38,13 +38,18 @@ That endpoint:
   (tracked in [`engine/src/session-store.ts`](../../../engine/src/session-store.ts) via
   `awaitDelegation`/`notifyDelegationComplete`).
 
-**Idempotency / dedupe (FLUX-842, FLUX-844).** The endpoint dedupes by a stable hash of
+**Idempotency / dedupe (FLUX-842, FLUX-844, FLUX-1735).** The endpoint dedupes by a stable hash of
 `(taskId, personaId, task, effort)`. If the MCP transport drops the held-open response after a child
 spawned, the orchestrator's retry attaches to the in-flight (or freshly-settled, within a 90s TTL)
 delegation — returning the same result with `deduped: true` instead of launching a second child (this
 is the ~3× review-fleet blow-up it prevents). The reservation is taken **before** `spawnSession()`
 (`reserveDispatch`), so even a retry that lands *during* spawn attaches rather than double-launching; a
-failed spawn releases the key so a genuine later retry can start fresh. **Caveat for callers:** because
+failed spawn releases the key so a genuine later retry can start fresh. A retry that **rewrote `task`**
+(so the hash misses) still attaches to a live or just-finished same-persona assistant on the ticket
+(`attachToExistingDelegation`) instead of spawning a second scout. The MCP `delegate` tool's self-fetch
+uses a custom undici Agent (`engine-long-fetch.ts`) so undici's 300s `headersTimeout` cannot abort a
+child that is still running under the route's 600s max; if that hop still drops, the same attach path
+recovers in-process. **Caveat for callers:** because
 the key is byte-identical inputs, two *intentionally identical* concurrent delegations (e.g. an
 N-identical-skeptic adversarial-verify fan-out) collapse to one — vary the prompt/label by index when
 you genuinely want N distinct runs.

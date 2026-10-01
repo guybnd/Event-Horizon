@@ -23,7 +23,14 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Self-hosted (Guy's Linux box, 24c/128G) instead of ubuntu-latest: this private repo's
+    # per-PR checks were burning paid hosted minutes, and the box runs the suite in a fraction
+    # of the 2-core hosted time. The runner is a systemd service (actions.runner.*, installed
+    # from ~/actions-runner-eh) — if this job sits queued forever, that machine is off or the
+    # service is down. Additional platform runners (mac/win dev machines) can register with
+    # their own labels later; release.yml stays on hosted macos/windows runners since those
+    # builds need real Apple/MS images and only run once per release.
+    runs-on: [self-hosted, Linux, X64]
 
     steps:
       - name: Checkout
@@ -50,6 +57,11 @@ jobs:
       # FLUX-938: adapter-boundary guard — forbids per-CLI code outside engine/src/agents/.
       - name: Adapter-boundary guard
         run: npm run check:boundary
+
+      # FLUX-1755: ambient-workspace guard — no NEW bare getWorkspace() calls (they resolve to the
+      # default board when unbound; the allowlist only shrinks as modules migrate).
+      - name: Workspace-binding guard
+        run: npm run check:workspace-binding
 
       # FLUX-1665: test-tier classification guard — fails if a spawn/git-fixture test file is
       # missing from the committed integration tier (test-tiers.json), the list the local

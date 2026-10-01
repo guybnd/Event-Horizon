@@ -121,6 +121,15 @@ function toSummary(session: CliSessionRecord): CliSessionSummary {
   // FLUX-1599: expose the auth self-diagnosis so the chat error card (FLUX-1601) can read a
   // structured verdict instead of re-parsing the raw provider error text.
   if (session.authDiagnosis) summary.authDiagnosis = session.authDiagnosis;
+  // FLUX-1744: promoted from record-only to portal-visible — nothing rendered these before.
+  if (session.lastTurnContextTokens != null) summary.lastTurnContextTokens = session.lastTurnContextTokens;
+  if (session.contextWindow != null) summary.contextWindow = session.contextWindow;
+  if (session.lastRateLimit) summary.lastRateLimit = session.lastRateLimit;
+  if (session.compactionCount != null) summary.compactionCount = session.compactionCount;
+  if (session.cumulativeDroppedTokens != null) summary.cumulativeDroppedTokens = session.cumulativeDroppedTokens;
+  if (session.lastCompactionAt) summary.lastCompactionAt = session.lastCompactionAt;
+  if (session.lastCompactTrigger) summary.lastCompactTrigger = session.lastCompactTrigger;
+  if (session.lastCompactDurationMs != null) summary.lastCompactDurationMs = session.lastCompactDurationMs;
   return summary;
 }
 
@@ -228,6 +237,21 @@ export function getDetailSessionSummariesForTask(taskId: string): CliSessionSumm
 }
 
 /**
+ * FLUX-1772: lite variant of {@link getAllSessionSummariesForTask} for the `start_session`
+ * liveness probe (`waitForSessionLiveness` in mcp-server.ts), which only reads
+ * `id`/`status`/`lastOutputAt`/`terminalReason`/`authDiagnosis` and never `liveOutput`. Strips
+ * `liveOutput`/`liveOutputChars` entirely rather than truncating — polling the untruncated
+ * route moved every session's full uncapped stdout buffer (measured 3.9MB across 4 sessions on
+ * one ticket) on each of the probe's ~11 polls per `start_session` call.
+ */
+export function getLiteSessionSummariesForTask(taskId: string): CliSessionSummary[] {
+  return getAllSessionSummariesForTask(taskId).map((summary) => {
+    const { liveOutput: _liveOutput, liveOutputChars: _liveOutputChars, ...rest } = summary;
+    return rest as CliSessionSummary;
+  });
+}
+
+/**
  * FLUX-1685: full untruncated `liveOutput` buffer for one session, for the on-demand
  * `/:id/cli-sessions/:sessionId/output` route. Reads the in-memory record directly (there is no
  * disk copy — an engine restart loses it, same as today). Requires `session.taskId === taskId` so
@@ -313,8 +337,8 @@ export function getActiveSessionsForTask(taskId: string): CliSessionRecord[] {
  * (like `stopAllCliSessions`/`stopCliSessionsForWorkspace` above), NOT via `getAdapter(...).stop()`
  * — importing `./agents/index.js` here would be circular (agents/copilot.ts, claude-code.ts, and
  * gemini.ts all import from this module). No-op returning false when the session doesn't exist or
- * is already terminal (not in `ACTIVE_STATUSES`) — mirrors the route's "already finished" 409
- * guard, just without a response.
+ * is already terminal (not in `ACTIVE_STATUSES`). The HTTP stop route treats that as an
+ * idempotent success so the portal Stop button can reconcile a failed spawn.
  */
 export function stopCliSession(sessionId: string): boolean {
   const session = cliSessionsById.get(sessionId);
@@ -623,8 +647,9 @@ export function unregisterPendingRelay(groupId: string): boolean {
 
 // ── Supervisor delegation completion tracking ───────────────────────────────
 // When a supervisor lead delegates to a child agent, the HTTP request blocks
-// until the child finishes. We store a resolve callback per child session ID
-// so that `notifyGroupSessionTerminal` (or direct session-end) can unblock it.
+// until the child finishes. We store a Set of resolvers per child session ID
+// so that `notifyGroupSessionTerminal` (or direct session-end) can unblock every
+// waiter — the REST handler plus an MCP recover after a dropped self-fetch.
 
 export interface DelegationResult {
   sessionId: string;
@@ -634,16 +659,29 @@ export interface DelegationResult {
 }
 
 type DelegationResolver = (result: DelegationResult) => void;
-const pendingDelegations = new Map<string, DelegationResolver>();
+const pendingDelegations = new Map<string, Set<DelegationResolver>>();
+
+function settleDelegations(sessionId: string, result: DelegationResult): void {
+  const waiters = pendingDelegations.get(sessionId);
+  if (!waiters || waiters.size === 0) return;
+  pendingDelegations.delete(sessionId);
+  for (const resolve of waiters) resolve(result);
+}
 
 /**
  * Register a pending delegation: returns a Promise that resolves when the
- * child session reaches a terminal state. Called by the delegation endpoint
- * before spawning the child.
+ * child session reaches a terminal state. Multiple waiters are allowed — an
+ * MCP-side recover after a dropped self-fetch must not steal the REST handler's
+ * resolver (FLUX-1735: combiner saw "fetch failed" while the scout still finished).
  */
 export function awaitDelegation(sessionId: string): Promise<DelegationResult> {
   return new Promise<DelegationResult>((resolve) => {
-    pendingDelegations.set(sessionId, resolve);
+    let waiters = pendingDelegations.get(sessionId);
+    if (!waiters) {
+      waiters = new Set();
+      pendingDelegations.set(sessionId, waiters);
+    }
+    waiters.add(resolve);
   });
 }
 
@@ -652,10 +690,7 @@ export function awaitDelegation(sessionId: string): Promise<DelegationResult> {
  * delegation, resolve its awaiter with the output.
  */
 export function notifyDelegationComplete(session: CliSessionRecord): void {
-  const resolver = pendingDelegations.get(session.id);
-  if (!resolver) return;
-  pendingDelegations.delete(session.id);
-  resolver({
+  settleDelegations(session.id, {
     sessionId: session.id,
     status: session.status,
     output: session.outputData || session.cumulativeOutput || '',
@@ -667,15 +702,37 @@ export function notifyDelegationComplete(session: CliSessionRecord): void {
  * Cancel a pending delegation (e.g. on timeout). Resolves with a failure result.
  */
 export function cancelDelegation(sessionId: string, reason: string): void {
-  const resolver = pendingDelegations.get(sessionId);
-  if (!resolver) return;
-  pendingDelegations.delete(sessionId);
-  resolver({
+  settleDelegations(sessionId, {
     sessionId,
     status: 'cancelled',
     output: reason,
     succeeded: false,
   });
+}
+
+/** Live supervisor-assistant session for this ticket + persona, if any. */
+export function findLiveDelegateSession(taskId: string, personaId: string): CliSessionRecord | undefined {
+  return matchingDelegateSessions(taskId, personaId).find((s) => ACTIVE_STATUSES.has(s.status));
+}
+
+function matchingDelegateSessions(taskId: string, personaId: string): CliSessionRecord[] {
+  if (!personaId) return [];
+  const role = `assistant:${personaId}`;
+  const ids = cliSessionsByTaskId.get(taskId) || [];
+  return ids
+    .map((id) => cliSessionsById.get(id))
+    .filter((s): s is CliSessionRecord =>
+      !!s && s.patternPosition === 'assistant' && (s.personaId === personaId || s.role === role),
+    );
+}
+
+function delegationResultFromSession(session: CliSessionRecord): DelegationResult {
+  return {
+    sessionId: session.id,
+    status: session.status,
+    output: session.outputData || session.cumulativeOutput || '',
+    succeeded: session.status === 'completed',
+  };
 }
 
 // ── Dispatch idempotency (FLUX-842) ─────────────────────────────────────────
@@ -763,6 +820,55 @@ export function reserveDispatch(key: string): DispatchReservation {
       rejectResult(error);
     },
   };
+}
+
+/** In-flight / recently-settled dispatch whose child session id is `sessionId`. */
+export function findDispatchBySessionId(sessionId: string): DispatchEntry | undefined {
+  if (!sessionId) return undefined;
+  for (const entry of dispatchRegistry.values()) {
+    if (entry.sessionId === sessionId) return entry;
+  }
+  return undefined;
+}
+
+/**
+ * Most recent assistant session for this ticket + persona that is still worth
+ * attaching to: live, or terminal within the dispatch TTL (a retry that landed
+ * after the child finished but before the combiner would otherwise re-spawn).
+ */
+function findAttachableDelegateSession(taskId: string, personaId: string): CliSessionRecord | undefined {
+  const matches = matchingDelegateSessions(taskId, personaId);
+  const live = matches.find((s) => ACTIVE_STATUSES.has(s.status));
+  if (live) return live;
+  const latest = [...matches].sort((a, b) =>
+    (b.endedAt || b.startedAt).localeCompare(a.endedAt || a.startedAt),
+  )[0];
+  if (!latest?.endedAt) return undefined;
+  const ended = Date.parse(latest.endedAt);
+  if (!Number.isFinite(ended) || Date.now() - ended > DISPATCH_RESULT_TTL_MS) return undefined;
+  return latest;
+}
+
+/**
+ * Reattach to a child already spawned for this delegation instead of treating a
+ * dropped HTTP wait as a failed scout. Prefers the exact idempotency key, then a
+ * live (or just-finished) assistant with the same persona on the ticket — a retry
+ * that rewrote `task` still attaches rather than launching a second child.
+ */
+export async function attachToExistingDelegation(
+  ticketId: string,
+  personaId: string,
+  task: string,
+  effortKey: string,
+): Promise<DelegationResult | undefined> {
+  const existing = findDispatch(dispatchKey(ticketId, personaId, task, effortKey));
+  if (existing) return existing.promise;
+  const session = findAttachableDelegateSession(ticketId, personaId);
+  if (!session) return undefined;
+  const bySid = findDispatchBySessionId(session.id);
+  if (bySid) return bySid.promise;
+  if (ACTIVE_STATUSES.has(session.status)) return awaitDelegation(session.id);
+  return delegationResultFromSession(session);
 }
 
 // File-lock enforcement: check if any active session holds a conflicting path lock
@@ -854,14 +960,20 @@ export function reconcileDeadSessions(now: number = Date.now()): number {
   return reaped;
 }
 
-// Silent-spawn watchdog: how long a spawned child may run with ZERO output (stdout or stderr —
-// `lastOutputAt` stamps on both, appendSessionOutput in agents/shared.ts) before it is presumed
+// Silent-spawn watchdog: how long a spawned child may run with ZERO output before it is presumed
 // hung and killed. Deliberately scoped to NEVER-output-this-turn only: a healthy CLI emits its
 // stream-json init event within seconds of every turn (fresh spawn or resume), while a turn that
 // HAS produced output can then legitimately go silent for many minutes inside one long-running
 // tool call — so "any silence > N" would false-positive, but "no output at all since the turn
 // started" cannot. 3 minutes comfortably clears a cold first launch (MCP handshakes are capped
 // pre-spawn; the CLI's own init lands well under a minute even cold).
+//
+// FLUX-1745: `lastOutputAt` is stamped in the shared skeleton (attachStdoutProcessing, agents/shared.ts)
+// for EVERY successfully-parsed JSONL line, before any dialect's onEvent/onVendorEvent runs — so
+// liveness no longer depends on which frame type or which adapter branch claims a line. This
+// guarantees a long-but-alive auto-compaction (FLUX-1744's compact_boundary, which a dialect claims
+// and returns `true` for) still counts as output. "No output at all" now genuinely means the child
+// emitted nothing parseable, not merely nothing the dialect chose to surface.
 const SILENT_SPAWN_TIMEOUT_MS = 180_000;
 
 /**
@@ -1069,6 +1181,14 @@ interface SessionStub {
    *  falls back to the turn-count proxy instead of the real gauge). */
   lastTurnContextTokens?: number;
   contextWindow?: number;
+  /** FLUX-1744: rate-limit/compaction telemetry, persisted so it survives an engine restart the same
+   *  way the context gauges above do. */
+  lastRateLimit?: { status: string; rateLimitType?: string; resetsAt?: string; observedAt: string };
+  compactionCount?: number;
+  cumulativeDroppedTokens?: number;
+  lastCompactionAt?: string;
+  lastCompactTrigger?: 'auto' | 'manual';
+  lastCompactDurationMs?: number;
   /** FLUX-1390: only set when status === 'scheduled'. */
   wakeAt?: string;
   /**
@@ -1137,6 +1257,12 @@ function stubFor(session: CliSessionRecord, workspaceRoot: string | null): Sessi
   if (session.patternPosition) stub.patternPosition = session.patternPosition;
   if (session.lastTurnContextTokens != null) stub.lastTurnContextTokens = session.lastTurnContextTokens;
   if (session.contextWindow != null) stub.contextWindow = session.contextWindow;
+  if (session.lastRateLimit) stub.lastRateLimit = session.lastRateLimit;
+  if (session.compactionCount != null) stub.compactionCount = session.compactionCount;
+  if (session.cumulativeDroppedTokens != null) stub.cumulativeDroppedTokens = session.cumulativeDroppedTokens;
+  if (session.lastCompactionAt) stub.lastCompactionAt = session.lastCompactionAt;
+  if (session.lastCompactTrigger) stub.lastCompactTrigger = session.lastCompactTrigger;
+  if (session.lastCompactDurationMs != null) stub.lastCompactDurationMs = session.lastCompactDurationMs;
   return stub;
 }
 
@@ -1182,6 +1308,12 @@ function rehydratedRecord(stub: SessionStub): CliSessionRecord {
     ...(stub.patternPosition ? { patternPosition: stub.patternPosition } : {}),
     ...(stub.lastTurnContextTokens != null ? { lastTurnContextTokens: stub.lastTurnContextTokens } : {}),
     ...(stub.contextWindow != null ? { contextWindow: stub.contextWindow } : {}),
+    ...(stub.lastRateLimit ? { lastRateLimit: stub.lastRateLimit } : {}),
+    ...(stub.compactionCount != null ? { compactionCount: stub.compactionCount } : {}),
+    ...(stub.cumulativeDroppedTokens != null ? { cumulativeDroppedTokens: stub.cumulativeDroppedTokens } : {}),
+    ...(stub.lastCompactionAt ? { lastCompactionAt: stub.lastCompactionAt } : {}),
+    ...(stub.lastCompactTrigger ? { lastCompactTrigger: stub.lastCompactTrigger } : {}),
+    ...(stub.lastCompactDurationMs != null ? { lastCompactDurationMs: stub.lastCompactDurationMs } : {}),
     ...(scheduled ? { wakeAt: stub.wakeAt } : {}),
     // FLUX-1636 (Fix A2): restore the tag so `sessionBelongsToWorkspaceRoot` resolves this
     // rehydrated session to its OWN board instead of collapsing through the untagged fallback.
@@ -1424,6 +1556,7 @@ export function stopAllSessionsForTask(taskId: string, reason: string) {
   const activeSessions = getActiveSessionsForTask(taskId);
   for (const session of activeSessions) {
     session.requestedStop = true;
+    session.stopReason = reason; // FLUX-1623: so the adapter's exit handler can attribute the stop correctly
     session.status = 'cancelled';
     session.endedAt = new Date().toISOString();
     clearHoldsForSession(session.id, reason); // FLUX-1645: ticket-scoped teardown overrides every hold

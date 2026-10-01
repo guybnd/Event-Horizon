@@ -8,6 +8,7 @@ import { recordWatchEvent } from './perf/watch-storm.js';
 import { finalMessageNeedsUser } from './final-message-heuristic.js';
 import fs from 'fs/promises';
 import { realpathSync, existsSync } from 'fs';
+import { detectSuspectRead, HISTORY_SHRINK_MIN_ENTRIES } from './ticket-read-guard.js';
 import path from 'path';
 import matter from 'gray-matter';
 import chokidar from 'chokidar';
@@ -18,18 +19,20 @@ import { runGit } from './git-exec.js';
 import { getActiveFluxDir, getTaskAssetsDir, getFluxStoreDir, isOrphanMode, setWorkspaceRoot, getWorkspacesList, getWorkspaceRoot } from './workspace.js';
 import { attachWorktreeIfPresent, migrateStrandedFluxTickets, ensureNonOrphanLocalGitignore } from './storage-sync.js';
 import { startSyncWatcher, allocateNewTicketId, triggerSync } from './sync-watcher.js';
-import { appendJournalEntry, setJournalReplayHandler, setJournalCacheReloadHandler } from './sync-journal.js';
+import { appendJournalEntry, dropPendingCreateEntries, setJournalReplayHandler, setJournalCacheReloadHandler, setJournalCreateReplayHandler, type CreateReplayPayload } from './sync-journal.js';
 import { randomUUID } from 'crypto';
 import { loadConfig, autoRegisterUnknownTags, getConfig } from './config.js';
+import { BENCHMARK_ID_PREFIX, BENCHMARK_KIND } from './models/benchmark.js';
 import { loadCustomPersonas } from './orchestration-personas.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp, compactSessionProgress, type HistoryEntryLike } from './history.js';
 import { isPidAlive } from './kill-process-tree.js';
 import { generatePromptNotification, generateCompletionNotification, clearNotifications, checkSkillStaleness, addNotification } from './notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
-import { broadcastEvent, bumpTasksVersion } from './events.js';
+import { broadcastEvent, bumpTasksVersion, broadcastToAllWorkspaces } from './events.js';
 import { rehydrateOpenPrompts } from './hitl-prompts.js';
 import { cliSessionsById, cliSessionIdByTaskId, rehydrateSessionStubs, armReclaimGrace } from './session-store.js';
 import { rehydrateHoldStubs, clearHoldsForTask, forceKillHeldSubtree } from './background-process-holds.js';
+import { rehydrateClaimStubs, releaseClaim } from './worktree-claims.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder, hashDocContent } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
 import { bootstrapNewWorkspace, installSkillsForWorkspace } from './bootstrap.js';
@@ -87,6 +90,29 @@ const repairingPaths = new Set<string>();
 // redundant stat/read/parse/validate pass (FLUX-290). Single-fire on purpose —
 // only the engine's own follow-up event is swallowed, not later external edits.
 const recentEngineWrites = new Set<string>();
+
+// FLUX-1634 review round 2: cache presence (`ws.tasks[taskId]`) cannot distinguish "deliberately
+// deleted after create" from "create lost to a reset --hard" — reconcileBackgroundPull (below)
+// deletes the cache entry for BOTH before create-replay ever runs, since it treats any changed
+// path whose file is now missing as a background-pull delete. This set is the explicit signal:
+// only deleteTask and DELETE /api/tasks/:id add to it, so the create-replay handler can tell the
+// two cases apart. Keyed by file path (not taskId) — the create-replay handler's journaled payload
+// carries `filePath` directly, and a path is the durable on-disk identity a deletion actually acts
+// on. In-memory only, never persisted — sufficient because replay of a given journal entry only
+// ever happens inside the same process's runSync tick that created it (the journal file is
+// local/gitignored, never shared across engines), so a process restart can never reach the
+// create-replay handler with a stale/missing marker for an entry it still owns. It IS cleared,
+// though: createTaskUnlocked clears a path's marker when a fresh create reuses it (ids, and so
+// paths, are reused after a delete — see FLUX-1634 round 3). That clear is safe only because
+// deleteTask/DELETE also drop the deleted ticket's own still-pending `kind:'create'` journal entry
+// (dropPendingCreateEntries, FLUX-1634 round 4) — otherwise clearing the marker for the new create
+// would also un-suppress the old ticket's entry, resurrecting it instead of applying the new one.
+const deliberatelyDeletedFilePaths = new Set<string>();
+
+/** Marks a ticket file as intentionally removed so a pending create-replay never resurrects it (FLUX-1634). */
+export function markTaskDeliberatelyDeleted(filePath: string): void {
+  deliberatelyDeletedFilePaths.add(filePath);
+}
 
 // Sessions whose final message we've already surfaced as a notification (FLUX-570) —
 // dedup across the multiple terminal persists a single session can make.
@@ -252,6 +278,17 @@ function serializeTicketWrite<T>(ws: Workspace, taskId: string, run: () => Promi
 }
 
 /**
+ * FLUX-1760: resolve once every write queued for this ticket has landed. A decision that reads the
+ * ticket's durable state right after a session ends (the end-of-turn park detector) must not race
+ * the session's own last `change_status` — observed: a run that moved to Ready with a completion
+ * comment was flagged "no board action" while an identical sibling 0.6 s later was not.
+ */
+export function awaitTicketWritesIdle(taskId: string, ws: Workspace = getWorkspace()): Promise<void> {
+  const tail = ticketWriteChains.get(ws)?.get(taskId);
+  return tail ? tail.then(() => {}, () => {}) : Promise.resolve();
+}
+
+/**
  * FLUX-1550: thrown by `updateTaskWithHistoryLocked` when a body write's `baseBodyVersion` no
  * longer matches the on-disk body's current version — a lost-update race (someone else wrote the
  * body between this caller's read and this write). Carries the fresh on-disk version so the
@@ -349,6 +386,48 @@ setJournalReplayHandler((taskId, options) => updateTaskWithHistory(taskId, optio
 // replaying — reconcileBackgroundPull already does exactly this (re-load changed files, drop
 // deleted ones) for the chokidar background-pull path; reuse it rather than duplicating the logic.
 setJournalCacheReloadHandler(reconcileBackgroundPull);
+// FLUX-1634: a create has no existing cache entry to route through updateTaskWithHistory, so it
+// gets its own replay handler — recreate the exact file that a losing sync race's `reset --hard`
+// discarded (createTaskUnlocked journals the fully-resolved content below, before writing it), and
+// reload it into the caller-supplied workspace's cache.
+//
+// Review fix (FLUX-1634, round 2): two guards, in order.
+// 1. If the task's file path is in `deliberatelyDeletedFilePaths`, it was intentionally removed after the create
+//    (FLUX-738's create-then-rollback in extract.ts, or DELETE /api/tasks/:id) while its journal
+//    entry was still pending flush (entries only drop after a successful push — see
+//    dropFlushedJournalEntries). This CANNOT be inferred from cache presence: `runSync` calls
+//    reloadCacheAfterReset (-> reconcileBackgroundPull) BEFORE the replay loop, and that deletes
+//    the cache entry for ANY changed path whose file is now missing on disk — which includes a
+//    create merely lost to `reset --hard` (Step 1 commits the new file before the first push, so
+//    it's in `preResetHead` and therefore in the pre/post-reset diff). Cache presence can't tell
+//    "deliberately deleted" apart from "lost to a reset" — both end with no cache entry and no
+//    file. The explicit marker set is what makes the distinction; see it for details.
+// 2. This handler only runs after this engine's own push was rejected, so its commit never won the
+//    race, and every replay attempt re-resets before re-reading the journal (see runSync) — so a file
+//    already at `filePath` can't be this engine's own write. The only way it can exist is a second
+//    engine minting the same id first (documented live at createTaskUnlocked's FLUX-1756 comment
+//    above). Silently returning there would drop this engine's ticket while the journaled parent
+//    `subtasks` link still replays and survives — exactly the dangling-reference symptom this ticket
+//    was filed for — so surface it loudly instead of swallowing it.
+setJournalCreateReplayHandler(async (taskId, payload: CreateReplayPayload, ws: Workspace) => {
+  const { filePath, fileContent } = payload;
+  if (deliberatelyDeletedFilePaths.has(filePath)) return;
+  if (existsSync(filePath)) {
+    log.error(`[tasks] Create replay for ${taskId} lost an id collision — ${filePath} already exists (a different engine minted this id first). This ticket's content was not recreated; its parent-link journal entry (if any) may still replay and leave a dangling reference.`);
+    addNotification({
+      type: 'error',
+      title: taskId,
+      message: `${taskId} could not be recreated after a sync conflict — another engine already created a ticket with this id. Check the parent's subtasks list for a dangling reference.`,
+      ticketId: taskId,
+      actions: [],
+    }, ws);
+    return;
+  }
+  recentEngineWrites.add(filePath);
+  await atomicWriteFile(filePath, fileContent);
+  const parsed = matter(fileContent);
+  ws.tasks[taskId] = { ...parsed.data, body: parsed.content, id: taskId, _path: filePath };
+});
 
 async function updateTaskWithHistoryLocked(taskId: string, options: UpdateTaskWithHistoryOptions, ws: Workspace) {
   const task = ws.tasks[taskId];
@@ -359,7 +438,33 @@ async function updateTaskWithHistoryLocked(taskId: string, options: UpdateTaskWi
   const entries = Array.isArray(options.entries) ? [...options.entries] : [];
   const { _path } = task;
 
-  const { frontmatter, body } = await readTaskFromDisk(task);
+  const disk = await readTaskFromDisk(task);
+  const { frontmatter } = disk;
+  let { body } = disk;
+
+  // FLUX-1754: this write is a read-merge-write over the ON-DISK copy. If that copy is a partial
+  // read (the sync merge rewriting the file, an editor mid-save), the merge persists the loss: an
+  // empty body and a frontmatter missing `id`/`branch`/`implementationLink`, written back with a
+  // fresh timestamp. Prefer the cached copy for whatever the disk read has lost, and say so loudly.
+  {
+    const cachedView = task as unknown as Record<string, unknown>;
+    const suspect = detectSuspectRead(
+      { body: task.body as string | undefined, frontmatter: cachedView },
+      { body, frontmatter },
+      { allowBodyClear: options.newBody !== undefined },
+    );
+    if (suspect) {
+      log.error(`[FLUX] ${taskId}: on-disk read looks partial (${suspect.reasons.join('; ')}) — writing from the cached copy instead. Path: ${_path}`);
+      if ((body ?? '').trim().length === 0 && typeof task.body === 'string' && task.body.trim().length > 0) body = task.body;
+      const fm = frontmatter as Record<string, unknown>;
+      for (const key of ['id', 'title', 'status', 'branch', 'implementationLink', 'baselineCommit', 'createdBy']) {
+        if (fm[key] === undefined && cachedView[key] !== undefined) fm[key] = cachedView[key];
+      }
+      const cachedHistory = Array.isArray(task.history) ? task.history : [];
+      const diskHistory = Array.isArray(frontmatter.history) ? frontmatter.history : [];
+      if (cachedHistory.length >= HISTORY_SHRINK_MIN_ENTRIES && diskHistory.length < cachedHistory.length * 0.5) fm.history = cachedHistory;
+    }
+  }
 
   // FLUX-1550: body CAS. Only gates writes that actually replace the body (`newBody` present) —
   // metadata-only writes (extraFields/nextStatus/etc. with no newBody) are unaffected regardless
@@ -447,6 +552,7 @@ async function updateTaskWithHistoryLocked(taskId: string, options: UpdateTaskWi
     // primitive here) and must never block/fail this write.
     if (getTerminalStatuses().includes(options.nextStatus)) {
       for (const hold of clearHoldsForTask(ws.root, taskId)) forceKillHeldSubtree(hold);
+      releaseClaim(ws.root, taskId);
     }
   }
 
@@ -682,12 +788,35 @@ async function getMaxIdFromRemote(projectKey: string): Promise<number> {
   }
 }
 
-export async function createTask(options: CreateTaskOptions, ws: Workspace = getWorkspace()): Promise<CreateTaskResult> {
+// FLUX-1756: id allocation is atomic per workspace. Two concurrent creates both scanned `ws.tasks`
+// for the max id, both awaited the remote max, and both minted `<prefix>-(max+1)` — observed live
+// twice (BENCH-2, BENCH-35), the second time overwriting the first ticket's file. The whole
+// scan → reserve → write sequence now runs on a per-workspace chain, so the second caller's scan
+// sees the first caller's `ws.tasks[nextId]` entry. Minting is milliseconds; nothing measurable waits.
+const allocationChains = new WeakMap<Workspace, Promise<unknown>>();
+
+export function createTask(options: CreateTaskOptions, ws: Workspace = getWorkspace()): Promise<CreateTaskResult> {
+  const prev = allocationChains.get(ws) ?? Promise.resolve();
+  const run = () => createTaskUnlocked(options, ws);
+  const result = prev.then(run, run);
+  const tail = result.then(() => {}, () => {});
+  allocationChains.set(ws, tail);
+  void tail.then(() => { if (allocationChains.get(ws) === tail) allocationChains.delete(ws); });
+  return result;
+}
+
+async function createTaskUnlocked(options: CreateTaskOptions, ws: Workspace): Promise<CreateTaskResult> {
   const pKey = options.projectKey || getConfig().projects?.[0] || 'FLUX';
   // FLUX-1225: scratch chats live in their own `SCRATCH-n` id namespace so they never consume the
   // `FLUX-n` sequence and are trivially distinguishable from board tickets. The counter is scanned
   // (cache + remote) against this prefix, so scratch and project ids increment independently.
-  const idPrefix = options.kind === 'scratch' ? 'SCRATCH' : pKey;
+  // FLUX-1739: benchmark runs mint one throwaway ticket EACH (a suite is N repetitions of one seed,
+  // and worktree paths derive from ticket id, so runs sharing a ticket would collide). They get their
+  // own `BENCH-n` namespace for the same reason scratch does — a 45-cell suite must not burn 45
+  // numbers out of the project's sequence.
+  const idPrefix = options.kind === 'scratch' ? 'SCRATCH'
+    : options.kind === BENCHMARK_KIND ? BENCHMARK_ID_PREFIX
+    : pKey;
   let maxId = 0;
   Object.keys(ws.tasks).forEach((key) => {
     if (key.startsWith(`${idPrefix}-`)) {
@@ -704,8 +833,20 @@ export async function createTask(options: CreateTaskOptions, ws: Workspace = get
     }
   }
 
-  const nextId = `${idPrefix}-${maxId + 1}`;
-  const filePath = path.join(getActiveFluxDir(), `${nextId}.md`);
+  // FLUX-1756 (containment): never overwrite a ticket file that already exists. The cache scan above
+  // misses a ticket whose file is on disk but not yet loaded (a freshly-written sibling the watcher
+  // has not picked up, a file synced in moments ago), and the id it then mints collides — observed
+  // live: BENCH-35 was minted twice within a minute and the second write replaced the first ticket's
+  // file. The allocator's proper fix (atomic reservation) is FLUX-1756; this makes the collision
+  // impossible to turn into data loss in the meantime.
+  let nextId = `${idPrefix}-${maxId + 1}`;
+  let filePath = path.join(getActiveFluxDir(), `${nextId}.md`);
+  while (existsSync(filePath)) {
+    maxId++;
+    log.warn(`[tasks] ${nextId} already exists on disk but not in the cache — skipping to ${idPrefix}-${maxId + 1}`);
+    nextId = `${idPrefix}-${maxId + 1}`;
+    filePath = path.join(getActiveFluxDir(), `${nextId}.md`);
+  }
   const createdAt = new Date().toISOString();
   const actor = options.author || 'Unknown';
 
@@ -748,6 +889,26 @@ export async function createTask(options: CreateTaskOptions, ws: Workspace = get
 
   const body = options.body || '';
   const fileContent = matter.stringify(body, frontmatter);
+
+  // FLUX-1634: journal the create BEFORE writing the file, same ordering invariant as
+  // updateTaskWithHistoryLocked — a `reset --hard` on a lost sync race discards the file's
+  // not-yet-pushed commit, but the journal (gitignored, untouched by reset) survives and lets
+  // replayJournalEntry recreate this exact file. Without this, create_ticket could report success
+  // for a file that a concurrent sync then silently erases (FLUX-1634's reported incident).
+  if (isOrphanMode()) {
+    await appendJournalEntry(getFluxStoreDir(), {
+      opId: randomUUID(),
+      taskId: nextId,
+      kind: 'create',
+      ts: createdAt,
+      options: { filePath, fileContent } satisfies CreateReplayPayload,
+    });
+  }
+
+  // FLUX-1634: a new ticket at this path supersedes any earlier deletion of it. Ids (and so paths)
+  // are reused after a delete, and a stale marker would make the create-replay handler skip this
+  // create if a reset loses it. Clearing here also bounds the set's growth.
+  deliberatelyDeletedFilePaths.delete(filePath);
   recentEngineWrites.add(filePath);
   await atomicWriteFile(filePath, fileContent);
   ws.tasks[nextId] = { ...frontmatter, body, id: nextId, _path: filePath };
@@ -768,6 +929,14 @@ export async function createTask(options: CreateTaskOptions, ws: Workspace = get
  */
 export async function deleteTask(id: string, ws: Workspace = getWorkspace()): Promise<void> {
   const task = ws.tasks[id];
+  if (task?._path) markTaskDeliberatelyDeleted(task._path);
+  // FLUX-1634 round 4: a delete never removed its own still-pending `kind:'create'` journal entry.
+  // If the id gets reused by a later create at the same path, and this engine's push later loses a
+  // sync race, replay would run the deleted ticket's create entry BEFORE the new one's — resurrecting
+  // the deleted ticket and losing the new one to the id-collision guard. Dropping the entry here means
+  // there is nothing left to resurrect it with; markTaskDeliberatelyDeleted above stays as the backstop
+  // for a delete that lands after runSync already read the journal into memory for this tick.
+  if (isOrphanMode()) await dropPendingCreateEntries(getFluxStoreDir(), id);
   delete ws.tasks[id];
   if (task?._path) {
     await fs.unlink(task._path).catch(() => {});
@@ -1013,6 +1182,20 @@ async function loadTaskInner(filePath: string, ws: Workspace) {
     if (existingCached && existingCached.title && !parsed.data.title && !parsed.data.status) {
       console.warn(`[loadTask] Ignoring corrupt write for ${existingId}: file lost title+status while cache has "${existingCached.title}". Likely a partial write or unauthorized direct edit.`);
       return;
+    }
+    // FLUX-1754: the guard above only caught a file that lost BOTH title and status. The observed
+    // data loss kept both and dropped the body, `id`, `branch`, `implementationLink` and nine more —
+    // and the auto-repair below then wrote that truncated parse back over the good file. Any read
+    // that has LOST what the cache has is a suspect read: keep the cache, do not repair, do not write.
+    if (existingCached) {
+      const suspect = detectSuspectRead(
+        { body: existingCached.body as string | undefined, frontmatter: existingCached as unknown as Record<string, unknown> },
+        { body: parsed.content, frontmatter: parsed.data },
+      );
+      if (suspect) {
+        log.error(`[loadTask] Ignoring suspect read for ${existingId} (${suspect.reasons.join('; ')}) — keeping the cached copy; the file was probably mid-write. Path: ${filePath}`);
+        return;
+      }
     }
 
     // Validate first; only attempt repair if validation fails
@@ -1777,11 +1960,24 @@ export async function startWatchers(ws: Workspace = getWorkspace()) {
         // must not silently drop a still-live, unexpired lease (AC8). rehydrateHoldStubs itself
         // drops overdue/dead leases rather than resuming them.
         void rehydrateHoldStubs(ws).catch((err) => console.error('[background-process-holds] stub rehydrate failed', err));
+        // FLUX-1771: same restart-durability restore for worktree claims — see worktree-claims.ts's
+        // module header for why a claim, unlike a benchmark collection window, must persist.
+        void rehydrateClaimStubs(ws).catch((err) => console.error('[worktree-claims] stub rehydrate failed', err));
       });
     })
     .on('unlink', (filePath) => {
       if (stale()) return; // FLUX-1707
       if (isTopLevelTaskFile(filePath)) {
+        // FLUX-1755 (the "agent can't see its own ticket" family): every engine write is an atomic
+        // temp-file RENAME over the ticket path, and on Windows chokidar reports that as unlink then
+        // add. This handler then deleted the ticket from the cache until the add re-loaded it — a
+        // window of seconds on every write, during which get_ticket/REST said "Ticket not found".
+        // Observed live on every benchmark run ("Removed task: BENCH-40" twice, right after spawn).
+        // A real deletion leaves no file behind; a rename-replace does. Check the disk, not the event.
+        if (existsSync(filePath)) {
+          log.info(`[watcher:flux] unlink for ${path.basename(filePath)} but the file exists — a rename-replace, not a deletion; keeping the cached ticket.`);
+          return;
+        }
         const id = findTaskIdForPath(filePath, ws);
         delete ws.tasks[id];
         log.info(`Removed task: ${id}`);
@@ -2038,6 +2234,10 @@ export async function openWorkspaceLive(root: string, opts: { reload?: boolean }
     try {
       ws.root = canonicalRoot;
       await hydrateWorkspace(ws);
+      // Multi-board binding: tell EVERY connected portal tab the open set changed, so a board
+      // brought live by an agent (X-EH-Workspace auto-open, bind_workspace) or the boot restore —
+      // not just the portal's own tab-strip action — shows up in the switcher without a reload.
+      broadcastToAllWorkspaces('workspacesChanged', { action: 'opened', root: canonicalRoot });
       return ws;
     } finally {
       ws.isActivating = false;

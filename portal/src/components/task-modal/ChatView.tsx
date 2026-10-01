@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X, RefreshCw, Play, CheckCircle2, XCircle, Ban, PauseCircle, HelpCircle, LayoutTemplate, ExternalLink, Pencil } from 'lucide-react';
+import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X, RefreshCw, RotateCcw, Play, CheckCircle2, XCircle, Ban, PauseCircle, HelpCircle, LayoutTemplate, ExternalLink, Pencil } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useReducedMotion } from 'framer-motion';
 import { ehBrowserUrl, fetchDiffFile, openWorkspaceEditor, type TranscriptMessage, type ChatAttachment } from '../../api';
@@ -832,6 +832,9 @@ export function ChatView({
             />
           );
         }
+        if (m.kind === 'compaction') {
+          return <CompactionChip key={i} text={m.text} ts={m.ts} />;
+        }
         return <ContextUpdateChip key={i} text={m.text} ts={m.ts} />;
       }
       // Assistant — no bubble: flowing markdown so code blocks / lists / links breathe.
@@ -1386,6 +1389,22 @@ function PermissionChip({ text, ts }: { text: string; ts?: string }) {
   return (
     <div className="flex w-full min-w-0 items-center gap-1.5 rounded-md border border-dashed border-amber-400/30 bg-amber-400/[0.05] px-2 py-1 text-[11px] text-[var(--eh-text-muted)]">
       <Shield className="h-3 w-3 flex-shrink-0 text-amber-500/70" />
+      <span className="min-w-0 truncate font-medium text-[var(--eh-text-secondary)]">{text}</span>
+      <MessageTime ts={ts} className="ml-auto flex-shrink-0" />
+    </div>
+  );
+}
+
+/**
+ * FLUX-1746: a compaction boundary the session just crossed — the plan, ticket context, and diff
+ * reasoning before this point were summarised away. A distinct, slightly louder chip (orange, ⟲
+ * glyph) rather than falling through to the generic ⟳ context-update chip, since "the session lost
+ * context here" is a materially different signal from a routine resume preamble.
+ */
+function CompactionChip({ text, ts }: { text: string; ts?: string }) {
+  return (
+    <div className="flex w-full min-w-0 items-center gap-1.5 rounded-md border border-dashed border-orange-400/30 bg-orange-400/[0.05] px-2 py-1 text-[11px] text-[var(--eh-text-muted)]">
+      <RotateCcw className="h-3 w-3 flex-shrink-0 text-orange-500/70" />
       <span className="min-w-0 truncate font-medium text-[var(--eh-text-secondary)]">{text}</span>
       <MessageTime ts={ts} className="ml-auto flex-shrink-0" />
     </div>
@@ -2106,14 +2125,18 @@ function Composer({
   const model = selectionsControlled ? selections?.model ?? '' : internalModel;
   const effort = selectionsControlled ? selections?.effort ?? '' : internalEffort;
   const permission = selectionsControlled ? selections?.permission ?? '' : internalPermission;
+  // FLUX-1706: the CLI-picker's `framework` override is STICKY (like `permission`) and lives in
+  // the SAME selections object — every setter here must carry it through unchanged, or touching
+  // the model/effort chips would silently reset the chosen CLI back to the workspace default.
+  const framework = selectionsControlled ? selections?.framework ?? '' : '';
   const setModel = selectionsControlled
-    ? (v: string) => onSelectionsChange!({ model: v, effort, permission })
+    ? (v: string) => onSelectionsChange!({ model: v, effort, permission, framework })
     : setInternalModel;
   const setEffort = selectionsControlled
-    ? (v: string) => onSelectionsChange!({ model, effort: v, permission })
+    ? (v: string) => onSelectionsChange!({ model, effort: v, permission, framework })
     : setInternalEffort;
   const setPermission = selectionsControlled
-    ? (v: string) => onSelectionsChange!({ model, effort, permission: v })
+    ? (v: string) => onSelectionsChange!({ model, effort, permission: v, framework })
     : setInternalPermission;
   // FLUX-1236: mark the chip touched on any user change so `submit` transmits the mode only then.
   const changePermission = (v: string) => {
@@ -2287,7 +2310,7 @@ function Composer({
     // uncontrolled path reset the internal states directly (calling the per-field controlled setters
     // in sequence would each see a stale closure of the other two).
     if (selectionsControlled) {
-      onSelectionsChange!({ permission });
+      onSelectionsChange!({ permission, framework });
     } else {
       setInternalModel('');
       setInternalEffort('');

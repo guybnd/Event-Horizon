@@ -1,6 +1,6 @@
 {
   "name": "event-horizon",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "private": true,
   "description": "An IDE for the agent era — a local-first, markdown-backed ticket board and orchestration layer for coding agents.",
   "keywords": [
@@ -38,8 +38,9 @@
     "check:boundary": "node engine/scripts/check-adapter-boundary.mjs",
     "check:git-exec": "node engine/scripts/check-git-exec.mjs",
     "check:classify": "npm run test:classify -w engine",
-    "check": "npm run check:boundary && npm run check:git-exec && npm run check:classify && npm run typecheck && npm run lint && npm run test:changed -w engine",
-    "check:full": "npm run check:boundary && npm run check:git-exec && npm run check:classify && npm run typecheck && npm run lint && npm run test -w engine",
+    "check:workspace-binding": "node engine/scripts/check-workspace-binding.mjs",
+    "check": "npm run check:boundary && npm run check:git-exec && npm run check:workspace-binding && npm run check:classify && npm run typecheck && npm run lint && npm run test:changed -w engine",
+    "check:full": "npm run check:boundary && npm run check:git-exec && npm run check:workspace-binding && npm run check:classify && npm run typecheck && npm run lint && npm run test -w engine",
     "init": "npm run init -w engine --",
     "init-group": "npm run init-group -w engine --",
     "package": "npm run build && npm run package -w engine",

@@ -9,6 +9,7 @@ import { computeContextBudget } from '../../context-budget-metrics.js';
 import { probeAllMcpSchemas } from '../../mcp-schema-probe.js';
 import { getEffectiveSpawnServers } from '../../agents/claude-code.js';
 import { errorMessage } from './helpers.js';
+import { computeTicketHealth } from '../../ticket-health.js';
 
 const router = express.Router();
 
@@ -66,6 +67,24 @@ router.get('/:id/debug/budget', async (req, res) => {
     res.json(await computeContextBudget(task));
   } catch (err: unknown) {
     res.status(500).json({ error: errorMessage(err, 'Failed to compute context budget') });
+  }
+});
+
+/**
+ * Per-ticket health — how did this ticket's execution actually go?
+ *
+ * Complements the AttentionDock rather than duplicating it: that surface says "act now, this is
+ * blocked", this one says "that went badly, your process may need a look". Retrospective, not
+ * escalation.
+ */
+router.get('/:id/health', async (req, res) => {
+  const { id } = req.params;
+  const task = getWorkspace().tasks[id];
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+  try {
+    res.json(await computeTicketHealth(id));
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err, 'Failed to compute ticket health') });
   }
 });
 

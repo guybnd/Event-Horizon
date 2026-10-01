@@ -65,7 +65,7 @@ const PHASE_HEADINGS: Record<LaunchPhase, string> = {
   finalize: 'Finalize with agents',
   // FLUX-1380: fast-path launches directly (no template picker) — this heading is unused in v1
   // but kept for PHASE_HEADINGS' exhaustiveness over LaunchPhase.
-  'fast-path': 'Fast-path (groom + implement)',
+  'fast-path': 'Oneshot (groom + implement)',
   // FLUX-1383: batch-grooming likewise launches directly (no template picker) — unused in v1, kept
   // for exhaustiveness.
   'batch-grooming': 'Batch grooming (groom several tickets)',

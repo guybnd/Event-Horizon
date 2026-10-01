@@ -93,7 +93,11 @@ describe('probeSelfMcpSchema', () => {
     // (new property names/types/enums), the same structural floor this comment already documents as
     // non-reducible. Baseline rebased to 31,652 (measured post-add) rather than just eating the slack,
     // so the NEXT ticket's addition still has the full original headroom rather than a shrunk buffer.
-    const POST_DIET_BASELINE_BYTES = 31_652;
+    // Multi-board binding: +1,696 bytes for the `bind_workspace` tool (1 param + a 5-field
+    // outputSchema) and `get_board_config`'s widened `binding` enum + `requestedRoot` field — again a
+    // tool-surface addition (JSON-schema structure + contract-shaped descriptions kept to the diet's
+    // bar), and again rebased (measured post-add) rather than eating the slack.
+    const POST_DIET_BASELINE_BYTES = 33_348;
     const SLACK_BYTES = 1_500; // headroom for legitimate new param/tool additions before this fails.
     const r = await probeSelfMcpSchema();
     expect(r.ok).toBe(true);

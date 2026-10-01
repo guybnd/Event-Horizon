@@ -12,6 +12,7 @@ import { cliSessionsById, getActiveSessionsForTask, isWithinReclaimGrace } from 
 import { killDescendantsByPid, defaultKillWin32Pid } from './kill-process-tree.js';
 import { findWorktreeLockHolders } from './worktree-lock-holders.js';
 import { getExemptPidsForTask, getAllExemptPids, clearHoldsForWorktree, forceKillHeldSubtree } from './background-process-holds.js';
+import { releaseClaimsForWorktree } from './worktree-claims.js';
 import { log } from './log.js';
 
 /**
@@ -651,6 +652,7 @@ export async function removeTaskWorktree(
   // process (never reached for a ticket the caller already deferred via worktreeUnreclaimableReason
   // — this only fires on a genuinely explicit removal, e.g. finish/detach/branch-delete).
   for (const hold of clearHoldsForWorktree(worktreePath, 'worktree removed')) forceKillHeldSubtree(hold);
+  releaseClaimsForWorktree(worktreePath);
   // FLUX-1182: this removes a registered worktree below — drop the cached
   // `isRegisteredWorktree` read (see createTaskWorktree for the same rationale).
   invalidateWorktreeListCache(workspaceRoot);
@@ -1171,15 +1173,25 @@ export function assertIsolatedSpawnRoot(
  * reuses it rather than refusing. The `existsSync` guard skips a stale git
  * record whose dir is gone, so callers fall through to (re)create instead of
  * resolving to a path that no longer exists.
+ *
+ * `excludeMainTree` (FLUX-1776): most callers want the main checkout included
+ * in the match — e.g. `resolveTaskExecutionRoot` relies on it to throw
+ * `branchPinnedToMainCheckoutError` instead of a cryptic downstream failure.
+ * Pass `excludeMainTree: true` only when the main tree matching would be
+ * mislabeling, not a valid answer — e.g. `cleanupMergedBranch`'s worktree-dirty
+ * gate, which must fall through to its own main-tree switch-off handling
+ * instead of reporting the main checkout as a dirty task worktree.
  */
 export async function findWorktreeForBranch(
   workspaceRoot: string,
   branch: string,
-  opts: { gitRunner?: GitRunner } = {},
+  opts: { gitRunner?: GitRunner; excludeMainTree?: boolean } = {},
 ): Promise<string | null> {
   const runner = opts.gitRunner ?? defaultGitRunner;
   const worktrees = await listWorktrees(runner, workspaceRoot);
-  const match = worktrees.find((w) => w.branch === branch && existsSync(w.path));
+  const match = worktrees.find(
+    (w) => w.branch === branch && existsSync(w.path) && (!opts.excludeMainTree || !pathsEqual(w.path, workspaceRoot)),
+  );
   return match ? match.path : null;
 }
 

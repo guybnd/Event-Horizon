@@ -32,7 +32,7 @@ Element.prototype.scrollIntoView = () => {};
 // Anzu-brain-style regression anchor: a GFM table, a fenced code block containing nested
 // backticks, a mixed/non-sequential ordered+unordered list, a wiki link, inline HTML, and
 // underscore emphasis — every construct turndown's default options are known to reformat.
-const { ANZU_BRAIN_BODY, RAW_DOC, RICH_DOC, MULTIBLOCK_DOC, FOOTNOTE_DOC, FRONTMATTER_CLEAN_DOC, MERMAID_DOC } = vi.hoisted(() => {
+const { ANZU_BRAIN_BODY, RAW_DOC, RICH_DOC, MULTIBLOCK_DOC, FOOTNOTE_DOC, FRONTMATTER_CLEAN_DOC, MERMAID_DOC, TABLE_CHECKLIST_DOC } = vi.hoisted(() => {
   const anzuBrainBody = [
     '# Provenance notes',
     '',
@@ -109,6 +109,22 @@ const { ANZU_BRAIN_BODY, RAW_DOC, RICH_DOC, MULTIBLOCK_DOC, FOOTNOTE_DOC, FRONTM
     '',
   ].join('\n');
 
+  // FLUX-1719: heading, paragraph, table, checklist -- 4 top-level blocks. Toggling the checklist's
+  // checkbox must scope the save to ONLY that block; the heading/paragraph/table must stay verbatim.
+  const tableChecklistBody = [
+    '# Notes',
+    '',
+    'An unrelated paragraph.',
+    '',
+    '| A | B |',
+    '| --- | --- |',
+    '| 1 | 2 |',
+    '',
+    '- [ ] alpha',
+    '- [x] beta',
+    '',
+  ].join('\n');
+
   return {
     ANZU_BRAIN_BODY: anzuBrainBody,
     MERMAID_BODY: mermaidBody,
@@ -162,6 +178,13 @@ const { ANZU_BRAIN_BODY, RAW_DOC, RICH_DOC, MULTIBLOCK_DOC, FOOTNOTE_DOC, FRONTM
       slug: 'mermaid',
       directory: 'guide',
     },
+    TABLE_CHECKLIST_DOC: {
+      path: 'guide/table-checklist',
+      title: 'Table Checklist',
+      body: tableChecklistBody,
+      slug: 'table-checklist',
+      directory: 'guide',
+    },
   };
 });
 
@@ -174,10 +197,11 @@ vi.mock('../api', async (importOriginal) => {
     [FOOTNOTE_DOC.path, FOOTNOTE_DOC],
     [FRONTMATTER_CLEAN_DOC.path, FRONTMATTER_CLEAN_DOC],
     [MERMAID_DOC.path, MERMAID_DOC],
+    [TABLE_CHECKLIST_DOC.path, TABLE_CHECKLIST_DOC],
   ]);
   return {
     ...actual,
-    fetchDocs: vi.fn().mockResolvedValue([RAW_DOC, RICH_DOC, MULTIBLOCK_DOC, FOOTNOTE_DOC, FRONTMATTER_CLEAN_DOC, MERMAID_DOC]),
+    fetchDocs: vi.fn().mockResolvedValue([RAW_DOC, RICH_DOC, MULTIBLOCK_DOC, FOOTNOTE_DOC, FRONTMATTER_CLEAN_DOC, MERMAID_DOC, TABLE_CHECKLIST_DOC]),
     fetchDoc: vi.fn().mockImplementation((path: string) =>
       Promise.resolve(docsByPath.get(path) ?? RAW_DOC)),
     fetchDocRevisions: vi.fn().mockResolvedValue([]),
@@ -509,5 +533,69 @@ describe('DocsScreen block-scoped rendered editing (FLUX-1663)', () => {
     expect(textarea.value).toBe(FOOTNOTE_DOC.body);
     expect(screen.getByText('Markdown').className).toContain('bg-white');
     expect(screen.getByText(/uses footnotes/i)).toBeTruthy();
+  });
+
+  // FLUX-1719: a table and a checklist round-trip verbatim through an actual editor save (not just
+  // the markdownSerializer unit tests) when nothing touches them.
+  it('a doc with a table and a checklist saves byte-identical when untouched', async () => {
+    appStore.patch({ currentUser: 'tester', config: undefined, workspacePath: '/repo' });
+    const { updateDoc } = await import('../api');
+    render(<ConfirmProvider><DocsScreen /></ConfirmProvider>);
+
+    await screen.findByText('Provenance');
+    fireEvent.click(screen.getByText('Table Checklist'));
+    await waitFor(() => {
+      expect(document.querySelector('.ProseMirror')?.textContent).toContain('Notes');
+    });
+    expect(document.querySelector('.ProseMirror table')).not.toBeNull();
+    expect(document.querySelector('.ProseMirror li[data-checked]')).not.toBeNull();
+
+    const titleButton = document.querySelector('h1 button') as HTMLButtonElement;
+    fireEvent.click(titleButton);
+    const titleInput = await screen.findByDisplayValue('Table Checklist');
+    fireEvent.change(titleInput, { target: { value: 'Table Checklist Renamed' } });
+    fireEvent.keyDown(titleInput, { key: 'Enter' });
+
+    const saveButton = await screen.findByText('Save');
+    await waitFor(() => expect((saveButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(saveButton);
+
+    await waitFor(() => expect(updateDoc).toHaveBeenCalled());
+    const [, payload] = (updateDoc as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(payload.body).toBe(TABLE_CHECKLIST_DOC.body);
+  });
+
+  // FLUX-1719: toggling ONE checklist item's checkbox must scope the save to that block only --
+  // the heading/paragraph/table blocks stay byte-identical to their original source.
+  it('toggling a checklist checkbox scopes the save to only that block', async () => {
+    appStore.patch({ currentUser: 'tester', config: undefined, workspacePath: '/repo' });
+    const { updateDoc } = await import('../api');
+    render(<ConfirmProvider><DocsScreen /></ConfirmProvider>);
+
+    await screen.findByText('Provenance');
+    fireEvent.click(screen.getByText('Table Checklist'));
+    await waitFor(() => {
+      expect(document.querySelector('.ProseMirror')?.textContent).toContain('Notes');
+    });
+
+    const checkboxes = document.querySelectorAll('.ProseMirror li[data-checked] input[type="checkbox"]');
+    expect(checkboxes.length).toBe(2);
+    // "alpha" is the first (unchecked) item -- click its checkbox to check it.
+    fireEvent.click(checkboxes[0]);
+
+    const saveButton = await screen.findByText('Save');
+    await waitFor(() => expect((saveButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(saveButton);
+
+    await waitFor(() => expect(updateDoc).toHaveBeenCalled());
+    const [, payload] = (updateDoc as ReturnType<typeof vi.fn>).mock.calls[0];
+
+    expect(payload.body).toContain('- [x] alpha');
+    expect(payload.body).toContain('- [x] beta');
+    // Every other block is untouched, verbatim from source bytes.
+    expect(payload.body).toContain('# Notes');
+    expect(payload.body).toContain('An unrelated paragraph.');
+    expect(payload.body).toContain('| A | B |');
+    expect(payload.body).not.toContain('<table');
   });
 });

@@ -1,7 +1,7 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
-import { fetchConfig, fetchTasks, fetchTaskListShape, fetchWorktrees, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace, fetchParseErrors, fetchNotifications, fetchWorkspaces, switchWorkspace as apiSwitchWorkspace, openBoardLive as apiOpenBoardLive, closeBoardLive as apiCloseBoardLive, fetchFurnaceBatches, setActiveBoardKey, type ParseError, type Notification, type WorkspaceInfo, type WorktreeInfo } from './api';
+import type { ColumnLiveEvent, Config, Task, TaskLiveEvent, UsageSnapshot } from './types';
+import { fetchConfig, fetchTasks, fetchTaskListShape, fetchWorktrees, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace, fetchParseErrors, fetchNotifications, fetchWorkspaces, fetchUsage, switchWorkspace as apiSwitchWorkspace, openBoardLive as apiOpenBoardLive, closeBoardLive as apiCloseBoardLive, fetchFurnaceBatches, setActiveBoardKey, type ParseError, type Notification, type WorkspaceInfo, type WorktreeInfo } from './api';
 import type { FurnaceBatch } from './furnaceTypes';
 import { getArchiveStatus } from './workflow';
 import { isActiveSession } from './orchestration';
@@ -97,6 +97,7 @@ const VIEW_PATHS: Record<AppView, string> = {
   workflows: '/workflows',
   epics: '/epics',
   'token-costs': '/token-costs',
+  benchmarks: '/benchmarks',
   'dev-onboarding': '/dev/onboarding',
 };
 
@@ -140,6 +141,7 @@ function getViewFromLocation(): AppView {
   if (path === '/workflows') return 'workflows';
   if (path === '/epics') return 'epics';
   if (path === '/token-costs') return 'token-costs';
+  if (path === '/benchmarks') return 'benchmarks';
   // Dev-only editor route (FLUX-755). Gated by import.meta.env.DEV so that in a
   // production build a hand-typed /dev/onboarding falls through to the board.
   if (import.meta.env.DEV && path === '/dev/onboarding') return 'dev-onboarding';
@@ -334,6 +336,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const seenNotificationIds = useRef<Set<string>>(new Set());
   const [restartPending, setRestartPending] = useState(false);
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
+  // FLUX-1747/1748: capacity usage — loaded on boot, refetched on `usageChanged`/SSE `open` only
+  // (no client polling; see the `usageChanged` listener below).
+  const [usage, setUsage] = useState<UsageSnapshot | null>(null);
+  const refreshUsage = useCallback(() => {
+    fetchUsage().then(setUsage).catch(() => {});
+  }, []);
   // S9 (epic FLUX-1230): the board-key dimension. S10 (`setActiveBoard`) can pin this to a
   // different already-open board than the server's legacy single-active binding — that's the
   // whole point of a non-destructive switch. `null` means "not pinned yet", in which case it
@@ -1100,7 +1108,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       })
       .catch(() => {});
     refreshWorkspaces();
-  }, [refreshWorkspaces]);
+    refreshUsage();
+  }, [refreshWorkspaces, refreshUsage]);
 
   useEffect(() => {
     let checkTimeout: number;
@@ -1294,10 +1303,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // incremental terminal `taskUpdated` for a session that ended during the gap can be missed —
       // leaving its card stuck on 'Working'. Re-fetching the authoritative task list on `open`
       // re-syncs each card to the engine's current session status (terminal/absent included).
+      // Multi-board binding: the engine broadcasts `workspacesChanged` to EVERY live board's stream
+      // when a board is opened or closed — by another portal tab, by an agent's X-EH-Workspace
+      // auto-open or `bind_workspace`, or by the boot restore. Re-fetch the registry so the
+      // switcher's tab strip reflects the engine's open set instead of going stale until a reload.
+      trackListener('workspacesChanged', () => {
+        lastEventAt = Date.now();
+        refreshWorkspaces();
+      });
+      // FLUX-1747/1748: the engine broadcasts `usageChanged` whenever the capacity snapshot moves
+      // (a probe file change, or a time-driven freshness transition). This is the ONLY thing that
+      // triggers a re-fetch of `/api/usage` besides boot and reconnect — never a client poll.
+      trackListener('usageChanged', () => {
+        lastEventAt = Date.now();
+        refreshUsage();
+      });
       trackListener('open', () => {
         lastEventAt = Date.now();
         incr('refresh.trigger.sse');
         void loadTasks();
+        // Also on every (re)connect: an engine restart restores its remembered open boards after
+        // this stream may already be back up, and a missed `workspacesChanged` during the gap would
+        // otherwise leave the tab strip out of sync with the engine.
+        refreshWorkspaces();
+        // A missed `usageChanged` during a connection gap would otherwise leave the capacity chip
+        // stale until the next real change — reconnect re-syncs it the same way.
+        refreshUsage();
       });
       trackListener('taskUpdated', (e: MessageEvent) => {
         incr('refresh.trigger.sse');
@@ -1542,7 +1573,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // no flush is otherwise coming.
       flushEngineEvents();
     };
-  }, [isConnected, refreshNotifications, flushEngineEvents, activeBoardId]);
+  }, [isConnected, refreshNotifications, flushEngineEvents, activeBoardId, refreshWorkspaces, refreshUsage]);
 
   useEffect(() => {
     updateViewUrl(getViewFromLocation(), 'replace');
@@ -1798,6 +1829,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     changesFocus, tasksLoading, bootProgress: storeBootProgress, taskLiveEvents, columnLiveEvents, pinnedTasks,
     refreshTrigger, lastRefreshAt, isWindowVisible, isConnected,
     workspaceConfigured, workspacePath, workspaces,
+    usage,
     config, readComments, totalUnreadCount,
     theme, parseErrors, parseErrorsLoading,
     notifications, notificationUnreadCount, restartPending,

@@ -163,7 +163,12 @@ export interface Task {
   /** 'pr' = an engine-managed PR ticket (FLUX-566); 'scratch' = a freeform Scratch Chat with its
    *  own SCRATCH-n id, spawned from the ChatDock and hidden from board columns + list_tickets
    *  (FLUX-1225); undefined/'ticket' = a normal ticket. */
-  kind?: 'ticket' | 'pr' | 'scratch';
+  /** FLUX-1739: 'benchmark' is one benchmark run's throwaway `BENCH-n` surface — hidden from the
+   *  board and from `list_tickets`' active screen, and refused by every PR/push surface. */
+  kind?: 'ticket' | 'pr' | 'scratch' | 'benchmark';
+  /** FLUX-1739: card-cheap execution health, computed server-side in the list serializer's existing
+   *  history pass. Absent for a ticket that never ran a session. */
+  health?: { grade: 'clean' | 'noisy' | 'rough' | 'broken'; summary: string };
   swimlane?: string | null;
   /** FLUX-651: set by the engine when an agent ended its turn leaving the ticket parked in a
    *  working status without taking a board action. Truthy = show as "Needs Action"; the string
@@ -181,6 +186,15 @@ export interface Task {
    *  existing PR-reconcile poll (`syncPrTickets`). 'unknown' = no checks configured on the PR
    *  (the card renders no chip for it, to avoid a stuck/alarming state). */
   ciStatus?: 'passing' | 'failing' | 'pending' | 'unknown';
+  /** FLUX-1713: PR tickets only — which runner(s) executed the head SHA's checks, refreshed on the
+   *  same PR-reconcile poll as `ciStatus`. Absent or `origin: 'unknown'` = no chip (mirrors
+   *  `ciStatus`'s 'unknown' rule — a repo without gh access or with unresolvable job data must not
+   *  show a stuck/misleading badge). */
+  ciRunner?: {
+    origin: 'hosted' | 'self-hosted' | 'mixed' | 'unknown';
+    runnerName?: string;
+    jobs: Array<{ name: string; origin: 'hosted' | 'self-hosted'; runnerName?: string; labels: string[] }>;
+  };
   /** FLUX-816: the outcome of an EH (non-GitHub) review — set by the review orchestrator when it
    *  concludes (approve→Ready, changes-requested→In Progress) or set/cleared manually by a human.
    *  Surfaces a review badge on the card. Distinct from `reviewDecision` (GitHub-synced, PR-only,
@@ -266,7 +280,7 @@ export interface Task {
 // leave-with-justification — it is a STRUCTURAL mirror, not a feature gate: the runtime source of
 // truth is the `cliCapabilities` table served on /api/config (engine/src/agents/types.ts), which
 // the UI reads to decide what to show. Keep these keys in lockstep with the engine union.
-export type CliFramework = 'claude' | 'copilot' | 'gemini' | 'codex';
+export type CliFramework = 'claude' | 'copilot' | 'gemini' | 'codex' | 'grok' | 'antigravity';
 
 // FLUX-1373: the three-tier spend model. Each CLI defines what a tier resolves to
 // (`integrations.<cli>.tiers`); `modelPolicy.assignments` maps a task key to a tier.
@@ -319,6 +333,47 @@ export interface AuthDiagnosis {
   duplicates: string[];
   shadowing: { settingsKey: boolean; settingsHelper: boolean; envKey: boolean; baseUrl: boolean };
   verdict: 'binary-divergence' | 'duplicate-installs' | 'shadowed-credentials' | 'token-rejected' | 'unknown';
+}
+
+// FLUX-1747/1748: the normalised capacity-usage wire contract, mirroring
+// `engine/src/usage/types.ts` (GET /api/usage, broadcast on `usageChanged`).
+export type Provenance = 'exact' | 'floor' | 'unknown';
+export type Freshness = 'live' | 'stale' | 'expired';
+
+export interface UsageGauge {
+  id: string;
+  label: string;
+  windowMinutes?: number;
+  unit: 'tokens' | 'requests';
+  used?: number;
+  limit?: number;
+  percent?: number;
+  percentFloor?: number;
+  /** Copilot-only: when true, `used`/`limit` describe a non-binding count, not a fraction to
+   *  render as a used/limit bar. */
+  unlimited?: boolean;
+  resetsAt?: string;
+  observedAt: string;
+  provenance: Provenance;
+  freshness: Freshness;
+  source?: { path: string; ageMs: number };
+}
+
+export interface ProviderUsage {
+  provider: CliFramework;
+  account?: string;
+  gauges: UsageGauge[];
+  provenance: Provenance;
+  reason?: string;
+  lastWall?: { rateLimitType?: string; observedAt: string; resetsAt?: string };
+  history: Array<{ at: string; gaugeId: string; value: number }>;
+  planType?: string;
+  credits?: { hasCredits: boolean; unlimited: boolean; balance?: string };
+}
+
+export interface UsageSnapshot {
+  providers: ProviderUsage[];
+  generatedAt: string;
 }
 
 export interface CliSessionSummary {
@@ -383,6 +438,20 @@ export interface CliSessionSummary {
   /** FLUX-1639: verbatim provider reset text, present only when `terminalReason` is
    *  'quota-exhausted' and Codex supplied one. Never parsed for a date — display-only. */
   quotaResetText?: string;
+  /** FLUX-1744: mirrors the engine's `CliSessionRecord.lastTurnContextTokens`/`contextWindow` —
+   *  previously record-only, so nothing rendered these live-context gauges. */
+  lastTurnContextTokens?: number;
+  contextWindow?: number;
+  /** FLUX-1744: structured shape of the most recent NON-ALLOWED `rate_limit_event` — reflects "last
+   *  observed wall", not cleared once a later `allowed` event arrives. */
+  lastRateLimit?: { status: string; rateLimitType?: string; resetsAt?: string; observedAt: string };
+  /** FLUX-1744: compaction telemetry — `cumulativeDroppedTokens` is the engine's own running sum of
+   *  `preTokens - postTokens` per event, not the CLI's own cumulative figure. */
+  compactionCount?: number;
+  cumulativeDroppedTokens?: number;
+  lastCompactionAt?: string;
+  lastCompactTrigger?: 'auto' | 'manual';
+  lastCompactDurationMs?: number;
 }
 
 export interface TaskLiveEvent {
@@ -597,6 +666,14 @@ export interface Config {
     codexCli?: {
       tiers?: { smart?: string; efficient?: string; cheap?: string };
     };
+    /** FLUX-1722 */
+    grokCli?: {
+      tiers?: { smart?: string; efficient?: string; cheap?: string };
+    };
+    /** FLUX-1738 */
+    antigravityCli?: {
+      tiers?: { smart?: string; efficient?: string; cheap?: string };
+    };
   };
   /** FLUX-1373: task -> tier policy. `preset` is 'custom' whenever `assignments` diverges from all
    *  three named presets (Splurge/Balanced/Frugal); editing any assignment flips it to 'custom'. */
@@ -633,6 +710,10 @@ export interface Config {
   syncSettings?: {
     debounceMs: number;
     maxWaitMs: number;
+    /** Idle-board sync heartbeat (DEFAULT_SYNC_HEARTBEAT_MS in sync-watcher.ts). Every other sync
+     *  trigger is a local file change, so an open board nobody writes to never pulls; this nudges
+     *  the debounced scheduler on a slow cadence. `0` disables the heartbeat. */
+    heartbeatMs?: number;
   };
   furnaceSettings?: {
     rateLimitRetryIntervalMs: number;

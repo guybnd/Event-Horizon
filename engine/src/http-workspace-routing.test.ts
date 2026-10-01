@@ -128,17 +128,22 @@ describe('resolveWorkspaceFromRoot / attachWorkspace (FLUX-1530)', () => {
     expect(getWorkspace()).not.toBe(wsA);
   });
 
-  it('attachWorkspace with no header, or an unknown root, lands req.workspace on the default workspace (FLUX-1557)', () => {
+  it('attachWorkspace with no header, or an unknown root, lands req.workspace on the default workspace (FLUX-1557)', async () => {
     openWorkspace(tmpRoot('b')); // some other board open — must not "win" the unbound fallback
     const defaultWs = getDefaultWorkspace();
 
     const reqNoHeader = { headers: {} } as unknown as express.Request;
     attachWorkspace(reqNoHeader, {} as express.Response, vi.fn());
     expect(reqNoHeader.workspace).toBe(defaultWs);
+    expect(reqNoHeader.workspaceBindingSource).toBe('default-fallback');
 
+    // An unknown root takes the async miss path (auto-open attempt, workspace-binding.ts) before
+    // `next()` — still the default board for reads, now disclosed as `header-unresolved`.
     const reqUnknown = { headers: { 'x-eh-workspace': tmpRoot('never-registered') } } as unknown as express.Request;
-    attachWorkspace(reqUnknown, {} as express.Response, vi.fn());
+    await new Promise<void>((resolve) => attachWorkspace(reqUnknown, {} as express.Response, () => resolve()));
     expect(reqUnknown.workspace).toBe(defaultWs);
+    expect(reqUnknown.workspaceBindingSource).toBe('header-unresolved');
+    expect(reqUnknown.workspaceHeaderUnresolved).toBe(true);
   });
 });
 
@@ -186,9 +191,11 @@ describe('requireWorkspace refuses misrouted mutations (FLUX-1675)', () => {
     expect(req.workspaceHeaderUnresolved).toBeFalsy();
   });
 
-  it('unloaded target + POST: 400 WORKSPACE_NOT_LOADED, next not called, nothing created on the active board', () => {
+  it('unloaded target + POST: 400 WORKSPACE_NOT_LOADED, next not called, nothing created on the active board', async () => {
     const req = { headers: { 'x-eh-workspace': tmpRoot('mutation-unloaded') }, method: 'POST' } as unknown as express.Request;
-    attachWorkspace(req, {} as express.Response, vi.fn());
+    // A header MISS now runs the async auto-open attempt (workspace-binding.ts) before `next()`;
+    // an unregistered root comes back unresolved exactly as before, just one tick later.
+    await new Promise<void>((resolve) => attachWorkspace(req, {} as express.Response, () => resolve()));
     const res = fakeRes();
     const next = vi.fn();
     requireWorkspace(req, res, next);
@@ -197,9 +204,9 @@ describe('requireWorkspace refuses misrouted mutations (FLUX-1675)', () => {
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'WORKSPACE_NOT_LOADED' }));
   });
 
-  it('unloaded target + GET: next() called, no 400 (FLUX-1557 read-fallback preserved)', () => {
+  it('unloaded target + GET: next() called, no 400 (FLUX-1557 read-fallback preserved)', async () => {
     const req = { headers: { 'x-eh-workspace': tmpRoot('mutation-unloaded-get') }, method: 'GET' } as unknown as express.Request;
-    attachWorkspace(req, {} as express.Response, vi.fn());
+    await new Promise<void>((resolve) => attachWorkspace(req, {} as express.Response, () => resolve()));
     const res = fakeRes();
     const next = vi.fn();
     requireWorkspace(req, res, next);

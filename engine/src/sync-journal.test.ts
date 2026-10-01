@@ -6,6 +6,7 @@ import {
   appendJournalEntry,
   readJournalEntries,
   dropFlushedJournalEntries,
+  dropPendingCreateEntries,
   replayJournalEntry,
   reloadCacheAfterReset,
   setJournalReplayHandler,
@@ -62,7 +63,7 @@ describe('sync-journal — durable append-only op journal (FLUX-1428)', () => {
     expect(entries.map((e) => e.opId)).toEqual(['op-1', 'op-2', 'op-3']);
   });
 
-  it('dropFlushedJournalEntries drops exactly the given count from the front, preserving later appends', async () => {
+  it('dropFlushedJournalEntries drops exactly the given opIds, preserving later appends', async () => {
     await appendJournalEntry(storeDir, makeEntry({ opId: 'op-1' }));
     await appendJournalEntry(storeDir, makeEntry({ opId: 'op-2' }));
 
@@ -70,7 +71,7 @@ describe('sync-journal — durable append-only op journal (FLUX-1428)', () => {
     // the tick only snapshotted the first two, so its flush must not touch this one.
     await appendJournalEntry(storeDir, makeEntry({ opId: 'op-3' }));
 
-    await dropFlushedJournalEntries(storeDir, 2);
+    await dropFlushedJournalEntries(storeDir, new Set(['op-1', 'op-2']));
 
     const remaining = await readJournalEntries(storeDir);
     expect(remaining.map((e) => e.opId)).toEqual(['op-3']);
@@ -84,12 +85,12 @@ describe('sync-journal — durable append-only op journal (FLUX-1428)', () => {
     // push) concurrently with an append (simulating a request handler journaling a new mutation
     // while that push is still in flight) — neither is awaited before the other starts, so
     // whichever wins the internal lock runs first. Without serializing append against drop's
-    // internal read-slice-write, the append could land between drop's read and its whole-file
+    // internal read-filter-write, the append could land between drop's read and its whole-file
     // overwrite and be silently clobbered. With the fix, op-3 survives regardless of ordering:
-    // either it's appended before the drop reads (so the drop's slice already excludes it and
+    // either it's appended before the drop reads (so the drop's filter already excludes it and
     // preserves it) or after the drop writes (so it's simply appended fresh).
     await Promise.all([
-      dropFlushedJournalEntries(storeDir, 2),
+      dropFlushedJournalEntries(storeDir, new Set(['op-1', 'op-2'])),
       appendJournalEntry(storeDir, makeEntry({ opId: 'op-3' })),
     ]);
 
@@ -97,10 +98,39 @@ describe('sync-journal — durable append-only op journal (FLUX-1428)', () => {
     expect(remaining.map((e) => e.opId)).toEqual(['op-3']);
   });
 
-  it('dropFlushedJournalEntries(0) is a no-op', async () => {
+  it('dropFlushedJournalEntries with an empty set is a no-op', async () => {
     await appendJournalEntry(storeDir, makeEntry({ opId: 'op-1' }));
-    await dropFlushedJournalEntries(storeDir, 0);
+    await dropFlushedJournalEntries(storeDir, new Set());
     expect((await readJournalEntries(storeDir)).map((e) => e.opId)).toEqual(['op-1']);
+  });
+
+  it('a mid-file dropPendingCreateEntries does not desync a positional flush — later entries survive (FLUX-1634 review fix)', async () => {
+    // Mirrors the sync-watcher shape: a prepared HEAD snapshots opIds for E1..E5, a create's
+    // pending entry (E2) is voided from the MIDDLE of the file by a concurrent delete, then two
+    // more entries (E6, E7) are appended before the flush runs. A positional `slice(preparedCount)`
+    // would miscount after E2 disappears and eat E6 (an un-pushed, never-replayed mutation) along
+    // with the prefix. The identity-keyed drop must not.
+    await appendJournalEntry(storeDir, makeEntry({ opId: 'E1' }));
+    await appendJournalEntry(storeDir, makeEntry({ opId: 'E2', taskId: 'FLUX-2', kind: 'create', options: { filePath: 'FLUX-2.md', fileContent: 'x' } }));
+    await appendJournalEntry(storeDir, makeEntry({ opId: 'E3' }));
+    await appendJournalEntry(storeDir, makeEntry({ opId: 'E4' }));
+    await appendJournalEntry(storeDir, makeEntry({ opId: 'E5' }));
+
+    const preparedOpIds = new Set((await readJournalEntries(storeDir)).map((e) => e.opId));
+    expect(preparedOpIds.size).toBe(5);
+
+    // The delete that voids FLUX-2's pending create lands inside the fetch+push window.
+    await dropPendingCreateEntries(storeDir, 'FLUX-2');
+
+    // More mutations are journaled while the push is still in flight — a real suffix that must
+    // survive the eventual flush.
+    await appendJournalEntry(storeDir, makeEntry({ opId: 'E6' }));
+    await appendJournalEntry(storeDir, makeEntry({ opId: 'E7' }));
+
+    await dropFlushedJournalEntries(storeDir, preparedOpIds);
+
+    const remaining = await readJournalEntries(storeDir);
+    expect(remaining.map((e) => e.opId)).toEqual(['E6', 'E7']);
   });
 
   it('skips unparseable lines instead of throwing', async () => {

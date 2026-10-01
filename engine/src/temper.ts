@@ -45,6 +45,8 @@ import {
 } from './models/furnace.js';
 import { resolveGateValue } from './models/gate-policy.js';
 import type { CliFramework } from './agents/types.js';
+import { BENCHMARK_KIND } from './models/benchmark.js';
+import { findSessionOutcome } from './history.js';
 import {
   decideTicketAction,
   dispatchSession,
@@ -54,7 +56,6 @@ import {
   extractPrUrl,
   isLiveSessionRefusal,
   describeBlockingSession,
-  findSessionOutcome,
   lastCommentMatchesVerdictMarker,
   pickSessionForPhase,
   refreshWorktreePool,
@@ -191,6 +192,13 @@ export async function maybeStartTemper(
   if (resolveGateValue(getConfig().gatePolicy, task.gatePolicyOverride, 'review') !== 'auto') return;
   // "Green PR" is only meaningful with a branch; branchless tickets are left alone (groomed default).
   if (!task.branch) return;
+  // FLUX-1739: a benchmark run reaching Ready is a MEASUREMENT reaching its terminal state, not work
+  // entering review. A run has a branch by construction, so without this guard every cell would arm
+  // the auto-review loop: a 45-cell suite spawns 45 review sessions, each burning tokens and holding
+  // a worktree slot the suite's own concurrency is already rationing — and a `changes-requested`
+  // verdict would bounce the ticket back to In Progress, overwriting the very terminal status the
+  // run is scored on. Temper never green-lights a PR that by design will never exist.
+  if (task.kind === BENCHMARK_KIND) return;
   // Already looping (durable flag or in-memory) → the reconciler owns it; don't reset attempts.
   if (task.tempering === true || isTempering(ticketId, ws)) return;
   // A Furnace batch already drives this ticket — the batch wins (AC #7).

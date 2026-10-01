@@ -211,14 +211,14 @@ export function TaskModalPopupView({
                 <button
                   disabled={saving || cliSessionBusy || !isDirty || fastPathDisabledForEffort}
                   onClick={() => void handleSaveAndFastPath()}
-                  title={fastPathDisabledForEffort ? 'Fast-path is unavailable for L/XL effort — use Save & Groom instead.' : 'Create the ticket and start an inline groom + implement session'}
+                  title={fastPathDisabledForEffort ? 'Oneshot is unavailable for L/XL effort — use Save & Groom instead.' : 'Create the ticket and start an inline groom + implement session'}
                   className={`border-l px-3 py-1.5 text-xs font-semibold ${
                     isDirty && !cliSessionBusy && !fastPathDisabledForEffort
                       ? 'cursor-pointer border-white/20 bg-primary/90 text-white hover:bg-primary-hover'
                       : 'cursor-not-allowed border-gray-200 bg-gray-200 text-gray-400 dark:border-white/10 dark:bg-white/10'
                   }`}
                 >
-                  Save & Fast-path
+                  Save & Oneshot
                 </button>
               </div>
             ) : (

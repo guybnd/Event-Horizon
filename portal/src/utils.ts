@@ -42,11 +42,12 @@ export function frameworkEffort(
 /**
  * FLUX-907 (split semantics): the frameworks EH can actually LAUNCH a session against — the runtime
  * adapter registry, served on `/api/config` as `runtimeFrameworks`. This is NARROWER than the skill
- * installer's framework list (cursor/cline/windsurf/antigravity/generic get skill files but no runtime).
+ * installer's framework list (cursor/cline/windsurf/generic get skill files but no runtime;
+ * FLUX-1738 promoted antigravity out of that set by authoring a real adapter).
  * The fallback mirrors the shipped registry and is reached only before `/api/config` loads — the engine
  * (`getRuntimeFrameworks()`) is the source of truth.
  */
-export const DEFAULT_RUNTIME_FRAMEWORKS = ['claude', 'copilot', 'gemini', 'codex'];
+export const DEFAULT_RUNTIME_FRAMEWORKS = ['claude', 'copilot', 'gemini', 'codex', 'grok', 'antigravity'];
 export function runtimeFrameworks(config: Config | null | undefined): string[] {
   return config?.runtimeFrameworks ?? DEFAULT_RUNTIME_FRAMEWORKS;
 }

@@ -124,7 +124,7 @@ describe('copilot.ts resumed-turn tokenMetadata flush (FLUX-1375)', () => {
     await startCliSession(session, { status: 'In Progress' } as never, '', '', '/tmp/test-repo');
     expect(lastProc).toBeDefined();
     // FLUX-1375 bug 1: the resolved model must be persisted onto the session, not left as a local var.
-    expect(session.model).toBe('gpt-5');
+    expect(session.model).toBe('auto');
 
     lastProc!.stdout.emit('data', Buffer.from(JSON.stringify({
       type: 'result',

@@ -159,6 +159,10 @@ export interface ComposerSelections {
   model?: string;
   effort?: string;
   permission?: string;
+  /** FLUX-1706: per-chat CLI override for this task's floating chat window — which runtime
+   *  framework the NEXT fresh chat start uses, independent of the workspace's default agent.
+   *  '' (or absent) = follow the workspace default, same convention as the other chip fields. */
+  framework?: string;
 }
 
 /** FLUX-920: a chat window's persisted footprint. `w`/`h` are the resizable chat-column size; the
@@ -551,15 +555,20 @@ export function DockProvider({ children }: { children: ReactNode }) {
           const model = sel.model ?? '';
           const effort = sel.effort ?? '';
           const permission = sel.permission ?? '';
-          if (!model && !effort && !permission) {
+          // FLUX-1706: the per-chat CLI override (see ComposerSelections.framework) is STICKY like
+          // `permission` — every caller that folds a single-field change into a fresh selections
+          // object must carry the other fields through unchanged, so this prune only fires once
+          // ALL four fields are back at default.
+          const framework = sel.framework ?? '';
+          if (!model && !effort && !permission && !framework) {
             if (!(id in prev)) return prev;
             const next = { ...prev };
             delete next[id];
             return next;
           }
           const cur = prev[id];
-          if (cur && cur.model === model && cur.effort === effort && cur.permission === permission) return prev;
-          return { ...prev, [id]: { model, effort, permission } };
+          if (cur && cur.model === model && cur.effort === effort && cur.permission === permission && cur.framework === framework) return prev;
+          return { ...prev, [id]: { model, effort, permission, framework } };
         }),
       // FLUX-727: the dragged arrangement leads; ids it omits (inactive-but-remembered) trail it.
       // FLUX-728: cap the in-memory order at 50 (same bound as the localStorage write) so inactive

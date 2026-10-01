@@ -3,11 +3,15 @@ import { ClaudeCodeAdapter } from './claude-code.js';
 import { CopilotAdapter } from './copilot.js';
 import { GeminiAdapter } from './gemini.js';
 import { CodexAdapter } from './codex.js';
+import { GrokAdapter } from './grok.js';
+import { AntigravityAdapter } from './antigravity.js';
 import type { BoardAdapter } from './board.js';
 import { claudeBoardAdapter } from './claude-board.js';
 import { copilotBoardAdapter } from './copilot-board.js';
 import { geminiBoardAdapter } from './gemini-board.js';
 import { codexBoardAdapter } from './codex-board.js';
+import { grokBoardAdapter } from './grok-board.js';
+import { antigravityBoardAdapter } from './antigravity-board.js';
 import { getConfig } from '../config.js';
 
 const registry: Map<string, AgentAdapter> = new Map([
@@ -15,6 +19,13 @@ const registry: Map<string, AgentAdapter> = new Map([
   ['copilot', new CopilotAdapter()],
   ['gemini', new GeminiAdapter()],
   ['codex', new CodexAdapter()],
+  ['grok', new GrokAdapter()],
+  // FLUX-1738: Google's replacement for Gemini CLI, which stopped serving individual (free/Pro/
+  // Ultra) accounts on 18 Jun 2026. `gemini` deliberately STAYS registered above rather than being
+  // removed: access remains fully supported for Gemini Code Assist Standard/Enterprise licences and
+  // paid API-key auth, so deleting it would break a real (if narrower) cohort. Upstream gemini-cli
+  // is frozen Apache-2.0, so the cost of keeping it is a stale file, not maintenance load.
+  ['antigravity', new AntigravityAdapter()],
 ]);
 
 export function getAdapter(agentType: string): AgentAdapter {
@@ -60,6 +71,8 @@ const BOARD_ADAPTERS: Record<CliFramework, BoardAdapter> = {
   copilot: copilotBoardAdapter,
   gemini: geminiBoardAdapter,
   codex: codexBoardAdapter,
+  grok: grokBoardAdapter,
+  antigravity: antigravityBoardAdapter,
 };
 
 // `framework` is fixed for a board session's life (resumeSessionId is CLI-specific — switching

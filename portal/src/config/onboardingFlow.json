@@ -49,7 +49,7 @@
       "kind": "widget",
       "title": "Pick your AI assistant",
       "widget": "pick-assistant",
-      "subtitle": "Event Horizon installs a workflow skill into your AI coding assistant so it can manage tickets automatically.\n(Currently only Claude Code is fully tested and supported)",
+      "subtitle": "Event Horizon installs a workflow skill into your AI coding assistant so it can manage tickets automatically.\nClaude Code, Copilot, Gemini, Codex, and Grok can also be launched from the board.",
       "icon": "Users",
       "system": true,
       "required": true,

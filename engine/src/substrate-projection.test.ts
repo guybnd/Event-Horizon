@@ -533,6 +533,30 @@ describe('substrate vs projection (FLUX-658)', () => {
     expect(msgs[2]!.lifecycle).toBeUndefined();
   });
 
+  it('projectTranscript renders a compaction boundary as its own note row, each boundary showing its OWN delta (FLUX-1746)', () => {
+    // FLUX-1746: these `type: 'compaction'` turns are synthesized by claude-code.ts's
+    // compact_boundary vendor-event handler (appendTranscriptEvent) — never matched from a raw
+    // compact_boundary frame here (unverified whether that subtype ever reaches the stream-json
+    // stdout the transcript captures). The second boundary's dropped-token figure must be ITS OWN
+    // pre/post delta (90000), never FLUX-1744's running cumulativeDroppedTokens (which would read
+    // 230000 by the second boundary and overstate it).
+    const stream = 'COMPACT';
+    const raws = [
+      { type: 'compaction', trigger: 'auto', preTokens: 180000, postTokens: 40000, durationMs: 12000, timestamp: 'T1' },
+      { type: 'compaction', trigger: 'manual', preTokens: 150000, postTokens: 60000, durationMs: 8000, timestamp: 'T2' },
+      // Missing compact metadata (defensive — should never happen in practice) projects to a plain
+      // marker with no numbers at all, never a bogus "0 tokens dropped".
+      { type: 'compaction', trigger: 'auto', timestamp: 'T3' },
+    ];
+    const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: 'TENV', role: 'unknown', raw }));
+
+    expect(projectTranscript(turns)).toEqual([
+      { role: 'note', kind: 'compaction', text: '⟲ Context compacted (auto) — 140k tokens dropped in 12 s', ts: 'T1', seq: 0 },
+      { role: 'note', kind: 'compaction', text: '⟲ Context compacted (manual) — 90k tokens dropped in 8 s', ts: 'T2', seq: 1 },
+      { role: 'note', kind: 'compaction', text: '⟲ Context compacted (auto)', ts: 'T3', seq: 2 },
+    ]);
+  });
+
   it('readTranscriptMessages routes legacy + enveloped turns through the projector identically', async () => {
     const stream = freshStream();
     // One legacy bare line, then one enveloped append — both must render through projection.

@@ -14,6 +14,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { log } from './log.js';
+import type { Workspace } from './workspace-context.js';
 
 export const SYNC_JOURNAL_FILE = 'sync-journal.jsonl';
 
@@ -21,11 +22,29 @@ export interface JournalEntry {
   /** Unique per append — not currently deduplicated on, but useful for log correlation. */
   opId: string;
   taskId: string;
+  /**
+   * FLUX-1634: distinguishes a brand-new ticket file from a mutation of an existing one. Missing
+   * (older entries, and every update) means 'update' — replayed through updateTaskWithHistory,
+   * which requires the task to already be in the cache. A 'create' entry carries the already-
+   * resolved file content (see CreateReplayPayload) and is replayed by recreating that exact file
+   * if it's missing, since the task may not exist in the cache at all after a losing reset.
+   */
+  kind?: 'update' | 'create';
   /** Present only for externally-triggered intents (PR merged, CI verdict) — see updateTaskWithHistory. */
   idempotencyKey?: string;
   ts: string;
-  /** The exact options object the original updateTaskWithHistory(taskId, options) call was given. */
+  /**
+   * For kind 'update' (or omitted): the exact options object the original
+   * updateTaskWithHistory(taskId, options) call was given.
+   * For kind 'create': a CreateReplayPayload (filePath + fileContent).
+   */
   options: Record<string, unknown>;
+}
+
+/** Journaled payload for a kind:'create' entry — enough to recreate the exact file byte-for-byte. */
+export interface CreateReplayPayload {
+  filePath: string;
+  fileContent: string;
 }
 
 function journalPath(storeDir: string): string {
@@ -99,21 +118,48 @@ export async function readJournalEntries(storeDir: string): Promise<JournalEntry
 }
 
 /**
- * Drop exactly the first `count` entries — the prefix a sync tick snapshotted and successfully
- * pushed. Never a blind truncate: entries appended DURING that tick (after the snapshot was taken,
- * from concurrent request handling) are a suffix of the file that hasn't been pushed yet and must
- * survive to be picked up by the next tick.
+ * Drop exactly the entries whose opId is in `flushedOpIds` — the set a sync tick snapshotted and
+ * successfully pushed. Identity-keyed rather than a positional prefix count (FLUX-1634 review fix):
+ * a count-based slice assumes nothing else ever removes a journal line, but dropPendingCreateEntries
+ * can void an entry from the middle of the file (a delete voiding its ticket's still-pending create).
+ * That shortens the file without the sync tick's snapshot knowing, so a positional `slice(count)`
+ * would silently eat un-pushed suffix entries instead of the intended prefix. Keying off opId makes
+ * the drop correct regardless of what else has mutated the file in between.
+ *
+ * Entries appended DURING the tick (after the snapshot was taken, from concurrent request handling)
+ * are simply not in `flushedOpIds` and survive untouched, to be picked up by the next tick.
  *
  * The internal read-then-write is serialized against appendJournalEntry for the same storeDir (see
  * withJournalLock) — otherwise a concurrent append landing between this function's read and its
  * write would be silently clobbered by the overwrite, discarding an un-pushed mutation.
  */
-export async function dropFlushedJournalEntries(storeDir: string, count: number): Promise<void> {
-  if (count <= 0) return;
+export async function dropFlushedJournalEntries(storeDir: string, flushedOpIds: ReadonlySet<string>): Promise<void> {
+  if (flushedOpIds.size === 0) return;
   return withJournalLock(storeDir, async () => {
     const entries = await readJournalEntries(storeDir);
-    const remaining = entries.slice(count);
+    const remaining = entries.filter((e) => !flushedOpIds.has(e.opId));
+    if (remaining.length === entries.length) return;
     const content = remaining.map((e) => JSON.stringify(e) + '\n').join('');
+    await fs.writeFile(journalPath(storeDir), content, 'utf-8');
+  });
+}
+
+/**
+ * FLUX-1634: a delete voids that ticket's still-pending `kind:'create'` journal entry — replaying
+ * it after a losing sync race would resurrect the just-deleted file, and if the id gets reused by
+ * a later create at the same path, that create's own entry would then find the path already
+ * occupied by the resurrected ticket and bail down the id-collision branch, losing the new ticket
+ * instead. Dropping the stale entry here means there is nothing left to resurrect it with.
+ *
+ * Same read-modify-write shape as dropFlushedJournalEntries, serialized against appendJournalEntry
+ * via withJournalLock for the same TOCTOU reason.
+ */
+export async function dropPendingCreateEntries(storeDir: string, taskId: string): Promise<void> {
+  return withJournalLock(storeDir, async () => {
+    const entries = await readJournalEntries(storeDir);
+    const kept = entries.filter((e) => !(e.taskId === taskId && e.kind === 'create'));
+    if (kept.length === entries.length) return;
+    const content = kept.map((e) => JSON.stringify(e) + '\n').join('');
     await fs.writeFile(journalPath(storeDir), content, 'utf-8');
   });
 }
@@ -128,9 +174,16 @@ export async function dropFlushedJournalEntries(storeDir: string, count: number)
 // which sync-watcher.ts's CAS loop needs for the identical reason.
 export type ReplayHandler = (taskId: string, options: Record<string, unknown>) => unknown;
 export type CacheReloadHandler = (storeDir: string, changedRelativePaths: string[]) => Promise<void>;
+// FLUX-1634: separate from ReplayHandler because a 'create' entry has no existing task to look up —
+// updateTaskWithHistoryLocked returns null for an unknown taskId, which would silently no-op a
+// create replay instead of recreating the lost file. Takes `ws` explicitly (the caller, sync-watcher's
+// SyncWorker, already has it as `this.ws`) rather than falling back to an ambient getWorkspace() —
+// this module has no request/ALS context of its own to bind one correctly.
+export type CreateReplayHandler = (taskId: string, payload: CreateReplayPayload, ws: Workspace) => unknown;
 
 let replayHandler: ReplayHandler | null = null;
 let cacheReloadHandler: CacheReloadHandler | null = null;
+let createReplayHandler: CreateReplayHandler | null = null;
 
 export function setJournalReplayHandler(fn: ReplayHandler): void {
   replayHandler = fn;
@@ -140,8 +193,26 @@ export function setJournalCacheReloadHandler(fn: CacheReloadHandler): void {
   cacheReloadHandler = fn;
 }
 
-/** Re-invoke the registered handler for one journal entry, marked so it doesn't re-journal itself. */
-export async function replayJournalEntry(entry: JournalEntry): Promise<void> {
+export function setJournalCreateReplayHandler(fn: CreateReplayHandler): void {
+  createReplayHandler = fn;
+}
+
+/**
+ * Re-invoke the registered handler for one journal entry, marked so it doesn't re-journal itself.
+ * `ws` is required for a `kind: 'create'` entry (see CreateReplayHandler) — the caller (sync-watcher's
+ * CAS loop) always has one; ignored for the default 'update' path, which resolves its own workspace.
+ */
+export async function replayJournalEntry(entry: JournalEntry, ws?: Workspace): Promise<void> {
+  if (entry.kind === 'create') {
+    if (!createReplayHandler) {
+      throw new Error('[sync-journal] replayJournalEntry called for a create entry before a create-replay handler was registered');
+    }
+    if (!ws) {
+      throw new Error('[sync-journal] replayJournalEntry called for a create entry without a workspace');
+    }
+    await createReplayHandler(entry.taskId, entry.options as unknown as CreateReplayPayload, ws);
+    return;
+  }
   if (!replayHandler) {
     throw new Error('[sync-journal] replayJournalEntry called before a replay handler was registered');
   }

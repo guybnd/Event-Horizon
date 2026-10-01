@@ -1,34 +1,36 @@
-import { getWorkspace, getDefaultWorkspace, runWithWorkspace, getRequestBinding, canonicalizeWorkspaceRoot, type Workspace } from './workspace-context.js';
-import { resolveWorkspaceFromRoot } from './middleware.js';
+import { getWorkspace, getDefaultWorkspace, runWithWorkspace, getRequestBinding, getRequestedWorkspaceRoot, canonicalizeWorkspaceRoot, resolveWorkspaceByRoot, type Workspace, type WorkspaceBindingSource } from './workspace-context.js';
+import { resolveWorkspaceBinding, firstHeaderValue } from './workspace-binding.js';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { McpError, ErrorCode as McpErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { McpError, ErrorCode as McpErrorCode, ElicitResultSchema, type Implementation, type RequestId } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { fileURLToPath } from 'node:url';
 import { completable } from '@modelcontextprotocol/sdk/server/completable.js';
 import { z } from 'zod';
 import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
 
-import { serializeTaskForAgent, updateTaskWithHistory, readTaskFromDisk, createTask, getTerminalStatuses, syncParentSubtaskLinks, validateParentLink, StaleBodyError, type CreateTaskOptions, type TaskRecord } from './task-store.js';
+import { serializeTaskForAgent, updateTaskWithHistory, readTaskFromDisk, createTask, getTerminalStatuses, syncParentSubtaskLinks, validateParentLink, StaleBodyError, openWorkspaceLive, type CreateTaskOptions, type TaskRecord } from './task-store.js';
 import { nextColumnAfter, getConfig } from './config.js';
 import { normalizeDocPathInput, type StoredDoc } from './file-utils.js';
 import { resolveDefaultFramework } from './agents/index.js';
+import type { CliSessionStatus } from './agents/types.js';
 import { buildCoreInstructionsBlock } from './skill-core.js';
 import { broadcastEvent } from './events.js';
 import { emitDocRecap, emitDocRecapForBranch } from './doc-recap-emit.js';
 // FLUX-1044: the status-transition rulebook shared with the REST PUT route — comment gates,
 // schema-validation + tag-registration sequencing, and the MCP-only commit-before-Ready
 // precondition all live there now (one seam for both write paths).
-import { evaluateCommentGate, resolveTransitionStatusNames, validateAndRegisterTicketWrite, evaluateWorktreeReadyRefusal } from './status-transition-service.js';
+import { evaluateCommentGate, resolveTransitionStatusNames, validateAndRegisterTicketWrite, evaluateWorktreeReadyRefusal, buildCompactionHandoffEntry } from './status-transition-service.js';
 import { extractTicket } from './extract.js';
 import { mergeTickets } from './merge.js';
 import { buildActivityEntry, type AgentSessionEntry, type AgentSessionProgress } from './history.js';
 import { sanitizeCompletion, completionInputSchema } from './completion-payload.js';
-import { getActiveFluxDir, getWorkspacesList, getWorkspaceRoot, resolveSkillSourceRoot, isOrphanMode } from './workspace.js';
+import { getActiveFluxDir, getWorkspacesList, getWorkspaceRoot, resolveSkillSourceRoot, isOrphanMode, resolveRegisteredWorkspaceForPath, rememberOpenWorkspace, type WorkspaceEntry } from './workspace.js';
 import { enrichList } from './routes/workspaces.js';
 import { log } from './log.js';
 import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, getGhAvailability, ghUnavailableMessage, captureDiff, resolveCommit, planFinishPr, evaluateCiGate, type DiffFileSummary } from './branch-manager.js';
@@ -37,8 +39,11 @@ import { ensureTicketIsolation } from './ticket-isolation.js';
 import { cleanupMergedBranch, isWorktreeReclaimable } from './pr-cleanup.js';
 import { sharedNonDoneSiblings, prTicketsOnBranch } from './pr-tickets.js';
 import { existsSync } from 'fs';
-import { getActiveSessionsForTask, getLiveStandaloneSessionForTask, stopAllSessionsForTask, reapStaleParkedSessions, getCliSessionSummaryForTask, cliSessionsById } from './session-store.js';
+import { getActiveSessionsForTask, getAllSessionsForTask, getLiveStandaloneSessionForTask, stopAllSessionsForTask, reapStaleParkedSessions, getCliSessionSummaryForTask, cliSessionsById, attachToExistingDelegation } from './session-store.js';
+import { engineLongFetch } from './engine-long-fetch.js';
 import { verifyConversation } from './session-binding.js';
+import { QUESTION_TIMEOUT_MS, recordQuestionRoundTrip, type PromptResult } from './hitl-prompts.js';
+import type { AskQuestion } from './ask-questions.js';
 import { isPidAlive, isSameOrDescendantPid, listWin32ProcessSnapshot, indexProcessTable } from './kill-process-tree.js';
 import {
   createOrRenewHold,
@@ -48,6 +53,7 @@ import {
   MAX_TTL_MINUTES,
   DEFAULT_TTL_MINUTES,
 } from './background-process-holds.js';
+import { claimWorktree, renewClaim } from './worktree-claims.js';
 import { handoffChatSessionPhase } from './agents/shared.js';
 import { SKILL_MODULES, type SkillModule } from './workflow-installer.js';
 import { generatePromptNotification, generateReviewNotification, generateNeedsActionNotification, dismissNotificationsForTicket, addNotification } from './notifications.js';
@@ -57,6 +63,7 @@ import { submitGroupEdit } from './group-edit.js';
 import { writeArtifactRevisionInPublication, withArtifactPublication, isSafeTicketId, listArtifactRevisionsOnDisk } from './artifacts.js';
 import { ensureFurnaceLoaded, getFurnaceBatch, getFurnaceBatchesCache, getFurnaceBatchesCacheForWorkspace, updateFurnaceBatch, createFurnaceBatch, deleteFurnaceBatch, mutateFurnaceBatch, globalSlotsInUse, freeSlots, FURNACE_SLOT_CAP } from './furnace-store.js';
 import { buildBatchTickets, toBuildCandidate, validateBatchTickets } from './furnace-builder.js';
+import { BENCHMARK_KIND, BENCHMARK_REFUSAL_MARKER } from './models/benchmark.js';
 import { igniteBatch, stopBatch, burnRateClampWarning, retryTicket, resumeBatch, dismissTicketFlag, takeoverTicket, handBackTicket, reconcileBatchCached, reconcileAllBatchesCached, refreshWorktreePool, isDispatching, clearTakeoverTracking, evictReconcileReadCache } from './furnace-stoker.js';
 import { newBatchTicket, isBatchActive, isTerminalTicketState, validateBatchTrigger, batchBelongsToWorkspaceRoot, DEFAULT_RETRY_CAP, type BatchKind, type BatchTrigger, type FurnaceBatch } from './models/furnace.js';
 import { maybeStartTemper, isChangesRequestedBounceOwned } from './temper.js';
@@ -64,6 +71,7 @@ import { planBodyHash, resolveGateValue, hasHumanGateTouch, SELF_ATTESTED_AUTHOR
 import { planLint, formatLintFindings, BODY_WARN_CHARS } from './models/plan-lint.js';
 import { startPlanGateNow, resolvePlanVerdictNow, type PlanGateMode } from './gate-runner.js';
 import type { OrchestrationPersonaMeta } from './orchestration-personas.js';
+import { formatAuthDiagnosisMessage, type AuthDiagnosis } from './agents/auth-diagnostics.js';
 
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
@@ -128,17 +136,160 @@ function jsonResult(data: unknown) {
   return textResult(JSON.stringify(data));
 }
 
-// FLUX-950: structured-output result for tools registered with an `outputSchema`.
-// Emits `structuredContent` as the SINGLE wire representation and leaves `content`
-// empty — the typed JSON is never *also* stringified into a text block. Returning
-// both would put two full copies of the payload on the wire and double per-call
-// tokens, the exact opposite of AXI #1 (token budget is first-class — the pinned
-// constraint on this ticket). There is therefore no text JSON left for FLUX-876 to
-// compact; structuredContent is the compact form. `content: []` is sent explicitly
-// (not omitted) so the SDK's `validateToolOutput` still runs the payload through the
-// tool's `outputSchema` as a guardrail (it early-returns when `content` is absent).
-function structuredResult(data: Record<string, unknown>) {
-  return { content: [] as { type: 'text'; text: string }[], structuredContent: data };
+/**
+ * FLUX-1774: build an `elicitation/create` request's params from `ask_user_question`'s
+ * `questions[]`, plus a map from the JSON-Schema-safe property key (`q0`, `q1`, …) back to the
+ * originating question — question text is not a safe JSON Schema property name, and the portal
+ * path's answer shape is keyed by question text, so an elicited answer must be rekeyed via this
+ * map to come back byte-identical to it. Single-select maps to an `enum`+`enumNames` string
+ * property (`enumNames` carries "label — description" when an option has one); multi-select maps
+ * to an array-of-enum-string property — the SDK's `ElicitRequestFormParamsSchema` strips
+ * `enumNames` from array `items`, so a multi-select question can only show bare labels on this
+ * path (a documented spec limitation, not a bug). A trailing optional `notes` property mirrors the
+ * portal picker's free-text note field.
+ */
+function buildElicitationRequest(questions: AskQuestion[]): {
+  params: { message: string; requestedSchema: Record<string, unknown> };
+  keyForQuestion: Map<string, AskQuestion>;
+} {
+  const keyForQuestion = new Map<string, AskQuestion>();
+  const properties: Record<string, unknown> = {};
+  const required: string[] = [];
+  questions.forEach((q, i) => {
+    const key = `q${i}`;
+    keyForQuestion.set(key, q);
+    required.push(key);
+    const labels = q.options.map((o) => o.label);
+    properties[key] = q.multiSelect
+      ? { type: 'array', title: q.header, description: q.question, items: { type: 'string', enum: labels } }
+      : {
+          type: 'string',
+          title: q.header,
+          description: q.question,
+          enum: labels,
+          enumNames: q.options.map((o) => (o.description ? `${o.label} — ${o.description}` : o.label)),
+        };
+  });
+  properties.notes = { type: 'string', title: 'Notes', description: 'Optional additional context for your answer.' };
+  const first = questions[0];
+  const message = questions.length === 1 && first ? first.question : `${questions.length} questions from Event Horizon`;
+  return { params: { message, requestedSchema: { type: 'object', properties, required } }, keyForQuestion };
+}
+
+/**
+ * FLUX-1774: map an accepted elicitation's raw `content` back onto the portal path's answer shape
+ * (`{ [question text]: label | label[] }`), dropping any value that isn't one of that question's
+ * own option labels — a client is free to send back anything for a string/array property. Empty
+ * result (nothing usable survived) is treated as unanswered, same as the portal timeout sentinel.
+ */
+function mapElicitationContent(content: Record<string, string | number | boolean | string[]>, keyForQuestion: Map<string, AskQuestion>): PromptResult {
+  const answers: Record<string, string | string[]> = {};
+  for (const [key, q] of keyForQuestion) {
+    const raw = content[key];
+    const labels = new Set(q.options.map((o) => o.label));
+    if (q.multiSelect) {
+      if (Array.isArray(raw)) {
+        const picked = raw.filter((v): v is string => typeof v === 'string' && labels.has(v));
+        if (picked.length > 0) answers[q.question] = picked;
+      }
+    } else if (typeof raw === 'string' && labels.has(raw)) {
+      answers[q.question] = raw;
+    }
+  }
+  if (Object.keys(answers).length === 0) return { answers: {}, unanswered: true };
+  const notesRaw = content.notes;
+  const notes = typeof notesRaw === 'string' && notesRaw.trim() ? notesRaw.trim() : undefined;
+  return { answers, ...(notes ? { notes } : {}) };
+}
+
+/** A poll's view of a just-dispatched session — the subset of `CliSessionSummary`
+ *  `waitForSessionLiveness` needs. Structural, not imported from session-store.ts, since the poll
+ *  callback fetches this over the loopback REST hop (see boundWorkspaceHeader), not in-process. */
+export interface SessionLivenessSnapshot {
+  id?: string;
+  status?: CliSessionStatus;
+  lastOutputAt?: string;
+  terminalReason?: 'context-exhausted' | 'rate-limited' | 'auth-expired';
+  authDiagnosis?: AuthDiagnosis;
+}
+
+export type SessionLivenessOutcome =
+  | { liveness: 'confirmed' }
+  | { liveness: 'unconfirmed' }
+  | { liveness: 'failed'; terminalReason: SessionLivenessSnapshot['terminalReason'] | undefined; authDiagnosis: AuthDiagnosis | undefined };
+
+/**
+ * FLUX-1772: bounded liveness probe for a just-dispatched session. `start_session` (below) fires
+ * the spawn and returns immediately (FLUX-1002) — a session that dies seconds later (e.g.
+ * `auth-expired` from duplicate Claude installs, FLUX-1599/1601) previously looked identical to a
+ * healthy dispatch to the caller. `poll` re-fetches the session summary (undefined = not visible
+ * yet); `sleep` is injected so tests can fast-forward instead of sleeping for real.
+ *
+ * `'failed'` can win at ANY point up to `timeoutMs` — it is NOT a first-match early return. In
+ * this codebase output always precedes an engine-classified death: `lastOutputAt` is stamped on
+ * every stdout frame (agents/shared.ts) *before* `onEvent` runs, and both classification paths
+ * (`auth-expired`'s `api_retry` frame, `classifyResultError`'s `result` frame — agents/claude-code.ts)
+ * are themselves driven by a later stdout frame. So a probe that returned `'confirmed'` the moment
+ * it saw first output would almost always win the race against the very failure it exists to
+ * catch (verified: a session with `lastOutputAt` stamped at ~1s and `status:'failed'` at ~3s must
+ * still be polling at t=3s to report the failure). Only at `timeoutMs`, once `'failed'` has had the
+ * whole window to happen, do we decide `'confirmed'` (first output was seen at some point) vs.
+ * `'unconfirmed'` (never saw output — NOT an error; plenty of healthy sessions, e.g. MCP/Serena
+ * handshake FLUX-1004, simply take longer than the probe window).
+ * Pure + exported for test (mirrors the `nextStepForStatus` idiom above).
+ */
+export async function waitForSessionLiveness(
+  poll: () => Promise<SessionLivenessSnapshot | undefined>,
+  opts: { timeoutMs?: number; intervalMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<SessionLivenessOutcome> {
+  const timeoutMs = opts.timeoutMs ?? 5000;
+  const intervalMs = opts.intervalMs ?? 500;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const deadline = Date.now() + timeoutMs;
+  let sawOutput = false;
+  for (;;) {
+    const snapshot = await poll();
+    if (snapshot?.status === 'failed' || snapshot?.status === 'cancelled') {
+      return { liveness: 'failed', terminalReason: snapshot.terminalReason, authDiagnosis: snapshot.authDiagnosis };
+    }
+    if (snapshot?.status && snapshot.status !== 'pending' && snapshot.lastOutputAt) {
+      sawOutput = true;
+    }
+    if (Date.now() >= deadline) return { liveness: sawOutput ? 'confirmed' : 'unconfirmed' };
+    await sleep(intervalMs);
+  }
+}
+
+// FLUX-950 / FLUX-1721: structured-output result for tools registered with an
+// `outputSchema`. For clients verified to read `structuredContent` (see
+// `KNOWN_STRUCTURED_CONTENT_CLIENTS` below), `structuredContent` is the SINGLE wire
+// representation and `content` stays empty — the typed JSON is never *also*
+// stringified into a text block, avoiding two full copies of the payload on the wire
+// (AXI #1, token budget is first-class). For every other client — including one that
+// sends no `clientInfo` at all — the JSON is *also* mirrored into a `content[0]` text
+// block: a live A/B probe (2026-08-31) showed a client that only reads `content[]`
+// (Grok Build) silently receiving `{}` with `is_error: false` when `content` was left
+// empty, the FLUX-1631 silent-data-loss shape. A wrong allowlist entry only ever costs
+// extra tokens (mirroring for a client that didn't need it) and can never lose data
+// (an unknown client always gets the mirror) — that asymmetry is what makes
+// name-substring matching safe. `content` is always *present* (never omitted, even
+// when empty) so the SDK's `validateToolOutput` still runs `structuredContent` through
+// the tool's `outputSchema` as a guardrail (it early-returns only when `content` is
+// absent, not when it's empty).
+const KNOWN_STRUCTURED_CONTENT_CLIENTS = ['claude', 'codex', 'gemini', 'copilot'];
+
+export function clientReadsStructuredContent(clientInfo: Implementation | undefined): boolean {
+  const name = clientInfo?.name?.toLowerCase();
+  if (!name) return false;
+  return KNOWN_STRUCTURED_CONTENT_CLIENTS.some((known) => name.includes(known));
+}
+
+export function buildStructuredResult(data: Record<string, unknown>, clientInfo: Implementation | undefined) {
+  if (clientReadsStructuredContent(clientInfo)) {
+    return { content: [] as { type: 'text'; text: string }[], structuredContent: data };
+  }
+  // Compact (no-indent) JSON — same reasoning as `jsonResult` (FLUX-876).
+  return { content: [{ type: 'text' as const, text: JSON.stringify(data) }], structuredContent: data };
 }
 
 /**
@@ -301,6 +452,9 @@ export function resolvePlanGateMode(gateValue: 'auto' | 'auto-then-you' | 'you')
 const SAFE_PERMISSION_TOOLS = new Set([
   'get_ticket', 'list_tickets', 'get_board_config', 'get_project_group', 'get_board_state',
   'list_available_agents', 'get_session_log', 'read_skill', 'list_workspaces',
+  // Binding the calling session to a registered board only opens/reads that board — never mutates
+  // a ticket — so a hand-launched agent can self-heal its binding without a confirm round-trip.
+  'bind_workspace',
   // The proposal path is always safe — it parks a batch for human approval, never mutates.
   'propose_board_rebase',
   'Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebSearch', 'TodoWrite', 'NotebookRead',
@@ -461,7 +615,9 @@ export function selectTicketsForList(
   // "pass includeAll" nudge — they aren't work to surface); the disclosure note below still counts
   // ONLY terminal tickets so its wording stays accurate.
   if (activeOnly) {
-    tasks = tasks.filter((t) => t.kind !== 'scratch');
+    // FLUX-1739: benchmark run tickets hide alongside scratch — a 45-cell suite would otherwise bury
+    // the real backlog under throwaway rows.
+    tasks = tasks.filter((t) => t.kind !== 'scratch' && t.kind !== BENCHMARK_KIND);
   }
   const afterScratch = tasks.length;
   if (activeOnly) {
@@ -663,7 +819,14 @@ export function buildBoardConfigProjection() {
   const workspaceRoot = root !== null ? canonicalizeWorkspaceRoot(root) : null;
   const binding = getRequestBinding();
   const storeMode = isOrphanMode() ? 'orphan' : 'in-repo';
-  return { statuses, projects, tags: agentTags, priorities: agentPriorities, users, requireInputStatus, readyForMergeStatus, workspaceRoot, binding, storeMode };
+  // `requestedRoot` only when the header MISSED (`'header-unresolved'`) — the board the caller asked
+  // for, so an agent can see it named a root this engine doesn't know rather than just "unresolved".
+  const requestedRoot = binding === 'header-unresolved' ? getRequestedWorkspaceRoot() : null;
+  return {
+    statuses, projects, tags: agentTags, priorities: agentPriorities, users, requireInputStatus, readyForMergeStatus,
+    workspaceRoot, binding, storeMode,
+    ...(requestedRoot ? { requestedRoot } : {}),
+  };
 }
 
 /**
@@ -821,7 +984,7 @@ function completeTicketId(value: string): string[] {
   const terminal = new Set(getTerminalStatuses());
   const needle = String(value ?? '').toLowerCase();
   return Object.values(boundWorkspace().tasks)
-    .filter((t) => !terminal.has(String(t.status ?? '')) && t.kind !== 'scratch')
+    .filter((t) => !terminal.has(String(t.status ?? '')) && t.kind !== 'scratch' && t.kind !== BENCHMARK_KIND)
     .filter(
       (t) =>
         String(t.id ?? '').toLowerCase().includes(needle) ||
@@ -862,7 +1025,16 @@ function buildWorkspaceBindingLine(): string {
   const workspaceRoot = root !== null ? canonicalizeWorkspaceRoot(root) : '<unset>';
   const binding = getRequestBinding();
   const storeMode = isOrphanMode() ? 'orphan' : 'in-repo';
-  return `This session is bound to workspace \`${workspaceRoot}\` (binding: ${binding}, storeMode: ${storeMode}). A \`binding\` of \`default-fallback\` means no X-EH-Workspace header was sent — verify with \`list_workspaces\` before any board mutation.`;
+  const head = `This session is bound to workspace \`${workspaceRoot}\` (binding: ${binding}, storeMode: ${storeMode}).`;
+  switch (binding) {
+    case 'header':
+    case 'session':
+      return `${head} The binding is verified — this is the board your ticket tools read and write.`;
+    case 'header-unresolved':
+      return `${head} WARNING: your X-EH-Workspace header named \`${getRequestedWorkspaceRoot() ?? '<unknown>'}\`, which is not a registered board on this engine, so the binding above is only a read fallback and every tool except \`list_workspaces\`, \`get_board_config\`, \`read_skill\` and \`bind_workspace\` is refused. Call \`bind_workspace\` with the board root (or your working directory) to bind explicitly.`;
+    default:
+      return `${head} \`default-fallback\` means no X-EH-Workspace header was sent, so this is the engine's default board — NOT necessarily the project you are working in. If your working directory is a different registered board, call \`bind_workspace\` with that directory BEFORE any board action (it also brings the board live if it isn't); \`list_workspaces\` shows every registered board.`;
+  }
 }
 
 /**
@@ -889,6 +1061,32 @@ export function buildMcpServer(): McpServer {
       instructions: `${buildCoreInstructionsBlock()}\n\n${buildWorkspaceBindingLine()}`,
     },
   );
+
+  // FLUX-1721: bind the client-conditional mirror to this connection's negotiated
+  // `clientInfo` so every one of the 11 `structuredResult(...)` call sites below stays
+  // textually unchanged. `buildMcpServer()` is invoked once per HTTP session
+  // (`handleMcpHttpRequest` calls it per new transport), so `getClientVersion()` never
+  // crosses between concurrent sessions; the SDK populates it while handling
+  // `initialize`, before any `tools/call` reaches these handlers.
+  const structuredResult = (data: Record<string, unknown>) => buildStructuredResult(data, server.server.getClientVersion());
+
+  // Multi-board binding: a connection whose X-EH-Workspace named a root this engine does not know
+  // (`'header-unresolved'`) must not read or write the DEFAULT board as if it were its own — every
+  // tool but the diagnose/self-heal set is refused until the session binds explicitly. Installed
+  // before any registration so it wraps all of them uniformly.
+  installUnresolvedBindingGuard(server);
+
+  // FLUX-1721: log the negotiated client once per connection so the allowlist above can
+  // be tightened from real evidence (confirming codex/gemini/copilot's actual
+  // `clientInfo.name`) instead of the current guess.
+  server.server.oninitialized = () => {
+    const clientInfo = server.server.getClientVersion();
+    log.debug('mcp_client_connected', {
+      name: clientInfo?.name,
+      version: clientInfo?.version,
+      structuredContentMirrored: !clientReadsStructuredContent(clientInfo),
+    });
+  };
 
   // ─── Context Tools ──────────────────────────────────────────────────────────
 
@@ -1104,9 +1302,10 @@ export function buildMcpServer(): McpServer {
         requireInputStatus: z.string().optional(),
         readyForMergeStatus: z.string().optional(),
         workspaceRoot: z.string().nullable().optional().describe('Canonical (realpath\'d) root this session is bound to (FLUX-1573)'),
-        binding: z.enum(['header', 'default-fallback']).optional().describe(
-          '"header" = bound via X-EH-Workspace (verified); "default-fallback" = no header, resolved to the boot board (unverified) (FLUX-1573)',
+        binding: z.enum(['header', 'session', 'header-unresolved', 'default-fallback']).optional().describe(
+          '"header" = X-EH-Workspace resolved (verified); "session" = bound via bind_workspace (verified); "header-unresolved" = header named an unregistered root (tools refused until bind_workspace); "default-fallback" = no header, boot board (unverified)',
         ),
+        requestedRoot: z.string().optional().describe('The X-EH-Workspace value that failed to resolve — present only when binding is "header-unresolved"'),
         storeMode: z.enum(['in-repo', 'orphan']).optional().describe('Ticket storage mode for the bound workspace (FLUX-1573)'),
       }).catchall(z.unknown()),
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -1159,7 +1358,7 @@ export function buildMcpServer(): McpServer {
       description:
         'Read-only: list every registered workspace (path, displayName, status, live session count, group info) plus ' +
         'canonicalRoot — the realpath\'d key to copy byte-exactly into an X-EH-Workspace header. Never rebinds this ' +
-        'session. Full lore: read_skill(\'tools\', \'list_workspaces\').',
+        'session — use bind_workspace for that. Full lore: read_skill(\'tools\', \'list_workspaces\').',
       outputSchema: z.object({
         workspaces: z.array(
           z.object({
@@ -1186,6 +1385,79 @@ export function buildMcpServer(): McpServer {
     async () => {
       const workspaces = await enrichList(await getWorkspacesList());
       return structuredResult({ workspaces });
+    },
+  );
+
+  server.registerTool(
+    'bind_workspace',
+    {
+      title: 'Bind workspace',
+      description:
+        'Bind THIS MCP session to a registered board: pass the board root or any path inside it (your working ' +
+        'directory, or a task worktree). Opens the board live if needed. For headerless/hand-launched sessions ' +
+        '(binding default-fallback or header-unresolved); refused when already bound via X-EH-Workspace. ' +
+        'Full lore: read_skill(\'tools\', \'bind_workspace\').',
+      inputSchema: {
+        path: z.string().describe('Board root, or any path inside a registered board (e.g. your cwd).'),
+      },
+      outputSchema: z.object({
+        workspaceRoot: z.string(),
+        // 'header' is the FLUX-1739 self-bind no-op (a dispatched session naming the board it is
+        // already on). Pinning this to 'session' turned that no-op into an MCP output-validation
+        // error — the benchmark analyst caught it: every self-referential bind still logged as a
+        // platform failure, just with a different message.
+        binding: z.enum(['session', 'header']),
+        storeMode: z.enum(['in-repo', 'orphan']),
+        opened: z.boolean().describe('True when this call brought the board live (it was registered but not open).'),
+        previousBinding: z.enum(['header', 'session', 'header-unresolved', 'default-fallback']),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ path: anyPath }) => {
+      const previousBinding = getRequestBinding();
+      if (previousBinding === 'header') {
+        // FLUX-1739: binding to the board you are ALREADY on is a no-op, not a conflict.
+        //
+        // This tool's own instructions tell every agent to "call bind_workspace with that directory
+        // BEFORE any board action". A dispatched session that obeys was refused outright — and the
+        // refusal was recorded in the benchmark's `ehToolFailures`, so the platform logged itself
+        // failing the agent for following the platform's instructions. Observed in real runs under
+        // both models.
+        //
+        // The safety property is unchanged: a dispatched session still cannot MOVE to a different
+        // board, which is what the refusal exists to prevent. Only the self-referential call — the
+        // one the instructions actually ask for — now succeeds.
+        const requested = await resolveRegisteredWorkspaceForPath(anyPath).catch(() => null);
+        const boundRoot = boundWorkspace().root;
+        if (requested && boundRoot && canonicalizeWorkspaceRoot(requested.path) === canonicalizeWorkspaceRoot(boundRoot)) {
+          return structuredResult({
+            workspaceRoot: canonicalizeWorkspaceRoot(boundRoot),
+            binding: 'header',
+            storeMode: isOrphanMode() ? 'orphan' : 'in-repo',
+            opened: false,
+            previousBinding,
+          });
+        }
+        return errorResult(
+          `This session is already bound via a resolved X-EH-Workspace header (a dispatched session) to ${boundRoot ?? 'its launching board'} — rebinding to a DIFFERENT board is refused so its ticket lifecycle writes stay there. Binding to the board it is already on is a no-op and succeeds.`,
+          'invalid_state',
+        );
+      }
+      const mcpSessionId = currentMcpSessionId();
+      if (!mcpSessionId) {
+        return errorResult('No Mcp-Session-Id on this connection — bind_workspace needs a Streamable-HTTP session to attach the binding to.', 'invalid_state');
+      }
+      const bound = await bindSessionToRegisteredPath(mcpSessionId, anyPath);
+      if ('error' in bound) return errorResult(bound.error, bound.code);
+      // Read storeMode under the NEW binding — `isOrphanMode()` reads the ambient workspace.
+      const storeMode = runWithWorkspace(bound.ws, () => (isOrphanMode() ? 'orphan' : 'in-repo'), { source: 'session' });
+      return structuredResult({
+        workspaceRoot: canonicalizeWorkspaceRoot(bound.root),
+        binding: 'session',
+        storeMode,
+        opened: bound.opened,
+        previousBinding,
+      });
     },
   );
 
@@ -1305,6 +1577,16 @@ export function buildMcpServer(): McpServer {
     { title: 'Merge tickets', readOnlyHint: false, destructiveHint: true },
     async ({ into, from }) => {
       if (boundWorkspace().isActivating) return errorResult('Workspace is activating, please retry', 'transient_retry');
+      // FLUX-1739: folding a benchmark run into a real ticket (or vice versa) would splice throwaway
+      // agent output into the board and destroy the run's isolation — the property every number in
+      // the suite depends on.
+      const benchmarkIds = [into, ...from].filter((id) => boundWorkspace().tasks[id]?.kind === BENCHMARK_KIND);
+      if (benchmarkIds.length > 0) {
+        return errorResult(
+          `${BENCHMARK_REFUSAL_MARKER} Cannot merge ${benchmarkIds.join(', ')} — benchmark run tickets are isolated measurement surfaces and cannot be folded into or out of the board.`,
+          'invalid_state'
+        );
+      }
       try {
         const result = await mergeTickets({ into, from });
         return jsonResult(result);
@@ -1674,7 +1956,16 @@ export function buildMcpServer(): McpServer {
       // When moving to Ready with a branch, push and create a PR for review (FLUX-555).
       // The work MUST be committed before Ready — a branch with no commits ahead of base
       // can't open a PR.
-      if (newStatus === readyStatus && task.branch) {
+      //
+      // FLUX-1739: skipped ENTIRELY for a benchmark run. This block is the PRIMARY PR-opening path
+      // in the engine — it is what every implementation session hits at end of turn — so an
+      // unguarded suite would open one real PR per cell. Skipping the whole block (not just the
+      // createPullRequest call) also skips the FLUX-730 commit-before-Ready refusal and the
+      // notifications, both of which are correct here: reaching Ready is a legitimate terminal state
+      // that evidence collection reads, and change size is measured from a diff that unions
+      // uncommitted work, so a run is fully scoreable without a commit. The transition itself must
+      // still succeed.
+      if (newStatus === readyStatus && task.branch && task.kind !== BENCHMARK_KIND) {
         const branchStatus = await getTicketBranchStatus(task.branch).catch(() => null);
 
         // FLUX-730: ENFORCE commit-before-Ready for *worktree* branches. A dedicated worktree
@@ -1751,6 +2042,19 @@ export function buildMcpServer(): McpServer {
         }
       }
 
+      // FLUX-1746: review-handoff note — if any implementation/fast-path session recorded for this
+      // ticket compacted while running, tell the reviewer not to assume continuity with the plan.
+      // Wired independently on the portal PUT path (routes/tasks/update.ts), per this file's
+      // REST/MCP-asymmetry policy (status-transition-service.ts header) — both read the same
+      // `getAllSessionsForTask`, so wiring only one would leave the other path silently producing
+      // nothing. Guarded on `task.status !== readyStatus` (matching the portal's `movingToReady`)
+      // so a Ready->Ready re-move doesn't append a second handoff note — the entry is a one-time
+      // "here's what happened during implementation" note, not a per-move stamp.
+      if (newStatus === readyStatus && task.status !== readyStatus) {
+        const handoffEntry = buildCompactionHandoffEntry(getAllSessionsForTask(ticketId), new Date().toISOString());
+        if (handoffEntry) entries.push(handoffEntry);
+      }
+
       const prevStatus = task.status;
       const result = await updateTaskWithHistory(ticketId, {
         entries,
@@ -1794,13 +2098,31 @@ export function buildMcpServer(): McpServer {
         handoffChatSessionPhase(ticketId, newStatus);
       }
 
+      // FLUX-1739: the PR block above is skipped wholesale for a benchmark run, so record the
+      // terminal state as an activity entry in its place. Without it the Ready move leaves no trace
+      // of WHY no PR exists, and the friction layer would have to infer a by-design skip from
+      // silence — exactly the ambiguity the refusal marker exists to remove.
+      if (newStatus === readyStatus && task.branch && task.kind === BENCHMARK_KIND) {
+        await updateTaskWithHistory(ticketId, {
+          updatedBy: 'Agent',
+          entries: [{
+            type: 'activity',
+            user: 'Agent',
+            comment: `${BENCHMARK_REFUSAL_MARKER} Reached ${readyStatus} without opening a PR — benchmark run branches are local-only and are never pushed or merged.`,
+            date: new Date().toISOString(),
+          }],
+        }).catch((err) => console.error(`[mcp] benchmark Ready activity for ${ticketId} failed:`, err));
+      }
+
       broadcastEvent('taskUpdated', { id: ticketId });
 
       // FLUX-1662: auto doc-recap — if this Ready move's branch touches a docsRoot .md file, publish
       // a kind:'doc-recap' artifact revision so the ticket surface shows the rendered doc changes
       // without an agent having to build one manually. Fire-and-forget: emitDocRecap already swallows
       // its own errors (never blocks/fails this status move); the .catch here is a defensive backstop.
-      if (newStatus === readyStatus && task.branch) {
+      // FLUX-1739: benchmark runs are excluded — a doc-recap artifact per cell would be 45 artifact
+      // writes onto throwaway tickets nobody reads.
+      if (newStatus === readyStatus && task.branch && task.kind !== BENCHMARK_KIND) {
         await emitDocRecap(ticketId, task.branch, task.baselineCommit ?? '', boundWorkspace()).catch((err) =>
           console.error(`[mcp] doc-recap emit for ${ticketId} failed:`, err),
         );
@@ -1861,7 +2183,13 @@ export function buildMcpServer(): McpServer {
       // `todoStatusForGate` for the plan-gate guard — no more re-deriving this per call site.
       const inProgressStatus = nextColumnAfter('Todo') || 'In Progress';
       const hint = nextStepForStatus(newStatus, { readyStatus, requireInputStatus, inProgressStatus, todoStatus: todoStatusForGate });
-      return textResult(`${ticketId} moved to ${newStatus}${hint ? `\n${hint}` : ''}`);
+      // FLUX-1739 analyst finding: the benchmark PR refusal was written to the board but never
+      // RETURNED to the agent, so an agent could finish with "Ready with the PR opened" while the
+      // board said the opposite. Say it in the tool result, where the agent actually reads.
+      const benchmarkNote = newStatus === readyStatus && task.branch && task.kind === BENCHMARK_KIND
+        ? `\nNo PR was opened: this is a benchmark run ticket — its branch is local-only and is never pushed or merged. Do not report a PR.`
+        : '';
+      return textResult(`${ticketId} moved to ${newStatus}${hint ? `\n${hint}` : ''}${benchmarkNote}`);
     },
   );
 
@@ -2314,6 +2642,14 @@ export function buildMcpServer(): McpServer {
           'invalid_state'
         );
       }
+      // FLUX-1739: a benchmark run is measured, never merged. Its branch is local-only and exists
+      // solely as the record of what that configuration produced.
+      if (task.kind === BENCHMARK_KIND) {
+        return errorResult(
+          `${BENCHMARK_REFUSAL_MARKER} Cannot finish ${ticketId} — it is a benchmark run ticket. Benchmark runs are scored, not merged: the branch is local-only and opening or merging a PR from it would push throwaway agent output into the real repository.`,
+          'invalid_state'
+        );
+      }
 
       const readyStatus = getConfig().readyForMergeStatus || 'Ready';
       if (task.status !== readyStatus) {
@@ -2554,6 +2890,15 @@ export function buildMcpServer(): McpServer {
             'invalid_state'
           );
         }
+        // FLUX-1739: the benchmark runner creates the run's branch itself, pinned to the suite's
+        // baseCommit and deliberately NOT pushed. Letting the run's own agent create one would
+        // branch from the live default HEAD and push it to origin.
+        if (task.kind === BENCHMARK_KIND) {
+          return errorResult(
+            `${BENCHMARK_REFUSAL_MARKER} Cannot create a branch for ${ticketId} — it is a benchmark run ticket. Its branch and worktree are created by the benchmark runner, pinned to the suite's baseCommit and never pushed.`,
+            'invalid_state'
+          );
+        }
         if (task.branch) return errorResult(`Ticket ${ticketId} already has branch: ${task.branch}`, 'invalid_state');
         try {
           // Optionally create a dedicated worktree (worktree ⇒ branch). Agent branch sessions are
@@ -2562,6 +2907,23 @@ export function buildMcpServer(): McpServer {
           // tree). The branch+worktree mechanism is centralized in ensureTicketIsolation; this tool
           // only resolves the agent POLICY (worktree-by-default) and delegates.
           const result = await ensureTicketIsolation(ticketId, { worktree: worktree ?? true, baseBranch });
+          // FLUX-1771: a worktree just came back from a connection with NO verified EH session —
+          // i.e. a non-EH chat session, invisible to `hasLiveSessionOnBranch` — so open a claim
+          // shielding it from reclaim until the session either commits or keeps calling EH tools.
+          // Gated on the RESULT, not the caller's `worktree` input: `ensureTicketIsolation`'s
+          // worktree creation is best-effort, and a cap/husk failure yields `worktreeError` with no
+          // `worktree` — a claim opened there would protect a tree that doesn't exist. An
+          // EH-dispatched session (verified session id) is already protected by
+          // `hasLiveSessionOnBranch`, so it never needs a redundant claim.
+          if (result.worktree && getVerifiedSessionId() === null) {
+            claimWorktree({
+              workspaceRoot: boundWorkspace().root,
+              ticketId,
+              branch: result.branch,
+              worktreePath: result.worktree,
+              ownerId: currentMcpSessionId() ?? 'unbound',
+            });
+          }
           return jsonResult({
             ...result,
             nextSteps: `Branch ready. Next: implement on it and commit, then change_status to Ready to open the PR (finish_ticket merges it).`,
@@ -2680,27 +3042,41 @@ export function buildMcpServer(): McpServer {
       const results = await Promise.allSettled(
         delegations.map(async (d): Promise<DelegationResult> => {
           const framework = process.env.EVENT_HORIZON_FRAMEWORK || resolveDefaultFramework();
-          const res = await fetch(`${ENGINE_URL}/api/tasks/${ticketId}/cli-session/delegate`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...boundWorkspaceHeader() },
-            body: JSON.stringify({
-              framework,
-              personaId: d.personaId,
-              task: d.task,
-              effortOverride: d.effort || '',
-              // FLUX-482: per-call model override (highest precedence); route resolves the
-              // persona/config/status-derived fallback when omitted.
-              ...(d.model ? { model: d.model } : {}),
-              ...(d.enableTools && d.enableTools.length > 0 ? { enableTools: d.enableTools } : {}),
-              skipPermissions: true,
-              timeout: timeoutMs,
-            }),
-          });
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.error || res.statusText);
+          const effortKey = d.model ? `${d.effort || ''}::model=${d.model}` : (d.effort || '');
+          try {
+            const res = await engineLongFetch(
+              `${ENGINE_URL}/api/tasks/${ticketId}/cli-session/delegate`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...boundWorkspaceHeader() },
+                body: JSON.stringify({
+                  framework,
+                  personaId: d.personaId,
+                  task: d.task,
+                  effortOverride: d.effort || '',
+                  // FLUX-482: per-call model override (highest precedence); route resolves the
+                  // persona/config/status-derived fallback when omitted.
+                  ...(d.model ? { model: d.model } : {}),
+                  ...(d.enableTools && d.enableTools.length > 0 ? { enableTools: d.enableTools } : {}),
+                  skipPermissions: true,
+                  timeout: timeoutMs,
+                }),
+              },
+              timeoutMs,
+            );
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({}));
+              throw new Error((err as { error?: string }).error || res.statusText);
+            }
+            return res.json() as Promise<DelegationResult>;
+          } catch (err: unknown) {
+            // FLUX-1735: undici (or the MCP client hop) can drop the self-fetch while the
+            // child is still running or has just finished. Reattach in-process so the
+            // combiner still gets that child's output instead of `{succeeded:false}`.
+            const recovered = await attachToExistingDelegation(ticketId, d.personaId, d.task, effortKey);
+            if (recovered) return recovered;
+            throw err;
           }
-          return res.json() as Promise<DelegationResult>;
         })
       );
 
@@ -2719,16 +3095,17 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'start_session',
-    'Start an agent session on a ticket, return IMMEDIATELY (dispatch, don\'t do it yourself). phase:\'fast-path\' grooms+implements small tickets in one session. phase:\'batch-grooming\' grooms up to 5 sibling tickets sharing one parent in one session. Full lore: read_skill(\'tools\', \'start_session\').',
+    'Start an agent session on a ticket (dispatch, don\'t do it yourself) and wait up to ~5s to confirm the session actually started. phase:\'fast-path\' grooms+implements small tickets in one session. phase:\'batch-grooming\' grooms up to 5 sibling tickets sharing one parent in one session. Full lore: read_skill(\'tools\', \'start_session\').',
     {
       ticketId: z.string().describe('Ticket ID to start the session on'),
-      phase: z.enum(['grooming', 'implementation', 'review', 'finalize', 'fast-path', 'batch-grooming']).optional().describe('Work phase (omit to derive from ticket status). \'fast-path\' grooms+implements an XS/S ticket in one session, skipping the plan gate (refused for L/XL effort or tickets with subtasks). \'batch-grooming\' grooms 1-5 sibling tickets (see batchTicketIds) sharing one parentId in one session.'),
+      phase: z.enum(['grooming', 'implementation', 'review', 'finalize', 'fast-path', 'batch-grooming']).optional().describe('Work phase (omit to derive from ticket status). \'fast-path\' (Oneshot) grooms+implements an XS/S ticket in one session, skipping the plan gate (refused for L/XL effort or tickets with subtasks). \'batch-grooming\' grooms 1-5 sibling tickets (see batchTicketIds) sharing one parentId in one session.'),
       batchTicketIds: z.array(z.string()).optional().describe('For phase:"batch-grooming" only: the sibling ticket ids to groom in this one session (must include ticketId, share one parentId, max 5). Ineligible members (L/XL effort, epic parents, not Grooming/Require Input) are excluded and named in the session summary rather than refused, unless every member is ineligible.'),
+      planFirst: z.boolean().optional().describe('For phase:"fast-path" only: pause after writing the plan for in-session user approval (ask_user_question). Must not move to Todo. Default false.'),
       personaId: z.string().optional().describe('Optional persona to lead the session (from list_available_agents). Default: the phase\'s solo lead.'),
       effort: z.string().optional().describe('Effort level: low, medium, high, xhigh.'),
       worktree: z.boolean().optional().describe('Isolate the session in a dedicated git worktree (default true). A branch-bearing session is always worktree-isolated regardless of this flag. Ignored for phase:"grooming"/"batch-grooming".'),
     },
-    async ({ ticketId, phase, batchTicketIds, personaId, effort, worktree }) => {
+    async ({ ticketId, phase, batchTicketIds, planFirst, personaId, effort, worktree }) => {
       try {
         const framework = process.env.EVENT_HORIZON_FRAMEWORK || resolveDefaultFramework();
         // FLUX-845: isolate by default — the engine creates the branch+worktree before spawning.
@@ -2740,6 +3117,7 @@ export function buildMcpServer(): McpServer {
         };
         if (phase) body.phase = phase;
         if (batchTicketIds && batchTicketIds.length > 0) body.batchTicketIds = batchTicketIds;
+        if (planFirst === true) body.planFirst = true;
         if (personaId) body.personaId = personaId;
         if (effort) body.effortOverride = effort;
         const res = await fetch(`${ENGINE_URL}/api/tasks/${ticketId}/cli-session/start`, {
@@ -2753,7 +3131,40 @@ export function buildMcpServer(): McpServer {
         }
         const result = await res.json();
         const sid = result.session?.id || 'unknown';
-        return textResult(`Started a ${phase || 'phase'} session on ${ticketId} (session ${sid}). It is running in the ticket's own scope — open ${ticketId}'s chat to drive it.`);
+
+        // FLUX-1772: the spawn above is fire-and-forget (FLUX-1002) — poll briefly for the first
+        // sign this session is genuinely alive, or that it died immediately (e.g. auth-expired
+        // from duplicate Claude installs), instead of reporting a bare dispatch as success either way.
+        const liveness = await waitForSessionLiveness(async () => {
+          try {
+            // FLUX-1772 Minor 1: poll the plural (all-sessions) route and select by `sid`, not the
+            // singular `/cli-session` route — that one prefers the most recent *active* session on
+            // the ticket, so if an older session is still running/waiting-input it would shadow the
+            // just-dispatched one and the probe would never see it go `'failed'`.
+            // FLUX-1772 Major 2: `?lite=1` strips `liveOutput` server-side — the probe only reads
+            // id/status/lastOutputAt/terminalReason/authDiagnosis, and the plural route is otherwise
+            // deliberately untruncated (FLUX-1685), so polling it plain moved every session's full
+            // stdout buffer (measured 3.9MB across 4 sessions) on each of ~11 polls per dispatch.
+            const pollRes = await fetch(`${ENGINE_URL}/api/tasks/${ticketId}/cli-sessions?lite=1`, { headers: boundWorkspaceHeader() });
+            if (!pollRes.ok) return undefined;
+            const data = await pollRes.json().catch(() => ({}));
+            const sessions: SessionLivenessSnapshot[] = Array.isArray(data?.sessions) ? data.sessions : [];
+            return sessions.find((s) => s.id === sid);
+          } catch {
+            return undefined;
+          }
+        });
+
+        if (liveness.liveness === 'failed') {
+          const reasonText = liveness.terminalReason ? ` (${liveness.terminalReason})` : '';
+          const diagText = liveness.authDiagnosis ? ` ${formatAuthDiagnosisMessage(liveness.authDiagnosis)}` : '';
+          return errorResult(
+            `Started a ${phase || 'phase'} session on ${ticketId} (session ${sid}), but it exited immediately${reasonText}.${diagText} Check ${ticketId} for details before retrying.`,
+            'operation_failed',
+          );
+        }
+        const livenessNote = liveness.liveness === 'confirmed' ? ' (liveness confirmed)' : ' (liveness unconfirmed — still starting up)';
+        return textResult(`Started a ${phase || 'phase'} session on ${ticketId} (session ${sid})${livenessNote}. It is running in the ticket's own scope — open ${ticketId}'s chat to drive it.`);
       } catch (err: unknown) {
         return errorResult(`Failed to start session: ${errMessage(err)}`, 'channel_unavailable');
       }
@@ -3345,9 +3756,24 @@ export function buildMcpServer(): McpServer {
   // POSTs to the engine and BLOCKS on the response, which is held open until the user answers
   // (or a 4-minute timeout returns an `unanswered` sentinel — kept under undici's 300s
   // headersTimeout so the held-open fetch doesn't abort before the park resolves).
+  //
+  // FLUX-1774: that portal park is invisible to a client with no EH portal watching the board
+  // (e.g. the Claude desktop Code tab) — the agent asks into the void and burns the full 4-minute
+  // timeout. Channel precedence, evaluated per call:
+  //   1. EH-spawned session (both conversationId + token bound) → portal park via the fetch
+  //      below, unchanged — these are `claude -p` print-mode spawns that cannot render a
+  //      client-side prompt, and the durable park raises the FLUX-826 Needs-Action net on timeout.
+  //   2. Client advertised MCP elicitation (`server.server.getClientCapabilities()?.elicitation`)
+  //      → elicit directly via `extra.sendRequest`, which stamps `relatedRequestId` so the request
+  //      rides THIS call's own SSE stream (unlike `elicitInput()`, which uses the standalone GET
+  //      stream a client may never have opened). Any throw out of the attempt (not a decline/
+  //      cancel/junk answer — those resolve normally as "unanswered") falls through to rule 3/4.
+  //   3. A portal is watching this board (`boundWorkspace().sseClients.size > 0`) → park, same as
+  //      rule 1 — covers a hand-launched CLI with the portal open.
+  //   4. Otherwise → immediate `channel_unavailable` error: no park, no 4-minute block.
   server.tool(
     'ask_user_question',
-    'Ask the user a structured multiple-choice question and BLOCK until they answer. Use whenever you need a decision. Returns { answers, notes? }; on timeout, use best judgment.',
+    'Ask the user a structured multiple-choice question and BLOCK until they answer. Use whenever you need a decision. Returns { answers, notes? }; on timeout, use best judgment. If no interactive channel is reachable (no portal watching, client has no elicitation support), fails immediately instead of blocking.',
     {
       questions: z.array(z.object({
         question: z.string().describe('The full question to ask the user.'),
@@ -3359,12 +3785,48 @@ export function buildMcpServer(): McpServer {
         multiSelect: z.boolean().optional().describe('Allow the user to select multiple options (default false).'),
       })).min(1).describe('One or more questions to ask (usually one).'),
     },
-    async ({ questions }) => {
+    async ({ questions }, extra) => {
+      const bound = getBoundConversation();
+      const ehSpawned = !!(bound.id && bound.token);
+      if (!ehSpawned) {
+        const capabilities = server.server.getClientCapabilities();
+        if (capabilities?.elicitation) {
+          try {
+            log.debug(`[hitl] ask_user_question: client advertises elicitation (capabilities=${JSON.stringify(capabilities.elicitation)}) — eliciting directly`);
+            const { params, keyForQuestion } = buildElicitationRequest(questions as AskQuestion[]);
+            const elicited = await extra.sendRequest(
+              // The hand-built params satisfy the SDK's ElicitRequestFormParamsSchema (verified
+              // in review — a discriminated per-property-type union not worth re-deriving in TS
+              // for a dynamically-built schema); the runtime shape is what the wire cares about.
+              { method: 'elicitation/create', params } as unknown as Parameters<typeof extra.sendRequest>[0],
+              ElicitResultSchema,
+              { timeout: QUESTION_TIMEOUT_MS },
+            );
+            const result: PromptResult = elicited.action === 'accept' && elicited.content
+              ? mapElicitationContent(elicited.content, keyForQuestion)
+              : { answers: {}, unanswered: true };
+            const conversationId = bound.id && bound.token && verifyConversation(bound.id, bound.token) ? bound.id : null;
+            recordQuestionRoundTrip(conversationId, questions, result);
+            if (result.unanswered) {
+              return textResult('The user did not answer in time. Proceed using your best judgment, or ask again if the answer is essential.');
+            }
+            return jsonResult({ answers: result.answers ?? {}, ...(result.notes ? { notes: result.notes } : {}) });
+          } catch (err: unknown) {
+            log.debug(`[hitl] ask_user_question: elicitation attempt failed (${errMessage(err)}) — falling back to the portal channel`);
+          }
+        }
+        if (boundWorkspace().sseClients.size === 0) {
+          return errorResult(
+            'No interactive channel is available for this question — no Event Horizon portal is watching this board and your client does not support MCP elicitation. Ask the user directly in chat instead, then record their answer on the ticket with add_note.',
+            'channel_unavailable',
+          );
+        }
+      }
       try {
         const res = await fetch(`${ENGINE_URL}/api/board/ask-question`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...boundWorkspaceHeader() },
-          body: JSON.stringify({ questions, conversationId: getBoundConversation().id, conversationToken: getBoundConversation().token }),
+          body: JSON.stringify({ questions, conversationId: bound.id, conversationToken: bound.token }),
         });
         if (!res.ok) return errorResult('Ask-question channel error — no answer received. Proceed with your best judgment or ask again.', 'channel_unavailable');
         const result = await res.json();
@@ -3672,11 +4134,304 @@ function getVerifiedSessionId(): string | null {
  *  MCP call but a registry-only lookup misses — and the old `getWorkspace()` fallback then
  *  silently bound the session to whichever OTHER board the S10 switcher opened last (the
  *  "my scratch chat thinks it's in a different project" failure). */
-function extractBoundWorkspaceFromRequest(req: IncomingMessage): Workspace | null {
-  const headerRoot = req.headers['x-eh-workspace'];
-  const root = Array.isArray(headerRoot) ? headerRoot[0] : headerRoot;
-  if (!root) return null;
-  return resolveWorkspaceFromRoot(root);
+/**
+ * Multi-board binding: per-MCP-session (`Mcp-Session-Id`) workspace bindings established by the
+ * `bind_workspace` tool. A hand-launched session (static `.mcp.json`, no `X-EH-Workspace` header)
+ * has no other way to say which board it is working in — the shared loopback HTTP mount cannot see
+ * the client's cwd — so it binds itself once and every later request on the same transport session
+ * resolves here. Entries die with their transport (`onclose`) and are dropped if the bound board is
+ * closed/evicted underneath them (checked on every request, see `resolveConnectionWorkspace`).
+ */
+const mcpSessionBindings = new Map<string, Workspace>();
+
+/** The current request's `Mcp-Session-Id`, so a tool handler can key a per-session binding. */
+const mcpSessionIdALS = new AsyncLocalStorage<string | null>();
+
+function currentMcpSessionId(): string | null {
+  return mcpSessionIdALS.getStore() ?? null;
+}
+
+/** FLUX-1781: this request's `resolveConnectionWorkspace`-reported `sessionReopenFailedRoot`, or
+ *  `null`. Module-local rather than a new `WorkspaceBindingSource` value — nothing new on the
+ *  wire, `installUnresolvedBindingGuard` just refuses the call when this is set. */
+const sessionReopenFailedALS = new AsyncLocalStorage<string | null>();
+
+function currentSessionReopenFailedRoot(): string | null {
+  return sessionReopenFailedALS.getStore() ?? null;
+}
+
+/**
+ * FLUX-1781: the last time a session binding was deliberately DROPPED (its board is no longer a
+ * registered board at all — `not_found`, not a transient re-open failure) — set here and in
+ * `newTransport.onclose`. Deliberately engine-global, not per-session: the point is to warn a NEW
+ * connection (a reconnect gets a fresh `Mcp-Session-Id`, so it can never see its OWN prior loss)
+ * about a binding a PREVIOUS connection lost. The cost — an unrelated client seeing one stale
+ * warning — is the accepted trade for a per-session map being structurally unable to do this.
+ */
+let lastLostSessionBinding: { root: string; at: number } | null = null;
+const LOST_BINDING_WARNING_TTL_MS = 6 * 60 * 60 * 1000;
+/** Sessions already shown the `lastLostSessionBinding` warning — at most once per `Mcp-Session-Id`. */
+const warnedLostBindingSessions = new Set<string>();
+
+type BindSessionSuccess = { ws: Workspace; root: string; entry: WorkspaceEntry; opened: boolean };
+type BindSessionError = { error: string; code: 'not_found' | 'operation_failed' };
+
+/**
+ * The back half of `bind_workspace`: resolve `anyPath` to a registered board, bring it live if
+ * needed, and attach it to `mcpSessionId`. Shared by the tool handler itself, the session-binding
+ * re-point in `resolveConnectionWorkspace` (case 1 below), and the `roots`-probe auto-bind in
+ * `installUnresolvedBindingGuard` (FLUX-1781) — one sequence, three callers, so none of them can
+ * drift from the others' notion of "bound".
+ *
+ * The two error legs are NOT interchangeable to callers: `'not_found'` means the root is no longer
+ * a registered board at all (deregistered) — a genuine binding loss. `'operation_failed'` means the
+ * board IS still registered but couldn't be opened just now (file lock, watcher limit, git
+ * contention) — transient, and the caller must NOT treat it as a loss.
+ */
+async function bindSessionToRegisteredPath(mcpSessionId: string, anyPath: string): Promise<BindSessionSuccess | BindSessionError> {
+  const entry = await resolveRegisteredWorkspaceForPath(anyPath);
+  if (!entry) {
+    return {
+      error: `"${anyPath}" is not inside any registered board on this engine. Call list_workspaces for the registered roots (register a new folder from the portal's board switcher).`,
+      code: 'not_found',
+    };
+  }
+  const wasLive = resolveWorkspaceByRoot(entry.path) !== null;
+  let ws: Workspace;
+  try {
+    ws = await openWorkspaceLive(entry.path);
+  } catch (err: unknown) {
+    return { error: `Board ${entry.path} could not be opened: ${errMessage(err)}`, code: 'operation_failed' };
+  }
+  if (!ws.root) return { error: `Board ${entry.path} opened without a root — refusing to bind.`, code: 'operation_failed' };
+  if (!wasLive) {
+    rememberOpenWorkspace(ws.root).catch((err) => console.warn(`[mcp] could not persist open board ${ws.root}:`, err));
+  }
+  mcpSessionBindings.set(mcpSessionId, ws);
+  return { ws, root: ws.root, entry, opened: !wasLive };
+}
+
+interface ConnectionWorkspaceBinding {
+  ws: Workspace | null;
+  source: WorkspaceBindingSource;
+  requestedRoot?: string;
+  /** FLUX-1781: set only when this request's session binding is still a REGISTERED board that
+   *  just failed to re-open transiently — the binding survives (see below), but THIS request must
+   *  not silently run against `ws` (the default board) as if nothing were wrong. */
+  sessionReopenFailedRoot?: string;
+}
+
+/**
+ * Resolve THIS request's workspace binding. Order: a resolvable `x-eh-workspace` header (a live
+ * board, the boot root, or a registered board auto-opened by `resolveWorkspaceBinding` — the fix
+ * for sessions dispatched on a secondary board the engine hadn't re-opened since restart); else the
+ * transport session's `bind_workspace` binding; else unresolved (header present but unknown root)
+ * or unrouted (no header).
+ *
+ * FLUX-1781: a session binding whose board object is no longer the live one (LRU-evicted, or
+ * evicted-then-reopened as a new object — either way `resolveWorkspaceByRoot` no longer returns
+ * THIS object) is re-pointed via `bindSessionToRegisteredPath`, not silently dropped — the session
+ * leg now behaves like the header leg's own auto-open. Only a `'not_found'` result (the root is no
+ * longer a registered board at all) actually discards the binding; a transient `'operation_failed'`
+ * keeps the entry as-is and reports `sessionReopenFailedRoot` so the caller refuses THIS request
+ * instead of quietly serving it from the default board — the exact bug this function exists to fix.
+ */
+async function resolveConnectionWorkspace(req: IncomingMessage, mcpSessionId: string | undefined): Promise<ConnectionWorkspaceBinding> {
+  const headerRoot = firstHeaderValue(req.headers['x-eh-workspace']);
+  let sessionBound = mcpSessionId ? mcpSessionBindings.get(mcpSessionId) : undefined;
+  let sessionReopenFailedRoot: string | undefined;
+  if (sessionBound && (!sessionBound.root || resolveWorkspaceByRoot(sessionBound.root) !== sessionBound)) {
+    const staleRoot = sessionBound.root;
+    sessionBound = undefined;
+    if (mcpSessionId && staleRoot) {
+      const rebind = await bindSessionToRegisteredPath(mcpSessionId, staleRoot);
+      if ('error' in rebind) {
+        if (rebind.code === 'not_found') {
+          mcpSessionBindings.delete(mcpSessionId);
+          lastLostSessionBinding = { root: staleRoot, at: Date.now() };
+        } else {
+          // Still registered, just transiently unreachable — leave the map entry untouched (it
+          // still holds the stale Workspace object, so the NEXT request retries this same
+          // re-open) and tell the caller to refuse rather than fall through to `default-fallback`.
+          sessionReopenFailedRoot = staleRoot;
+        }
+      } else {
+        sessionBound = rebind.ws;
+      }
+    } else if (mcpSessionId) {
+      mcpSessionBindings.delete(mcpSessionId);
+    }
+  }
+  if (headerRoot) {
+    const resolved = await resolveWorkspaceBinding(headerRoot);
+    if (resolved.ws) return { ws: resolved.ws, source: 'header' };
+    if (sessionBound) return { ws: sessionBound, source: 'session' };
+    return { ws: null, source: 'header-unresolved', requestedRoot: headerRoot };
+  }
+  if (sessionBound) return { ws: sessionBound, source: 'session' };
+  return sessionReopenFailedRoot
+    ? { ws: null, source: 'default-fallback', sessionReopenFailedRoot }
+    : { ws: null, source: 'default-fallback' };
+}
+
+/** Tools a `'header-unresolved'` connection may still call: enough to see what went wrong and fix it. */
+const UNRESOLVED_BINDING_ALLOWED_TOOLS = new Set(['list_workspaces', 'get_board_config', 'read_skill', 'bind_workspace']);
+
+/**
+ * FLUX-1781: append the "a previous session's binding was lost" notice to a tool result's
+ * `content`, at most once per `Mcp-Session-Id`, when this request landed on `default-fallback`
+ * with no way to recover a binding (the roots probe below either didn't run or didn't bind) and a
+ * loss is on record and still fresh. Fallback for clients that don't advertise MCP `roots` — the
+ * only population step 3 (the probe) cannot fix for.
+ *
+ * Appends to `content` ONLY, never touches `structuredContent` — the SDK's `outputSchema`
+ * validation would fail on a mismatched shape otherwise. The block therefore lands at whatever
+ * index is currently last: `content[0]` for a structured-content client (`content` starts `[]`),
+ * `content[1]` behind the JSON mirror for every other client.
+ */
+function maybeAppendLostBindingWarning(result: unknown, mcpSessionId: string | null): unknown {
+  if (getRequestBinding() !== 'default-fallback') return result;
+  // A call that itself just bound this session (bind_workspace succeeding, or the roots probe
+  // above) shouldn't be told to do what it just did — check post-dispatch, not the pre-dispatch
+  // getRequestBinding() snapshot, which is still 'default-fallback' on that very call.
+  if (mcpSessionId && mcpSessionBindings.has(mcpSessionId)) return result;
+  const lost = lastLostSessionBinding;
+  if (!lost || Date.now() - lost.at > LOST_BINDING_WARNING_TTL_MS) return result;
+  if (mcpSessionId) {
+    if (warnedLostBindingSessions.has(mcpSessionId)) return result;
+    warnedLostBindingSessions.add(mcpSessionId);
+  }
+  const defaultRoot = getWorkspaceRoot();
+  const warningText = `⚠️ Binding notice: this connection is on the DEFAULT board \`${defaultRoot ?? '<unset>'}\`. A previous MCP session on this engine was bound to \`${lost.root}\` and that binding was lost (reconnect or engine restart). If you are working in \`${lost.root}\`, call \`bind_workspace\` before any board action.`;
+  const typed = result as { content?: unknown } & Record<string, unknown>;
+  const priorContent = Array.isArray(typed.content) ? typed.content : [];
+  return { ...typed, content: [...priorContent, { type: 'text' as const, text: warningText }] };
+}
+
+/**
+ * Wrap every tool registration on `server` so (a) a call whose session binding just failed a
+ * TRANSIENT re-open is refused rather than silently served from the default board (FLUX-1781); (b)
+ * a call arriving under a `'header-unresolved'` binding is refused (with the requested root named)
+ * unless the tool is in the allowlist above; (c) a connection with NO binding at all re-derives one
+ * from the client's MCP `roots`, when it advertises the capability (FLUX-1781); (d) — FLUX-1771 —
+ * every OTHER call renews any worktree claim the caller holds; and (e) a connection that stays
+ * unbound gets the FLUX-1781 lost-binding notice, at most once. Central by construction —
+ * `server.tool`/`server.registerTool` are patched BEFORE any tool registers, so no handler can
+ * forget any of this — and inert for every other binding source. The patched signatures are the
+ * SDK's own overload sets, so the wrapper is typed loosely and re-dispatches the original argument
+ * list untouched apart from the trailing callback.
+ */
+function installUnresolvedBindingGuard(server: McpServer): void {
+  const refuse = (name: string) => errorResult(
+    `Refused: this session's X-EH-Workspace header named \`${getRequestedWorkspaceRoot() ?? '<unknown>'}\`, which is not a registered board on this engine, so \`${name}\` would silently run against the default board instead. Call \`bind_workspace\` with your board root (or working directory) first, or fix the header; \`list_workspaces\` shows the registered boards.`,
+    'invalid_state',
+  );
+
+  // FLUX-1781: at most one `roots/list` probe per CONNECTION (this closure is per-transport —
+  // `installUnresolvedBindingGuard` runs once per new session in `handleMcpHttpRequest`) — shared
+  // by every concurrent tool call on this transport, so nothing needs cleanup on `onclose`.
+  let rootsProbe: Promise<Workspace | null> | null = null;
+
+  async function probeRootsAndBind(mcpSessionId: string, requestId: RequestId): Promise<Workspace | null> {
+    try {
+      // relatedRequestId routes this server→client request onto the CALLING tool call's own
+      // response SSE stream — the standalone GET stream (no relatedRequestId) is silently dropped
+      // by this transport when absent, and doesn't exist yet this early in the connection anyway.
+      const { roots } = await server.server.listRoots(undefined, { relatedRequestId: requestId, timeout: 2000 });
+      const first = roots[0];
+      if (!first) return null;
+      const rootPath = fileURLToPath(first.uri);
+      const bound = await bindSessionToRegisteredPath(mcpSessionId, rootPath);
+      return 'error' in bound ? null : bound.ws;
+    } catch (err: unknown) {
+      // The 2s timeout REJECTS (an McpError from Protocol.request) rather than resolving null —
+      // caught here so it degrades to today's behaviour (plus the lost-binding warning, if
+      // applicable) instead of failing the tool call it rode in on.
+      console.warn(`[mcp] roots auto-bind probe failed: ${errMessage(err)}`);
+      return null;
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type AnyFn = (...args: any[]) => unknown;
+  const guard = (name: string, cb: AnyFn): AnyFn => async (...args) => {
+    // FLUX-1781: this session is bound to a still-REGISTERED board that just failed to re-open
+    // (transient — file lock, watcher limit, git contention). The binding survives
+    // (resolveConnectionWorkspace left it in place), but THIS request must not silently run
+    // against the default board — ahead of every other check, including header-unresolved.
+    const reopenFailedRoot = currentSessionReopenFailedRoot();
+    if (reopenFailedRoot && !UNRESOLVED_BINDING_ALLOWED_TOOLS.has(name)) {
+      return errorResult(
+        `Refused: this session is bound to \`${reopenFailedRoot}\`, which is still a registered board but could not be re-opened just now. \`${name}\` was not run — it must never run against the default board. Retry in a moment.`,
+        'transient_retry',
+      );
+    }
+    if (getRequestBinding() === 'header-unresolved' && !UNRESOLVED_BINDING_ALLOWED_TOOLS.has(name)) return refuse(name);
+
+    // FLUX-1781: this connection has NO binding at all (engine restart or transport churn dropped
+    // a prior `bind_workspace`) — re-derive one from the client's own MCP `roots`, if it advertises
+    // the capability, before dispatching. Never overrides an explicit header or a live session
+    // binding (both already returned/refused above), and never runs for `bind_workspace` itself.
+    let autoBoundWs: Workspace | null = null;
+    const mcpSessionId = currentMcpSessionId();
+    if (
+      getRequestBinding() === 'default-fallback' &&
+      name !== 'bind_workspace' &&
+      mcpSessionId !== null &&
+      !mcpSessionBindings.has(mcpSessionId) &&
+      server.server.getClientCapabilities()?.roots
+    ) {
+      const extra = args[args.length - 1] as { requestId?: RequestId } | undefined;
+      if (extra?.requestId !== undefined) {
+        if (!rootsProbe) rootsProbe = probeRootsAndBind(mcpSessionId, extra.requestId);
+        autoBoundWs = await rootsProbe;
+        // The cached probe result outlives the board it resolved: if that Workspace is no longer
+        // the live object for its root (deregistered + closed since the probe ran), fall through to
+        // default-fallback + the lost-binding notice rather than dispatching into a torn-down
+        // Workspace — the same identity check resolveConnectionWorkspace uses at line ~4243.
+        if (autoBoundWs && (!autoBoundWs.root || resolveWorkspaceByRoot(autoBoundWs.root) !== autoBoundWs)) {
+          autoBoundWs = null;
+        }
+      }
+    }
+
+    // FLUX-1771: heartbeat AFTER every refuse above, never before — under 'header-unresolved' (or
+    // unbound), boundWorkspace() resolves to the DEFAULT board (the exact misrouting the refusals
+    // above exist to prevent), so a renewal keyed off it before them would key against the wrong
+    // root. Note the four UNRESOLVED_BINDING_ALLOWED_TOOLS entries DO reach this line even under
+    // 'header-unresolved' — harmless only because none of them accepts a ticketId; a future
+    // addition to that allowlist must keep it that way.
+    //
+    // FLUX-1781: an auto-bound root is the caller's REAL board — renewClaim must key off IT, not
+    // whatever boundWorkspace() reads before the scope below is entered (still the default board).
+    const renewIfTicketed = (root: string | null) => {
+      if (getVerifiedSessionId() === null) {
+        const a = args[0] as { ticketId?: unknown } | undefined;
+        if (typeof a?.ticketId === 'string') renewClaim(root, a.ticketId);
+      }
+    };
+
+    if (autoBoundWs) {
+      const ws = autoBoundWs;
+      return runWithWorkspace(ws, () => {
+        renewIfTicketed(ws.root);
+        return cb(...args);
+      }, { source: 'session' });
+    }
+
+    renewIfTicketed(boundWorkspace().root);
+    const result = await cb(...args);
+    return maybeAppendLostBindingWarning(result, mcpSessionId);
+  };
+  const patchable = server as unknown as { tool: AnyFn; registerTool: AnyFn };
+  const originalTool = patchable.tool.bind(server);
+  const originalRegisterTool = patchable.registerTool.bind(server);
+  patchable.tool = (name: string, ...rest: unknown[]) => {
+    const last = rest.length - 1;
+    if (typeof rest[last] === 'function') rest[last] = guard(name, rest[last] as AnyFn);
+    return originalTool(name, ...rest);
+  };
+  patchable.registerTool = (name: string, config: unknown, cb: AnyFn) => originalRegisterTool(name, config, guard(name, cb));
 }
 
 /** The workspace this MCP call should read/write: the request-bound one for this connection
@@ -3720,9 +4475,13 @@ export async function handleMcpHttpRequest(req: IncomingMessage, res: ServerResp
   // task-store default parameters (`ws = getWorkspace()`) and every other legacy call inside a
   // tool handler resolve to this connection's board too — not just the sites that call
   // boundWorkspace() explicitly.
-  const boundWs = extractBoundWorkspaceFromRequest(req);
+  // Multi-board binding: async because a header naming a registered-but-not-live board is
+  // auto-opened here (see resolveConnectionWorkspace) instead of silently landing on the default.
+  const connectionBinding = await resolveConnectionWorkspace(req, sessionId);
+  const bindingOpts: { source: WorkspaceBindingSource; requestedRoot?: string } = { source: connectionBinding.source };
+  if (connectionBinding.requestedRoot !== undefined) bindingOpts.requestedRoot = connectionBinding.requestedRoot;
 
-  await boundConversationALS.run(bound, () => runWithWorkspace(boundWs, async () => {
+  await boundConversationALS.run(bound, () => mcpSessionIdALS.run(sessionId ?? null, () => sessionReopenFailedALS.run(connectionBinding.sessionReopenFailedRoot ?? null, () => runWithWorkspace(connectionBinding.ws, async () => {
     if (!transport) {
       // Only a POST may open a session — it must carry the `initialize` request. A GET/DELETE
       // (or a POST with an unknown session id) has no live transport to attach to.
@@ -3741,7 +4500,17 @@ export async function handleMcpHttpRequest(req: IncomingMessage, res: ServerResp
       });
       newTransport.onclose = () => {
         const sid = newTransport.sessionId;
-        if (sid) httpTransports.delete(sid);
+        if (sid) {
+          httpTransports.delete(sid);
+          // FLUX-1781: this transport's own session binding is a genuine loss (the reconnect
+          // gets a fresh Mcp-Session-Id, so it can never see this one's binding again) — record it
+          // for the lost-binding warning, unlike the transient `sessionReopenFailedRoot` leg above,
+          // which keeps the binding on record instead of reaching here.
+          const lost = mcpSessionBindings.get(sid);
+          if (lost?.root) lastLostSessionBinding = { root: lost.root, at: Date.now() };
+          mcpSessionBindings.delete(sid);
+          warnedLostBindingSessions.delete(sid);
+        }
       };
       // Cast: StreamableHTTPServerTransport `implements Transport`, but its getter/setter `onclose`
       // is `(() => void) | undefined` which trips exactOptionalPropertyTypes against Transport's
@@ -3755,7 +4524,7 @@ export async function handleMcpHttpRequest(req: IncomingMessage, res: ServerResp
       transport = newTransport;
     }
     return transport!.handleRequest(req, res);
-  }));
+  }, bindingOpts))));
 }
 
 // NOTE (FLUX-705): no self-start-on-direct-invocation block here. This module is now

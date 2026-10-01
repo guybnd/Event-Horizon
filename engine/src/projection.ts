@@ -85,8 +85,10 @@ export interface TranscriptMessage {
    *  `'context-update'` = the warm-resume situational update (FLUX-655/FLUX-745);
    *  `'action'` = the pressed phase-launch action (FLUX-794, e.g. "▶ Implementation session started");
    *  `'permission'` = a gated-tool approval request/decision round-trip (FLUX-833);
-   *  `'dispatch'` = a dispatched session's live activity teed to the board thread (FLUX-849). */
-  kind?: 'context-update' | 'action' | 'permission' | 'dispatch';
+   *  `'dispatch'` = a dispatched session's live activity teed to the board thread (FLUX-849);
+   *  `'compaction'` = a compaction boundary the session just crossed (FLUX-1746) — this boundary's
+   *  OWN dropped-token delta, not FLUX-1744's session-level cumulative sum. */
+  kind?: 'context-update' | 'action' | 'permission' | 'dispatch' | 'compaction';
   /** FLUX-849: on a `dispatch` note, the source ticket the dispatched session is working
    *  (e.g. `FLUX-849`) — the board chip labels/links the row to that ticket. */
   sourceTask?: string;
@@ -150,6 +152,14 @@ const PHASE_LABELS: Record<string, string> = {
   review: 'Review session started',
   finalize: 'Finalize session started',
 };
+
+/** FLUX-1746: round a token count to the nearest thousand for the compaction marker
+ *  ("427k"), matching the portal's existing `(n/1000).toFixed(1)}k` convention closely enough
+ *  for a one-line chip without pulling a portal-side helper into engine code. Exported so
+ *  status-transition-service.ts's review-handoff note uses the same rounding. */
+export function formatCompactionTokenCount(n: number): string {
+  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
 
 /** FLUX-798: derive a clean one-line chip suffix from a launch `focus`. A plain phase-button
  *  press carries an empty focus, but a delegated/supervisor launch passes the `rosterContext`
@@ -323,6 +333,79 @@ export function classifyRole(raw: unknown): TurnRole {
   if (t === 'result') return 'result';
   if (t === 'tool' || t === 'tool_use' || t === 'tool_result') return 'tool';
   return 'unknown';
+}
+
+// ── FLUX-1739: raw-turn predicates for the benchmark friction layer ───────────
+//
+// These live HERE, beside classifyRole, because this module is the sanctioned framework-agnostic
+// home for interpreting raw turns — it already duck-types every adapter's event shapes. Duck-typing
+// on shape (never on a framework literal) is also what keeps them legal outside engine/src/agents/:
+// check-adapter-boundary.mjs rejects per-CLI literals anywhere else.
+
+/** One tool invocation observed in a turn, with its name already MCP-unwrapped. */
+export interface RawToolCall {
+  /** Normalized name — `mcp__event-horizon__get_ticket` becomes `get_ticket`. */
+  name: string;
+  /** Fully-qualified name as the adapter emitted it, kept so EH's own tools stay identifiable. */
+  rawName: string;
+  input: Record<string, unknown>;
+}
+
+/** Every tool call in a turn, across the assistant-message content-block shapes adapters emit. */
+export function toolCallsInTurn(turn: Turn): RawToolCall[] {
+  const evt = turn?.raw;
+  const blocks: unknown[] = Array.isArray(evt?.message?.content) ? evt.message.content
+    : Array.isArray(evt?.content) ? evt.content
+    : [];
+  const out: RawToolCall[] = [];
+  for (const b of blocks) {
+    const block = b as { type?: unknown; name?: unknown; input?: Record<string, unknown> } | null;
+    if (!block || block.type !== 'tool_use') continue;
+    const rawName = String(block.name || 'tool');
+    out.push({ name: normalizeToolName(block), rawName, input: block.input || {} });
+  }
+  return out;
+}
+
+/** True when the tool call reached EventHorizon's own MCP server — the sharpest friction signal. */
+export function isEventHorizonTool(call: RawToolCall): boolean {
+  return /^mcp__event-horizon__/.test(call.rawName);
+}
+
+/**
+ * The error text of a failed tool result, or `null`.
+ *
+ * Adapters disagree on where the flag lives (`is_error` on the block, `isError` on the event, a
+ * `status: 'error'`), so all three are accepted — narrowing to one would silently under-count the
+ * frameworks that use another.
+ */
+export function toolResultError(turn: Turn): string | null {
+  const evt = turn?.raw;
+  const blocks: unknown[] = Array.isArray(evt?.message?.content) ? evt.message.content
+    : Array.isArray(evt?.content) ? evt.content
+    : [];
+  for (const b of blocks) {
+    const block = b as { type?: unknown; is_error?: unknown; isError?: unknown; status?: unknown; content?: unknown } | null;
+    if (!block || block.type !== 'tool_result') continue;
+    const failed = block.is_error === true || block.isError === true || block.status === 'error';
+    if (!failed) continue;
+    const content = block.content;
+    const text = typeof content === 'string' ? content
+      : Array.isArray(content) ? content.map((c) => (c as { text?: unknown })?.text ?? '').join(' ')
+      : '';
+    return String(text || 'tool failed');
+  }
+  if (evt?.is_error === true && typeof evt?.result === 'string') return evt.result;
+  return null;
+}
+
+/**
+ * A turn where the agent stopped to ask a human. In an UNATTENDED benchmark run these do not get
+ * answered — they stall to the HITL timeout — so each one is time the platform took from the run.
+ */
+export function isHumanInterruptTurn(turn: Turn): boolean {
+  const t = turn?.raw?.type;
+  return t === 'ask-question' || t === 'permission-request';
 }
 
 /** Friendly one-line label for a tool_use block ("watch it work"). */
@@ -509,6 +592,25 @@ export function projectTranscript(
       // no duration token when absent (older rows / paths that left startedAt undefined).
       if (typeof evt.startedAt === 'string') msg.startedAt = evt.startedAt;
       out.push(tag(msg, turn));
+    } else if (evt?.type === 'compaction') {
+      // FLUX-1746: synthesized by claude-code.ts's compact_boundary vendor-event handler — NOT
+      // matched from a raw compact_boundary frame here (unverified whether that subtype ever
+      // reaches the stream-json stdout the transcript captures). Dropped tokens are THIS
+      // boundary's own pre/post delta, never FLUX-1744's session-level cumulative sum (which is a
+      // running total and would overstate every boundary after the first).
+      const ts = typeof evt.timestamp === 'string' ? evt.timestamp : turn.ts;
+      const pre = typeof evt.preTokens === 'number' ? evt.preTokens : undefined;
+      const post = typeof evt.postTokens === 'number' ? evt.postTokens : undefined;
+      const durationMs = typeof evt.durationMs === 'number' ? evt.durationMs : undefined;
+      const trigger = evt.trigger === 'manual' ? 'manual' : 'auto';
+      let text = `⟲ Context compacted (${trigger})`;
+      if (typeof pre === 'number' && typeof post === 'number' && pre - post > 0) {
+        text += ` — ${formatCompactionTokenCount(pre - post)} tokens dropped`;
+        if (typeof durationMs === 'number' && durationMs > 0) {
+          text += ` in ${Math.round(durationMs / 1000)} s`;
+        }
+      }
+      out.push(tag({ role: 'note', kind: 'compaction', text, ts }, turn));
     } else if (evt?.type === 'assistant.message') {
       // FLUX-969: Copilot CLI's message event (its streaming deltas are excluded from the tee in
       // copilot.ts, so this is the only place its assistant text ever appears). Distinct from

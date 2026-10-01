@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   looksLaunchdMinimal,
+  looksGuiMinimalLinux,
   mergePath,
   fallbackPath,
+  fallbackPathLinux,
   resolveShellPathAtStartup,
 } from './shell-path.js';
 
@@ -92,6 +94,87 @@ describe('resolveShellPathAtStartup (FLUX-1408)', () => {
     env.SHELL = '/bin/bash';
     const probe = vi.fn().mockResolvedValue('/opt/homebrew/bin');
     await resolveShellPathAtStartup({ platform: 'darwin', env, probe });
+    expect(probe).toHaveBeenCalledWith('/bin/bash');
+  });
+});
+
+describe('looksGuiMinimalLinux (FLUX-1711)', () => {
+  const HOME = '/home/guy';
+
+  it('flags a systemd-user default PATH (no $HOME entries) as GUI-minimal', () => {
+    expect(looksGuiMinimalLinux('/usr/local/bin:/usr/bin:/bin', HOME)).toBe(true);
+  });
+
+  it('does not flag a PATH carrying any $HOME-rooted entry', () => {
+    expect(looksGuiMinimalLinux('/home/guy/.local/bin:/usr/bin', HOME)).toBe(false);
+    expect(looksGuiMinimalLinux('/usr/bin:/home/guy/.cargo/bin', HOME)).toBe(false);
+  });
+
+  it('never flags when HOME is unknown (no basis for the heuristic)', () => {
+    expect(looksGuiMinimalLinux('/usr/bin:/bin', '')).toBe(false);
+  });
+
+  it('does not treat a sibling dir sharing the HOME prefix as $HOME-rooted', () => {
+    expect(looksGuiMinimalLinux('/home/guyother/bin:/usr/bin', HOME)).toBe(true);
+  });
+});
+
+describe('fallbackPathLinux (FLUX-1711)', () => {
+  it('appends only user bin dirs that exist on disk, preserving the original entries', () => {
+    // A nonexistent HOME → nothing can exist → PATH unchanged.
+    expect(fallbackPathLinux('/usr/bin:/bin', '/nonexistent-home-xyz')).toBe('/usr/bin:/bin');
+  });
+
+  it('does not duplicate an already-present user dir', () => {
+    const home = process.env.HOME || '/home/guy';
+    const withLocal = `${home}/.local/bin:/usr/bin`;
+    const result = fallbackPathLinux(withLocal, home);
+    expect(result.split(':').filter((e) => e === `${home}/.local/bin`)).toHaveLength(1);
+  });
+});
+
+describe('resolveShellPathAtStartup on linux (FLUX-1711)', () => {
+  let env: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    env = { PATH: '/usr/local/bin:/usr/bin:/bin', SHELL: '/bin/fish', HOME: '/home/guy' };
+  });
+
+  it('adopts the login-shell PATH when the probe succeeds', async () => {
+    const probe = vi.fn().mockResolvedValue('/home/guy/.local/bin:/usr/local/bin:/usr/bin');
+    await resolveShellPathAtStartup({ platform: 'linux', env, probe });
+    expect(probe).toHaveBeenCalledWith('/bin/fish');
+    expect(env.PATH).toBe('/home/guy/.local/bin:/usr/local/bin:/usr/bin:/bin');
+  });
+
+  it('is a no-op when PATH already carries a $HOME entry', async () => {
+    env.PATH = '/home/guy/.local/bin:/usr/bin';
+    const probe = vi.fn();
+    await resolveShellPathAtStartup({ platform: 'linux', env, probe });
+    expect(probe).not.toHaveBeenCalled();
+    expect(env.PATH).toBe('/home/guy/.local/bin:/usr/bin');
+  });
+
+  it('is a no-op when HOME is unknown', async () => {
+    delete env.HOME;
+    const probe = vi.fn();
+    await resolveShellPathAtStartup({ platform: 'linux', env, probe });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('falls back to appending existing user bin dirs when the probe fails', async () => {
+    env.HOME = '/nonexistent-home-xyz';
+    const probe = vi.fn().mockResolvedValue(null);
+    await resolveShellPathAtStartup({ platform: 'linux', env, probe });
+    expect(probe).toHaveBeenCalled();
+    // Nothing exists under the fake HOME, so PATH is unchanged — and nothing throws.
+    expect(env.PATH).toBe('/usr/local/bin:/usr/bin:/bin');
+  });
+
+  it('defaults the probe shell to /bin/bash when SHELL is unset', async () => {
+    delete env.SHELL;
+    const probe = vi.fn().mockResolvedValue('/home/guy/bin:/usr/bin');
+    await resolveShellPathAtStartup({ platform: 'linux', env, probe });
     expect(probe).toHaveBeenCalledWith('/bin/bash');
   });
 });

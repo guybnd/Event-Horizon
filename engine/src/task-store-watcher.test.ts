@@ -111,6 +111,32 @@ describe('startWatchers() boot behavior (FLUX-1184)', () => {
     expect(getWorkspace().tasks['FLUX-3']?.title).toBe('Ticket 3 updated');
     expect(getWorkspace().tasks['FLUX-4']?.title).toBe('Ticket 4'); // untouched — proves it's per-file, not a rescan
   }, 15_000);
+
+  it('an atomic rename-replace of a ticket file never removes the ticket from the cache (FLUX-1755)', async () => {
+    // Every engine write is temp-file + rename over the ticket path. On Windows chokidar reports that
+    // as unlink then add, and the unlink handler deleted the cached ticket until the add re-loaded
+    // it — the "Ticket <id> not found" window agents hit on their first get_ticket after dispatch.
+    await fs.writeFile(path.join(fluxDir, 'FLUX-1.md'), ticketContent('FLUX-1', 'Ticket 1'));
+    await initDir();
+    await startWatchers();
+    await new Promise((r) => setTimeout(r, 1000));
+
+    let everMissing = false;
+    const probe = setInterval(() => { if (!getWorkspace().tasks['FLUX-1']) everMissing = true; }, 5);
+    try {
+      for (let i = 0; i < 5; i++) {
+        const tmp = path.join(fluxDir, 'FLUX-1.md.tmp');
+        await fs.writeFile(tmp, ticketContent('FLUX-1', `Ticket 1 rev ${i}`));
+        await fs.rename(tmp, path.join(fluxDir, 'FLUX-1.md'));
+        await new Promise((r) => setTimeout(r, 120));
+      }
+      await waitFor(() => getWorkspace().tasks['FLUX-1']?.title === 'Ticket 1 rev 4');
+    } finally {
+      clearInterval(probe);
+    }
+    expect(everMissing).toBe(false);
+    expect(getWorkspace().tasks['FLUX-1']?.title).toBe('Ticket 1 rev 4');
+  }, 15_000);
 });
 
 /**

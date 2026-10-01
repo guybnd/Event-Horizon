@@ -9,9 +9,10 @@ import express from 'express';
 import fs from 'fs/promises';
 import matter from 'gray-matter';
 import { existsSync } from 'fs';
-import { getWorkspaceRoot } from '../../workspace.js';
+import { getWorkspaceRoot, getFluxStoreDir, isOrphanMode } from '../../workspace.js';
 import { normalizeHistoryEntries } from '../../history.js';
-import { serializeTaskForApi, serializeTaskForAgent, serializeTaskForList, atomicWriteFile, createTask, getTerminalStatuses, subtaskIds } from '../../task-store.js';
+import { serializeTaskForApi, serializeTaskForAgent, serializeTaskForList, atomicWriteFile, createTask, getTerminalStatuses, subtaskIds, markTaskDeliberatelyDeleted } from '../../task-store.js';
+import { dropPendingCreateEntries } from '../../sync-journal.js';
 import { stopAllSessionsForTask, reconcileDeadSessions } from '../../session-store.js';
 import { detachTaskWorktree, resolveTaskWorktreePath } from '../../task-worktree.js';
 import { broadcastEvent, getTasksVersion } from '../../events.js';
@@ -226,6 +227,14 @@ router.delete('/:id', async (req, res) => {
       }
     }
     await fs.unlink(task._path);
+    // FLUX-1634: mark before clearing the cache so a create-replay still pending flush (this
+    // ticket created and deleted within the same ~30s sync debounce) is never resurrected.
+    markTaskDeliberatelyDeleted(task._path);
+    // FLUX-1634 round 4: also drop this ticket's OWN still-pending create entry — otherwise a later
+    // create reusing this id would clear the marker above and un-suppress this entry too, replaying
+    // it before the new one and resurrecting this deleted ticket instead. See task-store.ts's
+    // deliberatelyDeletedFilePaths comment for the full failure sequence.
+    if (isOrphanMode()) await dropPendingCreateEntries(getFluxStoreDir(), id);
     delete getWorkspace().tasks[id];
     broadcastEvent('taskDeleted', { id }); // FLUX-753: drop the card on connected portals
     res.json({ success: true });

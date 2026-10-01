@@ -104,6 +104,14 @@ export function cleanChildEnv(framework?: string, conversationId?: string, sessi
     env.EH_SESSION_ID = sessionId;
     env.EH_SESSION_TOKEN = signConversation(sessionId);
   }
+  // Copilot CLI prefers GH_TOKEN/GITHUB_TOKEN over `copilot login`. The engine often
+  // carries a gh token that can talk to GitHub but is not Copilot-entitled, which
+  // surfaces as `Model "…" from --model flag is not available` for every id including
+  // ones the interactive CLI accepts. Leave COPILOT_GITHUB_TOKEN if the user set it.
+  if (framework === 'copilot') {
+    delete env.GH_TOKEN;
+    delete env.GITHUB_TOKEN;
+  }
   return env;
 }
 
@@ -294,10 +302,54 @@ export function flushSessionOutput(session: CliSessionRecord, force = false, nar
 // and flushSessionOutput(force=true) broadcasts a `progress` SSE AND pushes to
 // session.sessionHistoryEntry.progress[] (persisted to history when the session ends).
 // No new infra, no portal changes — just one visible ⚠️ line per failure.
+// FLUX-1739: the ⚠️ line above is a LIVE surface only — it does not survive into durable history,
+// which is where the benchmark friction layer (and `get_session_log`, and the Smelter's
+// troubleshooting flow) actually read from. Two mechanisms drop it:
+//
+//   1. `compactSessionProgress` keeps only the last COMPACT_TEXT_TAIL (=2) untyped text entries plus
+//      whatever `looksLikeError` matches — and that predicate tests /^(error|fatal)\b/i against the
+//      trimmed message, which a "⚠️ "-prefixed line fails.
+//   2. Even matching the marker as a substring would not be enough: `flushSessionOutput` clips the
+//      whole outputBuffer at 2000 chars BEFORE pushing the entry, and this function appends into
+//      that same buffer. With more than 2000 chars of assistant prose pending — one long assistant
+//      block inside the 1s flush debounce, entirely routine — the marker sits past index 2000 and is
+//      truncated away before any predicate can see it. Flushing first doesn't separate them either:
+//      flushSessionOutput enqueues flushNow onto session.writeQueue and reads outputBuffer when that
+//      promise runs, so a synchronous append after the call still lands in the same flush.
+//
+// So instead of a marker string, push a TYPED entry carrying `data: { error }`. `looksLikeError`
+// already matches `data.error != null` with no change, and compaction's data-stripping `.map`
+// already exempts looksLikeError entries — so both the entry and its payload survive, with no new
+// constant to drift between writer and reader. The friction layer then reads a structured field
+// rather than re-parsing prose.
 export function appendErrorToSession(session: CliSessionRecord, message: string) {
   appendSessionOutput(session, `\n⚠️ ${message}\n`, 'stdout', true);
   flushSessionOutput(session, true);
+  // Enqueued AFTER the force-flush above so it lands in order behind the text it annotates
+  // (enqueueSessionWrite serializes on session.writeQueue).
+  enqueueSessionWrite(session, async () => {
+    if (!session.sessionHistoryEntry) return;
+    const progress = session.sessionHistoryEntry.progress;
+    // Keep-cap: a pathological run must not be able to bloat a ticket's durable history with
+    // thousands of failure entries. Past the cap the overflow collapses to a single counted entry.
+    const existing = progress.filter((p) => (p?.data as { error?: unknown } | undefined)?.error != null);
+    if (existing.length >= SESSION_ERROR_KEEP_CAP) {
+      const last = existing[existing.length - 1]!;
+      const data = last.data as { error?: unknown; overflow?: number };
+      data.overflow = (data.overflow ?? 0) + 1;
+      return;
+    }
+    // `type: 'info'` is load-bearing, not cosmetic. Compaction keeps ANY entry whose type is set and
+    // is not 'text' (`p?.type && p.type !== 'text'`), so this survives on its type alone — belt and
+    // braces with the `data.error` match. It also keeps the entry out of `isText`, so it never
+    // consumes one of the two COMPACT_TEXT_TAIL slots that real narration needs; and out of the
+    // data-stripping `.map`, which only strips `type === 'tool'` payloads.
+    progress.push({ timestamp: new Date().toISOString(), message, type: 'info', data: { error: message } });
+  });
 }
+
+/** Durable failure entries retained per session before overflow collapses to a count (FLUX-1739). */
+export const SESSION_ERROR_KEEP_CAP = 50;
 
 // ---- FLUX-1120: surface a RESUME-time pre-spawn failure as clearly as a fresh-spawn one ----
 // `resolveResumeExecutionRoot` (task-worktree.ts) throws BEFORE a child process is spawned — e.g.
@@ -447,6 +499,10 @@ export interface BuildInitialPromptOptions {
   /** FLUX-1383: members the route excluded from `batchTicketIds` (+why), substituted into the
    *  persona template's `{{batchExcludedNote}}` token. Empty/absent renders no note. */
   batchExcluded?: { id: string; reason: string }[] | undefined;
+  /** FLUX-1733: for phase:'fast-path' — when true, substitute the PLAN-FIRST pause into
+   *  `{{planFirstStep}}` so the same session waits for in-session approval before implementing.
+   *  Default off (empty substitution). Never routes through Todo. */
+  planFirst?: boolean | undefined;
 }
 
 // FLUX-1073: tickets are gray-matter-parsed YAML frontmatter validated at RUNTIME by schema.ts —
@@ -640,6 +696,7 @@ function renderPhasePersonaMission(
     explicitPersonaId?: string | undefined;
     batchTicketIds?: string[] | undefined;
     batchExcluded?: { id: string; reason: string }[] | undefined;
+    planFirst?: boolean | undefined;
   },
 ): string | undefined {
   const persona = resolveSoloChatPersona(phase, opts.explicitPersonaId, isScratchSession(task));
@@ -656,6 +713,14 @@ function renderPhasePersonaMission(
     opts.batchExcluded && opts.batchExcluded.length > 0
       ? `\nExcluded from this batch (left in Grooming for individual attention): ${opts.batchExcluded.map((e) => `${e.id} (${e.reason})`).join(', ')}.\n`
       : '';
+  // FLUX-1733: PLAN-FIRST is an opt-in paragraph after the eligibility bail-out and
+  // before In Progress. Empty by default so the cheap oneshot path pays nothing; when
+  // set, the same session pauses via ask_user_question and must NOT change_status → Todo
+  // (that fires the plan gate and kills oneshot). Placing it after eligibility avoids
+  // asking the user to approve a plan, then bailing to Todo if the ticket is too big.
+  const planFirstStep = opts.planFirst
+    ? `PLAN-FIRST (user opted in): After the eligibility check passes and BEFORE moving to In Progress, pause for user approval with ask_user_question (or waiting-input). If they reject, stay in Grooming (or Require Input) and do not implement. If they approve, continue in THIS same session. Do NOT change_status to "Todo" to get that approval — that fires the plan-review gate and ends oneshot.\n`
+    : '';
   return renderPersonaTemplate(persona.prompt, {
     taskId: String(task.id),
     readyStatus: getConfig()?.readyForMergeStatus || 'Ready',
@@ -665,6 +730,7 @@ function renderPhasePersonaMission(
     orchestrationProposalsParagraph: buildOrchestrationProposalsParagraph(opts.framework),
     batchMembersList,
     batchExcludedNote,
+    planFirstStep,
   });
 }
 
@@ -731,6 +797,7 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
         explicitPersonaId: undefined,
         batchTicketIds: opts?.batchTicketIds,
         batchExcluded: opts?.batchExcluded,
+        planFirst: opts?.planFirst,
       });
       if (rendered !== undefined) return rendered;
     }
@@ -853,6 +920,123 @@ export function buildTokenMetadataUpdate(taskId: string, session: CliSessionReco
   };
 }
 
+// ---- FLUX-1744: structured capture of compaction + rate-limit telemetry on the session record ----
+// Shared writers so any adapter's dialect (not just Claude) can call them and the arithmetic (count,
+// dropped-sum, ISO normalisation) lives in exactly one place.
+
+/**
+ * FLUX-1744: fold one `compact_boundary` event into the session record. `cumulativeDroppedTokens` is
+ * OUR running sum of `preTokens - postTokens` per event — deliberately not the CLI's own cumulative
+ * figure, so the session total stays ours and provider-independent. Called for every compaction
+ * frame, auto or manual; `lastCompactTrigger`/`lastCompactDurationMs` always reflect the MOST RECENT
+ * event, not an aggregate.
+ */
+export function recordCompaction(
+  session: Pick<CliSessionRecord, 'compactionCount' | 'cumulativeDroppedTokens' | 'lastCompactionAt' | 'lastCompactTrigger' | 'lastCompactDurationMs'>,
+  info: { trigger?: 'auto' | 'manual' | undefined; preTokens?: number | undefined; postTokens?: number | undefined; durationMs?: number | undefined; at?: string | undefined },
+): void {
+  session.compactionCount = (session.compactionCount ?? 0) + 1;
+  // `post_tokens` is `.optional()` on the wire; treating a missing value as 0 would report the
+  // entire pre-compaction context as dropped, so only accumulate when both numbers are present.
+  if (typeof info.preTokens === 'number' && typeof info.postTokens === 'number') {
+    const dropped = info.preTokens - info.postTokens;
+    if (dropped > 0) session.cumulativeDroppedTokens = (session.cumulativeDroppedTokens ?? 0) + dropped;
+  }
+  session.lastCompactionAt = info.at ?? new Date().toISOString();
+  if (info.trigger) session.lastCompactTrigger = info.trigger;
+  if (typeof info.durationMs === 'number') session.lastCompactDurationMs = info.durationMs;
+}
+
+/**
+ * FLUX-1744: fold one non-`allowed` `rate_limit_event` into the session record's `lastRateLimit`.
+ * Reflects the most recent observed wall — the caller decides whether to skip this on an `allowed`
+ * status (claude-code.ts only calls it for non-allowed statuses, before the existing dedupe check, so
+ * `observedAt` refreshes even on a repeat of the same status/rateLimitType). `resetsAtEpochSeconds` is
+ * normalised to ISO here since the wire event carries epoch seconds.
+ */
+export function recordRateLimit(
+  session: Pick<CliSessionRecord, 'lastRateLimit'>,
+  info: { status: string; rateLimitType?: string | undefined; resetsAtEpochSeconds?: number | undefined },
+): void {
+  session.lastRateLimit = {
+    status: info.status,
+    ...(info.rateLimitType ? { rateLimitType: info.rateLimitType } : {}),
+    ...(typeof info.resetsAtEpochSeconds === 'number' && Number.isFinite(info.resetsAtEpochSeconds)
+      ? { resetsAt: new Date(info.resetsAtEpochSeconds * 1000).toISOString() }
+      : {}),
+    observedAt: new Date().toISOString(),
+  };
+}
+
+// ---- FLUX-1746: proactive checkpoint before the compaction cliff ----
+// Auto-compaction has been observed to trigger around ~95% of the model's context window;
+// checkpointing at 85% leaves headroom to act on a session that is about to have its plan,
+// ticket context, and diff reasoning summarised away. One constant, framework-neutral — a
+// per-provider derived threshold needs several observed preTokens/contextWindow pairs FLUX-1744
+// telemetry hasn't accumulated yet.
+export const CHECKPOINT_CONTEXT_RATIO = 0.85;
+
+/**
+ * FLUX-1746: best-effort "context checkpoint" activity entry, fired once per compaction epoch when
+ * `session.liveContextTokens` crosses `CHECKPOINT_CONTEXT_RATIO` of `session.contextWindow`. The
+ * engine writes this from what it already knows (progress log, current activity, token gauges) —
+ * no prompt injection, so it never depends on the agent complying at the worst possible moment and
+ * works identically for every adapter that reports usage through the Anthropic wire format.
+ *
+ * Deliberately reads `liveContextTokens`, NOT `lastTurnContextTokens` — see that field's JSDoc
+ * (agents/types.ts) for why repurposing it here would break `findResumeCandidate`'s resume-safety
+ * gate (furnace-stoker.ts).
+ */
+export function maybeWriteContextCheckpoint(session: CliSessionRecord, taskId: string): void {
+  // Unknown window: session.contextWindow is only set in the `result` branch of
+  // anthropic-stream.ts, so it stays undefined until a turn completes. The checkpoint is one-shot
+  // per epoch — a spurious early fire against a guessed window would consume it and leave nothing
+  // written near the real cliff. Only turn 1 is ever unguarded, and turn 1 is never near a cliff.
+  if (session.contextWindow == null) return;
+  // Epoch guard, normalized on both sides: FLUX-1744 leaves `compactionCount` absent until the
+  // first compaction, and `checkpointEpoch` is likewise absent on a fresh session — comparing
+  // undefined !== undefined would never fire on a never-compacted session, the main case this
+  // exists for. The -1 sentinel keeps "never checkpointed" distinct from epoch 0.
+  const epoch = session.compactionCount ?? 0;
+  if ((session.checkpointEpoch ?? -1) === epoch) return;
+  const ratio = (session.liveContextTokens ?? 0) / session.contextWindow;
+  if (ratio < CHECKPOINT_CONTEXT_RATIO) return;
+  session.checkpointEpoch = epoch;
+  const pct = Math.round(ratio * 100);
+  // FLUX-1746: this is a "where was I" breadcrumb, not a transcript — each progress message is
+  // already clipped at 2000 chars by flushSessionOutput, so 3 of them unclipped would write up to
+  // ~6KB into the ticket's frontmatter YAML. Re-clip to 300 chars and strip backticks so a
+  // message containing one can't break the surrounding `` ` `` in the rendered markdown.
+  const recentProgress = (session.sessionHistoryEntry?.progress ?? [])
+    .slice(-3)
+    .map((p) => p.message?.slice(0, 300).replace(/`/g, "'"))
+    .filter(Boolean)
+    .join('; ');
+  const currentActivity = (session.currentActivity || 'Working').slice(0, 300).replace(/`/g, "'");
+  const comment = `Context checkpoint at ${pct}% of window — compaction likely soon. Last activity: \`${currentActivity}\`.${recentProgress ? ` Recent progress: \`${recentProgress}\`.` : ''}`;
+  enqueueSessionWrite(session, async () => {
+    await updateTaskWithHistory(taskId, {
+      updatedBy: 'Agent',
+      entries: [buildActivityEntry(comment, 'Agent', new Date().toISOString())],
+    });
+  });
+}
+
+// ---- FLUX-1623: shared stop-attribution text for a `requestedStop` exit ----
+// `stopAllSessionsForTask` stamps `session.stopReason` with the caller's human-readable reason (e.g.
+// 'furnace parked ticket') — but every adapter's exit handler used to render ANY `requestedStop` as
+// "stopped by user", even when a Furnace/gate park (not a user click) caused it. A bare
+// `stopCliSession(sessionId)` route stop (the actual Stop button) never sets `stopReason`, so it
+// correctly still falls back to "by user" here.
+export function stopOutcomeText(session: CliSessionRecord): string {
+  return session.stopReason ?? 'by user';
+}
+
+/** Telemetry-shaped variant (no leading "by") for the `reason:` field on operation events. */
+export function stopOutcomeReason(session: CliSessionRecord): string {
+  return session.stopReason ?? 'stopped by user';
+}
+
 // ---- FLUX-921: shared stop-terminalization for a resumed/reply turn ----
 // The `if (session.requestedStop) { status='cancelled'; endedAt=… } else { status='waiting-input' }`
 // block was duplicated across the reply error/exit handlers of claude-code.ts / copilot.ts /
@@ -918,6 +1102,12 @@ export function attachStdoutProcessing<TEvent = unknown>(
       if (!trimmed) continue;
       try {
         const evt = JSON.parse(trimmed) as TEvent;
+        // FLUX-1745: stamp liveness here, before onEvent, so a frame a dialect's onVendorEvent claims
+        // (returns true, e.g. compact_boundary/rate_limit_event) or a stream_event early-return can no
+        // longer silence the silent-spawn watchdog (reapHungSilentSpawn, session-store.ts). Direct
+        // assignment only — never route through appendSessionOutput, which also touches the output
+        // buffers this must not affect.
+        session.lastOutputAt = new Date().toISOString();
         handlers.onEvent(evt, trimmed, commitPendingAssistantText);
       } catch {
         handlers.onParseError(trimmed);

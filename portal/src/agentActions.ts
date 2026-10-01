@@ -83,6 +83,8 @@ export interface RunAgentActionOptions {
   supersedeParked?: boolean;
   /** FLUX-1383: for phase:'batch-grooming' — the sibling ticket ids to groom in this one session. */
   batchTicketIds?: string[];
+  /** FLUX-1733: for phase:'fast-path' — pause for in-session plan approval before implementing. */
+  planFirst?: boolean;
 }
 
 /**
@@ -105,6 +107,7 @@ export async function runAgentAction(opts: RunAgentActionOptions): Promise<CliSe
     patternPosition,
     supersedeParked,
     batchTicketIds,
+    planFirst,
   } = opts;
 
   if (preStatus) {
@@ -137,6 +140,7 @@ export async function runAgentAction(opts: RunAgentActionOptions): Promise<CliSe
     pattern,
     patternPosition,
     batchTicketIds,
+    planFirst,
   });
 }
 

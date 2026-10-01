@@ -23,6 +23,7 @@ interface MdastNode {
   type: string;
   position?: { start: { offset?: number }; end: { offset?: number } };
   children?: MdastNode[];
+  checked?: boolean | null;
 }
 
 function parseTree(body: string): MdastNode {
@@ -72,6 +73,26 @@ export function detectUnsupported(body: string): { supported: boolean; reason?: 
 
   if (hasRefLink) {
     return { supported: false, reason: 'This document uses reference-style links, which rendered editing does not yet support.' };
+  }
+
+  // FLUX-1719: a TOP-LEVEL list mixing checkbox and plain items (GFM permits this; marked renders
+  // it as one `<ul>`) gets split by `shapeTaskLists` into sibling checkbox/plain lists so a plain
+  // item never gains a checkbox -- but that turns ONE top-level source block into N top-level
+  // editor nodes, which `spliceableHtmls.length === blocks.length` (this module's caller) can't
+  // express. A mixed list NESTED inside another block doesn't hit this: splitting it only changes
+  // structure within its already-1 top-level node, so only TOP-LEVEL lists are checked here.
+  const hasMixedTopLevelList = (tree.children ?? []).some((node) => {
+    if (node.type !== 'list') {
+      return false;
+    }
+    const items = node.children ?? [];
+    const hasChecked = items.some((item) => item.checked === true || item.checked === false);
+    const hasPlain = items.some((item) => item.checked == null);
+    return hasChecked && hasPlain;
+  });
+
+  if (hasMixedTopLevelList) {
+    return { supported: false, reason: 'This document uses a list mixing checkbox and plain items, which rendered editing does not yet support.' };
   }
 
   return { supported: true };

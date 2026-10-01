@@ -146,3 +146,71 @@ describe('PR card nested-member bubbling (FLUX-1316/FLUX-1322 regression)', () =
     expect(openTaskModal).toHaveBeenCalledWith(expect.objectContaining({ id: MEMBER_TASK.id }));
   });
 });
+
+// FLUX-1713 review (Major 2): ciRunnerChip's four branches (absent/unknown, hosted, self-hosted,
+// mixed) had zero test coverage — this exercises each via the real PrDeckCard render, not a unit
+// test of the (unexported) chip function.
+describe('CI runner chip (FLUX-1713)', () => {
+  afterEach(() => cleanup());
+
+  function renderWithRunner(ciRunner?: Task['ciRunner']) {
+    const task: Task = { ...PR_TASK, members: [], ciRunner };
+    appStore.patch({
+      tasks: [task],
+      taskById: new Map([[task.id, task]]),
+      config: CONFIG,
+      currentUser: 'tester',
+      tasksLoading: false,
+    });
+    render(
+      <AppActionsContext.Provider value={stubActions()}>
+        <DockProvider>
+          <TaskCard task={task} />
+        </DockProvider>
+      </AppActionsContext.Provider>,
+    );
+  }
+
+  it('renders no runner chip when ciRunner is absent', () => {
+    renderWithRunner(undefined);
+    expect(screen.queryByText('Hosted')).toBeNull();
+    expect(screen.queryByText('Self-hosted')).toBeNull();
+    expect(screen.queryByText('Mixed')).toBeNull();
+  });
+
+  it('renders no runner chip when origin is unknown', () => {
+    renderWithRunner({ origin: 'unknown', jobs: [] });
+    expect(screen.queryByText('Hosted')).toBeNull();
+    expect(screen.queryByText('Self-hosted')).toBeNull();
+    expect(screen.queryByText('Mixed')).toBeNull();
+  });
+
+  it('renders the hosted chip', () => {
+    renderWithRunner({ origin: 'hosted', jobs: [] });
+    expect(screen.getByText('Hosted')).toBeTruthy();
+  });
+
+  it('renders the self-hosted chip with the runner name in the tooltip', () => {
+    renderWithRunner({ origin: 'self-hosted', runnerName: 'guy-cachyos-x8664-linux', jobs: [] });
+    const chip = screen.getByText('Self-hosted');
+    expect(chip.closest('span')?.getAttribute('title')).toBe('Ran on self-hosted runner: guy-cachyos-x8664-linux');
+  });
+
+  it('falls back to a generic tooltip when a self-hosted chip has no runner name', () => {
+    renderWithRunner({ origin: 'self-hosted', jobs: [] });
+    const chip = screen.getByText('Self-hosted');
+    expect(chip.closest('span')?.getAttribute('title')).toBe('Ran on a self-hosted runner');
+  });
+
+  it('renders the mixed chip with a per-job origin tooltip', () => {
+    renderWithRunner({
+      origin: 'mixed',
+      jobs: [
+        { name: 'check', origin: 'hosted', labels: [] },
+        { name: 'lint', origin: 'self-hosted', labels: [] },
+      ],
+    });
+    const chip = screen.getByText('Mixed');
+    expect(chip.closest('span')?.getAttribute('title')).toBe('check: hosted, lint: self-hosted');
+  });
+});

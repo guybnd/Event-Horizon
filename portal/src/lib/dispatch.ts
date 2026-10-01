@@ -1,6 +1,7 @@
 import { Search, Code2, Eye, Flag, Zap, Layers } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { TranscriptMessage } from '../api';
+import type { Task } from '../types';
 
 /**
  * FLUX-849 / FLUX-867: short, friendly stage labels for a dispatched session's lifecycle — mirrors
@@ -29,8 +30,9 @@ export const DISPATCH_PHASE_LABEL: Record<string, string> = {
   implementation: 'impl',
   review: 'review',
   finalize: 'final',
-  // FLUX-1380: one session grooms + implements a Grooming-column XS/S ticket.
-  'fast-path': 'fast-path',
+  // FLUX-1380 / FLUX-1733: one session grooms + implements a Grooming-column XS/S ticket.
+  // Engine id stays `fast-path`; the user-facing label is Oneshot.
+  'fast-path': 'oneshot',
   // FLUX-1383: one session grooms up to 5 sibling tickets sharing one parent.
   'batch-grooming': 'batch-groom',
 };
@@ -58,3 +60,10 @@ export const DISPATCH_LIFECYCLES: Array<NonNullable<TranscriptMessage['lifecycle
 export const DISPATCH_PHASES: Array<NonNullable<TranscriptMessage['phase']>> = [
   'grooming', 'implementation', 'review', 'finalize', 'fast-path', 'batch-grooming',
 ];
+
+/** True when a live session or any recent `cliSessions` entry was dispatched as oneshot
+ *  (`phase:'fast-path'`). Drives the rest-state Zap/oneshot chip on the board card (FLUX-1733). */
+export function taskHasOneshotSession(task: Pick<Task, 'cliSession' | 'cliSessions'>): boolean {
+  if (task.cliSession?.phase === 'fast-path') return true;
+  return (task.cliSessions ?? []).some((s) => s.phase === 'fast-path');
+}

@@ -240,6 +240,31 @@ describe('resumeOrDispatchSession (FLUX-1378)', () => {
       const outcome = await resumeOrDispatchSession(ticketId, 'implementation', { resumeMessage: 'go' });
       expect(outcome.resumed).toBe(true);
     });
+
+    // FLUX-1745: a session that has compacted at least once reads as "tiny context, resume me" under
+    // the ratio check above (a compaction just summarized the warm context away, producing a low
+    // reading), but that is exactly the worst possible resume target — refuse it regardless of ratio.
+    it('cold-spawns a session that has compacted, even at a tiny context ratio', async () => {
+      const ticketId = 'TICK-21';
+      getWorkspace().tasks[ticketId] = { id: ticketId, status: 'In Progress' };
+      registerTicketSession(makeSession({
+        id: 'sess-21', taskId: ticketId,
+        compactionCount: 1, lastTurnContextTokens: 16_600, contextWindow: 1_000_000, // ~1.7%
+      }));
+      const outcome = await resumeOrDispatchSession(ticketId, 'implementation', { resumeMessage: 'go' });
+      expect(outcome.resumed).toBe(false);
+    });
+
+    it('resumes an identical low-ratio candidate that has never compacted (control)', async () => {
+      const ticketId = 'TICK-22';
+      getWorkspace().tasks[ticketId] = { id: ticketId, status: 'In Progress' };
+      registerTicketSession(makeSession({
+        id: 'sess-22', taskId: ticketId,
+        lastTurnContextTokens: 16_600, contextWindow: 1_000_000,
+      }));
+      const outcome = await resumeOrDispatchSession(ticketId, 'implementation', { resumeMessage: 'go' });
+      expect(outcome.resumed).toBe(true);
+    });
   });
 
   it('cold-spawns a stale session (idle > 30 minutes)', async () => {

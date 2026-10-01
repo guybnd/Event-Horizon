@@ -21,6 +21,7 @@ import { FurnaceSection } from './settings/FurnaceSection';
 import { CostTokensSection } from './settings/CostTokensSection';
 import { ModulesSection } from './settings/ModulesSection';
 import { ConnectorsSection } from './settings/ConnectorsSection';
+import { CapacitySection } from './settings/CapacitySection';
 import { McpPhasesSection } from './settings/McpPhasesSection';
 import { GeneralSection } from './settings/GeneralSection';
 import { CommunicationStyleSection, type CommUserStyle } from './settings/CommunicationStyleSection';
@@ -30,9 +31,9 @@ import { EMPTY_TIER_MODELS, PRESET_ASSIGNMENTS, derivePreset, type TierModels } 
 /** Runtime config carries a per-phase MCP server map that isn't yet on the `Config` type. */
 type ConfigWithMcpPhases = Config & { mcpServerPhases?: Record<string, string[]> };
 
-type SettingsTab = 'board' | 'appearance' | 'attributes' | 'workspace' | 'agents' | 'modules' | 'connectors' | 'general';
+type SettingsTab = 'board' | 'appearance' | 'attributes' | 'workspace' | 'agents' | 'capacity' | 'modules' | 'connectors' | 'general';
 
-const TAB_ORDER: SettingsTab[] = ['board', 'appearance', 'attributes', 'workspace', 'agents', 'modules', 'connectors', 'general'];
+const TAB_ORDER: SettingsTab[] = ['board', 'appearance', 'attributes', 'workspace', 'agents', 'capacity', 'modules', 'connectors', 'general'];
 
 const TAB_LABELS: Record<SettingsTab, string> = {
   board: 'Board',
@@ -40,6 +41,7 @@ const TAB_LABELS: Record<SettingsTab, string> = {
   attributes: 'Attributes',
   workspace: 'Workspace',
   agents: 'Agents',
+  capacity: 'Capacity',
   modules: 'Modules',
   connectors: 'Connectors',
   general: 'General',
@@ -106,6 +108,8 @@ export function Settings() {
   const [geminiTiers, setGeminiTiers] = useState<TierModels>(EMPTY_TIER_MODELS);
   const [copilotTiers, setCopilotTiers] = useState<TierModels>(EMPTY_TIER_MODELS);
   const [codexTiers, setCodexTiers] = useState<TierModels>(EMPTY_TIER_MODELS);
+  const [grokTiers, setGrokTiers] = useState<TierModels>(EMPTY_TIER_MODELS);
+  const [antigravityTiers, setAntigravityTiers] = useState<TierModels>(EMPTY_TIER_MODELS);
   const [modelPolicyAssignments, setModelPolicyAssignments] = useState<Record<TaskKey, Tier>>(PRESET_ASSIGNMENTS.balanced);
   const [generateDistinctFiles, setGenerateDistinctFiles] = useState(true);
   const [releaseNotesPath, setReleaseNotesPath] = useState('release-notes');
@@ -187,6 +191,8 @@ export function Settings() {
       setGeminiTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.geminiCli?.tiers ?? {}) });
       setCopilotTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.copilotCli?.tiers ?? {}) });
       setCodexTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.codexCli?.tiers ?? {}) });
+      setGrokTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.grokCli?.tiers ?? {}) });
+      setAntigravityTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.antigravityCli?.tiers ?? {}) });
       setModelPolicyAssignments(config.modelPolicy?.assignments ?? PRESET_ASSIGNMENTS.balanced);
       if (config.releaseSettings) {
         setGenerateDistinctFiles(config.releaseSettings.generateDistinctFiles);
@@ -322,6 +328,12 @@ export function Settings() {
           codexCli: {
             tiers: { smart: codexTiers.smart.trim(), efficient: codexTiers.efficient.trim(), cheap: codexTiers.cheap.trim() },
           },
+          grokCli: {
+            tiers: { smart: grokTiers.smart.trim(), efficient: grokTiers.efficient.trim(), cheap: grokTiers.cheap.trim() },
+          },
+          antigravityCli: {
+            tiers: { smart: antigravityTiers.smart.trim(), efficient: antigravityTiers.efficient.trim(), cheap: antigravityTiers.cheap.trim() },
+          },
         },
         modelPolicy: {
           preset: derivePreset(modelPolicyAssignments),
@@ -421,6 +433,8 @@ export function Settings() {
     setGeminiTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.geminiCli?.tiers ?? {}) });
     setCopilotTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.copilotCli?.tiers ?? {}) });
     setCodexTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.codexCli?.tiers ?? {}) });
+    setGrokTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.grokCli?.tiers ?? {}) });
+    setAntigravityTiers({ ...EMPTY_TIER_MODELS, ...(config.integrations?.antigravityCli?.tiers ?? {}) });
     setModelPolicyAssignments(config.modelPolicy?.assignments ?? PRESET_ASSIGNMENTS.balanced);
     setGenerateDistinctFiles(config.releaseSettings?.generateDistinctFiles ?? true);
     setReleaseNotesPath(config.releaseSettings?.releaseNotesPath || 'release-notes');
@@ -499,6 +513,8 @@ export function Settings() {
       geminiTiers,
       copilotTiers,
       codexTiers,
+      grokTiers,
+      antigravityTiers,
       modelPolicyAssignments,
       agentProgressEnabled,
       agentProgressDelay,
@@ -508,6 +524,8 @@ export function Settings() {
       tokenDisplayMode,
       tokenCostThresholds,
     },
+    // Read-only capacity readings (FLUX-1748) — nothing to save, so its slice never differs.
+    capacity: {},
     modules: { modules, mcpServerPhases },
     // Read-only status panel (FLUX-1656) — nothing to save, so its slice never differs.
     connectors: {},
@@ -566,6 +584,8 @@ export function Settings() {
       geminiTiers: { ...EMPTY_TIER_MODELS, ...(config.integrations?.geminiCli?.tiers ?? {}) },
       copilotTiers: { ...EMPTY_TIER_MODELS, ...(config.integrations?.copilotCli?.tiers ?? {}) },
       codexTiers: { ...EMPTY_TIER_MODELS, ...(config.integrations?.codexCli?.tiers ?? {}) },
+      grokTiers: { ...EMPTY_TIER_MODELS, ...(config.integrations?.grokCli?.tiers ?? {}) },
+      antigravityTiers: { ...EMPTY_TIER_MODELS, ...(config.integrations?.antigravityCli?.tiers ?? {}) },
       modelPolicyAssignments: config.modelPolicy?.assignments ?? PRESET_ASSIGNMENTS.balanced,
       agentProgressEnabled: config.agentProgress?.enabled ?? true,
       agentProgressDelay: config.agentProgress?.inlineDelay ?? 2,
@@ -575,6 +595,7 @@ export function Settings() {
       tokenDisplayMode: config.tokenDisplayMode ?? 'cost',
       tokenCostThresholds: config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 },
     },
+    capacity: {},
     modules: {
       modules: config.modules || [],
       mcpServerPhases: (config as ConfigWithMcpPhases).mcpServerPhases || {},
@@ -740,6 +761,10 @@ export function Settings() {
                     setCopilotTiers={setCopilotTiers}
                     codexTiers={codexTiers}
                     setCodexTiers={setCodexTiers}
+                    grokTiers={grokTiers}
+                    setGrokTiers={setGrokTiers}
+                    antigravityTiers={antigravityTiers}
+                    setAntigravityTiers={setAntigravityTiers}
                     assignments={modelPolicyAssignments}
                     setAssignments={setModelPolicyAssignments}
                   />
@@ -779,6 +804,8 @@ export function Settings() {
                   <McpPhasesSection value={mcpServerPhases} setValue={setMcpServerPhases} />
                 </>
               )}
+
+              {activeTab === 'capacity' && <CapacitySection />}
 
               {activeTab === 'connectors' && <ConnectorsSection />}
 

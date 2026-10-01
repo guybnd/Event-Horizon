@@ -1,11 +1,9 @@
-// FLUX-959: the Copilot `BoardSpec`. Degrades relative to Claude — no `--include-partial-messages`
-// (no token-by-token deltas) and no `--disallowed-tools` / `--permission-prompt-tool` (Copilot has
-// no permission-gating flag, so the board always runs `--yolo`). MCP config is now EXPLICIT
-// (FLUX-984): workspace `.mcp.json` is never auto-loaded by Copilot in non-interactive `-p` mode —
-// confirmed live, no permission flag changes it — so `buildAdditionalMcpConfigArgs()` injects the
-// event-horizon server directly via `--additional-mcp-config`. See FLUX-959 risk notes: turn-1
+// FLUX-959: the Copilot `BoardSpec` runs unattended with `--yolo` while explicit denials retain
+// Event Horizon's chat edit gate.
+// MCP config is EXPLICIT (FLUX-984): `buildCopilotPromptArgs()` injects the bound event-horizon
+// server directly via `--additional-mcp-config`. See FLUX-959 risk notes: turn-1
 // `resumeSessionId` capture still needed live verification (separately confirmed working, FLUX-977).
-import { attachStdoutProcessing, spawnCopilot, buildAdditionalMcpConfigArgs, checkCopilotBinaryInstalled } from './copilot.js';
+import { attachStdoutProcessing, spawnCopilot, buildCopilotPromptArgs, checkCopilotBinaryInstalled } from './copilot.js';
 import { EFFORT_LEVELS } from './shared.js';
 import { CLI_CAPABILITIES } from './types.js';
 import { BOARD_CONVERSATION_ID, type BoardSpec } from './board.js';
@@ -15,24 +13,17 @@ export const copilotBoardSpec: BoardSpec = {
   framework: 'copilot',
   binary: 'copilot',
   checkBinary: () => checkCopilotBinaryInstalled(BOARD_CONVERSATION_ID),
-  buildArgs({ session, workspaceRoot, isResume }) {
-    const resumeArgs = isResume && session.resumeSessionId ? ['--resume', session.resumeSessionId] : [];
-    // FLUX-1496: `-p` is a bare flag — the prompt is written to stdin by wireBoardProc after spawn
-    // (board-core.ts), mirroring the FLUX-1444 per-ticket fix (copilot.ts:467).
-    const args = [
-      // Copilot has no `--resume`-time model re-specification in the per-ticket adapter either —
-      // mirror that: only set --model on a fresh turn.
-      ...(!isResume && session.model ? ['--model', session.model] : []),
-      '-p',
-      ...resumeArgs,
-      '--output-format', 'json',
-      '--yolo',
-      // FLUX-984: explicit MCP config injection — workspace .mcp.json is never auto-loaded in -p mode.
-      // FLUX-1213/FLUX-1580: bind to the turn's ACTUAL conversation id (`__board__` or
-      // `__furnace__`) + workspaceRoot, not a hardcoded board literal — previously every Furnace
-      // child's own HITL prompts / MCP tool calls silently routed as `__board__`.
-      ...buildAdditionalMcpConfigArgs(session.taskId, workspaceRoot),
-    ];
+  buildArgs({ session, workspaceRoot, isResume, attachmentAbsPaths }) {
+    const model = !isResume ? session.model : undefined;
+    const resumeSessionId = isResume ? session.resumeSessionId : undefined;
+    const args = buildCopilotPromptArgs({
+      conversationId: session.taskId,
+      workspaceRoot,
+      ...(model ? { model } : {}),
+      ...(resumeSessionId ? { resumeSessionId } : {}),
+      skipPermissions: true,
+      attachmentAbsPaths,
+    });
     // FLUX-977: Copilot CLI rejects --effort outright when no explicit --model is passed in the
     // SAME invocation (its default "auto" model doesn't support it — confirmed against the live
     // CLI). Mirror the exact same condition --model is gated on above (!isResume && session.model),

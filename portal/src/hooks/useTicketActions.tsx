@@ -14,7 +14,7 @@ import { useAppSelector, useAppActions, shallowEqual } from '../store/useAppSele
 import {
   mergePr, updateTask, fetchWorkflows, fetchPrStatus, sendTaskCliInput, raisePr, deleteTask,
   detachWorktree, joinWorktree, openWorktreeWindow, setTicketBranch, attachParent,
-  finishBranchless, fetchDiffOverview,
+  finishBranchless, fetchDiffOverview, oneshotFromScratch,
   MergeForceRequiredError, MergeParkedError,
   type WorkflowTemplate,
 } from '../api';
@@ -314,25 +314,58 @@ export function useTicketActions(task: Task): UseTicketActions {
     triggerRefresh();
   };
 
-  // ── Agent: fast-path (FLUX-1380) — one session grooms AND implements an XS/S Grooming-column
-  // ticket. No pre-launch status move (design decision 6): the session itself advances
-  // Grooming → In Progress → Ready. Eligibility (effort L/XL, subtasks) is enforced server-side by
-  // the start route; on refusal its error surfaces here verbatim. ──
+  // ── Agent: oneshot / fast-path (FLUX-1380 / FLUX-1733) — one session grooms AND implements
+  // an XS/S Grooming-column ticket. No pre-launch status move (design decision 6): the session
+  // itself advances Grooming → In Progress → Ready. Eligibility (effort L/XL, subtasks) is
+  // enforced server-side by the start route; on refusal its error surfaces here verbatim.
+  // `planFirst` pauses for in-session plan approval (ask_user_question) without moving to Todo. ──
   //
   // FLUX-1423: await the refresh (rather than firing it and letting the button go idle
   // immediately) so the card's busy spinner holds until the new session actually shows up as a
   // "Starting…" row — otherwise the click looked like a no-op for the beat between the launch
   // call returning and the next poll picking up the session, inviting a repeat click.
-  const dispatchFastPath = async () => {
+  const dispatchFastPath = async (planFirst?: boolean) => {
     const endGhost = beginGhostLaunch();
     try {
-      await runAgentAction({ taskId: task.id, framework, action: { kind: 'launch' }, currentUser, phase: 'fast-path' });
+      await runAgentAction({ taskId: task.id, framework, action: { kind: 'launch' }, currentUser, phase: 'fast-path', planFirst });
     } catch (err) {
       endGhost(true);
-      notifyError(`Failed to start fast-path on ${task.id}`, err instanceof Error ? err.message : String(err));
+      notifyError(`Failed to start oneshot on ${task.id}`, err instanceof Error ? err.message : String(err));
       return;
     }
     await triggerRefresh();
+  };
+
+  // ── Agent: Oneshot this (FLUX-1733) — promote a scratch chat, then start fast-path on the
+  // new Grooming ticket. Never implement on the scratch (FLUX-1443). Confirm the title when
+  // it is still the placeholder "Scratch N".
+  const dispatchOneshotFromScratch = async () => {
+    const currentTitle = (task.title || '').trim();
+    const placeholder = !currentTitle || /^Scratch(\s+\d+)?$/i.test(currentTitle);
+    let title = currentTitle;
+    if (placeholder) {
+      const entered = await runPrompt({
+        title: 'Oneshot this scratch',
+        message: 'Title for the new ticket:',
+        defaultValue: '',
+        submitLabel: 'Oneshot',
+      });
+      if (entered === null) return;
+      title = entered.trim();
+      if (!title) {
+        notifyError('Oneshot this', 'A title is required');
+        return;
+      }
+    }
+    const endGhost = beginGhostLaunch();
+    try {
+      const result = await oneshotFromScratch(task.id, { title, framework, user: currentUser });
+      await triggerRefresh();
+      openTask({ id: result.ticketId, title, status: 'Grooming' } as Task);
+    } catch (err) {
+      endGhost(true);
+      notifyError(`Failed to Oneshot this ${task.id}`, err instanceof Error ? err.message : String(err));
+    }
   };
 
   // ── Agent: batch-grooming (FLUX-1383) — the epic trigger. One session grooms this epic's
@@ -622,6 +655,7 @@ export function useTicketActions(task: Task): UseTicketActions {
     finishViaEngine,
     dispatchFinish,
     dispatchFastPath,
+    dispatchOneshotFromScratch,
     batchGroomingEligibleIds,
     dispatchBatchGrooming,
     launchDefault,

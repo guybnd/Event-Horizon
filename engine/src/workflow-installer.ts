@@ -9,8 +9,14 @@ import { signConversation } from './session-binding.js';
 import { buildCoreSkillDocument } from './skill-core.js';
 import { pathsEqual } from './workspace.js';
 import { CLI_CAPABILITIES, type CliCapabilities } from './agents/types.js';
+import {
+  extractEnginePortFromGrokToml,
+  grokMcpConfigToml,
+  upsertGrokEventHorizonToml,
+} from './agents/grok-mcp-config.js';
+import { buildAntigravityMcpServerEntry } from './agents/antigravity-mcp-config.js';
 
-export type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'codex' | 'generic';
+export type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'codex' | 'grok' | 'generic';
 export type ResolvedFramework = Exclude<Framework, 'auto'>;
 
 export const EVENT_HORIZON_INSTRUCTIONS_START = '<!-- EVENT_HORIZON_MANAGED_INSTRUCTIONS:START -->';
@@ -20,12 +26,14 @@ export const EVENT_HORIZON_INSTRUCTIONS_END = '<!-- EVENT_HORIZON_MANAGED_INSTRU
  * Skill-layout strategy per framework — an installer-side skill-layout axis, not runtime
  * adapter coupling (`ResolvedFramework` is wider than the runtime `CliFramework`, so it
  * can't index `CLI_CAPABILITIES`). FLUX-1377: Claude alone gets the trimmed always-on
- * 'core' doc (phase guidance is engine-injected at spawn instead); 'modular' frameworks
- * get one file per skill module (Option B); everything else gets the Option A
+ * 'core' doc (phase guidance is engine-injected at spawn instead); Cline gets one file per
+ * skill module (Option B); everything else gets the Option A
  * concatenation (no engine-driven agent-spawn injection path for those).
  */
 const SKILL_INSTALL_STRATEGY: Record<ResolvedFramework, 'modular' | 'core' | 'concatenated'> = {
-  copilot: 'modular',
+  // Copilot CLI discovers directory skills only through `<name>/SKILL.md`; arbitrary sibling
+  // markdown files under `.github/skills/` are resources, not independently invocable skills.
+  copilot: 'concatenated',
   cline: 'modular',
   claude: 'core',
   gemini: 'concatenated',
@@ -36,6 +44,7 @@ const SKILL_INSTALL_STRATEGY: Record<ResolvedFramework, 'modular' | 'core' | 'co
   // phaseSkillModule injection is gated to 'claude' only) — needs everything statically installed,
   // same as gemini/cursor/generic.
   codex: 'concatenated',
+  grok: 'concatenated',
   generic: 'concatenated',
 };
 
@@ -90,7 +99,14 @@ export function resolveFramework(targetDir: string, requested: Framework): Resol
     return 'copilot';
   }
 
-  if (existsSync(path.join(targetDir, '.gemini', 'antigravity'))) {
+  // FLUX-1738: `.agents/` is Antigravity CLI's per-workspace directory (it is where
+  // `.agents/mcp_config.json` and `.agents/skills/` live — confirmed against an agy 1.1.26
+  // install). The former probe here looked for `.gemini/antigravity`, which is a **user-home**
+  // directory (`~/.gemini/antigravity`), so it never matched a project dir and every antigravity
+  // workspace silently auto-resolved to `gemini` on the next line instead. Checked BEFORE
+  // `.gemini` because an agy install also creates `~/.gemini/*`, and a repo carrying both markers
+  // is an antigravity workspace.
+  if (existsSync(path.join(targetDir, '.agents'))) {
     return 'antigravity';
   }
 
@@ -114,6 +130,14 @@ export function resolveFramework(targetDir: string, requested: Framework): Resol
     return 'claude';
   }
 
+  if (existsSync(path.join(targetDir, '.codex'))) {
+    return 'codex';
+  }
+
+  if (existsSync(path.join(targetDir, '.grok'))) {
+    return 'grok';
+  }
+
   return 'generic';
 }
 
@@ -121,10 +145,15 @@ export function resolveFramework(targetDir: string, requested: Framework): Resol
 function skillDestinationFor(targetDir: string, framework: ResolvedFramework): string {
   switch (framework) {
     case 'copilot':
-      return path.join(targetDir, '.github', 'skills', 'event-horizon', 'orchestrator.md');
+      return path.join(targetDir, '.github', 'skills', 'event-horizon', 'SKILL.md');
     case 'cline':
       return path.join(targetDir, '.cline', 'skills', 'event-horizon-orchestrator.md');
+    // FLUX-1738: split from `gemini`. `agy` keeps skills under `.agents/skills/` (an agy install
+    // creates `~/.agents/skills/` with its own `.skill-lock.json`); it does not read
+    // `.gemini/skills/`. Sharing gemini's destination meant an antigravity workspace got a skill
+    // file its CLI never loads.
     case 'antigravity':
+      return path.join(targetDir, '.agents', 'skills', 'event-horizon.md');
     case 'gemini':
       return path.join(targetDir, '.gemini', 'skills', 'event-horizon.md');
     case 'cursor':
@@ -135,6 +164,12 @@ function skillDestinationFor(targetDir: string, framework: ResolvedFramework): s
       return path.join(targetDir, '.claude', 'rules', 'event-horizon.md');
     case 'codex':
       return path.join(targetDir, '.codex', 'skills', 'event-horizon.md');
+    case 'grok':
+      // Grok skills are `<name>/SKILL.md` directories (08-skills.md). A flat
+      // `.grok/skills/event-horizon.md` is not discovered. `.grok/rules/*.md` would
+      // auto-load, but gitignored rules are skipped — FLUX-958 gitignores install
+      // outputs, and skill discovery does not honor gitignore. FLUX-1726.
+      return path.join(targetDir, '.grok', 'skills', 'event-horizon', 'SKILL.md');
     case 'generic':
     default:
       return path.join(targetDir, '.event-horizon', 'skills', 'event-horizon.md');
@@ -157,7 +192,10 @@ function instructionsDestinationFor(targetDir: string, framework: ResolvedFramew
   switch (framework) {
     case 'copilot':
       return path.join(targetDir, '.github', 'copilot-instructions.md');
+    // FLUX-1738: AGENTS.md, matching codex/grok — `agy` has no `.gemini/instructions.md`
+    // equivalent, and AGENTS.md is the cross-CLI convention it shares with them.
     case 'antigravity':
+      return path.join(targetDir, 'AGENTS.md');
     case 'gemini':
       return path.join(targetDir, '.gemini', 'instructions.md');
     case 'cursor':
@@ -174,23 +212,63 @@ function instructionsDestinationFor(targetDir: string, framework: ResolvedFramew
     // widely-documented Codex convention.
     case 'codex':
       return path.join(targetDir, 'AGENTS.md');
+    case 'grok':
+      return path.join(targetDir, 'AGENTS.md');
     default:
       return undefined;
   }
 }
 
-// Every concrete (non-'auto') framework EH can install skills for. `gemini` precedes `antigravity`
-// so it wins the dedupe for their shared `.gemini/skills/event-horizon.md` target (the common label).
+// Every concrete (non-'auto') framework EH can install skills for. FLUX-1738: `gemini` and
+// `antigravity` no longer share a skill destination (`.gemini/skills/` vs `.agents/skills/`), so the
+// ordering here is no longer load-bearing for their dedupe — kept as-is to avoid churning the
+// order-sensitive detectWorkspaceFrameworks "primary wins" behaviour for the other frameworks.
 const ALL_RESOLVED_FRAMEWORKS: readonly ResolvedFramework[] = [
-  'copilot', 'gemini', 'antigravity', 'cursor', 'cline', 'windsurf', 'claude', 'codex', 'generic',
+  'copilot', 'gemini', 'antigravity', 'cursor', 'cline', 'windsurf', 'claude', 'codex', 'grok', 'generic',
 ];
+
+/** Destinations a previous installer revision wrote for `framework` that the current
+ * `skillDestinationFor` no longer uses. Probed so a dest move still counts as "already
+ * installed" (FLUX-942 detect) and unlinked on reinstall so the old file cannot shadow. */
+function priorSkillDestinationsFor(targetDir: string, framework: ResolvedFramework): string[] {
+  switch (framework) {
+    case 'copilot':
+      return SKILL_MODULES.map((module) => path.join(targetDir, '.github', 'skills', 'event-horizon', `${module}.md`));
+    case 'grok':
+      // FLUX-1722 wrote a flat file Grok does not treat as a skill (FLUX-1726).
+      return [path.join(targetDir, '.grok', 'skills', 'event-horizon.md')];
+    default:
+      return [];
+  }
+}
 
 /** True when EH has ALREADY installed its skill file(s) for `framework` in `targetDir`. */
 function frameworkHasInstall(targetDir: string, framework: ResolvedFramework): boolean {
   const probe = SKILL_INSTALL_STRATEGY[framework] === 'modular'
     ? skillModuleDestinationFor(targetDir, framework, 'orchestrator')
     : skillDestinationFor(targetDir, framework);
-  return existsSync(probe);
+  if (existsSync(probe)) return true;
+  return priorSkillDestinationsFor(targetDir, framework).some((p) => existsSync(p));
+}
+
+async function removePriorSkillDestinations(
+  targetDir: string,
+  framework: ResolvedFramework,
+  currentDest: string,
+): Promise<void> {
+  const current = path.resolve(currentDest);
+  for (const prior of priorSkillDestinationsFor(targetDir, framework)) {
+    if (path.resolve(prior) === current) continue;
+    try {
+      await fs.unlink(prior);
+      log.info(`[installer] Removed superseded skill file: ${prior}`);
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') continue;
+      const message = err instanceof Error ? err.message : String(err);
+      log.error(`[installer] Could not remove superseded skill file ${prior} (${message}); skipping.`);
+    }
+  }
 }
 
 /**
@@ -208,8 +286,10 @@ export function detectWorkspaceFrameworks(targetDir: string, preferred: Framewor
   for (const fw of ALL_RESOLVED_FRAMEWORKS) {
     if (frameworkHasInstall(targetDir, fw)) candidates.push(fw);
   }
-  // Collapse frameworks that install to the SAME skill destination (gemini & antigravity both write
-  // `.gemini/skills/event-horizon.md`) so we never install/check the identical file twice — first wins.
+  // Collapse frameworks that install to the SAME skill destination so we never install/check the
+  // identical file twice — first wins. FLUX-1738: gemini & antigravity used to be the motivating
+  // pair; they now write to different directories, but codex & grok still both use AGENTS.md for
+  // instructions, so the collapse stays meaningful.
   const byDest = new Map<string, ResolvedFramework>();
   for (const fw of candidates) {
     const key = path.resolve(skillDestinationFor(targetDir, fw));
@@ -297,6 +377,16 @@ function getSourcePaths(sourceRoot: string) {
  * hand-duplicating the list, so drift between the two fails CI rather than silently misleading. */
 export const PULL_ONLY_MODULES: readonly SkillModule[] = ['tools'];
 
+/** Directory-skill frontmatter — `name`/`description` drive listing and auto-invocation. */
+function wrapDirectorySkillDocument(body: string): string {
+  return `---
+name: event-horizon
+description: Event Horizon ticket workflow (orchestrator, grooming, implementation, review). Use when working on a FLUX ticket, grooming, changing ticket status, or before any task that modifies repository files in an Event Horizon workspace.
+---
+
+${body}`;
+}
+
 /** Concatenates skill modules into one file, wrapping each in XML tags for LLM navigation.
  * Skips PULL_ONLY_MODULES — see above. */
 async function buildConcatenatedSkill(skillSourcePaths: readonly string[]): Promise<string> {
@@ -321,6 +411,57 @@ async function pathExists(targetPath: string) {
   }
 }
 
+/** One file the installer writes for a framework's skill install. */
+interface RenderedSkillFile {
+  path: string;
+  content: string;
+}
+
+/**
+ * Renders the exact skill file set `installWorkspaceWorkflow` writes for `framework` — the
+ * SINGLE source of truth for both the install and the staleness check (FLUX-1749). The first
+ * entry is always the primary file (`skillDestinationFor`), whose `Version:` line is what status
+ * surfaces display.
+ *
+ * Throws if a required source module is missing (the caller decides whether that is fatal).
+ */
+async function renderSkillInstall(sourceRoot: string, targetDir: string, framework: ResolvedFramework): Promise<RenderedSkillFile[]> {
+  const { skillSourcePaths } = getSourcePaths(sourceRoot);
+  const primaryPath = skillDestinationFor(targetDir, framework);
+  switch (SKILL_INSTALL_STRATEGY[framework]) {
+    case 'modular': {
+      // Option B: one file per skill module, copied verbatim. The orchestrator is SKILL_MODULES[0],
+      // so it lands first and doubles as the primary/display file.
+      const files: RenderedSkillFile[] = [];
+      for (const [index, module] of SKILL_MODULES.entries()) {
+        files.push({
+          path: skillModuleDestinationFor(targetDir, framework, module),
+          content: await fs.readFile(skillSourcePaths[index]!, 'utf-8'),
+        });
+      }
+      return files;
+    }
+    case 'core':
+      // FLUX-1377: Claude gets the trimmed always-on core (invariants + phase routing table),
+      // not the full 6-module concatenation — phase guidance is engine-injected at spawn for
+      // agent sessions instead (buildInitialPrompt, agents/shared.ts) or Read on demand by
+      // humans. Only Claude gets this: buildInitialPrompt's injection is gated to the claude
+      // framework (copilot/gemini share the same call but don't receive the injection), so
+      // trimming their static install here would lose phase guidance with nothing to replace it.
+      return [{ path: primaryPath, content: buildCoreSkillDocument() }];
+    case 'concatenated': {
+      // Option A: concatenate all modules wrapped in XML tags (gemini, cursor, windsurf,
+      // generic — no engine-driven agent-spawn injection path for these, so they still need
+      // everything statically installed).
+      let concatenated = await buildConcatenatedSkill(skillSourcePaths);
+      if (framework === 'copilot' || framework === 'grok') {
+        concatenated = wrapDirectorySkillDocument(concatenated);
+      }
+      return [{ path: primaryPath, content: concatenated }];
+    }
+  }
+}
+
 const VERSION_RE = /^Version:\s*(\d+\.\d+\.\d+)/m;
 
 /** Extract the "Version: x.y.z" line from skill content. */
@@ -329,35 +470,72 @@ export function extractSkillVersion(content: string): string | null {
   return match?.[1] ?? null;
 }
 
+/** Line-ending + edge-whitespace normalization for content comparison. An installed file may be
+ * committed in the target repo and re-checked-out under a different `core.autocrlf`, which must
+ * not read as stale (it would reinstall LF, get CRLF back on the next checkout, and loop). */
+function normalizeSkillContent(content: string): string {
+  return content.replace(/\r\n/g, '\n').trim();
+}
+
+export interface SkillStalenessResult {
+  /** `Version:` line of the primary file as the installer would write it now (display only). */
+  sourceVersion: string;
+  /** `Version:` line of the primary file currently on disk; null when missing/unparseable. */
+  installedVersion: string | null;
+  isStale: boolean;
+  /** Installed paths whose on-disk content differs from (or is missing vs.) the current render. */
+  staleFiles: string[];
+  resolvedFramework: ResolvedFramework;
+}
+
 /**
- * Compare source skill version against the installed version.
- * Returns { sourceVersion, installedVersion, isStale } or null if check fails.
+ * Is the installed skill for `framework` out of date with respect to the source modules?
+ *
+ * FLUX-1749: staleness is CONTENT-based — every file `installWorkspaceWorkflow` would write now
+ * (`renderSkillInstall`) is compared, line-endings normalized, against what is on disk. Before,
+ * only the orchestrator module's `Version:` line was compared, so (a) editing any other module
+ * (review/implementation/…, which by convention bump only their own `Version:`) never flagged a
+ * concatenated/modular install stale, and (b) the Claude core doc's `CORE_SKILL_VERSION` stamp had
+ * to stay in lockstep with the orchestrator's version line or every install was perpetually stale.
+ * Neither can happen now: a fresh install is by construction identical to the render.
+ *
+ * `sourceVersion`/`installedVersion` remain the primary file's `Version:` line for display — they
+ * may be equal while `isStale` is true (a non-orchestrator module changed).
+ *
+ * Returns null when the check cannot run (source module missing / no source `Version:` line).
  */
 export async function checkSkillVersionStaleness(options: {
   sourceRoot: string;
   targetDir: string;
   framework?: Framework;
-}): Promise<{ sourceVersion: string; installedVersion: string | null; isStale: boolean; resolvedFramework: ResolvedFramework } | null> {
+}): Promise<SkillStalenessResult | null> {
   const resolvedFramework = resolveFramework(options.targetDir, options.framework || 'auto');
-  const { skillSourcePaths } = getSourcePaths(options.sourceRoot);
 
-  // Read version from source (use orchestrator as canonical)
-  const sourcePath = skillSourcePaths[0]!;
-  if (!await pathExists(sourcePath)) return null;
-  const sourceContent = await fs.readFile(sourcePath, 'utf-8');
-  const sourceVersion = extractSkillVersion(sourceContent);
+  let rendered: RenderedSkillFile[];
+  try {
+    rendered = await renderSkillInstall(options.sourceRoot, options.targetDir, resolvedFramework);
+  } catch {
+    return null;
+  }
+  const primary = rendered[0]!;
+  const sourceVersion = extractSkillVersion(primary.content);
   if (!sourceVersion) return null;
 
-  // Read version from installed file
-  const installedPath = skillDestinationFor(options.targetDir, resolvedFramework);
-  if (!await pathExists(installedPath)) return { sourceVersion, installedVersion: null, isStale: true, resolvedFramework };
-  const installedContent = await fs.readFile(installedPath, 'utf-8');
-  const installedVersion = extractSkillVersion(installedContent);
+  let installedVersion: string | null = null;
+  const staleFiles: string[] = [];
+  for (const file of rendered) {
+    const installedContent = await fs.readFile(file.path, 'utf-8').catch(() => null);
+    if (file === primary && installedContent !== null) installedVersion = extractSkillVersion(installedContent);
+    if (installedContent === null || normalizeSkillContent(installedContent) !== normalizeSkillContent(file.content)) {
+      staleFiles.push(file.path);
+    }
+  }
 
   return {
     sourceVersion,
     installedVersion,
-    isStale: installedVersion !== sourceVersion,
+    isStale: staleFiles.length > 0,
+    staleFiles,
     resolvedFramework,
   };
 }
@@ -422,7 +600,7 @@ export async function getWorkflowInstallStatus({ sourceRoot, targetDir, framewor
 export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framework = 'auto', force = false }: WorkflowInstallerOptions): Promise<WorkflowInstallResult> {
   const resolvedFramework = resolveFramework(targetDir, framework);
   log.info(`[installer] Resolved framework: ${resolvedFramework}${force ? ' (force reinstall)' : ''}`);
-  const { skillSourcePath, skillSourcePaths, instructionsSourcePath } = getSourcePaths(sourceRoot);
+  const { skillSourcePath, instructionsSourcePath } = getSourcePaths(sourceRoot);
   const skillInstalledPath = skillDestinationFor(targetDir, resolvedFramework);
   const instructionsInstalledPath = instructionsDestinationFor(targetDir, resolvedFramework);
 
@@ -433,41 +611,15 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
     throw new Error(`Skill source file not found: ${skillSourcePath}`);
   }
 
-  switch (SKILL_INSTALL_STRATEGY[resolvedFramework]) {
-    case 'modular': {
-      // Option B: install one file per skill module
-      log.info(`[installer] Installing modular skill...`);
-      for (const [index, module] of SKILL_MODULES.entries()) {
-        const src = skillSourcePaths[index]!;
-        const dest = skillModuleDestinationFor(targetDir, resolvedFramework, module);
-        await fs.mkdir(path.dirname(dest), { recursive: true });
-        await fs.copyFile(src, dest);
-      }
-      break;
-    }
-    case 'core': {
-      // FLUX-1377: Claude gets the trimmed always-on core (invariants + phase routing table),
-      // not the full 6-module concatenation — phase guidance is engine-injected at spawn for
-      // agent sessions instead (buildInitialPrompt, agents/shared.ts) or Read on demand by
-      // humans. Only Claude gets this: buildInitialPrompt's injection is gated to the claude
-      // framework (copilot/gemini share the same call but don't receive the injection), so
-      // trimming their static install here would lose phase guidance with nothing to replace it.
-      log.info(`[installer] Installing core skill (FLUX-1377)...`);
-      await fs.mkdir(path.dirname(skillInstalledPath), { recursive: true });
-      await fs.writeFile(skillInstalledPath, buildCoreSkillDocument(), 'utf-8');
-      break;
-    }
-    case 'concatenated': {
-      // Option A: concatenate all modules wrapped in XML tags (gemini, cursor, windsurf,
-      // generic — no engine-driven agent-spawn injection path for these, so they still need
-      // everything statically installed).
-      log.info(`[installer] Installing concatenated skill...`);
-      await fs.mkdir(path.dirname(skillInstalledPath), { recursive: true });
-      const concatenated = await buildConcatenatedSkill(skillSourcePaths);
-      await fs.writeFile(skillInstalledPath, concatenated, 'utf-8');
-      break;
-    }
+  // Strategy-specific layout (modular / core / concatenated) lives in renderSkillInstall — the
+  // staleness check renders through the same function, so the two cannot disagree (FLUX-1749).
+  log.info(`[installer] Installing ${SKILL_INSTALL_STRATEGY[resolvedFramework]} skill...`);
+  for (const file of await renderSkillInstall(sourceRoot, targetDir, resolvedFramework)) {
+    await fs.mkdir(path.dirname(file.path), { recursive: true });
+    await fs.writeFile(file.path, file.content, 'utf-8');
   }
+
+  await removePriorSkillDestinations(targetDir, resolvedFramework, skillInstalledPath);
 
   if (instructionsInstalledPath) {
     log.info(`[installer] Patching instructions...`);
@@ -525,7 +677,12 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
 
 function mcpConfigPathFor(targetDir: string, framework: ResolvedFramework): string {
   switch (framework) {
+    // FLUX-1738: `agy` reads `.agents/mcp_config.json` per workspace with its OWN schema
+    // (`serverUrl` + `disabled`, see antigravity-mcp-config.ts) — NOT `.gemini/settings.json` and
+    // NOT Gemini CLI's `httpUrl` shape. Writing the gemini entry here produced a server with no
+    // URL that failed at connect time rather than at install time.
     case 'antigravity':
+      return path.join(targetDir, '.agents', 'mcp_config.json');
     case 'gemini':
       return path.join(targetDir, '.gemini', 'settings.json');
     case 'cursor':
@@ -541,6 +698,8 @@ function mcpConfigPathFor(targetDir: string, framework: ResolvedFramework): stri
     // here is a harmless no-op for codex today (an inert file it doesn't read) rather than a
     // guessed-wrong TOML writer — same "don't write a guessed format" call as
     // CliCapabilities.bakesPermissionAllowlist's copilot precedent.
+    case 'grok':
+      return path.join(targetDir, '.grok', 'config.toml');
     case 'codex':
     case 'copilot':
     case 'claude':
@@ -552,8 +711,7 @@ function mcpConfigPathFor(targetDir: string, framework: ResolvedFramework): stri
 
 /** Home-dir-based global MCP config path for a framework's user-scoped (not project-scoped) config
  *  file. Returns `null` for frameworks with no clean, user-writable global MCP config this release
- *  supports (copilot never gets a global write by design — see installGlobalMcpConfig; antigravity/
- *  cline/windsurf/generic are deferred). */
+ *  supports (cline/windsurf/generic are deferred; antigravity gained one in FLUX-1738). */
 export function globalMcpConfigPathFor(framework: ResolvedFramework): string | null {
   switch (framework) {
     case 'claude':
@@ -562,6 +720,14 @@ export function globalMcpConfigPathFor(framework: ResolvedFramework): string | n
       return path.join(os.homedir(), '.gemini', 'settings.json');
     case 'cursor':
       return path.join(os.homedir(), '.cursor', 'mcp.json');
+    case 'copilot':
+      return path.join(os.homedir(), '.copilot', 'mcp-config.json');
+    case 'grok':
+      return path.join(os.homedir(), '.grok', 'config.toml');
+    // FLUX-1738: no longer deferred — `agy` has a clean, user-writable global MCP config, verified
+    // by driving `agy mcp add` and reading back what it wrote.
+    case 'antigravity':
+      return path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json');
     default:
       return null;
   }
@@ -718,12 +884,38 @@ async function isLiveSiblingEngineForWorkspace(port: number, workspaceRoot: stri
  * FLUX-1572 live-sibling probe and the module-server merge, both workspace-scoped concepts) and
  * the global-config installer (`installGlobalMcpConfig`), which has neither.
  */
+async function writeGrokMcpEntryToConfig(configPath: string): Promise<void> {
+  const block = grokMcpConfigToml(getEnginePort());
+  let existing = '';
+  try {
+    existing = await fs.readFile(configPath, 'utf-8');
+  } catch (readErr: unknown) {
+    if ((readErr as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      const message = readErr instanceof Error ? readErr.message : String(readErr);
+      console.error(`[installer] Could not read ${configPath} (${message}); leaving it untouched and skipping the event-horizon MCP entry.`);
+      return;
+    }
+  }
+  const next = upsertGrokEventHorizonToml(existing, block);
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await fs.writeFile(configPath, next, 'utf-8');
+  log.info(`[installer] MCP config installed: ${configPath}`);
+}
+
 export async function writeMcpEntryToConfig(configPath: string, framework: ResolvedFramework): Promise<void> {
-  // Gemini/antigravity read `.gemini/settings.json` with Gemini CLI's own MCP schema — every other
-  // framework gets the `.mcp.json`-style Claude shape (FLUX-1222).
-  const serverEntry = framework === 'gemini' || framework === 'antigravity'
-    ? buildGeminiMcpServerEntry()
-    : buildMcpServerEntry();
+  if (framework === 'grok') {
+    await writeGrokMcpEntryToConfig(configPath);
+    return;
+  }
+  // Three distinct MCP schemas now. Gemini reads `.gemini/settings.json` with Gemini CLI's own
+  // shape (`httpUrl`, FLUX-1222); antigravity reads `mcp_config.json` with `agy`'s shape
+  // (`serverUrl` + `disabled`, FLUX-1738 — probed by driving `agy mcp add`); everything else gets
+  // the `.mcp.json`-style Claude shape.
+  const serverEntry = framework === 'antigravity'
+    ? buildAntigravityMcpServerEntry()
+    : framework === 'gemini'
+      ? buildGeminiMcpServerEntry()
+      : buildMcpServerEntry();
 
   // Read and parse SEPARATELY. A single empty catch here used to swallow a
   // JSON.parse failure too, leaving existing={} so the unconditional write below
@@ -765,6 +957,18 @@ export async function writeMcpEntryToConfig(configPath: string, framework: Resol
 // Exported for gemini-conversation-headers.test.ts (FLUX-1222) — not part of the public API.
 export async function installMcpConfig(targetDir: string, sourceRoot: string, framework: ResolvedFramework): Promise<void> {
   const configPath = mcpConfigPathFor(targetDir, framework);
+
+  if (framework === 'grok') {
+    let toml = '';
+    try { toml = await fs.readFile(configPath, 'utf-8'); } catch { /* ENOENT / unreadable */ }
+    const priorPort = extractEnginePortFromGrokToml(toml);
+    if (priorPort != null && priorPort !== getEnginePort() && await isLiveSiblingEngineForWorkspace(priorPort, targetDir)) {
+      log.warn(`[installer] ${configPath} already points at a LIVE Event Horizon engine (port ${priorPort}) serving this exact workspace — leaving the event-horizon MCP entry untouched instead of overwriting it with this engine's port ${getEnginePort()}. This usually means two engine instances are bound to the same workspace; only one should own it.`);
+      return;
+    }
+    await writeMcpEntryToConfig(configPath, framework);
+    return;
+  }
 
   // FLUX-1572: before stamping our own port over whatever `event-horizon` entry is already there,
   // check whether that entry still points at a DIFFERENT engine that is alive and bound to this

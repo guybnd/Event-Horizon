@@ -7,7 +7,7 @@ vi.mock('./git-sync-env.js', () => ({
   buildGitSyncEnv: vi.fn(async () => ({ ...process.env, GIT_TERMINAL_PROMPT: '0' })),
 }));
 
-import { runHardened, setGitOperationSink, redactArg, type GitOperationEvent } from './git-exec.js';
+import { runHardened, setGitOperationSink, redactArg, resolveDefaultBranchName, type GitOperationEvent } from './git-exec.js';
 
 // runHardened's contract is git|gh, but its timeout/kill machinery is command-agnostic — drive it
 // with the node binary (a deterministic, cross-platform stand-in for a hanging/returning process).
@@ -151,5 +151,33 @@ describe('git-exec runHardened', () => {
       'https://***@github.com/org/repo.git',
     );
     expect(redactArg('no url here')).toBe('no url here');
+  });
+});
+
+// FLUX-1773: the local-first default-branch NAME ladder, extracted out of resolveBranchCreationBase
+// so commit-close.ts can resolve the same name without also getting that function's
+// remote-tracking-ref preference. Driven with an injected `run` double — no real git spawn.
+describe('resolveDefaultBranchName', () => {
+  it('returns the name from origin/HEAD when configured', async () => {
+    const run = vi.fn(async (args: string[]) => {
+      if (args[0] === 'symbolic-ref') return { stdout: 'refs/remotes/origin/trunk\n', stderr: '' };
+      throw new Error('unexpected call');
+    });
+    await expect(resolveDefaultBranchName(run)).resolves.toBe('trunk');
+  });
+
+  it('falls back to probing local refs/heads/main when origin/HEAD is absent and main exists', async () => {
+    const run = vi.fn(async (args: string[]) => {
+      if (args[0] === 'symbolic-ref') throw new Error('no origin/HEAD');
+      if (args[0] === 'rev-parse' && args[3] === 'refs/heads/master') throw new Error('no local master');
+      if (args[0] === 'rev-parse' && args[3] === 'refs/heads/main') return { stdout: '', stderr: '' };
+      throw new Error('unexpected call');
+    });
+    await expect(resolveDefaultBranchName(run)).resolves.toBe('main');
+  });
+
+  it('falls back to the "master" literal when neither origin/HEAD nor a local candidate resolves', async () => {
+    const run = vi.fn(async () => { throw new Error('nothing resolves'); });
+    await expect(resolveDefaultBranchName(run)).resolves.toBe('master');
   });
 });

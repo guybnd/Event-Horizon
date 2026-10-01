@@ -241,15 +241,15 @@ Instructions content here...
 ### Non-Interactive / Headless
 
 ```bash
-copilot -p "task" --allow-all          # Non-interactive, auto-approve
-copilot -p "task" --silent             # Clean output only
-copilot -p "task" --output-format json # JSONL output
-copilot -p "task" --share ./out.md     # Save session to file
+printf '%s\n' "task" | copilot --yolo --no-ask-user # Non-interactive, auto-approve
+printf '%s\n' "task" | copilot --silent             # Clean output only
+printf '%s\n' "task" | copilot --output-format json # JSONL output
+printf '%s\n' "task" | copilot --share ./out.md     # Save session to file
 ```
 
 **Auth for headless:**
 ```bash
-COPILOT_GITHUB_TOKEN=ghp_... copilot -p "task" --allow-all
+printf '%s\n' "task" | COPILOT_GITHUB_TOKEN=ghp_... copilot --yolo --no-ask-user
 ```
 
 ### Subagents & Multi-Agent
@@ -281,7 +281,7 @@ copilot --acp   # Start as protocol server for programmatic control
 
 ```bash
 # Reviewer: restricted tools, JSON output
-copilot -p "Review changes on this branch" \
+printf '%s\n' "Review changes on this branch" | copilot \
   --model claude-opus-4.6 \
   --available-tools='shell(git:*)' \
   --output-format json \
@@ -289,7 +289,7 @@ copilot -p "Review changes on this branch" \
   --no-ask-user
 
 # Implementer: full tools, scoped MCP
-copilot -p "Implement the plan" \
+printf '%s\n' "Implement the plan" | copilot \
   --model claude-sonnet-4.6 \
   --mode autopilot \
   --max-autopilot-continues 10 \
@@ -384,9 +384,9 @@ claude --resume "$SESSION" -p "Here are the test results: $RESULTS"
 
 **Copilot:** Use `--session-id` or `--resume`:
 ```bash
-copilot -p "Start planning" --session-id my-session --share ./state.md
+printf '%s\n' "Start planning" | copilot --session-id my-session --share ./state.md
 # ... later ...
-copilot --resume my-session -p "Continue with these inputs"
+printf '%s\n' "Continue with these inputs" | copilot --resume my-session
 ```
 
 **Gemini:** Session continuation not well-documented for headless mode.

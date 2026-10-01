@@ -22,6 +22,11 @@ describe('finalMessageNeedsUser (FLUX-570/777/945 session-end backstop)', () => 
     expect(finalMessageNeedsUser('Want me to file a follow-up, or leave it?', 'require-input')).toBe(false);
   });
 
+  it('does NOT flag a Ready hand-off whose explanation happens to contain "which" (FLUX-1739 benchmark finding)', () => {
+    const fm = 'Ticket BENCH-46 is now **Ready**. \n\nRoot cause: the fallback recomputed the base with a live merge-base, which drifts to the branch tip once a PR merges. The held-out test now passes.';
+    expect(finalMessageNeedsUser(fm, null)).toBe(false);
+  });
+
   it('does NOT flag a pure completion summary (FLUX-777 false-positive guard preserved)', () => {
     const done =
       'Done — implemented, validated, and moved to Done. Implementation link: PR #209 (merged). ' +

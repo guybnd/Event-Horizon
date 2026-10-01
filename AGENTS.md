@@ -1,6 +1,16 @@
+<!-- EVENT_HORIZON_MANAGED_INSTRUCTIONS:START -->
+## Event Horizon Workflow
+
+This repository uses the Event Horizon ticket system. Tickets are markdown files stored in `.flux/`.
+
+- **Ticket Work:** When working on a ticket (e.g., `FLUX-41`) or before starting any task that modifies repository files, you **MUST** read the Event Horizon Orchestrator skill.
+- The orchestrator skill provides critical rules for ticket resolution, metadata formatting, and workflows. Find it in your agent's rule location (e.g., `.github/skills/event-horizon/SKILL.md`, `.gemini/skills/event-horizon.md`, `.cursor/rules/event-horizon.mdc`, `.claude/rules/event-horizon.md`, `.codex/skills/event-horizon.md`, or `.grok/skills/event-horizon/SKILL.md`). If none of those files exist, call the Event Horizon MCP tool `read_skill` with `module: "orchestrator"`.
+- Pure explanation, brainstorming, or read-only discussion does not require reading the skill or modifying tickets.
+<!-- EVENT_HORIZON_MANAGED_INSTRUCTIONS:END -->
+
 # EventHorizon — Agent Guide
 
-EventHorizon ("Event Horizon" / FLUX) is a local-first, markdown-backed ticket board. The engine is an Express + TypeScript API (`engine/src/`); the portal is a React UI (`portal/src/`). Ticket workflow rules for agents live in [.Codex/rules/event-horizon.md](.Codex/rules/event-horizon.md) — that file governs how you interact with tickets (always via the `event-horizon` MCP tools, never by editing `.flux/` or `.flux-store/` directly).
+EventHorizon ("Event Horizon" / FLUX) is a local-first, markdown-backed ticket board. The engine is an Express + TypeScript API (`engine/src/`); the portal is a React UI (`portal/src/`). Ticket workflow rules for agents live in the Event Horizon Orchestrator skill (paths in the managed block above; MCP fallback `read_skill` with `module: "orchestrator"`). That skill governs how you interact with tickets (always via the `event-horizon` MCP tools, never by editing `.flux/` or `.flux-store/` directly).
 
 ## NEVER run the dev stack from an agent session or worktree (FLUX-1117)
 

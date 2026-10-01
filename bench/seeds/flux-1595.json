@@ -1,0 +1,50 @@
+{
+  "id": "flux-1595",
+  "title": "FLUX-1595 — cross-board session bleed",
+  "track": "fix",
+  "seedTitle": "FLUX-1595 cross-board session bleed",
+  "baseRef": "bench/flux-1595-holdout-v2",
+  "promptFile": "flux-1595.prompt.md",
+  "validation": {
+    "command": "node",
+    "args": [
+      "node_modules/vitest/vitest.mjs",
+      "run",
+      "--root",
+      "engine",
+      "src/benchmark-holdout-flux-1595.test.ts"
+    ],
+    "paths": [
+      "engine/src/benchmark-holdout-flux-1595.test.ts"
+    ],
+    "timeoutMs": 300000
+  },
+  "regression": {
+    "command": "node",
+    "args": [
+      "node_modules/typescript/bin/tsc",
+      "--noEmit",
+      "-p",
+      "engine"
+    ],
+    "timeoutMs": 600000
+  },
+  "repetitions": 3,
+  "concurrency": 3,
+  "wallClockBudgetMs": 1800000,
+  "notes": "Hard-ish: three serializers must be workspace-scoped without breaking engine-internal callers. Prompt names the fix shape. ~15–25 min per run.",
+  "defaultMatrix": [
+    {
+      "framework": "claude",
+      "model": "claude-sonnet-5",
+      "effortOverride": "high",
+      "phase": "implementation"
+    },
+    {
+      "framework": "claude",
+      "model": "claude-opus-5",
+      "effortOverride": "high",
+      "phase": "implementation"
+    }
+  ]
+}

@@ -437,6 +437,15 @@ These are features that exist for claude but not for the other adapters. They ar
 >   Cline, Windsurf, Antigravity, …) is genuinely useful and stays.
 > - **Runtime stays at 3** — `claude` / `copilot` / `gemini` are the only frameworks EH can launch &
 >   drive. **No new runtime adapter was authored** (that is high-cost and explicitly out of the epic).
+>
+> **Superseded — the runtime is now 6.** `codex` (FLUX-1625), `grok` (FLUX-1722) and `antigravity`
+> (FLUX-1738) each authored the runtime adapter this row deferred, so option 1 ("runtime catches up")
+> was taken incrementally rather than never. The install-vs-runtime asymmetry survives only for
+> `cursor` / `cline` / `windsurf` / `generic`. FLUX-1738 also had to UNDO part of the installer's
+> pre-existing antigravity support: it shared gemini's skill destination and MCP schema, which turned
+> out to be wrong for `agy` on both counts (`.agents/skills/` and a `serverUrl` shape, not
+> `.gemini/skills/` and `httpUrl`) — install-only support for a framework nobody had run is not the
+> same as verified support.
 > - **The gap is surfaced** — the engine serves an explicit **`runtimeFrameworks`** list on `/api/config`
 >   (`getRuntimeFrameworks()` = the adapter registry keys; a new adapter widens it automatically). The
 >   portal reads it via `isRuntimeFramework()` ([`utils.ts`](../../../portal/src/utils.ts)) and **badges
@@ -460,7 +469,7 @@ These are features that exist for claude but not for the other adapters. They ar
 
 Option 3 is the closest fit to user expectation. **FLUX-907 picked it** (see the resolution banner above).
 
-> **🔵 FLUX-1412** — The skill-layout branch (`resolvedFramework === 'claude'`, a leftover per-CLI literal from FLUX-1377) is now `SKILL_INSTALL_STRATEGY[resolvedFramework]`, a `Record<ResolvedFramework, 'modular' | 'core' | 'concatenated'>` table in `workflow-installer.ts`. Still installer-internal (this is a skill-layout axis on the 8-framework `ResolvedFramework`, not the 3-CLI runtime `CliFramework` — it cannot be expressed via `CLI_CAPABILITIES`), just data-driven instead of a literal, so `check-adapter-boundary.mjs` no longer flags it. The 3 `framework: 'claude'` test-fixture leaks it also caught (`build-initial-prompt.test.ts`, `resume-or-dispatch.test.ts`, `workflow-installer-core.test.ts`) are sanctioned exceptions — a test of the claude adapter must name `'claude'` — allowlisted per the existing `mcp-phase-profiles.test.ts` precedent.
+> **🔵 FLUX-1412** — The skill-layout branch (`resolvedFramework === 'claude'`, a leftover per-CLI literal from FLUX-1377) is now `SKILL_INSTALL_STRATEGY[resolvedFramework]`, a `Record<ResolvedFramework, 'modular' | 'core' | 'concatenated'>` table in `workflow-installer.ts`. Still installer-internal (this is a skill-layout axis on the 8-framework `ResolvedFramework`, not the 3-CLI runtime `CliFramework` — it cannot be expressed via `CLI_CAPABILITIES`), just data-driven instead of a literal, so `check-adapter-boundary.mjs` no longer flags it. The 3 `framework: 'claude'` test-fixture leaks it also caught (`build-initial-prompt.test.ts`, `resume-or-dispatch.test.ts`, `workflow-installer-core.test.ts`) are sanctioned exceptions — a test of the claude adapter must name `'claude'` — allowlisted per the existing `mcp-phase-profiles.test.ts` precedent. FLUX-1749 added two more `framework: 'claude'` fixture literals to `workflow-installer-core.test.ts` (content-based staleness tests for the core install branch; allowlist 2 → 4) under the same exception.
 
 ---
 

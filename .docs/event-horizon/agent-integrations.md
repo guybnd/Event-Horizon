@@ -5,7 +5,7 @@ order: 6
 
 # Agent Integrations
 
-Event Horizon integrates with four AI coding CLI frameworks. Each can be launched directly from a ticket card in the portal, with full session tracking, live progress streaming, and cost monitoring.
+Event Horizon integrates with five AI coding CLI frameworks. Each can be launched directly from a ticket card in the portal, with full session tracking, live progress streaming, and cost monitoring.
 
 ---
 
@@ -17,8 +17,9 @@ Event Horizon integrates with four AI coding CLI frameworks. Each can be launche
 | **Gemini CLI** | `gemini` | Fully supported | `npm install -g @google/gemini-cli` |
 | **Copilot CLI** | `copilot` | Fully supported | `npm install -g @github/copilot` |
 | **Codex CLI** | `codex` | Fully supported | `npm install -g @openai/codex` |
+| **Grok Build** | `grok` | Fully supported | Installer from https://docs.x.ai (binary at `~/.grok/bin/grok`) |
 
-All four frameworks plug in through the same `AgentAdapter` interface. To add a fifth framework, or to understand exactly how the engine drives a CLI, see [[Agent Adapter Contract]].
+All five frameworks plug in through the same `AgentAdapter` interface. To add another framework, or to understand exactly how the engine drives a CLI, see [[Agent Adapter Contract]].
 
 ---
 
@@ -40,13 +41,25 @@ All four frameworks plug in through the same `AgentAdapter` interface. To add a 
 
 1. Install: `npm install -g @github/copilot`
 2. Authenticate: Ensure you're logged in via `gh auth login` (requires GitHub Copilot subscription)
-3. Verify: `copilot -p "say hello" --output-format json` should produce JSONL output
+3. Verify: `echo "say hello" | copilot --output-format json --no-ask-user` should produce JSONL output
+4. Event Horizon installs the workflow as `.github/skills/event-horizon/SKILL.md`, the directory-skill format current Copilot CLI versions discover. Reinstalling migrates the older module-only `*.md` layout.
+5. Portal-spawned sessions pass `-p ""` (required non-interactive flag; a bare `-p` is invalid) and stream the prompt over stdin, plus `--no-ask-user`, `--additional-mcp-config` for the bound Event Horizon MCP server, and native `--attachment` for chat images/documents.
+6. Settings → Global CLI install can write `~/.copilot/mcp-config.json`.
 
 ### Codex CLI
 
 1. Install: `npm install -g @openai/codex`
 2. Authenticate: Run `codex` once to log in with your OpenAI account
 3. Verify: `codex exec "say hello" --json` should produce JSONL output
+
+### Grok Build
+
+1. Install the Grok CLI (binary lands at `~/.grok/bin/grok` / `grok.exe`, not necessarily on PATH)
+2. Authenticate: Run `grok login`
+3. Verify: `grok --prompt-file hello.txt --output-format streaming-messages-json --trust --always-approve` should produce Anthropic-Messages JSONL
+4. Event Horizon installs the workflow skill at `.grok/skills/event-horizon/SKILL.md` (a Grok skill directory — FLUX-1726). The older flat `.grok/skills/event-horizon.md` is migrated on reinstall. AGENTS.md names that path and falls back to MCP `read_skill` (`module: "orchestrator"`) if the file is missing.
+5. First-run onboarding lists **Grok Build** as a launchable assistant. Picking it installs that skill dest, sets the workspace default agent to `grok`, and records it as the global preferred framework.
+6. MCP for a user-run Grok in the repo is `.grok/config.toml` (TOML `[mcp_servers.event-horizon]`, not `.mcp.json`). Portal-spawned sessions still use EH-owned `GROK_HOME`. Settings → Global CLI install can write `~/.grok/config.toml`.
 
 ---
 
@@ -64,6 +77,7 @@ All four frameworks plug in through the same `AgentAdapter` interface. To add a 
 - **Token tracking**: Input/output tokens and estimated cost per session
 - **Multi-turn**: Send follow-up messages to a running session via the portal comment box
 - **Resume**: Copilot sessions support `--resume` for continuing previous conversations
+- **Copilot chat safety**: status-gated chat sessions deny Copilot's `write` and `shell` permission classes even when the process otherwise runs with unattended approval
 
 ---
 
@@ -149,7 +163,7 @@ Each framework needs workflow skills installed so the agent understands Event Ho
 
 | Target | Files Installed |
 |--------|----------------|
-| `copilot` | `.github/skills/event-horizon/*.md` + patches `.github/copilot-instructions.md` |
+| `copilot` | `.github/skills/event-horizon/SKILL.md` + patches `.github/copilot-instructions.md` |
 | `claude` | `.claude/rules/event-horizon.md` |
 | `gemini` | `.gemini/skills/event-horizon.md` |
 | `cursor` | `.cursor/rules/event-horizon.mdc` |
@@ -254,8 +268,8 @@ The session store enforces file-lock conventions: if a session declares `lockedP
 
 The CLI binary must be on your system PATH. Verify with:
 
-- Windows: `where claude` / `where gemini` / `where copilot` / `where codex`
-- macOS/Linux: `which claude` / `which gemini` / `which copilot` / `which codex`
+- Windows: `where claude` / `where gemini` / `where copilot` / `where codex` / `%USERPROFILE%\.grok\bin\grok.exe`
+- macOS/Linux: `which claude` / `which gemini` / `which copilot` / `which codex` / `~/.grok/bin/grok`
 
 ### Copilot: "path with spaces" errors on Windows
 
@@ -271,7 +285,7 @@ Event Horizon handles this internally by spawning `node` directly with the Copil
 
 - Claude: Reports exact tokens — cost should populate automatically
 - Gemini: Reports exact tokens — cost should populate automatically  
-- Copilot: Does not currently report token counts in JSON output; cost tracking is limited
+- Copilot: JSONL result events report token usage; Event Horizon records it and estimates cost when the CLI does not provide a direct total
 - Codex: Reports exact tokens, but no direct cost figure in its usage payload — cost is estimated from `model-pricing.md`
 
 ---

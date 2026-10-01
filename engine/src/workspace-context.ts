@@ -353,6 +353,19 @@ export function liveWorkspaces(): Workspace[] {
 }
 
 /**
+ * FLUX-1710: `liveWorkspaces()` filtered to boards that actually have a folder bound. Only the
+ * default workspace can carry a `null` root (registry entries all come from `openWorkspace(root)`,
+ * which always sets one), so this is exactly "boards with a resolvable path". `liveWorkspaces()`
+ * itself must keep the unbound default workspace (events.ts's SSE broadcast fans out to it), but any
+ * loop that goes on to resolve a filesystem path from a workspace — stoke/temper/gate-runner/PR-
+ * reconcile ticks — must not see it, or it throws through `requireWorkspaceRoot()` every tick on a
+ * fresh install with no board bound yet.
+ */
+export function liveBoundWorkspaces(): Workspace[] {
+  return liveWorkspaces().filter((ws) => ws.root !== null);
+}
+
+/**
  * Looks up a registered workspace by its root path (same key format `openWorkspace`/
  * `closeWorkspace` use — `normalizeWorkspaceKey`, realpath'd + case-folded, FLUX-1571). Returns
  * `undefined` if `rootPath` isn't currently registered — the caller (the MCP per-connection
@@ -405,12 +418,46 @@ export function resolveWorkspaceByRoot(rootPath: string): Workspace | null {
  * deterministic `defaultWorkspace` fallback (FLUX-1557), so untouched background code stays
  * unambiguous rather than following whichever board happens to be "active".
  */
-const requestWorkspaceALS = new AsyncLocalStorage<Workspace | null>();
+/**
+ * How the current request/tool call's workspace was resolved (FLUX-1573, extended for multi-board
+ * binding):
+ * - `'header'` — a resolvable `X-EH-Workspace` header (or HTTP `?ws=`) named a live board, or an
+ *   explicit `runWithWorkspace(ws, …)` binding (background loops); verified.
+ * - `'session'` — a headerless MCP connection bound itself with the `bind_workspace` tool; verified.
+ * - `'header-unresolved'` — a header WAS sent but named a root that is neither live nor a registered
+ *   board on this engine (so it could not be auto-opened). Reads fall back to the default board;
+ *   MCP refuses every tool but the diagnostic/self-heal set until the session binds explicitly.
+ * - `'default-fallback'` — no header at all (a hand-launched session's static `.mcp.json`);
+ *   silently resolved to the boot/default board — an unverified guess.
+ */
+export type WorkspaceBindingSource = 'header' | 'session' | 'header-unresolved' | 'default-fallback';
+
+interface RequestWorkspaceBinding {
+  ws: Workspace | null;
+  source: WorkspaceBindingSource;
+  /** The root the caller ASKED for when `source` is `'header-unresolved'` — kept for disclosure. */
+  requestedRoot?: string;
+}
+
+const requestWorkspaceALS = new AsyncLocalStorage<RequestWorkspaceBinding>();
+
+/** Optional binding metadata for {@link runWithWorkspace} — how the caller resolved `ws`. */
+export interface RunWithWorkspaceOptions {
+  source?: WorkspaceBindingSource;
+  requestedRoot?: string;
+}
 
 /** Run `fn` with `ws` as the workspace every `getWorkspace()` call inside it resolves to.
- *  Pass `null` for "unrouted" (falls back to `getWorkspace()`'s deterministic default). */
-export function runWithWorkspace<T>(ws: Workspace | null, fn: () => T): T {
-  return requestWorkspaceALS.run(ws, fn);
+ *  Pass `null` for "unrouted" (falls back to `getWorkspace()`'s deterministic default). `opts.source`
+ *  records HOW the binding was established for `getRequestBinding()`; it defaults to `'header'` for
+ *  a non-null `ws` (the pre-existing reading) and `'default-fallback'` for `null`. */
+export function runWithWorkspace<T>(ws: Workspace | null, fn: () => T, opts?: RunWithWorkspaceOptions): T {
+  const binding: RequestWorkspaceBinding = {
+    ws,
+    source: opts?.source ?? (ws ? 'header' : 'default-fallback'),
+  };
+  if (opts?.requestedRoot !== undefined) binding.requestedRoot = opts.requestedRoot;
+  return requestWorkspaceALS.run(binding, fn);
 }
 
 /** Throttle for the unbound-fallback dev warning below — one board's worth of unmigrated
@@ -435,7 +482,7 @@ let lastUnboundFallbackWarnAt = 0;
  * close (see its own doc comment) but is no longer consulted here.
  */
 export function getWorkspace(): Workspace {
-  const bound = requestWorkspaceALS.getStore();
+  const bound = requestWorkspaceALS.getStore()?.ws;
   if (bound) return bound;
   if (registry.size > 0) {
     const now = Date.now();
@@ -457,6 +504,20 @@ export function getWorkspace(): Workspace {
  * board). Exposed so disclosure surfaces (`get_board_config`, MCP session instructions) can tell
  * an agent whether its binding was actually verified or merely assumed.
  */
-export function getRequestBinding(): 'header' | 'default-fallback' {
-  return requestWorkspaceALS.getStore() ? 'header' : 'default-fallback';
+export function getRequestBinding(): WorkspaceBindingSource {
+  const store = requestWorkspaceALS.getStore();
+  if (!store) return 'default-fallback';
+  // A binding that carries no workspace can only be an unrouted (`null`) or unresolved-header
+  // store — never report `'header'`/`'session'` (verified) for one.
+  if (!store.ws && store.source !== 'header-unresolved') return 'default-fallback';
+  return store.source;
+}
+
+/**
+ * The root the caller asked for when the current binding is `'header-unresolved'` (the
+ * `X-EH-Workspace` value that matched no live or registered board), else `null`. Lets disclosure
+ * surfaces say WHICH board the session wanted, not just that it missed.
+ */
+export function getRequestedWorkspaceRoot(): string | null {
+  return requestWorkspaceALS.getStore()?.requestedRoot ?? null;
 }

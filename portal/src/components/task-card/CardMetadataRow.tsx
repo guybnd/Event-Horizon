@@ -1,11 +1,13 @@
 import { useMemo } from 'react';
-import { Layers, Hammer } from 'lucide-react';
+import { Layers, Hammer, Zap, Activity } from 'lucide-react';
 import type { Task } from '../../types';
 import { StatusBadge } from '../StatusBadge';
 import { reviewChip } from '../ReviewChip';
 import { getStatusColorClass } from '../../statusStyles';
 import { normalizeStatus } from '../../workflow';
 import type { TaskCardController } from '../../hooks/useTaskCardController';
+import { taskHasOneshotSession } from '../../lib/dispatch';
+import { CardChip , CARD_CHIP_TEXT } from './CardChip';
 
 
 function useTimeInColumn(task: Task): string | null {
@@ -134,6 +136,36 @@ export function CardMetadataRow({ task, isOverlay, c }: { task: Task; isOverlay?
             <Hammer className="w-2.5 h-2.5" />
             tempering…
           </span>
+        )}
+        {/* FLUX-1739: how this ticket's execution actually went. Rendered ONLY when there is
+            something to say — a health pill on every card would train the eye to ignore it, and the
+            exception is the whole point. `clean` and never-ran both render nothing. Clicking opens
+            the ticket, where the full breakdown with evidence locators lives. */}
+        {task.health && task.health.grade !== 'clean' && (
+          <CardChip
+            title={`Health: ${task.health.summary} — open the ticket for the full breakdown.`}
+            className={
+              task.health.grade === 'broken'
+                ? 'bg-rose-100 font-bold text-rose-700 dark:bg-rose-500/15 dark:text-rose-300'
+                : task.health.grade === 'rough'
+                  ? 'bg-orange-100 font-bold text-orange-700 dark:bg-orange-500/15 dark:text-orange-300'
+                  : 'bg-amber-100 font-bold text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'
+            }
+          >
+            <Activity className="h-2.5 w-2.5" />
+            <span className={CARD_CHIP_TEXT}>
+              {task.health.grade === 'broken' ? 'needs a look' : task.health.grade}
+            </span>
+          </CardChip>
+        )}
+        {taskHasOneshotSession(task) && (
+          <CardChip
+            title="Oneshot — one session groomed and implemented this ticket (phase:fast-path)"
+            className="bg-amber-100 font-bold text-amber-700 dark:bg-amber-500/15 dark:text-amber-300"
+          >
+            <Zap className="h-2.5 w-2.5" />
+            oneshot
+          </CardChip>
         )}
         {isEpic && task.kind !== 'pr' && (
           <span className="flex items-center gap-0.5 rounded-full bg-indigo-100 px-1.5 py-0.5 text-[9px] font-bold text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300">

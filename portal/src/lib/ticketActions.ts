@@ -6,7 +6,7 @@
 
 import type { Config, HistoryDigest, HistoryEntry, Task } from '../types';
 import { updateTask, type DiffOverview } from '../api';
-import { getReadyForMergeStatus, getRequireInputStatus } from '../workflow';
+import { getArchiveStatus, getReadyForMergeStatus, getRequireInputStatus } from '../workflow';
 import type { LaunchPhase } from '../agentActions';
 
 // Standard board statuses these actions transition to. They mirror the engine defaults
@@ -311,6 +311,15 @@ export interface TicketAction {
   onTemplate?: (templateId: string) => void;
   /** `picker`: the inline sub-UI. */
   picker?: TicketActionPicker;
+  /** `agent`: optional chevron menu (Oneshot's Show plan first). Click still runs `run`. */
+  menu?: TicketActionMenuItem[];
+}
+
+/** A chevron-menu item on a `kind:'agent'` action (FLUX-1733 Show plan first). */
+export interface TicketActionMenuItem {
+  key: string;
+  label: string;
+  run: () => void | Promise<void>;
 }
 
 /**
@@ -333,8 +342,11 @@ export interface TicketActionContext {
   finishViaEngine: () => void | Promise<void>;
   /** Agent `finish` — fallback when there's nothing to curate (clean tree / no open PR), tokenized. */
   dispatchFinish: () => void | Promise<void>;
-  /** Agent fast-path (FLUX-1380) — one session grooms + implements a Grooming-column XS/S ticket. */
-  dispatchFastPath: () => void | Promise<void>;
+  /** Agent oneshot / fast-path (FLUX-1380 / FLUX-1733) — one session grooms + implements a
+   *  Grooming-column XS/S ticket. `planFirst: true` pauses for in-session plan approval. */
+  dispatchFastPath: (planFirst?: boolean) => void | Promise<void>;
+  /** Scratch-chat Oneshot this: promote via extract, then start fast-path on the new ticket. */
+  dispatchOneshotFromScratch: () => void | Promise<void>;
   /** Agent batch-grooming (FLUX-1383) — one session grooms this epic's eligible Grooming/Require
    *  Input children. Undefined/empty when there are fewer than 2 eligible children. */
   batchGroomingEligibleIds?: string[];
@@ -430,20 +442,51 @@ export function actionsForStatus(task: Task, ctx: TicketActionContext): TicketAc
     });
   }
 
-  // Grooming / Require Input → plan it forward or hand to the grooming agent.
-  if (/^groom/i.test(status) || status === requireInputStatus) {
-    actions.push(launchAction('groom', 'Start grooming', 'grooming', tpl, ctx));
-    // FLUX-1380: fast-path is a Grooming-column-only opt-in (not offered from Require Input) —
-    // eligibility (effort L/XL, subtasks) is enforced server-side; the button just offers the choice.
-    if (/^groom/i.test(status)) {
+  // FLUX-1733: a scratch is a conversation surface (kind:'scratch'), minted at Todo. Replace
+  // Implement with Oneshot this — never implement on the scratch itself (FLUX-1443).
+  // Hide once extractTicket has consumed it (mergedInto + archive; kind stays 'scratch').
+  if (task.kind === 'scratch') {
+    const archiveStatus = getArchiveStatus(ctx.config);
+    const consumed = Boolean(task.mergedInto) || task.status === archiveStatus;
+    if (!consumed) {
       actions.push({
-        key: 'fast-path',
-        label: 'Fast-path',
+        key: 'oneshot-this',
+        label: 'Oneshot this',
         category: 'workflow',
         kind: 'agent',
         icon: 'sparkles',
-        run: ctx.dispatchFastPath,
+        run: ctx.dispatchOneshotFromScratch,
       });
+    }
+    return actions;
+  }
+
+  // Grooming / Require Input → plan it forward or hand to the grooming agent.
+  if (/^groom/i.test(status) || status === requireInputStatus) {
+    actions.push(launchAction('groom', 'Start grooming', 'grooming', tpl, ctx));
+    // FLUX-1380 / FLUX-1733: Oneshot (engine phase:'fast-path') is a Grooming-column-only
+    // opt-in (not offered from Require Input). Hide L/XL and own-subtasks as UX; the start
+    // route still 400s if a caller bypasses this.
+    if (/^groom/i.test(status)) {
+      const effort = task.effort;
+      const ineligible = effort === 'L' || effort === 'XL' || (task.subtasks?.length ?? 0) > 0;
+      if (!ineligible) {
+        actions.push({
+          key: 'fast-path',
+          label: 'Oneshot',
+          category: 'workflow',
+          kind: 'agent',
+          icon: 'sparkles',
+          run: () => ctx.dispatchFastPath(),
+          menu: [
+            {
+              key: 'fast-path-plan-first',
+              label: 'Show plan first',
+              run: () => ctx.dispatchFastPath(true),
+            },
+          ],
+        });
+      }
     }
     actions.push(transition('to-todo', 'Move to Todo', TODO_STATUS, ctx, { surfaces: ['compact'] }));
     return actions;

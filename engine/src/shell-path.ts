@@ -72,6 +72,24 @@ export function probeLoginShellPath(
   return probeLoginShellCommand(shell, 'command printf \'%s\' "$PATH"', timeoutMs).then((value) => value || null);
 }
 
+/**
+ * Shell-agnostic PATH probe (FLUX-1711): read `PATH=` out of `env`'s output instead of
+ * expanding `"$PATH"` in the shell. In fish — a common default on Linux desktops — `$PATH`
+ * is a LIST and `"$PATH"` expands space-joined, which would corrupt the result; `env` always
+ * prints the exported, colon-joined form regardless of shell. Verified against fish 4.x.
+ */
+export function probeLoginShellEnvPath(
+  shell: string,
+  timeoutMs = DEFAULT_PROBE_TIMEOUT_MS
+): Promise<string | null> {
+  return probeLoginShellCommand(shell, 'command env', timeoutMs).then((out) => {
+    if (!out) return null;
+    const line = out.split('\n').find((l) => l.startsWith('PATH='));
+    const value = line ? line.slice('PATH='.length).trim() : '';
+    return value || null;
+  });
+}
+
 /** Union of the shell-resolved PATH (first) and the existing PATH, de-duplicated. */
 export function mergePath(shellPath: string, currentPath: string): string {
   const seen = new Set<string>();
@@ -93,6 +111,27 @@ export function fallbackPath(currentPath: string): string {
   return entries.join(':');
 }
 
+/** Heuristic (FLUX-1711): a Linux desktop/systemd-launched PATH carries no $HOME-rooted entry
+ *  at all — every terminal shell setup adds at least one (~/.local/bin, nvm, cargo, …). */
+export function looksGuiMinimalLinux(pathEnv: string | undefined, home: string): boolean {
+  if (!home) return false;
+  const prefix = home.endsWith('/') ? home : `${home}/`;
+  return !(pathEnv || '').split(':').some((e) => e.startsWith(prefix));
+}
+
+/** Linux user-level bin dirs worth having when the shell probe fails (relative to $HOME). */
+const LINUX_USER_BIN_DIRS = ['.local/bin', 'bin', '.npm-global/bin', '.cargo/bin'];
+
+/** Fallback when the Linux shell probe fails/times out: append user bin dirs that exist. */
+export function fallbackPathLinux(currentPath: string, home: string): string {
+  const entries = currentPath.split(':').filter(Boolean);
+  for (const rel of LINUX_USER_BIN_DIRS) {
+    const dir = `${home}/${rel}`;
+    if (existsSync(dir) && !entries.includes(dir)) entries.push(dir);
+  }
+  return entries.join(':');
+}
+
 export interface ResolveShellPathDeps {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
@@ -107,22 +146,47 @@ export interface ResolveShellPathDeps {
  */
 export async function resolveShellPathAtStartup(deps: ResolveShellPathDeps = {}): Promise<void> {
   const platform = deps.platform ?? process.platform;
-  if (platform !== 'darwin') return;
-
   const env = deps.env ?? process.env;
   const before = env.PATH || '';
-  if (!looksLaunchdMinimal(before)) return;
 
-  const probe = deps.probe ?? probeLoginShellPath;
-  const shell = env.SHELL || '/bin/zsh';
-  const shellPath = await probe(shell);
+  if (platform === 'darwin') {
+    if (!looksLaunchdMinimal(before)) return;
 
-  const after = shellPath ? mergePath(shellPath, before) : fallbackPath(before);
-  if (after === before) return;
+    const probe = deps.probe ?? probeLoginShellPath;
+    const shell = env.SHELL || '/bin/zsh';
+    const shellPath = await probe(shell);
 
-  env.PATH = after;
-  log.info(
-    `[shell-path] launchd-minimal PATH detected — resolved via ${shellPath ? 'login shell' : 'Homebrew fallback'}. ` +
-    `before="${before}" after="${after}"`
-  );
+    const after = shellPath ? mergePath(shellPath, before) : fallbackPath(before);
+    if (after === before) return;
+
+    env.PATH = after;
+    log.info(
+      `[shell-path] launchd-minimal PATH detected — resolved via ${shellPath ? 'login shell' : 'Homebrew fallback'}. ` +
+      `before="${before}" after="${after}"`
+    );
+    return;
+  }
+
+  // FLUX-1711: same failure on Linux — a desktop/systemd-launched AppImage (or deb/rpm/pacman
+  // install) inherits the bare systemd-user PATH with no ~/.local/bin, nvm, npm-global, or cargo
+  // dirs, so every agent-CLI precheck reports "not installed" even though the CLIs work from any
+  // terminal. Probe via `env` (fish-safe — see probeLoginShellEnvPath) and merge, falling back to
+  // appending the user bin dirs that exist.
+  if (platform === 'linux') {
+    const home = env.HOME || '';
+    if (!looksGuiMinimalLinux(before, home)) return;
+
+    const probe = deps.probe ?? probeLoginShellEnvPath;
+    const shell = env.SHELL || '/bin/bash';
+    const shellPath = await probe(shell);
+
+    const after = shellPath ? mergePath(shellPath, before) : fallbackPathLinux(before, home);
+    if (after === before) return;
+
+    env.PATH = after;
+    log.info(
+      `[shell-path] GUI-minimal PATH detected — resolved via ${shellPath ? 'login shell' : 'user-bin fallback'}. ` +
+      `before="${before}" after="${after}"`
+    );
+  }
 }

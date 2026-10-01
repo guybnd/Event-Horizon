@@ -45,6 +45,9 @@ export interface ExtractTicketOptions {
   body?: string;
   /** Actor recorded on the op (default `Agent`). */
   by?: string;
+  /** Initial status of the minted card (default Todo). Oneshot-from-scratch (FLUX-1733) passes
+   *  Grooming so the new ticket is eligible for phase:'fast-path' without a Todo flicker. */
+  status?: string;
 }
 
 export interface ExtractTicketResult {
@@ -91,6 +94,7 @@ export async function extractTicket(opts: ExtractTicketOptions): Promise<Extract
     ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
     ...(opts.tags ? { tags: opts.tags } : {}),
     ...(opts.body !== undefined ? { body: opts.body } : {}),
+    ...(opts.status !== undefined ? { status: opts.status } : {}),
   });
 
   const op: ExtractOp = {

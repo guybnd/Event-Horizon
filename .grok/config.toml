@@ -1,0 +1,10 @@
+[mcp_servers.event-horizon]
+url = "http://127.0.0.1:3067/mcp"
+enabled = true
+
+[mcp_servers.event-horizon.headers]
+X-EH-Session-Id = "${EH_SESSION_ID}"
+X-EH-Session-Token = "${EH_SESSION_TOKEN}"
+X-EH-Conversation-Id = "${EH_CONVERSATION_ID}"
+X-EH-Conversation-Token = "${EH_CONVERSATION_TOKEN}"
+X-EH-Workspace = "${EH_WORKSPACE}"

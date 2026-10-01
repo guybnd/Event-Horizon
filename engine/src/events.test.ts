@@ -126,3 +126,32 @@ describe('per-workspace SSE isolation (FLUX-1450)', () => {
     a.close();
   });
 });
+
+describe('broadcastToAllWorkspaces (multi-board binding)', () => {
+  it('delivers one named frame to the clients of EVERY live workspace, including the default one', async () => {
+    const { openWorkspace, closeWorkspace, getDefaultWorkspace } = await import('./workspace-context.js');
+    const { broadcastToAllWorkspaces } = await import('./events.js');
+    const path = await import('path');
+    const os = await import('os');
+    const wsA = openWorkspace(path.join(os.tmpdir(), 'eh-events-fanout-a'));
+    const wsB = openWorkspace(path.join(os.tmpdir(), 'eh-events-fanout-b'));
+    const a = fakeClient();
+    const b = fakeClient();
+    const d = fakeClient();
+    addSseClient(a.res, wsA);
+    addSseClient(b.res, wsB);
+    addSseClient(d.res, getDefaultWorkspace());
+    try {
+      broadcastToAllWorkspaces('workspacesChanged', { action: 'opened', root: wsB.root });
+      for (const c of [a, b, d]) {
+        const frames = c.writes.filter((w) => w.startsWith('event: workspacesChanged\n'));
+        expect(frames).toHaveLength(1);
+        expect(frames[0]).toContain('"action":"opened"');
+      }
+    } finally {
+      a.close(); b.close(); d.close();
+      await closeWorkspace(wsA.root!);
+      await closeWorkspace(wsB.root!);
+    }
+  });
+});

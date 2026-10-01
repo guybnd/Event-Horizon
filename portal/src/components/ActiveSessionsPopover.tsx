@@ -128,7 +128,7 @@ export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks
              value={config?.defaultAgent || 'auto'}
              onChange={handleAgentChange}
              showAuto
-             allowedFrameworks={['auto', 'claude', 'gemini', 'copilot', 'codex']}
+             allowedFrameworks={['auto', 'claude', 'gemini', 'copilot', 'codex', 'grok', 'antigravity']}
            />
         </div>
       </div>

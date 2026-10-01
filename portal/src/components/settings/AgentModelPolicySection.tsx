@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Bot, Zap, Terminal, Braces } from 'lucide-react';
+import { Bot, Zap, Terminal, Braces, Sparkles, Rocket } from 'lucide-react';
 import type { CliFramework, ModelPreset, TaskKey, Tier } from '../../types';
 import {
   DEFAULT_TIER_MODELS,
@@ -21,6 +21,10 @@ interface AgentModelPolicySectionProps {
   setCopilotTiers: (v: TierModels) => void;
   codexTiers: TierModels;
   setCodexTiers: (v: TierModels) => void;
+  grokTiers: TierModels;
+  setGrokTiers: (v: TierModels) => void;
+  antigravityTiers: TierModels;
+  setAntigravityTiers: (v: TierModels) => void;
   assignments: Record<TaskKey, Tier>;
   setAssignments: (v: Record<TaskKey, Tier>) => void;
 }
@@ -30,6 +34,8 @@ const CLI_COLUMNS: { id: CliFramework; label: string; icon: typeof Bot }[] = [
   { id: 'gemini', label: 'Gemini', icon: Zap },
   { id: 'copilot', label: 'Copilot', icon: Terminal },
   { id: 'codex', label: 'Codex', icon: Braces },
+  { id: 'grok', label: 'Grok', icon: Sparkles },
+  { id: 'antigravity', label: 'Antigravity', icon: Rocket },
 ];
 
 const PRESET_CHIPS: { id: Exclude<ModelPreset, 'custom'>; label: string; blurb: string }[] = [
@@ -49,14 +55,18 @@ export function AgentModelPolicySection({
   setCopilotTiers,
   codexTiers,
   setCodexTiers,
+  grokTiers,
+  setGrokTiers,
+  antigravityTiers,
+  setAntigravityTiers,
   assignments,
   setAssignments,
 }: AgentModelPolicySectionProps) {
   const [previewCli, setPreviewCli] = useState<CliFramework>('claude');
   const activePreset = derivePreset(assignments);
 
-  const tiersByFramework: Record<CliFramework, TierModels> = { claude: claudeTiers, gemini: geminiTiers, copilot: copilotTiers, codex: codexTiers };
-  const setTiersByFramework: Record<CliFramework, (v: TierModels) => void> = { claude: setClaudeTiers, gemini: setGeminiTiers, copilot: setCopilotTiers, codex: setCodexTiers };
+  const tiersByFramework: Record<CliFramework, TierModels> = { claude: claudeTiers, gemini: geminiTiers, copilot: copilotTiers, codex: codexTiers, grok: grokTiers, antigravity: antigravityTiers };
+  const setTiersByFramework: Record<CliFramework, (v: TierModels) => void> = { claude: setClaudeTiers, gemini: setGeminiTiers, copilot: setCopilotTiers, codex: setCodexTiers, grok: setGrokTiers, antigravity: setAntigravityTiers };
 
   const applyPreset = (preset: Exclude<ModelPreset, 'custom'>) => setAssignments({ ...PRESET_ASSIGNMENTS[preset] });
 

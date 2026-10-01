@@ -388,7 +388,16 @@ export function runGh(args: string[], opts?: GitExecOptions): Promise<GitExecRes
  * `run` is injected so both call sites can route through their own cwd-bound wrapper (or a test
  * double) without this module knowing about workspace resolution.
  */
-export async function resolveBranchCreationBase(
+/**
+ * Resolve the default branch's NAME (not a ref) via a local-first ladder: `origin/HEAD` when
+ * configured, else probe local `refs/heads/master` then `refs/heads/main`, else the `'master'`
+ * literal. Extracted from {@link resolveBranchCreationBase} (FLUX-1773) so a second caller
+ * (`commit-close.ts`) can resolve the same name without also getting that function's
+ * remote-tracking-ref preference — `resolveBranchCreationBase` itself now calls this and
+ * layers its own ref-selection tail on top. `run` stays injected so both call sites (and tests)
+ * can route through their own cwd-bound wrapper.
+ */
+export async function resolveDefaultBranchName(
   run: (args: string[]) => Promise<{ stdout: string; stderr: string }>,
 ): Promise<string> {
   let defaultName = 'master';
@@ -412,6 +421,13 @@ export async function resolveBranchCreationBase(
       }
     }
   }
+  return defaultName;
+}
+
+export async function resolveBranchCreationBase(
+  run: (args: string[]) => Promise<{ stdout: string; stderr: string }>,
+): Promise<string> {
+  const defaultName = await resolveDefaultBranchName(run);
 
   // Prefer the remote-tracking ref for the actual base — unstripped, since the bare name may have
   // no local copy to resolve against (FLUX-1341).

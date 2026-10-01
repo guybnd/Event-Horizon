@@ -130,3 +130,16 @@ export function broadcastEvent(event: string, data: unknown, ws: Workspace = get
   for (const res of [...ws.sseClients]) writeOrDrop(res, payload, ws);
   recordDuration('sse.broadcastFanout', performance.now() - startedAt);
 }
+
+/**
+ * Multi-board binding: broadcast one event to the clients of EVERY live workspace — for state that
+ * is not owned by any single board. The one such event today is `workspacesChanged` (a board was
+ * opened or closed: portal tab-strip action, an agent's `X-EH-Workspace` auto-open or
+ * `bind_workspace`, the boot restore), which every portal tab must see regardless of which board
+ * its own SSE stream is scoped to — a portal viewing board A otherwise never learns that an agent
+ * brought board B live, and its switcher stays stale until a reload. Routed through
+ * {@link broadcastEvent} per workspace so the named + `eh-event` mirror frames stay identical.
+ */
+export function broadcastToAllWorkspaces(event: string, data: unknown): void {
+  for (const ws of liveWorkspaces()) broadcastEvent(event, data, ws);
+}

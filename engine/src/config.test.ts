@@ -100,6 +100,7 @@ describe('loadConfig — model-policy migration (FLUX-1373)', () => {
     expect(getConfig().integrations.geminiCli.tiers).toEqual(INTEGRATION_TIER_DEFAULTS.geminiCli);
     expect(getConfig().integrations.copilotCli.tiers).toEqual(INTEGRATION_TIER_DEFAULTS.copilotCli);
     expect(getConfig().integrations.codexCli.tiers).toEqual(INTEGRATION_TIER_DEFAULTS.codexCli);
+    expect(getConfig().integrations.grokCli.tiers).toEqual(INTEGRATION_TIER_DEFAULTS.grokCli);
     expect(getConfig().modelPolicy).toEqual({ preset: 'balanced', assignments: MODEL_POLICY_PRESETS.balanced });
     expect(getConfig().modelPolicyMigrated).toBe(true);
 
@@ -139,6 +140,34 @@ describe('loadConfig — model-policy migration (FLUX-1373)', () => {
     await loadConfig();
 
     expect(getConfig().modelPolicy).toEqual({ preset: 'frugal', assignments: customAssignments });
+  });
+});
+
+describe('loadConfig — remaps stale Copilot CLI model ids', () => {
+  beforeEach(async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-config-'));
+    await fs.mkdir(path.join(root, '.flux'), { recursive: true });
+    setWorkspaceRoot(root);
+  });
+
+  it('rewrites named Copilot ids that 404 in -p onto auto without clobbering other CLIs', async () => {
+    await fs.writeFile(getConfigFile(), JSON.stringify({
+      modelPolicyMigrated: true,
+      integrations: {
+        claudeCode: { tiers: { smart: 'opus', efficient: 'sonnet', cheap: 'haiku' } },
+        copilotCli: { tiers: { smart: 'gpt-5', efficient: 'gpt-5.4-mini', cheap: 'gpt-4.1' } },
+      },
+    }), 'utf-8');
+    await loadConfig();
+
+    expect(getConfig().integrations.copilotCli.tiers).toEqual({
+      smart: 'auto',
+      efficient: 'auto',
+      cheap: 'auto',
+    });
+    expect(getConfig().integrations.claudeCode.tiers).toEqual({ smart: 'opus', efficient: 'sonnet', cheap: 'haiku' });
+    const onDisk = JSON.parse(await fs.readFile(getConfigFile(), 'utf-8'));
+    expect(onDisk.integrations.copilotCli.tiers.smart).toBe('auto');
   });
 });
 

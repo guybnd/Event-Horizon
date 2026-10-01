@@ -1,0 +1,51 @@
+{
+  "id": "flux-1676",
+  "title": "FLUX-1676 — Changes tab empty for merged PRs (medium)",
+  "track": "fix",
+  "seedTitle": "FLUX-1676 Changes tab empty for merged PRs",
+  "baseRef": "bench/flux-1676-holdout",
+  "ticketId": "FLUX-1676",
+  "seedPrompt": "Fix the bug described below. A regression test already exists at engine/src/benchmark-holdout-flux-1676.test.ts and currently FAILS (the new cases) — make it pass without modifying that test file.\n\nThe ticket, as groomed:\n\n{{ticketBody}}\n\nVerify with: node node_modules/vitest/vitest.mjs run --root engine src/benchmark-holdout-flux-1676.test.ts",
+  "validation": {
+    "command": "node",
+    "args": [
+      "node_modules/vitest/vitest.mjs",
+      "run",
+      "--root",
+      "engine",
+      "src/benchmark-holdout-flux-1676.test.ts"
+    ],
+    "paths": [
+      "engine/src/benchmark-holdout-flux-1676.test.ts"
+    ],
+    "timeoutMs": 600000
+  },
+  "regression": {
+    "command": "node",
+    "args": [
+      "node_modules/typescript/bin/tsc",
+      "--noEmit",
+      "-p",
+      "engine"
+    ],
+    "timeoutMs": 600000
+  },
+  "repetitions": 3,
+  "concurrency": 3,
+  "wallClockBudgetMs": 2700000,
+  "notes": "Medium: 6 files (diff-aggregator, doc-recap, two routes); base predates test tiering so the repo's own `npm run check` there runs the full suite. 4–14 min per run.",
+  "defaultMatrix": [
+    {
+      "framework": "claude",
+      "model": "claude-sonnet-5",
+      "effortOverride": "high",
+      "phase": "implementation"
+    },
+    {
+      "framework": "claude",
+      "model": "claude-opus-5",
+      "effortOverride": "high",
+      "phase": "implementation"
+    }
+  ]
+}

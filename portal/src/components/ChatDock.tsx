@@ -25,6 +25,7 @@ import { parseRunProposal } from './task-modal/chatRunProposal';
 import { ChatRequireInputBanner } from './task-modal/ChatRequireInputBanner';
 import { AuthErrorCard } from './task-modal/AuthErrorCard';
 import { TagSelector } from './TagSelector';
+import { TaskChatFrameworkPicker } from './TaskChatFrameworkPicker';
 import { TicketActions } from './ticket-actions/TicketActions';
 import { Skeleton } from './ui/Skeleton';
 import { ChatPendingInteractions, usePendingInteractions, useComposerAnswer, isPlanApprovalPending, isPlanGateInFlight, revisePlan } from './pendingInteractions';
@@ -2093,6 +2094,7 @@ function ChatWindowHeader({
   onClose,
   openTaskFullView,
   onResetConversation,
+  frameworkPicker,
 }: {
   id: string;
   orchestrator: boolean;
@@ -2107,6 +2109,9 @@ function ChatWindowHeader({
   onClose?: (id: string) => void;
   openTaskFullView: (task: Task) => void;
   onResetConversation: () => void;
+  /** FLUX-1706: the task chat's compact CLI switcher (ticket windows only — absent for the
+   *  orchestrator/Furnace chat, which have no per-task session to retarget). */
+  frameworkPicker?: ReactNode;
 }) {
   return (
     <div
@@ -2137,6 +2142,7 @@ function ChatWindowHeader({
             <SmelterModeToggle />
           </div>
         )}
+        {frameworkPicker && <div className="mr-1.5">{frameworkPicker}</div>}
         <span className="flex items-center gap-0.5">
           {/* Orchestrator can't be closed (it's pinned) — instead it can be reset to a clean
               slate: stop the live turn and wipe the transcript. FLUX-1221: the Furnace-chat gets the
@@ -2413,7 +2419,11 @@ const ChatWindow = memo(function ChatWindow({
   // FLUX-748: pass `working` (live running session) so the hook's message queue auto-dispatches
   // on the turn-completion edge. FLUX-1420: also pass the animating flag (the open/minimize spring
   // is in flight while `!settled`) so the hook can buffer SSE-driven commits until it settles.
-  const chat = useChatSession(id, true, working, !settled, isVirtualConversationWindow ? activeBoardId : undefined);
+  // FLUX-1706: the task chat's own sticky CLI override (set via the header picker below) — passed
+  // through so a fresh send() honors it instead of resuming whatever framework was running before
+  // the switch. Undefined for the orchestrator/Furnace virtual conversations (no picker there).
+  const frameworkOverride = task ? selections?.framework : undefined;
+  const chat = useChatSession(id, true, working, !settled, isVirtualConversationWindow ? activeBoardId : undefined, frameworkOverride);
   const allTasks = useAppSelector((s) => s.tasks) as Task[];
 
   // FLUX-1339/1362: chat-scoped plan-review panel state. The panel opens as an own full-screen
@@ -3044,6 +3054,19 @@ const ChatWindow = memo(function ChatWindow({
     />
   );
 
+  // FLUX-1706: only real ticket windows get the CLI switcher — the orchestrator/Furnace chats have
+  // no per-task session for it to retarget.
+  const frameworkPickerEl = task ? (
+    <TaskChatFrameworkPicker
+      taskId={id}
+      config={config}
+      session={session}
+      selections={selections}
+      onSelectionsChange={(s) => onSelectionsChange(id, s)}
+      defaultFramework={config?.defaultFramework}
+    />
+  ) : undefined;
+
   const handleResetConversation = async () => {
     // FLUX-1221: this button also backs the Furnace-chat's reset (see ChatWindowHeader) — label the
     // confirm off which window it actually is instead of hardcoding "orchestrator".
@@ -3139,6 +3162,7 @@ const ChatWindow = memo(function ChatWindow({
                 orchestrator={orchestrator}
                 isFurnaceChat={isFurnaceChat}
                 task={task}
+                frameworkPicker={frameworkPickerEl}
                 startDrag={startDrag}
                 onToggleSideView={onToggleSideView}
                 sideViewOpen={sideViewOpen}

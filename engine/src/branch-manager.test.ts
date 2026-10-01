@@ -6,6 +6,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { setWorkspaceRoot } from './workspace.js';
 import { createTicketBranch, deleteTicketBranch, planFinishPr, checkGhAuth, isMergeConflict, evaluateCiGate, runConfiguredCheckCommand, type PrStatus } from './branch-manager.js';
+import type { CiRunnerInfo } from './ci-runner.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -404,6 +405,50 @@ describe('evaluateCiGate (FLUX-560)', () => {
     });
     expect(outcome.blocked).toBe(true);
     expect(outcome.reason).toMatch(/still running/);
+  });
+
+  // FLUX-1713 AC #2: the CI-gate refusal message names the runner origin, reusing the
+  // `PrStatus.runner` already resolved by getStatus — no extra network call inside the gate.
+  it('appends the self-hosted runner name to the failing-checks reason (AC #2)', async () => {
+    const runner: CiRunnerInfo = { origin: 'self-hosted', runnerName: 'guy-cachyos-x8664-linux', jobs: [], checkedAt: new Date().toISOString() };
+    const outcome = await evaluateCiGate('flux/x', {}, {
+      getStatus: async () => ({ ...withChecks(checks({ total: 3, passed: 2, failed: 1 })), runner }),
+    });
+    expect(outcome.blocked).toBe(true);
+    expect(outcome.reason).toContain('Runner: self-hosted (guy-cachyos-x8664-linux).');
+    expect(outcome.runner).toEqual(runner);
+  });
+
+  it('appends the hosted runner note to the pending-checks reason (AC #2)', async () => {
+    const runner: CiRunnerInfo = { origin: 'hosted', jobs: [], checkedAt: new Date().toISOString() };
+    const outcome = await evaluateCiGate('flux/x', {}, {
+      getStatus: async () => ({ ...withChecks(checks({ total: 2, passed: 1, pending: 1 })), runner }),
+    });
+    expect(outcome.blocked).toBe(true);
+    expect(outcome.reason).toContain('Runner: hosted.');
+  });
+
+  it('appends a mixed-runner note when the run spanned both pools', async () => {
+    const runner: CiRunnerInfo = { origin: 'mixed', jobs: [], checkedAt: new Date().toISOString() };
+    const outcome = await evaluateCiGate('flux/x', {}, {
+      getStatus: async () => ({ ...withChecks(checks({ total: 2, failed: 1 })), runner }),
+    });
+    expect(outcome.reason).toContain('Runner: mixed.');
+  });
+
+  it('omits the runner sentence when runner origin is unknown, and never surfaces one via checkCommand', async () => {
+    const runner: CiRunnerInfo = { origin: 'unknown', jobs: [], checkedAt: new Date().toISOString() };
+    const outcome = await evaluateCiGate('flux/x', {}, {
+      getStatus: async () => ({ ...withChecks(checks({ total: 1, failed: 1 })), runner }),
+    });
+    expect(outcome.reason).not.toContain('Runner:');
+
+    const checkCommandOutcome = await evaluateCiGate('flux/x', { checkCommand: 'exit 1' }, {
+      getStatus: async () => null,
+      runCheckCommand: async () => ({ ok: false, detail: 'exit code 1' }),
+    });
+    expect(checkCommandOutcome.reason).not.toContain('Runner:');
+    expect(checkCommandOutcome.runner).toBeUndefined(); // source is 'checkCommand', not 'github' — never surfaced
   });
 
   it('allows pending checks when allowPending is set', async () => {

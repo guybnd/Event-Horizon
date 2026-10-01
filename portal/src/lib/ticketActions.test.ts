@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { applyOptimisticStatusChange, runChangeStatus, runFinishBranchless } from './ticketActions';
+import { applyOptimisticStatusChange, runChangeStatus, runFinishBranchless, actionsForStatus } from './ticketActions';
+import type { TicketActionContext } from './ticketActions';
 import type { HistoryDigest, Task } from '../types';
 import type { DiffOverview } from '../api';
 
@@ -336,5 +337,67 @@ describe('runFinishBranchless', () => {
     ).resolves.toBeUndefined();
 
     expect(notifyError).toHaveBeenCalledTimes(1);
+  });
+});
+
+function mockActionCtx(over: Partial<TicketActionContext> = {}): TicketActionContext {
+  return {
+    phase: 'grooming',
+    launchTemplates: [],
+    finalizeTemplates: [],
+    changeStatus: vi.fn(),
+    finishViaMerge: vi.fn(),
+    finishViaEngine: vi.fn(),
+    dispatchFinish: vi.fn(),
+    dispatchFastPath: vi.fn(),
+    dispatchOneshotFromScratch: vi.fn(),
+    dispatchBatchGrooming: vi.fn(),
+    launchDefault: vi.fn(),
+    openLauncher: vi.fn(),
+    returnToDev: vi.fn(),
+    ...over,
+  };
+}
+
+describe('actionsForStatus — Oneshot (FLUX-1733)', () => {
+  it('exposes Oneshot (not Fast-path) on a Grooming ticket, dispatching the fast-path key', () => {
+    const actions = actionsForStatus(makeTask({ status: 'Grooming', effort: 'S' }), mockActionCtx());
+    const oneshot = actions.find((a) => a.key === 'fast-path');
+    expect(oneshot).toBeTruthy();
+    expect(oneshot!.label).toBe('Oneshot');
+    expect(oneshot!.kind).toBe('agent');
+    expect(oneshot!.menu?.some((m) => m.key === 'fast-path-plan-first' && m.label === 'Show plan first')).toBe(true);
+    expect(actions.every((a) => !/fast-path/i.test(a.label))).toBe(true);
+  });
+
+  it('hides Oneshot on Require Input, L/XL effort, and epic parents', () => {
+    const ctx = mockActionCtx();
+    expect(actionsForStatus(makeTask({ status: 'Require Input', effort: 'S' }), ctx).some((a) => a.key === 'fast-path')).toBe(false);
+    expect(actionsForStatus(makeTask({ status: 'Grooming', effort: 'L' }), ctx).some((a) => a.key === 'fast-path')).toBe(false);
+    expect(actionsForStatus(makeTask({ status: 'Grooming', effort: 'XL' }), ctx).some((a) => a.key === 'fast-path')).toBe(false);
+    expect(actionsForStatus(makeTask({ status: 'Grooming', effort: 'S', subtasks: ['FLUX-2'] }), ctx).some((a) => a.key === 'fast-path')).toBe(false);
+  });
+
+  it('still offers Oneshot for unset/None/M effort and epic members (parentId only)', () => {
+    const ctx = mockActionCtx();
+    expect(actionsForStatus(makeTask({ status: 'Grooming' }), ctx).some((a) => a.key === 'fast-path')).toBe(true);
+    expect(actionsForStatus(makeTask({ status: 'Grooming', effort: 'None' }), ctx).some((a) => a.key === 'fast-path')).toBe(true);
+    expect(actionsForStatus(makeTask({ status: 'Grooming', effort: 'M' }), ctx).some((a) => a.key === 'fast-path')).toBe(true);
+    expect(actionsForStatus(makeTask({ status: 'Grooming', effort: 'S', parentId: 'FLUX-0' }), ctx).some((a) => a.key === 'fast-path')).toBe(true);
+  });
+
+  it('replaces Implement with Oneshot this on a Todo-status scratch', () => {
+    const actions = actionsForStatus(makeTask({ status: 'Todo', kind: 'scratch', title: 'Scratch 1' }), mockActionCtx());
+    expect(actions.some((a) => a.key === 'oneshot-this' && a.label === 'Oneshot this')).toBe(true);
+    expect(actions.some((a) => a.key === 'implement' || a.label === 'Implement')).toBe(false);
+    expect(actions.some((a) => a.key === 'fast-path')).toBe(false);
+  });
+
+  it('does not offer Oneshot this on an archived or consumed scratch', () => {
+    const ctx = mockActionCtx();
+    expect(actionsForStatus(makeTask({ status: 'Archived', kind: 'scratch', title: 'Scratch 1' }), ctx)
+      .some((a) => a.key === 'oneshot-this')).toBe(false);
+    expect(actionsForStatus(makeTask({ status: 'Todo', kind: 'scratch', title: 'Scratch 1', mergedInto: 'FLUX-2' }), ctx)
+      .some((a) => a.key === 'oneshot-this')).toBe(false);
   });
 });

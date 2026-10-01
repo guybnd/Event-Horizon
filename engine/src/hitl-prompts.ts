@@ -396,6 +396,28 @@ export function settleOpenPromptsForConversation(conversationId: string): number
 }
 
 /**
+ * FLUX-1774: record a question/answer round-trip that was resolved OUTSIDE the park/settle flow —
+ * an MCP client answered via elicitation, in the same turn, so no `fetch` was ever parked. This
+ * synthesizes a throwaway `OpenPromptRecord` purely so `appendRequestTranscript`/
+ * `appendResolveTranscript` write the SAME `ask-question`/`ask-answer` transcript events the park
+ * path does, to the same stream (the conversation, or `__board__` when unrouted). Deliberately
+ * does NOT `persist()`, `broadcastRequest()`, or enter `durable`/`live`: the prompt is already
+ * answered, so a live portal card for it would be unanswerable (`resolvePrompt` returns `false`
+ * for an id it never parked) — the exchange surfaces in the chat transcript instead.
+ */
+export function recordQuestionRoundTrip(conversationId: string | null, questions: unknown[], result: PromptResult): void {
+  const rec: OpenPromptRecord = {
+    id: randomUUID(),
+    kind: 'question',
+    payload: { questions },
+    conversationId,
+    createdAt: new Date().toISOString(),
+  };
+  appendRequestTranscript(rec);
+  appendResolveTranscript(rec, result);
+}
+
+/**
  * Re-hydrate the durable index from disk on boot and re-broadcast each open prompt so the portal
  * re-surfaces it. Called from the watcher `ready` hook alongside reconcileOrphanedSessions.
  * Returns the count re-surfaced. The transcript already holds each prompt's request event, so we

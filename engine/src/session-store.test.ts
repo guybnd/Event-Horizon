@@ -690,6 +690,19 @@ describe('session-store', () => {
       expect(sessC.status).toBe('cancelled');
     });
 
+    // FLUX-1623: `reason` used to be logged but never persisted, so an adapter's exit handler could
+    // not tell a Furnace/gate-initiated stop from a real user Stop click — both rendered "stopped by
+    // user". `stopReason` closes that gap.
+    it('stamps stopReason with the caller-supplied reason on every session it stops', () => {
+      const sess = createMockSession({ id: 'sess-a', taskId: 'FLUX-1', status: 'running' });
+      cliSessionsById.set('sess-a', sess);
+      registerSession('FLUX-1', 'sess-a');
+
+      stopAllSessionsForTask('FLUX-1', 'furnace parked ticket');
+
+      expect(sess.stopReason).toBe('furnace parked ticket');
+    });
+
     it('does nothing when no active sessions', () => {
       const sessDone = createMockSession({ id: 'sess-done', taskId: 'FLUX-1', status: 'completed' });
       cliSessionsById.set('sess-done', sessDone);
@@ -1239,6 +1252,45 @@ describe('active-session stub sync/rehydrate — two-board isolation (FLUX-1556)
 
       expect(cliSessionsById.get('sess-a')?.workspaceRoot).toBe(rootA); // tag survived the round-trip
       expect(await readStubFiles(rootB)).toEqual([]); // never leaked into board B's dir
+    });
+
+    // FLUX-1744: the rate-limit/compaction telemetry fields must survive an engine restart the same
+    // way the FLUX-1378 context gauges already do — and an ABSENT field must round-trip as absent,
+    // never coerced to 0/undefined-as-zero (stubFor/rehydratedRecord both use `!= null` guards).
+    it('round-trips lastRateLimit + compaction fields through sync -> restart -> rehydrate; absent fields stay absent', async () => {
+      boardA.tasks['FLUX-A'] = { id: 'FLUX-A', status: 'Ready' };
+      cliSessionsById.set('sess-a', createMockSession({
+        id: 'sess-a',
+        taskId: 'FLUX-A',
+        status: 'waiting-input',
+        workspaceRoot: rootA,
+        lastRateLimit: { status: 'rejected', rateLimitType: 'five_hour', resetsAt: '2026-12-31T23:30:00.000Z', observedAt: '2026-09-05T04:00:00.000Z' },
+        compactionCount: 2,
+        cumulativeDroppedTokens: 210000,
+        lastCompactionAt: '2026-09-05T04:01:00.000Z',
+        lastCompactTrigger: 'manual',
+        lastCompactDurationMs: 800,
+        // lastTurnContextTokens / contextWindow deliberately left unset.
+      }));
+      registerSession('FLUX-A', 'sess-a');
+      await runWithWorkspace(boardA, () => rehydrateSessionStubs());
+      await runWithWorkspace(boardA, () => syncActiveSessionStubs(rootA, rootA));
+
+      // Simulate a restart: wipe the in-memory map, then rehydrate from disk.
+      cliSessionsById.clear();
+      cliSessionsByTaskId.clear();
+      __resetSessionStubStateForTests();
+      await runWithWorkspace(boardA, () => rehydrateSessionStubs());
+
+      const rehydrated = cliSessionsById.get('sess-a');
+      expect(rehydrated?.lastRateLimit).toEqual({ status: 'rejected', rateLimitType: 'five_hour', resetsAt: '2026-12-31T23:30:00.000Z', observedAt: '2026-09-05T04:00:00.000Z' });
+      expect(rehydrated?.compactionCount).toBe(2);
+      expect(rehydrated?.cumulativeDroppedTokens).toBe(210000);
+      expect(rehydrated?.lastCompactionAt).toBe('2026-09-05T04:01:00.000Z');
+      expect(rehydrated?.lastCompactTrigger).toBe('manual');
+      expect(rehydrated?.lastCompactDurationMs).toBe(800);
+      expect(rehydrated?.lastTurnContextTokens).toBeUndefined();
+      expect(rehydrated?.contextWindow).toBeUndefined();
     });
   });
 });

@@ -1,7 +1,9 @@
-import { getWorkspace } from './workspace-context.js';
-import { getTerminalStatuses } from './task-store.js';
-import { getConfig } from './config.js';
+import { getWorkspace, getDefaultWorkspace } from './workspace-context.js';
+import { getTerminalStatuses, subtaskIds } from './task-store.js';
+import { getConfig, nextColumnAfter } from './config.js';
 import { getPullRequestStatus } from './branch-manager.js';
+import { getActiveSessionsForTaskInWorkspace } from './session-store.js';
+import { classifyStaleInProgress, type StaleInProgressSignal } from './ticket-health.js';
 
 /**
  * FLUX-966: on-demand "Board Health" signals for the board-rebase ritual. Unlike
@@ -42,6 +44,7 @@ interface TriageTicket {
   parentId?: string;
   branch?: string;
   history?: TriageHistoryEntry[];
+  subtasks?: unknown;
 }
 
 /**
@@ -152,6 +155,42 @@ function computeDuplicateTitles(tickets: TriageTicket[], terminal: Set<string>):
   return out;
 }
 
+/**
+ * FLUX-1775: an In Progress ticket with no live session and no history activity for 48h — most
+ * often an epic whose children got worked individually and nobody moved the parent when they
+ * finished. Takes `workspaceRoot` from the caller's own `getWorkspace()` read (rather than calling
+ * it again here) so the workspace-binding guard sees one bare call per module, not two.
+ */
+function computeStaleInProgressSignals(
+  tickets: TriageTicket[],
+  byId: Map<string, TriageTicket>,
+  terminal: Set<string>,
+  workspaceRoot: string | null,
+): StaleInProgressSignal[] {
+  const inProgressStatus = nextColumnAfter('Todo') || 'In Progress';
+  const defaultWorkspaceRoot = getDefaultWorkspace().root;
+  const terminalStatuses = [...terminal];
+  const out: StaleInProgressSignal[] = [];
+  for (const t of tickets) {
+    if (t.status !== inProgressStatus) continue;
+    const hasActiveSession = getActiveSessionsForTaskInWorkspace(t.id, workspaceRoot, defaultWorkspaceRoot).length > 0;
+    const childrenStatuses = subtaskIds(t.subtasks)
+      .map((id) => byId.get(id)?.status)
+      .filter((s): s is string => typeof s === 'string');
+    const signal = classifyStaleInProgress({
+      ticketId: t.id,
+      status: t.status,
+      inProgressStatus,
+      history: t.history ?? [],
+      hasActiveSession,
+      childrenStatuses,
+      terminalStatuses,
+    });
+    if (signal) out.push(signal);
+  }
+  return out;
+}
+
 /** Bounded-concurrency `gh pr view` sweep over Ready+branched tickets, capped at MAX_PR_CHECKS. */
 async function computeDeadPrSignals(candidates: TriageTicket[]): Promise<DeadPrSignal[]> {
   const out: DeadPrSignal[] = [];
@@ -181,7 +220,8 @@ async function computeDeadPrSignals(candidates: TriageTicket[]): Promise<DeadPrS
  * dead-PR check is a read-only remote `gh` call; everything else is a synchronous in-memory read.
  */
 export async function buildTriageFragment(): Promise<string> {
-  const tickets = Object.values(getWorkspace().tasks) as unknown as TriageTicket[];
+  const ws = getWorkspace();
+  const tickets = Object.values(ws.tasks) as unknown as TriageTicket[];
   const byId = new Map(tickets.map((t) => [t.id, t]));
   const terminal = new Set(getTerminalStatuses());
 
@@ -193,6 +233,7 @@ export async function buildTriageFragment(): Promise<string> {
   const orphans = computeOrphanedSubtasks(tickets, byId, terminal);
   const dupes = computeDuplicateTitles(tickets, terminal);
   const deadPrs = await computeDeadPrSignals(checkedCandidates);
+  const staleInProgress = computeStaleInProgressSignals(tickets, byId, terminal, ws.root);
 
   // Ticket-centric fact accumulation — insertion order = first-encountered signal.
   const facts = new Map<string, string[]>();
@@ -213,6 +254,10 @@ export async function buildTriageFragment(): Promise<string> {
   for (const d of deadPrs) {
     addFact(d.id, d.state === 'no-pr' ? 'Ready, no PR found' : `Ready, PR ${d.state.toLowerCase()}${d.prNumber ? ` #${d.prNumber}` : ''} elsewhere`);
   }
+  for (const s of staleInProgress) {
+    const children = s.childrenTotal > 0 ? `, ${s.childrenDone}/${s.childrenTotal} children done` : '';
+    addFact(s.ticketId, `In Progress, no session for ${s.hoursSinceActivity}h${children} — suggest ${s.suggestion}`);
+  }
 
   const lines: string[] = ['[Board Health — signals computed on-demand at trigger time; reason over these before calling propose_board_rebase]'];
 
@@ -221,6 +266,7 @@ export async function buildTriageFragment(): Promise<string> {
   if (orphans.length) categoryCounts.push(`${orphans.length} orphaned`);
   if (dupes.length) categoryCounts.push(`${dupes.length} duplicate-title group${dupes.length === 1 ? '' : 's'}`);
   if (deadPrs.length) categoryCounts.push(`${deadPrs.length} dead-PR`);
+  if (staleInProgress.length) categoryCounts.push(`${staleInProgress.length} stale in-progress`);
 
   if (facts.size === 0) {
     lines.push('No staleness signals found — board looks healthy.');

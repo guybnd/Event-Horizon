@@ -1,6 +1,7 @@
 import { Trash2, Check, X } from 'lucide-react';
 import { CliSessionPanel } from './CliSessionPanel';
 import { RunView } from './RunView';
+import { TicketHealthPanel } from './TicketHealthPanel';
 import type { TaskModalController } from '../../hooks/useTaskModalController';
 
 type DetailsPanelProps = Pick<TaskModalController,
@@ -168,6 +169,7 @@ export function DetailsPanel({
         />
         )
       )}
+      {modalTask?.id && <TicketHealthPanel ticketId={modalTask.id} />}
       {modalTask?.id && (
         <button
           onClick={() => setConfirmDelete(true)}

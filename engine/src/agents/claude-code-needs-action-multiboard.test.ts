@@ -30,6 +30,8 @@ vi.mock('../config.js', async (importOriginal) => {
 // getWorkspace()` param) instead of hitting the filesystem, while still respecting whichever
 // workspace is ambient (or explicitly passed) at call time — the exact thing this ticket's fix binds.
 vi.mock('../task-store.js', () => ({
+  // FLUX-1760: flagIfParked drains the ticket's write chain before deciding; nothing is queued here.
+  awaitTicketWritesIdle: vi.fn(async () => {}),
   updateTaskWithHistory: vi.fn(async (taskId: string, options: { extraFields?: Record<string, unknown> }, ws?: unknown) => {
     const { getWorkspace } = await import('../workspace-context.js');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -73,3 +73,83 @@ describe('TaskDescriptionSurface link insertion (FLUX-1457)', () => {
     expect(editorRegion.querySelector('a')).toBeNull();
   });
 });
+
+// FLUX-1719: this surface has no block splice (unlike DocsScreen) and no raw-mode fallback -- ANY
+// edit turndowns the WHOLE description, so a corrupt table/checklist serializer corrupts a ticket's
+// `## Acceptance criteria` checkboxes on ANY unrelated edit, not just an edit to that section.
+describe('TaskDescriptionSurface markdown round-trip fidelity (FLUX-1719)', () => {
+  afterEach(() => cleanup());
+
+  // Drives a real content-changing edit (the link-insertion flow, the only user-facing command in
+  // this component that reliably mutates the doc under jsdom's lack of real contenteditable
+  // typing) and asserts the checklist/table elsewhere in the document survive the resulting save.
+  async function editUnrelatedTextAndCapture(value: string) {
+    const onChange = vi.fn();
+    render(<TaskDescriptionSurface value={value} onChange={onChange} mode="full" />);
+
+    const shell = document.querySelector('.task-description-editor-shell');
+    fireEvent.mouseDown(shell as Element);
+    fireEvent.click(shell as Element);
+
+    const linkButton = await screen.findByTitle('Link') as HTMLButtonElement;
+    await waitFor(() => expect(linkButton.disabled).toBe(false));
+    fireEvent.click(linkButton);
+
+    const input = screen.getByRole('dialog').querySelector('input') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'https://example.com' } });
+    fireEvent.click(screen.getByText('Set link'));
+
+    await waitFor(() => expect(onChange).toHaveBeenCalled());
+    return onChange.mock.calls.at(-1)?.[0] as string;
+  }
+
+  it('preserves acceptance-criteria checkboxes and a table across an unrelated edit', async () => {
+    const value = [
+      '## Acceptance criteria',
+      '',
+      '- [ ] alpha',
+      '- [x] beta',
+      '',
+      '| A | B |',
+      '| --- | --- |',
+      '| 1 | 2 |',
+      '',
+      'Hello world',
+    ].join('\n');
+
+    const savedMarkdown = await editUnrelatedTextAndCapture(value);
+
+    expect(savedMarkdown).toContain('- [ ] alpha');
+    expect(savedMarkdown).toContain('- [x] beta');
+    expect(savedMarkdown).not.toContain('<table');
+    expect(savedMarkdown).toContain('| A | B |');
+  });
+
+  it('never adds a checkbox to a plain item in a mixed checkbox/plain list', async () => {
+    const value = ['- [ ] alpha', '- plain bravo', '', 'Hello world'].join('\n');
+
+    const savedMarkdown = await editUnrelatedTextAndCapture(value);
+
+    expect(savedMarkdown).toContain('- [ ] alpha');
+    expect(savedMarkdown).toContain('- plain bravo');
+    expect(savedMarkdown).not.toContain('- [ ] plain bravo');
+  });
+
+  it('renders a loaded checklist as real taskItem nodes, not a stripped-checkbox plain list', async () => {
+    const value = ['- [ ] alpha', '- [x] beta'].join('\n');
+    render(<TaskDescriptionSurface value={value} onChange={vi.fn()} mode="full" />);
+
+    const editorRegion = await waitFor(() => {
+      const el = document.querySelector('.task-description-editor-content');
+      expect(el?.querySelectorAll('li').length).toBeGreaterThan(0);
+      return el as HTMLElement;
+    });
+
+    // The live editing DOM is built by TaskItem's custom node view, which sets `data-checked` but
+    // not `data-type` (that's only in the schema `renderHTML` spec `getHTML()` would use instead).
+    const taskItems = editorRegion.querySelectorAll('li[data-checked]');
+    expect(taskItems.length).toBe(2);
+    expect(taskItems[0].getAttribute('data-checked')).toBe('false');
+    expect(taskItems[1].getAttribute('data-checked')).toBe('true');
+  });
+});

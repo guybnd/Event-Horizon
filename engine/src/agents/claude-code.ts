@@ -1,10 +1,9 @@
 import { getWorkspace, resolveWorkspaceByRoot, runWithWorkspace } from '../workspace-context.js';
 import { log } from '../log.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
-import * as path from 'path';
 import { getConfig } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentSessionEntry, lastAssistantText } from '../history.js';
-import { updateTaskWithHistory, updateAgentSession, estimateCostUSD } from '../task-store.js';
+import { updateTaskWithHistory, updateAgentSession } from '../task-store.js';
 import { resolveTaskExecutionRoot, resolveResumeExecutionRoot, assertIsolatedSpawnRoot } from '../task-worktree.js';
 import { resolveExecutionRootReclaimOpts } from '../pr-cleanup.js';
 import { getWorkspaceRoot } from '../workspace.js';
@@ -29,11 +28,16 @@ import { disallowedEhToolsForPersona, resolveSoloChatPersona } from '../orchestr
 import { allReadOnlyDisallowedTools } from '../mcp-readonly.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest, SendInputOptions } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, resolveEffectivePhase, buildPhaseHandoffNote } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, resolveClaudeExePath, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, resolveEffectivePhase, buildPhaseHandoffNote, recordCompaction, recordRateLimit, stopOutcomeText, stopOutcomeReason } from './shared.js';
 import { BOARD_CONVERSATION_ID } from './board.js';
 import { diagnoseAuthFailure } from './auth-diagnostics.js';
 import { watchForCredentialRefresh } from './auth-recovery-watch.js';
 import { resolveClaudeBinaryPathDarwin, invalidateClaudeBinaryDarwinCache } from './claude-binary-darwin.js';
+import {
+  attachAnthropicStdoutProcessing,
+  claudeProgressLabel,
+  type AnthropicContentBlock,
+} from './anthropic-stream.js';
 
 /**
  * One entry of the `--mcp-config` server map: either a shared HTTP endpoint (FLUX-579) or a
@@ -475,52 +479,9 @@ function surfaceAuthDiagnosis(session: CliSessionRecord, taskId: string) {
   watchForCredentialRefresh(taskId);
 }
 
-/** Claude Code `--output-format stream-json` content block (`assistant`/`user` message content[]). */
-export interface ClaudeContentBlock {
-  type?: string;
-  text?: string;
-  name?: string;
-  id?: string;
-  input?: Record<string, unknown>;
-  tool_use_id?: string;
-  is_error?: boolean;
-  content?: string | Array<{ type?: string; text?: string }>;
-}
-
-/** One line of Claude Code's `--output-format stream-json` JSONL — the shape this adapter parses.
- *  Fields are a union of every event `type` Claude emits; only the ones this parser reads. */
-interface ClaudeCliEvent {
-  type?: string;
-  session_id?: string;
-  event?: {
-    type?: string;
-    delta?: { type?: string; text?: string };
-    content_block?: { type?: string; name?: string };
-  };
-  rate_limit_info?: { status?: string; rateLimitType?: string; resetsAt?: number };
-  message?: { content?: ClaudeContentBlock[] };
-  usage?: {
-    cache_read_input_tokens?: number;
-    cache_creation_input_tokens?: number;
-    input_tokens?: number;
-    output_tokens?: number;
-  };
-  total_cost_usd?: number;
-  is_error?: boolean;
-  error?: string;
-  subtype?: string;
-  api_error_status?: number;
-  /** FLUX-1598: mid-stream `system`/`api_retry` event's status field — NB distinct name from the
-   *  terminal `result` event's `api_error_status` above; same provider HTTP status semantics. */
-  error_status?: number;
-  result?: string;
-  tool_name?: string;
-  /** FLUX-1378: per-model breakdown the CLI reports alongside a `result` event's `usage` — the only
-   *  place `contextWindow` is surfaced. Keyed by model id; a turn that only used the main model has
-   *  one entry, but a turn with haiku sub-agent calls can carry several — pick the entry with the
-   *  most tokens as the "driving" model for the live-context gauge. */
-  modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; contextWindow?: number }>;
-}
+/** Claude Code `--output-format stream-json` content block (`assistant`/`user` message content[]).
+ *  FLUX-1722: type lives in anthropic-stream.ts so Grok can share the wire-format parser. */
+export type ClaudeContentBlock = AnthropicContentBlock;
 
 // FLUX-1375: moved to shared.ts so gemini.ts/copilot.ts's resume/reply exit handlers can reuse it
 // too (each was dropping every resumed turn's tokenMetadata). Re-exported here for the existing
@@ -532,291 +493,84 @@ export function attachStdoutProcessing(
   session: CliSessionRecord,
   taskId: string,
 ) {
-  // FLUX-932: the line-buffer / JSON.parse / commitPendingAssistantText transport skeleton now lives
-  // in shared.ts (sharedAttachStdoutProcessing). This supplies Claude's per-CLI parser: `stream_event`
-  // token deltas (--include-partial-messages) + complete `assistant` content[] blocks + `result` usage.
-  // narrationType is omitted → Claude flushes compact progress rows (not the 'text' Narration block).
-  return sharedAttachStdoutProcessing<ClaudeCliEvent>(proc, session, {
-    onEvent: (evt, trimmed, commitPendingAssistantText) => {
-        if (!session.resumeSessionId && evt.session_id) {
-          session.resumeSessionId = evt.session_id;
-        }
-        // FLUX-691: token-by-token live streaming. With `--include-partial-messages` the CLI
-        // emits `stream_event` lines wrapping the raw Anthropic SSE events. Surface text deltas
-        // as a lightweight `assistantDelta` SSE for the live chat node, then STOP: partial events
-        // must NOT be teed to the durable transcript (it stays complete-messages-only, so the
-        // taskUpdated/progress-driven refetch path is untouched) and must NOT touch the output
-        // buffers (the complete `assistant` message — handled below — still owns those).
-        if (evt.type === 'stream_event') {
-          const inner = evt.event;
-          if (inner?.type === 'content_block_delta'
-            && inner.delta?.type === 'text_delta'
-            && typeof inner.delta.text === 'string'
-            && inner.delta.text) {
-            broadcastEvent('assistantDelta', {
-              taskId,
-              sessionId: session.sessionHistoryEntry?.sessionId,
-              text: inner.delta.text,
-            });
-          } else if (inner?.type === 'content_block_start'
-            && inner.content_block?.type === 'tool_use'
-            && typeof inner.content_block.name === 'string') {
-            // FLUX-927: a tool_use block's name arrives up front, BEFORE its (potentially
-            // huge) input_json_delta streams — e.g. publish_artifact streams an entire
-            // self-contained HTML document as its input. Without this, currentActivity is
-            // only set when the COMPLETE assistant message lands (below), so the long
-            // input-streaming window shows no signal and the chat feels frozen. Broadcast an
-            // early activity the moment the tool name is known so the UI reflects it
-            // immediately. (Still partial-only: don't tee the transcript or touch buffers.)
-            const name = inner.content_block.name;
-            const earlyActivity = name === 'publish_artifact'
-              // Generic label: at stream-start the input hasn't arrived, so we can't yet tell a
-              // grooming artifact from a Ready-time visual recap (FLUX-976) — don't presume grooming.
-              ? 'Preparing artifact…'
-              : activityFor(TOOL_ACTIVITY_MAP, name);
-            if (session.currentActivity !== earlyActivity) {
-              session.currentActivity = earlyActivity;
-              session.lastProgressLog = undefined;
-              broadcastEvent('activity', { taskId, activity: session.currentActivity });
-            }
-          }
-          return; // FLUX-932: was `continue` — now a return from onEvent (the loop lives in shared.ts).
-        }
-        // FLUX-1598: the CLI emits mid-stream `system`/`api_retry` events on every retry attempt,
-        // long before the terminal `result` event (below) that this parser already classifies as
-        // 'auth-expired'. A 401/403 never heals by retrying — the CLI still rides out all
-        // `max_retries` (10, exponential backoff — ~2 min total) before surfacing anything, so the
-        // chat sits frozen the whole time. Abort on the FIRST auth-coded retry instead. Keep
-        // FLUX-1406 discipline: only the structured numeric `error_status` (or an exact
-        // 'authentication_failed' error code — NOT free-text scanning of stream content) triggers
-        // this, so an unrelated mid-task tool 401/403 can never reach here (this is a system-level
-        // provider event, not tool output). 429/5xx retries are left alone — they have a real
-        // cooldown / are genuinely transient — and continue their normal backoff untouched.
-        if (evt.type === 'system' && evt.subtype === 'api_retry') {
-          appendTranscriptLine(taskId, trimmed);
-          if (!session.terminalReason
-            && (evt.error_status === 401 || evt.error_status === 403 || evt.error === 'authentication_failed')) {
-            session.terminalReason = 'auth-expired';
-            // FLUX-1601: no raw "HTTP 401" line in chat — the portal's actionable auth error card
-            // reads `terminalReason`/`authDiagnosis` off the session summary instead. surfaceAuthDiagnosis
-            // also starts the bounded credential-refresh watch that drives the card's auto-retry.
-            surfaceAuthDiagnosis(session, taskId);
-            proc.kill();
-          }
-          return;
-        }
-        // FLUX-981: surface a real rate-limit throttle inline. Gate on the TOP-LEVEL
-        // `rate_limit_info.status` (e.g. anything other than 'allowed'), NOT `overageStatus` —
-        // a normal request carries `{status:'allowed', overageStatus:'rejected'}`, so gating on
-        // overageStatus would false-positive on every request. Note only; does not stop the session.
-        if (evt.type === 'rate_limit_event') {
-          const info = evt.rate_limit_info || {};
-          if (info.status && info.status !== 'allowed') {
-            // De-dup: the stream re-emits this event on every retry/backoff while throttled, so
-            // surface ONE ⚠️ line per distinct throttle state instead of flooding the chat.
-            const key = `${info.status}:${info.rateLimitType ?? ''}`;
-            if (session.lastRateLimitKey !== key) {
-              session.lastRateLimitKey = key;
-              // Number.isFinite (not typeof === 'number') so a NaN resetsAt doesn't reach
-              // new Date(NaN).toISOString() — which throws and reroutes the whole line to onParseError.
-              const resetsAtRaw = info.resetsAt;
-              const resetsAt = typeof resetsAtRaw === 'number' && Number.isFinite(resetsAtRaw)
-                ? ` (resets at ${new Date(resetsAtRaw * 1000).toISOString()})`
-                : '';
-              appendErrorToSession(session, `Rate limited: ${info.status}${info.rateLimitType ? ` [${info.rateLimitType}]` : ''}${resetsAt}`);
-            }
-          } else if (session.lastRateLimitKey) {
-            // Back to allowed — reset so a later re-throttle surfaces again.
-            session.lastRateLimitKey = undefined;
-          }
-          // FLUX-602: still tee the raw line to the durable transcript (the early return here used to
-          // skip it, silently dropping every rate_limit_event — including normal `allowed` ones —
-          // from the per-ticket transcript). Tee, THEN return.
-          appendTranscriptLine(taskId, trimmed);
-          return;
-        }
-        // FLUX-602: tee every raw stream-json line to the durable per-ticket transcript.
+  // FLUX-1722: Claude's Anthropic-wire-format onEvent lives in anthropic-stream.ts so Grok can
+  // reuse it. This wrapper is the Claude dialect: vendor events (api_retry, rate_limit_event,
+  // ScheduleWakeup) plus the published-artifact early-activity label. The shared.ts line-buffer
+  // skeleton is untouched.
+  return attachAnthropicStdoutProcessing(proc, session, taskId, {
+    toolActivityMap: TOOL_ACTIVITY_MAP,
+    progressLabel: claudeProgressLabel,
+    earlyToolActivity: (name) => (name === 'publish_artifact' ? 'Preparing artifact…' : undefined),
+    onToolUse: (s, block) => {
+      if (block.name === 'ScheduleWakeup') captureScheduledWakeup(s, block);
+    },
+    onVendorEvent: (evt, trimmed, ctx) => {
+      if (evt.type === 'system' && evt.subtype === 'api_retry') {
         appendTranscriptLine(taskId, trimmed);
-        // FLUX-981: surface individual tool-result errors inline. Claude delivers tool RESULTS as
-        // `user` messages whose content blocks carry `is_error` — previously never inspected, so a
-        // failed Bash/Edit/etc. mid-session was silently dropped (only a terminal result.is_error or
-        // a nonzero process exit ever surfaced). Copilot/Gemini already do this via appendErrorToSession.
-        if (evt.type === 'user' && Array.isArray(evt.message?.content)) {
-          for (const block of evt.message.content) {
-            if (block?.type === 'tool_result' && block.is_error) {
-              const toolName = (block.tool_use_id && session.toolNamesById?.[block.tool_use_id]) || 'unknown';
-              const raw = typeof block.content === 'string'
-                ? block.content
-                : Array.isArray(block.content)
-                  ? block.content.map((c) => (typeof c === 'string' ? c : c?.text || '')).join(' ')
-                  : '';
-              const detail = raw.trim().slice(0, 200);
-              appendErrorToSession(session, `Tool failed: ${toolName}${detail ? ` — ${detail}` : ''}`);
-            }
-          }
+        if (!ctx.session.terminalReason
+          && (evt.error_status === 401 || evt.error_status === 403 || evt.error === 'authentication_failed')) {
+          ctx.session.terminalReason = 'auth-expired';
+          surfaceAuthDiagnosis(ctx.session, taskId);
+          ctx.proc.kill();
         }
-        if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
-          const toolBlock = evt.message.content.find((b) => b.type === 'tool_use');
-          if (toolBlock) {
-            session.pendingAssistantText = '';
-            const newActivity = activityFor(TOOL_ACTIVITY_MAP, toolBlock.name ?? '');
-            const activityChanged = session.currentActivity !== newActivity;
-            session.currentActivity = newActivity;
-
-            // Reset last progress log when activity changes
-            if (activityChanged) {
-              session.lastProgressLog = undefined;
-            }
-
-            // Log progress when activity changes or for significant tools
-            if (activityChanged && session.sessionHistoryEntry?.sessionId) {
-              const toolName = toolBlock.name;
-              let progressMsg = session.currentActivity;
-
-              // Add context for specific tools if available
-              if (toolBlock.input) {
-                if (toolName === 'Read' && typeof toolBlock.input.file_path === 'string') {
-                  progressMsg = `Reading ${path.basename(toolBlock.input.file_path)}`;
-                } else if (toolName === 'Edit' && typeof toolBlock.input.file_path === 'string') {
-                  progressMsg = `Editing ${path.basename(toolBlock.input.file_path)}`;
-                } else if (toolName === 'Write' && typeof toolBlock.input.file_path === 'string') {
-                  progressMsg = `Writing ${path.basename(toolBlock.input.file_path)}`;
-                } else if (toolName === 'Bash' && toolBlock.input.command) {
-                  const cmd = String(toolBlock.input.command).slice(0, 50);
-                  progressMsg = `Running: ${cmd}${cmd.length >= 50 ? '...' : ''}`;
-                }
-              }
-
-              // Accumulate tool progress in memory only — written to file at session end
-              if (session.sessionHistoryEntry) {
-                session.sessionHistoryEntry.progress.push({
-                  timestamp: new Date().toISOString(),
-                  message: progressMsg,
-                  type: 'tool',
-                  data: { toolName, parameters: toolBlock.input }
-                });
-              }
-            }
-          } else {
-            commitPendingAssistantText();
-            session.currentActivity = 'Thinking';
+        return true;
+      }
+      if (evt.type === 'rate_limit_event') {
+        const info = evt.rate_limit_info || {};
+        if (info.status && info.status !== 'allowed') {
+          // FLUX-1744: record structured telemetry BEFORE the dedupe check below, so `observedAt`
+          // refreshes on every repeat of the same status/rateLimitType (a stream that re-emits
+          // rate_limit_event on every retry/backoff while throttled) even though the human-readable
+          // chat line is still deduped to one per key.
+          recordRateLimit(ctx.session, { status: info.status, rateLimitType: info.rateLimitType, resetsAtEpochSeconds: info.resetsAt });
+          const key = `${info.status}:${info.rateLimitType ?? ''}`;
+          if (ctx.session.lastRateLimitKey !== key) {
+            ctx.session.lastRateLimitKey = key;
+            const resetsAtRaw = info.resetsAt;
+            const resetsAt = typeof resetsAtRaw === 'number' && Number.isFinite(resetsAtRaw)
+              ? ` (resets at ${new Date(resetsAtRaw * 1000).toISOString()})`
+              : '';
+            appendErrorToSession(ctx.session, `Rate limited: ${info.status}${info.rateLimitType ? ` [${info.rateLimitType}]` : ''}${resetsAt}`);
           }
-          broadcastEvent('activity', { taskId, activity: session.currentActivity });
-          for (const block of evt.message.content) {
-            if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-              session.liveOutputBuffer += block.text;
-              if (!toolBlock) {
-                session.pendingAssistantText += block.text;
-              }
-            } else if (block.type === 'tool_use' && block.id && typeof block.name === 'string') {
-              // FLUX-981: remember id→name so a later `user` tool_result carrying is_error can be
-              // labeled with the tool that failed (the result block carries only tool_use_id).
-              (session.toolNamesById ??= {})[block.id] = block.name;
-              // FLUX-1390: stage an honored ScheduleWakeup call; consumed at turn-end.
-              if (block.name === 'ScheduleWakeup') captureScheduledWakeup(session, block);
-            }
-          }
-        } else {
-          if (evt.type !== 'tool_use' && evt.type !== 'tool_result') {
-            commitPendingAssistantText();
-          } else {
-            session.pendingAssistantText = '';
-          }
-          appendSessionOutput(session, trimmed, 'stdout', false);
+        } else if (ctx.session.lastRateLimitKey) {
+          ctx.session.lastRateLimitKey = undefined;
         }
-        if (evt.type === 'result') {
-          session.currentActivity = undefined;
-          session.toolNamesById = undefined; // FLUX-981: turn ended — release the id→name map.
-          broadcastEvent('activity', { taskId, activity: null });
-        }
-        if (evt.type === 'result' && evt.usage) {
-          const cacheRead = evt.usage?.cache_read_input_tokens ?? 0;
-          const cacheCreation = evt.usage?.cache_creation_input_tokens ?? 0;
-          const freshInput = evt.usage?.input_tokens ?? 0;
-          const inputTok = freshInput + cacheRead + cacheCreation;
-          const outputTok = evt.usage?.output_tokens ?? 0;
-          session.inputTokens = (session.inputTokens ?? 0) + inputTok;
-          session.outputTokens = (session.outputTokens ?? 0) + outputTok;
-          session.cacheReadTokens = (session.cacheReadTokens ?? 0) + cacheRead;
-          session.cacheCreationTokens = (session.cacheCreationTokens ?? 0) + cacheCreation;
-          if (typeof evt.total_cost_usd === 'number') {
-            session.costUSD = (session.costUSD ?? 0) + evt.total_cost_usd;
-          } else {
-            // FLUX-1375: session.model (not session.resumeSessionId, a UUID that never matched any
-            // pricing row) — and price fresh/cache-read/cache-creation tokens at their own rates
-            // instead of blending them all into the full input rate.
-            session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.model, {
-              freshInputTokens: freshInput,
-              cacheReadTokens: cacheRead,
-              cacheCreationTokens: cacheCreation,
-              outputTokens: outputTok,
-            });
-            session.costIsEstimated = true;
-          }
-          // FLUX-1378: live (non-cumulative) context-headroom gauge — overwritten every `result`
-          // event, unlike the accumulators above. `inputTok` here already sums fresh+cache-read+
-          // cache-creation, i.e. exactly the session's context size as of THIS turn.
-          session.lastTurnContextTokens = inputTok;
-          const modelEntries = evt.modelUsage ? Object.values(evt.modelUsage) : [];
-          if (modelEntries.length > 0) {
-            const primary = modelEntries.reduce((best, cur) => {
-              const curTok = (cur.inputTokens ?? 0) + (cur.cacheReadInputTokens ?? 0) + (cur.cacheCreationInputTokens ?? 0);
-              const bestTok = (best.inputTokens ?? 0) + (best.cacheReadInputTokens ?? 0) + (best.cacheCreationInputTokens ?? 0);
-              return curTok > bestTok ? cur : best;
-            });
-            if (typeof primary.contextWindow === 'number') session.contextWindow = primary.contextWindow;
-          }
-        }
-        if (evt.type === 'tool_use_blocked' || (evt.type === 'result' && evt.is_error && /permission|not allowed|denied/i.test(String(evt.error || '')))) {
-          const reason = evt.tool_name
-            ? `Blocked: ${evt.tool_name}${evt.error ? ` — ${evt.error}` : ''}`
-            : String(evt.error || 'Permission denied');
-          session.blockedReason = reason;
-          session.status = 'waiting-input';
-          flushSessionOutput(session, true);
-          enqueueSessionWrite(session, async () => {
-            await updateTaskWithHistory(taskId, {
-              updatedBy: 'Agent',
-              nextStatus: getConfig().requireInputStatus || 'Require Input',
-              entries: [buildActivityEntry(`${session.label} blocked: ${reason}`, 'Agent', new Date().toISOString())],
-            });
-          });
-        } else if (evt.type === 'result' && evt.is_error) {
-          // FLUX-1047 / FLUX-1063 / FLUX-1397: classify a RECOVERABLE terminal cause here — the only
-          // reliable point, since the exit funnel only sees an opaque nonzero code by the time this
-          // surfaces. Stamp the structured terminalReason BEFORE the exit funnel flips status to
-          // 'failed', so the Furnace stoker can read it and recover (fresh session / cooldown) instead
-          // of parking on the first strike. A rate limit hides in `result` + `api_error_status` (not
-          // `error`/`subtype`): the 5-hour-limit payload is `{is_error:true, subtype:"success",
-          // api_error_status:429, result:"You've hit your session limit …"}`, so `errText` alone is
-          // just "success".
-          const errText = String(evt.error || evt.subtype || 'unknown');
-          const resultText = typeof evt.result === 'string' ? evt.result : '';
-          const combined = `${errText} ${resultText}`;
-          const isAuth = evt.api_error_status === 401 || evt.api_error_status === 403 || isAuthError(combined);
-          // FLUX-981: a non-permission result error (API error, overload, invalid request) was
-          // previously DROPPED — it doesn't match the permission regex above and there's no other
-          // handler, so it fell silently into liveOutputBuffer. Surface it inline. Do NOT flip to
-          // waiting-input: this isn't a HITL prompt, and the exit handler still runs afterward.
-          // FLUX-1601: EXCEPT an auth failure — no raw provider 401 string in chat; the portal's
-          // actionable auth error card reads `terminalReason`/`authDiagnosis` off the session summary
-          // instead of this line.
-          if (!isAuth) appendErrorToSession(session, `Agent error: ${errText}`);
-          if (isContextExhaustionError(combined)) {
-            session.terminalReason = 'context-exhausted';
-          } else if (evt.api_error_status === 429 || isRateLimitError(combined)) {
-            session.terminalReason = 'rate-limited';
-          } else if (isAuth) {
-            // FLUX-1397: an expired/invalid credential is a HUMAN action, not a per-ticket retry — see
-            // decideTicketAction's 'auth-expired' branch, which halts the whole batch instead of parking.
-            session.terminalReason = 'auth-expired';
-            surfaceAuthDiagnosis(session, taskId);
-          }
-        }
+        appendTranscriptLine(taskId, trimmed);
+        return true;
+      }
+      if (evt.type === 'system' && evt.subtype === 'compact_boundary') {
+        recordCompaction(ctx.session, {
+          trigger: evt.compact_metadata?.trigger,
+          preTokens: evt.compact_metadata?.pre_tokens,
+          postTokens: evt.compact_metadata?.post_tokens,
+          durationMs: evt.compact_metadata?.duration_ms,
+        });
+        // FLUX-1746: synthesize the transcript marker rather than matching the raw compact_boundary
+        // frame in projection.ts — it is unverified that this frame's subtype ever reaches the
+        // stream-json stdout appendTranscriptLine below captures (0 occurrences across every
+        // captured transcript as of this ticket). Projecting from this synthetic event instead means
+        // the marker renders correctly even if that channel never settles.
+        appendTranscriptEvent(taskId, {
+          type: 'compaction',
+          trigger: evt.compact_metadata?.trigger,
+          preTokens: evt.compact_metadata?.pre_tokens,
+          postTokens: evt.compact_metadata?.post_tokens,
+          durationMs: evt.compact_metadata?.duration_ms,
+          timestamp: new Date().toISOString(),
+        });
+        appendTranscriptLine(taskId, trimmed);
+        return true;
+      }
+      return false;
     },
-    onParseError: (trimmed) => {
-      appendSessionOutput(session, trimmed, 'stdout', false);
+    classifyResultError: (combined, apiStatus) => {
+      const isAuth = apiStatus === 401 || apiStatus === 403 || isAuthError(combined);
+      if (isContextExhaustionError(combined)) return 'context-exhausted';
+      if (apiStatus === 429 || isRateLimitError(combined)) return 'rate-limited';
+      if (isAuth) return 'auth-expired';
+      return undefined;
     },
+    onAuthExpired: surfaceAuthDiagnosis,
   });
 }
 
@@ -1107,7 +861,7 @@ async function finalizeTerminalSession(
 ): Promise<void> {
   const label = session.label;
   const outcome = session.requestedStop
-    ? `${label} session stopped by user.`
+    ? `${label} session stopped ${stopOutcomeText(session)}.`
     : `${label} session ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
 
   // FLUX-981: a nonzero/signal exit that the user did NOT cancel surfaces inline in the chat, in
@@ -1188,7 +942,12 @@ async function finalizeTerminalSession(
     // FLUX-1563: same unbound-exit-handler rebind as the health-check call above — flagIfParked
     // resolves the ticket (and raises needsAction/notification) via getWorkspace(), which must be
     // bound to the session's OWNING board, not whatever board is active.
-    await runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => flagIfParked(session, id, leadWaitOverride(session)));
+    // FLUX-1761: a narrated "I'll wait for X" on this terminal path is an empty promise in every
+    // phase — flag it with the specific message before the generic backstop runs.
+    await runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), async () => {
+      await flagIfUnarmedWaitPromise(id, lastAssistantText(session.sessionHistoryEntry?.progress));
+      await flagIfParked(session, id, leadWaitOverride(session));
+    });
   }
 
   // Notify delegation awaiters (supervisor pattern).
@@ -1227,7 +986,7 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
     ? resolveModel(session.taskKey ?? 'implementation.lead', framework, getConfig())
     : null;
 
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { diffBlock: session.diffBlock, phase: resolveEffectivePhase(session), framework: 'claude', editsGated: isChatEditGated(session, task) || isScratchSession(task), patternPosition: session.patternPosition, batchTicketIds: session.batchTicketIds, batchExcluded: session.batchExcluded });
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { diffBlock: session.diffBlock, phase: resolveEffectivePhase(session), framework: 'claude', editsGated: isChatEditGated(session, task) || isScratchSession(task), patternPosition: session.patternPosition, batchTicketIds: session.batchTicketIds, batchExcluded: session.batchExcluded, planFirst: session.planFirst });
 
   // FLUX-579: ensure this session's per-worktree shared HTTP server(s) exist (keyed
   // by execution root) before building the MCP config that looks them up.
@@ -1485,15 +1244,19 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
         endedAt: spawnEndedAt,
         durationMs: spawnEndedAt - spawnStartedAt,
         outcome,
-        reason: session.requestedStop ? 'stopped by user' : outcome === 'error' ? (signal ? `signal ${signal}` : `exit code ${code}`) : undefined,
+        reason: session.requestedStop ? stopOutcomeReason(session) : outcome === 'error' ? (signal ? `signal ${signal}` : `exit code ${code}`) : undefined,
       });
       // S10 (epic FLUX-996): surface a crashed spawn (non-zero/signalled exit, not a user stop or
       // a healthy Require-Input pause) via the same needsAction + notification plumbing used
       // elsewhere — this session never reaches the parked-turn backstop (it never really started).
       // FLUX-1563: unbound child-process 'exit' handler — rebind to the session's OWNING board.
       if (outcome === 'error') {
+        // FLUX-1772: name the classified reason (e.g. 'auth-expired') when one was stamped before
+        // the process died — previously this generic message was the only board-visible signal,
+        // leaving the classification (terminalReason/authDiagnosis, already computed) silent.
+        const reasonSuffix = session.terminalReason ? ` — ${session.terminalReason}` : '';
         runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () => {
-          void raiseNeedsAction(id, `Agent process exited unexpectedly (${signal ? `signal ${signal}` : `exit code ${code}`}).`);
+          void raiseNeedsAction(id, `Agent process exited unexpectedly (${signal ? `signal ${signal}` : `exit code ${code}`})${reasonSuffix}.`);
         });
       }
     }
@@ -1877,7 +1640,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
         endedAt: spawnEndedAt,
         durationMs: spawnEndedAt - spawnStartedAt,
         outcome,
-        reason: session.requestedStop ? 'stopped by user' : outcome === 'error' ? (signal ? `signal ${signal}` : `exit code ${code}`) : undefined,
+        reason: session.requestedStop ? stopOutcomeReason(session) : outcome === 'error' ? (signal ? `signal ${signal}` : `exit code ${code}`) : undefined,
       });
     }
     commitReplyPending();
@@ -1949,11 +1712,13 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       // HARD backstop regardless of what it said.
       // FLUX-1563: unbound child-process 'exit' handler — rebind flagIfUnarmedWaitPromise/
       // flagIfParked (both raise needsAction + a notification) to the session's OWNING board.
-      if (session.phase === 'chat') {
-        await runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () =>
-          flagIfUnarmedWaitPromise(id, lastAssistantText(session.sessionHistoryEntry?.progress)),
-        );
-      }
+      // FLUX-1761: no longer chat-only. This is a TERMINAL path — an armed wakeup never reaches it —
+      // so a narrated "I'll wait for X" is an empty promise in every phase. Observed on an
+      // implementation run that finished its fix, said it would wait for a backgrounded
+      // `npm run check`, and exited four seconds later with no board action and no flag.
+      await runWithWorkspace(resolveWorkspaceByRoot(workspaceRoot), () =>
+        flagIfUnarmedWaitPromise(id, lastAssistantText(session.sessionHistoryEntry?.progress)),
+      );
       // FLUX-1437: same stale-wait catch-and-resume as finalizeTerminalSession — try it BEFORE
       // flagging/parking. No-ops instantly for chat (tryResumeStaleWait's isDispatchedSession gate),
       // so chat sessions always fall through to flagIfParked exactly as before.

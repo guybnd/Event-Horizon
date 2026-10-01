@@ -1,4 +1,4 @@
-import { Bot, Terminal, Zap, Braces, type LucideIcon } from 'lucide-react';
+import { Bot, Terminal, Zap, Braces, Sparkles, Rocket, type LucideIcon } from 'lucide-react';
 import type { CliFramework } from './types';
 
 export const FRAMEWORK_ICONS: Record<CliFramework, LucideIcon> = {
@@ -6,4 +6,6 @@ export const FRAMEWORK_ICONS: Record<CliFramework, LucideIcon> = {
   gemini: Zap,
   copilot: Terminal,
   codex: Braces,
+  grok: Sparkles,
+  antigravity: Rocket,
 };

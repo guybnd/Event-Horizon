@@ -474,7 +474,11 @@ export async function checkSkillStaleness(framework: Framework): Promise<void> {
     if (existing) return;
 
     const first = stale[0]!;
-    const detail = stale.map(s => `${s.framework} v${s.installed}`).join(', ');
+    // FLUX-1749: staleness is content-based, so the display versions can match while the install
+    // is still outdated (a non-orchestrator module changed). Say so instead of "v2.17.0 (source v2.17.0)".
+    const detail = stale
+      .map(s => `${s.framework} v${s.installed}${s.installed === s.source ? ' (content changed)' : ''}`)
+      .join(', ');
     const sourceVersion = first.source;
     addNotification({
       type: 'error',

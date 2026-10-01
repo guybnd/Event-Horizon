@@ -1,0 +1,55 @@
+{
+  "id": "flux-1681",
+  "title": "FLUX-1681 — Codex tickets stall after changes-requested (hard)",
+  "track": "fix",
+  "seedTitle": "FLUX-1681 Codex tickets stall after changes-requested",
+  "baseRef": "bench/flux-1681-holdout",
+  "ticketId": "FLUX-1681",
+  "seedPrompt": "Fix the bug described below. Regression tests already exist at engine/src/benchmark-holdout-flux-1681-mcp.test.ts, engine/src/benchmark-holdout-flux-1681-dispatch.test.ts, engine/src/benchmark-holdout-flux-1681-temper.test.ts and currently FAIL (the new cases in each file) — make them pass without modifying those test files. They are registered in engine/test-tiers.json and the adapter-boundary allowlist already; do not touch either.\n\nThe ticket, as groomed:\n\n{{ticketBody}}\n\nVerify with: node node_modules/vitest/vitest.mjs run --root engine src/benchmark-holdout-flux-1681-mcp.test.ts src/benchmark-holdout-flux-1681-dispatch.test.ts src/benchmark-holdout-flux-1681-temper.test.ts",
+  "validation": {
+    "command": "node",
+    "args": [
+      "node_modules/vitest/vitest.mjs",
+      "run",
+      "--root",
+      "engine",
+      "src/benchmark-holdout-flux-1681-mcp.test.ts",
+      "src/benchmark-holdout-flux-1681-dispatch.test.ts",
+      "src/benchmark-holdout-flux-1681-temper.test.ts"
+    ],
+    "paths": [
+      "engine/src/benchmark-holdout-flux-1681-mcp.test.ts",
+      "engine/src/benchmark-holdout-flux-1681-dispatch.test.ts",
+      "engine/src/benchmark-holdout-flux-1681-temper.test.ts"
+    ],
+    "timeoutMs": 600000
+  },
+  "regression": {
+    "command": "node",
+    "args": [
+      "node_modules/typescript/bin/tsc",
+      "--noEmit",
+      "-p",
+      "engine"
+    ],
+    "timeoutMs": 600000
+  },
+  "repetitions": 3,
+  "concurrency": 3,
+  "wallClockBudgetMs": 2700000,
+  "notes": "Hard: 8 files across furnace-stoker, mcp-server and temper, 15 held-out cases in three files. 20–45 min per run, $3–12.",
+  "defaultMatrix": [
+    {
+      "framework": "claude",
+      "model": "claude-sonnet-5",
+      "effortOverride": "high",
+      "phase": "implementation"
+    },
+    {
+      "framework": "claude",
+      "model": "claude-opus-5",
+      "effortOverride": "high",
+      "phase": "implementation"
+    }
+  ]
+}

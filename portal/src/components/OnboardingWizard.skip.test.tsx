@@ -32,6 +32,10 @@ vi.mock('../api', async (importOriginal) => {
     fetchStorageMode: vi.fn().mockResolvedValue({ mode: 'in-repo' }),
     fetchPathInfo: vi.fn().mockResolvedValue({ binaryDir: null, isPkg: false, platform: 'linux' }),
     installWorkspaceSkill: vi.fn().mockResolvedValue({ success: true, skillInstalledPath: '/tmp/skill' }),
+    fetchConfig: vi.fn().mockResolvedValue({ users: [] }),
+    saveConfig: vi.fn().mockResolvedValue({}),
+    updateGlobalSettings: vi.fn().mockResolvedValue({}),
+    recheckGh: vi.fn().mockResolvedValue({ installed: false, authenticated: false, platform: 'linux', linuxPackageManager: null }),
   };
 });
 
@@ -167,5 +171,29 @@ describe('OnboardingWizard — per-step skip (FLUX-1684)', () => {
 
     fireEvent.click(screen.getByText('Install now'));
     await waitFor(() => expect(installWorkspaceSkill).toHaveBeenCalledWith('cursor'));
+  });
+
+  it('offers Codex and Grok as launchable assistants and installs Grok against grok (FLUX-1726)', async () => {
+    localStorage.setItem('eh-onboarding-resume', 'pick-assistant');
+    const { installWorkspaceSkill, saveConfig, updateGlobalSettings } = await import('../api');
+    renderWizard();
+
+    await screen.findByRole('heading', { name: 'Pick your AI assistant' });
+    expect(screen.getByText('Grok Build')).toBeTruthy();
+    expect(screen.getByText('Codex CLI')).toBeTruthy();
+    expect(screen.getByText(/Claude Code, Copilot, Gemini, Codex & Grok/)).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Grok Build'));
+    fireEvent.click(screen.getByText('Continue →'));
+
+    await waitFor(() => expect(saveConfig).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'grok' })));
+    await waitFor(() => expect(updateGlobalSettings).toHaveBeenCalledWith({ preferredFramework: 'grok' }));
+    await screen.findByRole('heading', { name: 'Connect the GitHub CLI' });
+    fireEvent.click(screen.getByText('Skip'));
+
+    await screen.findByRole('heading', { name: 'Install the integration' });
+    expect(screen.getByText('Grok Build')).toBeTruthy();
+    fireEvent.click(screen.getByText('Install now'));
+    await waitFor(() => expect(installWorkspaceSkill).toHaveBeenCalledWith('grok'));
   });
 });

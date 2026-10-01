@@ -68,10 +68,15 @@ export const PRESET_ASSIGNMENTS: Record<Exclude<ModelPreset, 'custom'>, Record<T
 export const DEFAULT_TIER_MODELS: Record<CliFramework, TierModels> = {
   claude: { smart: 'opus', efficient: 'sonnet', cheap: 'haiku' },
   gemini: { smart: 'gemini-2.5-pro', efficient: 'gemini-2.5-flash', cheap: 'gemini-2.5-flash-lite' },
-  copilot: { smart: 'gpt-5', efficient: 'gpt-5-mini', cheap: 'gpt-4.1' },
+  copilot: { smart: 'auto', efficient: 'auto', cheap: 'auto' },
   // FLUX-1625: unprobed against codex-cli's actual model catalog — mirrors engine config.ts's
   // INTEGRATION_TIER_DEFAULTS.codexCli, same caveat.
   codex: { smart: 'gpt-5-codex', efficient: 'gpt-5', cheap: 'gpt-5-mini' },
+  grok: { smart: 'grok-4.6', efficient: 'grok-4.5', cheap: 'grok-4.5' },
+  // FLUX-1738: live slugs from `agy models` (agy 1.1.26) — mirrors engine config.ts's
+  // INTEGRATION_TIER_DEFAULTS.antigravityCli. Effort is baked into most slugs AND available as
+  // `--effort`; the adapter uses the flag, so these are plain model picks.
+  antigravity: { smart: 'gemini-3.1-pro-high', efficient: 'gemini-3.8-flash-medium', cheap: 'gemini-3.8-flash-low' },
 };
 
 export const EMPTY_TIER_MODELS: TierModels = { smart: '', efficient: '', cheap: '' };

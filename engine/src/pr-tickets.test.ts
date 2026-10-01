@@ -12,9 +12,23 @@ vi.mock('./events.js', () => ({ broadcastEvent: vi.fn() }));
 
 // syncPrTickets shells out to `gh` via runGh (git-exec.js, FLUX-1001); mock it so the test feeds
 // a canned `gh pr list --json …` payload (FLUX-751: asserting the PR body is threaded through).
-const ghState = vi.hoisted(() => ({ stdout: '[]' }));
+// FLUX-1713 review: dispatch on argv rather than returning `ghState.stdout` for ANY call —
+// syncPrTickets also calls getCiRunnerInfo, which shells out to `gh api .../actions/runs` and
+// `.../jobs` via the same runGh. A blanket mock fed the `pr list` array back to those calls too,
+// so getCiRunnerInfo always parsed it as `{ workflow_runs: undefined }` and silently returned
+// undefined — every ciRunner-touching test would keep passing even if the plumbing were deleted.
+const ghState = vi.hoisted(() => ({
+  stdout: '[]',
+  runsStdout: JSON.stringify({ workflow_runs: [] }),
+  jobsStdout: JSON.stringify({ jobs: [] }),
+}));
 vi.mock('./git-exec.js', () => ({
-  runGh: vi.fn(async () => ({ stdout: ghState.stdout, stderr: '' })),
+  runGh: vi.fn(async (args: string[]) => {
+    if (args[0] === 'pr' && args[1] === 'list') return { stdout: ghState.stdout, stderr: '' };
+    if (args[1] === 'repos/{owner}/{repo}/actions/runs') return { stdout: ghState.runsStdout, stderr: '' };
+    if (typeof args[1] === 'string' && args[1].includes('/jobs')) return { stdout: ghState.jobsStdout, stderr: '' };
+    return { stdout: ghState.stdout, stderr: '' };
+  }),
 }));
 
 // FLUX-1076: syncPrTickets checks isSyncUnhealthy() before creating a brand-new PR ticket.
@@ -27,6 +41,7 @@ vi.mock('./sync-watcher.js', () => ({
 import { upsertManagedTicket, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { selectMembers, prTicketFields, prTicketId, sharedNonDoneSiblings, membersToBounce, prTicketsOnBranch, resolveMergedPrTickets, syncPrTickets, deriveCiStatus } from './pr-tickets.js';
+import { invalidateCiRunnerCache, type CiRunnerInfo } from './ci-runner.js';
 
 /** FLUX-566: work-gated PR membership + gh-state→ticket-field mapping (pure logic). */
 describe('selectMembers (work-gated membership)', () => {
@@ -117,6 +132,22 @@ describe('prTicketFields (state mapping)', () => {
     expect(prTicketFields(base, [], null).ciStatus).toBe('unknown');
     const failing = { ...base, statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'FAILURE' }] };
     expect(prTicketFields(failing, [], null).ciStatus).toBe('failing');
+  });
+
+  // FLUX-1713: the optional 4th param threads getCiRunnerInfo's result onto the card. A miss
+  // must OMIT the key (not null it) so a transient gh failure never blanks the last-known-good
+  // chip already on disk.
+  it('sets ciRunner when the 4th param is provided, stripping checkedAt', () => {
+    const runner: CiRunnerInfo = { origin: 'self-hosted', runnerName: 'box-1', jobs: [], checkedAt: '2026-01-01T00:00:00.000Z' };
+    const f = prTicketFields(base, [], null, runner);
+    // FLUX-1713 review (Major 3): checkedAt must NOT be persisted — nothing reads it, and
+    // keeping it made every cache-TTL re-probe rewrite the card even when the verdict didn't change.
+    expect(f.ciRunner).toEqual({ origin: 'self-hosted', runnerName: 'box-1', jobs: [] });
+  });
+
+  it('omits ciRunner (not null) when the 4th param is undefined', () => {
+    const f = prTicketFields(base, [], null);
+    expect('ciRunner' in f).toBe(false);
   });
 });
 
@@ -321,6 +352,75 @@ describe('syncPrTickets (PR body carried into the card)', () => {
     await syncPrTickets('/repo');
 
     expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-10', expect.any(Object), '', expect.any(Object));
+  });
+});
+
+/**
+ * FLUX-1713 review (Major 2): the leaf (getCiRunnerInfo) was well tested, but syncPrTickets'
+ * wiring of it onto the card was not, and the pre-existing blanket runGh mock actively masked
+ * that gap (it fed `pr list`'s JSON back to the `actions/runs` call too, so getCiRunnerInfo
+ * always missed and returned undefined). These tests dispatch the mock on argv so a real
+ * runs+jobs payload reaches getCiRunnerInfo, and assert both the hit and the deliberate
+ * omit-on-miss.
+ */
+describe('syncPrTickets threads ciRunner onto the card (FLUX-1713)', () => {
+  beforeEach(() => {
+    for (const k of Object.keys(getWorkspace().tasks)) delete (getWorkspace().tasks as Record<string, unknown>)[k];
+    vi.mocked(upsertManagedTicket).mockClear();
+    ghState.runsStdout = JSON.stringify({ workflow_runs: [] });
+    ghState.jobsStdout = JSON.stringify({ jobs: [] });
+    invalidateCiRunnerCache();
+  });
+
+  it('sets ciRunner on the card when the head sha resolves to a self-hosted run', async () => {
+    ghState.stdout = JSON.stringify([
+      { number: 20, title: 'Add thing', url: 'https://gh/pr/20', state: 'OPEN', headRefName: 'feature/runner', reviewDecision: null, isDraft: false, body: '', headRefOid: 'sha-runner-hit' },
+    ]);
+    ghState.runsStdout = JSON.stringify({ workflow_runs: [{ id: 99 }] });
+    ghState.jobsStdout = JSON.stringify({ jobs: [{ name: 'check', labels: ['self-hosted', 'Linux'], runner_name: 'guy-cachyos-x8664-linux' }] });
+
+    await syncPrTickets('/repo');
+
+    const fields = vi.mocked(upsertManagedTicket).mock.calls[0]![1] as Record<string, unknown>;
+    expect(fields.ciRunner).toMatchObject({ origin: 'self-hosted', runnerName: 'guy-cachyos-x8664-linux' });
+  });
+
+  it('omits ciRunner (not null) on a miss — no workflow run found for the head sha', async () => {
+    ghState.stdout = JSON.stringify([
+      { number: 21, title: 'Add thing', url: 'https://gh/pr/21', state: 'OPEN', headRefName: 'feature/no-runner', reviewDecision: null, isDraft: false, body: '', headRefOid: 'sha-runner-miss' },
+    ]);
+    // ghState.runsStdout defaults to { workflow_runs: [] } from beforeEach — no run for this sha yet.
+
+    await syncPrTickets('/repo');
+
+    const fields = vi.mocked(upsertManagedTicket).mock.calls[0]![1] as Record<string, unknown>;
+    expect('ciRunner' in fields).toBe(false);
+  });
+
+  // FLUX-1713 review (Major 3): getCiRunnerInfo stamps a fresh checkedAt on every cache-TTL
+  // re-probe even when the verdict is byte-identical, and task-store's upsert detects change by
+  // deep-comparing the persisted fields — so a leaked checkedAt would make an unchanged PR's card
+  // look "changed" forever. Two syncPrTickets passes over the identical gh payload (simulating a
+  // hit-TTL expiry re-probe with a new cache entry, via invalidateCiRunnerCache) must persist the
+  // exact same ciRunner object so the deep-compare — and thus the rewrite/commit loop — sees no
+  // change. This is the invariant that would have caught the regression.
+  it('persists an identical ciRunner across two polls of an unchanged PR (no checkedAt leak)', async () => {
+    ghState.stdout = JSON.stringify([
+      { number: 22, title: 'Add thing', url: 'https://gh/pr/22', state: 'OPEN', headRefName: 'feature/stable', reviewDecision: null, isDraft: false, body: '', headRefOid: 'sha-stable' },
+    ]);
+    ghState.runsStdout = JSON.stringify({ workflow_runs: [{ id: 100 }] });
+    ghState.jobsStdout = JSON.stringify({ jobs: [{ name: 'check', labels: ['self-hosted', 'Linux'], runner_name: 'guy-cachyos-x8664-linux' }] });
+
+    await syncPrTickets('/repo');
+    const firstFields = vi.mocked(upsertManagedTicket).mock.calls[0]![1] as Record<string, unknown>;
+
+    invalidateCiRunnerCache(); // simulate the hit-TTL expiring and a fresh probe running
+    vi.mocked(upsertManagedTicket).mockClear();
+    await syncPrTickets('/repo');
+    const secondFields = vi.mocked(upsertManagedTicket).mock.calls[0]![1] as Record<string, unknown>;
+
+    expect(secondFields.ciRunner).toEqual(firstFields.ciRunner);
+    expect(secondFields.ciRunner).not.toHaveProperty('checkedAt');
   });
 });
 

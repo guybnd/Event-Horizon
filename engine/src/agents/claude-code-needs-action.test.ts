@@ -162,6 +162,24 @@ describe('claude-code.ts — raiseNeedsAction wiring for a crashed spawn/resume 
       expect(raiseNeedsAction).toHaveBeenCalledWith('FLUX-TEST', 'Agent process exited unexpectedly (exit code 1).');
     });
 
+    // FLUX-1772: when a terminalReason was classified before the process died (e.g. the
+    // auth-expired kill in claude-code.ts's api_retry handler), the needsAction message names it
+    // instead of staying a bare exit code — the only board-visible signal for a session that died
+    // before it ever produced output.
+    it('names the classified terminalReason in the needsAction message when one was stamped', async () => {
+      const { startCliSession } = await import('./claude-code.js');
+      const { raiseNeedsAction } = await import('../parked-ticket.js');
+      const session = fakeSession({ terminalReason: 'auth-expired' });
+
+      await startCliSession(session, { status: 'In Progress' }, '', '', '/tmp/test-repo');
+      expect(lastProc).toBeDefined();
+
+      lastProc!.emit('exit', 1, null);
+      await vi.waitFor(() => expect(raiseNeedsAction).toHaveBeenCalled());
+
+      expect(raiseNeedsAction).toHaveBeenCalledWith('FLUX-TEST', 'Agent process exited unexpectedly (exit code 1) — auth-expired.');
+    });
+
     it('does NOT raise needsAction on a healthy (code 0) exit', async () => {
       const { startCliSession } = await import('./claude-code.js');
       const { raiseNeedsAction } = await import('../parked-ticket.js');

@@ -100,6 +100,16 @@ describe('installWorkspaceWorkflow — event-horizon permission allowlist', () =
     expect(written.mcpServers['event-horizon'].trust).toBe(true);
   });
 
+  it('grok: writes TOML event-horizon MCP into .grok/config.toml, not .mcp.json', async () => {
+    const result = await installWorkspaceWorkflow({ sourceRoot, targetDir, framework: 'grok' });
+    expect(result.skillInstalledPath).toContain(`${path.sep}event-horizon${path.sep}SKILL.md`);
+    const toml = await fs.readFile(path.join(targetDir, '.grok', 'config.toml'), 'utf-8');
+    expect(toml).toContain('[mcp_servers.event-horizon]');
+    expect(toml).toContain('${EH_SESSION_ID}');
+    expect(toml).toMatch(/url = "http:\/\/127\.0\.0\.1:\d+\/mcp"/);
+    await expect(fs.access(path.join(targetDir, '.mcp.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('copilot: does NOT write a .claude/settings.json permission file (no equivalent capability)', async () => {
     await fs.mkdir(path.join(targetDir, '.github'), { recursive: true });
     await installWorkspaceWorkflow({ sourceRoot, targetDir, framework: 'copilot' });

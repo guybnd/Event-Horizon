@@ -15,6 +15,9 @@
 
 import { validateTicketFrontmatter, formatValidationErrors, type TicketValidationError } from './schema.js';
 import { autoRegisterUnknownTags } from './config.js';
+import { buildActivityEntry } from './history.js';
+import { formatCompactionTokenCount } from './projection.js';
+import type { CliSessionRecord } from './agents/types.js';
 
 /**
  * The configured names of the two comment-gated statuses, with their canonical fallbacks.
@@ -151,4 +154,41 @@ export function evaluateWorktreeReadyRefusal(input: {
       `Commit the worktree's work with a real message (in the worktree: \`git add -A && git commit\`), then retry the move to ${readyStatus} — that opens the PR for review. ` +
       `If this ticket's scope genuinely produces no code diff (verification/investigation-only), retry with noDiffExpected:true instead. Status left unchanged.`,
   };
+}
+
+/**
+ * FLUX-1746: pure review-handoff builder — sums FLUX-1744's compaction telemetry across every
+ * implementation/fast-path session recorded for this ticket and returns ONE activity entry naming
+ * the total, or `null` when nothing compacted. No I/O: each Ready writer (MCP `change_status` in
+ * mcp-server.ts, the portal PUT in routes/tasks/update.ts) reads `getAllSessionsForTask` itself and
+ * pushes the result onto its own entries array — deliberately NOT converged into a single call site
+ * here, per this file's header (REST/MCP asymmetries are preserved, not silently unified). Typed as
+ * `ReturnType<typeof buildActivityEntry>` rather than importing `HistoryEntry` — that type exists
+ * only at `routes/tasks/helpers.ts`, and importing it would make this shared, protocol-agnostic
+ * service depend on `routes/`.
+ */
+export function buildCompactionHandoffEntry(
+  sessions: CliSessionRecord[],
+  now: string,
+): ReturnType<typeof buildActivityEntry> | null {
+  let count = 0;
+  let dropped = 0;
+  for (const session of sessions) {
+    if (session.phase !== 'implementation' && session.phase !== 'fast-path') continue;
+    if (!session.compactionCount) continue;
+    count += session.compactionCount;
+    dropped += session.cumulativeDroppedTokens ?? 0;
+  }
+  if (count === 0) return null;
+  // FLUX-1746: `dropped` stays 0 when every compacting session's post_tokens was absent on the
+  // wire (the FLUX-1744 optional-field case, claude-code-telemetry-capture.test.ts:163) — that
+  // means "unknown", not "nothing lost", so the clause is dropped entirely rather than printing
+  // a misleading "~0 tokens". Rounded via the same formatCompactionTokenCount the transcript
+  // marker uses (projection.ts) so the two surfaces read consistently ("427k", not "427399").
+  const droppedClause = dropped > 0 ? `, dropping ~${formatCompactionTokenCount(dropped)} tokens of context` : '';
+  return buildActivityEntry(
+    `Implementing session compacted ${count} time${count === 1 ? '' : 's'}${droppedClause} — review without assuming continuity with the plan.`,
+    'Agent',
+    now,
+  );
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { buildAdditionalMcpConfigArgs } from './copilot.js';
+import { buildAdditionalMcpConfigArgs, buildCopilotPromptArgs } from './copilot.js';
 
-// FLUX-984: Copilot CLI never auto-loads the workspace .mcp.json in non-interactive (-p) mode —
+// FLUX-984: Copilot CLI never auto-loads the workspace .mcp.json in programmatic mode —
 // confirmed live, no permission flag changes it — so the event-horizon MCP server must be
 // injected explicitly via --additional-mcp-config. This test exercises the actual function both
 // copilot.ts's per-ticket spawn paths and copilot-board.ts's board spec call, not just the
@@ -20,5 +20,45 @@ describe('buildAdditionalMcpConfigArgs (FLUX-984)', () => {
     const parsed = JSON.parse(args[1]!);
     expect(parsed.mcpServers['event-horizon'].type).toBe('http');
     expect(parsed.mcpServers['event-horizon'].url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+  });
+
+  describe('buildCopilotPromptArgs', () => {
+    it('uses empty -p plus stdin, never a bare -p that consumes the next flag', () => {
+      const args = buildCopilotPromptArgs({
+        conversationId: 'FLUX-1',
+        workspaceRoot: 'C:\\repo',
+        sessionId: 'session-1',
+        skipPermissions: true,
+      });
+
+      const idx = args.indexOf('-p');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(args[idx + 1]).toBe('');
+      expect(args[idx + 2]?.startsWith('-')).toBe(true);
+      expect(args).toContain('--no-ask-user');
+      expect(args).toContain('--yolo');
+      expect(args).toContain('--additional-mcp-config');
+    });
+
+    it('omits --model for auto and for named ids that 404 in -p', () => {
+      for (const model of ['gpt-5', 'gpt-5-mini', 'gpt-4.1', 'gpt-5.4', 'gpt-5.4-mini', 'auto']) {
+        expect(buildCopilotPromptArgs({ model })).not.toContain('--model');
+      }
+    });
+
+    it('adds resume, native attachments, and write/shell denials for gated chat', () => {
+      const args = buildCopilotPromptArgs({
+        resumeSessionId: 'resume-1',
+        editsGated: true,
+        attachmentAbsPaths: ['C:\\repo\\.flux\\assets\\image.png'],
+      });
+
+      expect(args).toEqual(expect.arrayContaining([
+        '--resume', 'resume-1',
+        '--attachment', 'C:\\repo\\.flux\\assets\\image.png',
+        '--deny-tool=write',
+        '--deny-tool=shell',
+      ]));
+    });
   });
 });

@@ -1,8 +1,8 @@
-import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from '../types';
+import type { ColumnLiveEvent, Config, Task, TaskLiveEvent, UsageSnapshot } from '../types';
 import type { ParseError, Notification, WorkspaceInfo, WorktreeInfo } from '../api';
 import type { BatchTicket } from '../furnaceTypes';
 
-export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases' | 'workflows' | 'changes' | 'epics' | 'token-costs' | 'dev-onboarding';
+export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases' | 'workflows' | 'changes' | 'epics' | 'token-costs' | 'benchmarks' | 'dev-onboarding';
 export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
 export type AppTheme = 'light' | 'dark' | 'matrix' | 'cyber' | 'midnight' | 'axis-night' | 'axis-day';
 
@@ -175,6 +175,9 @@ export interface AppStoreState {
   workspaceConfigured: boolean;
   workspacePath: string | null;
   workspaces: WorkspaceInfo[];
+  /** FLUX-1747/1748: the capacity-usage snapshot (`GET /api/usage`), refreshed on boot and on the
+   *  `usageChanged` SSE event — never polled. `null` until the first fetch resolves. */
+  usage: UsageSnapshot | null;
   config: Config | null;
   readComments: Record<string, string[]>;
   totalUnreadCount: number;
@@ -305,6 +308,7 @@ function createInitialState(): AppStoreState {
     workspaceConfigured: false,
     workspacePath: null,
     workspaces: [],
+    usage: null,
     config: null,
     readComments: {},
     totalUnreadCount: 0,

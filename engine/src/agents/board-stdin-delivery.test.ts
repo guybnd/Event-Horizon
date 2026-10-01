@@ -39,7 +39,9 @@ vi.mock('./claude-code.js', () => ({
 vi.mock('./copilot.js', () => ({
   attachStdoutProcessing: vi.fn(() => () => {}),
   spawnCopilot: vi.fn(),
-  buildAdditionalMcpConfigArgs: vi.fn(() => []),
+  buildCopilotPromptArgs: vi.fn((options: { resumeSessionId?: string }) => (
+    options.resumeSessionId ? ['-p', '', '--resume', options.resumeSessionId] : ['-p', '']
+  )),
 }));
 vi.mock('./gemini.js', () => ({
   attachStdoutProcessing: vi.fn(() => () => {}),
@@ -142,10 +144,10 @@ describe('wireBoardProc delivers the prompt via stdin, not argv (FLUX-1496)', ()
 });
 
 describe.each([
-  { name: 'claude', spec: claudeBoardSpec, expectBarePFlag: true },
-  { name: 'copilot', spec: copilotBoardSpec, expectBarePFlag: true },
-  { name: 'gemini', spec: geminiBoardSpec, expectBarePFlag: false },
-])('$name board spec keeps argv prompt-free (FLUX-1496)', ({ spec, expectBarePFlag }) => {
+  { name: 'claude', spec: claudeBoardSpec, promptMode: 'bare-p' },
+  { name: 'copilot', spec: copilotBoardSpec, promptMode: 'empty-p' },
+  { name: 'gemini', spec: geminiBoardSpec, promptMode: 'empty-p' },
+])('$name board spec keeps argv prompt-free (FLUX-1496)', ({ spec, promptMode }) => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -153,20 +155,24 @@ describe.each([
   it('buildArgs never places the (oversized) prompt in argv, for a fresh turn', async () => {
     const session = fakeSession();
     const args = await spec.buildArgs({
-      session, prompt: OVERSIZED_PROMPT, workspaceRoot: '/tmp/test-repo', executionRoot: '/tmp/test-repo', isResume: false,
+      session, prompt: OVERSIZED_PROMPT, attachmentAbsPaths: [], workspaceRoot: '/tmp/test-repo', executionRoot: '/tmp/test-repo', isResume: false,
     });
 
     for (const arg of args) {
       expect(arg).not.toContain('DIFF_LINE_');
     }
     const idx = args.indexOf('-p');
-    expect(idx).toBeGreaterThanOrEqual(0);
-    if (expectBarePFlag) {
+    if (promptMode === 'bare-p') {
+      expect(idx).toBeGreaterThanOrEqual(0);
       // The next element must be another flag, never the prompt (bare `-p`).
       expect(args[idx + 1]?.startsWith('-') || idx + 1 === args.length).toBe(true);
-    } else {
+    } else if (promptMode === 'empty-p') {
+      expect(idx).toBeGreaterThanOrEqual(0);
       // gemini: `-p` carries an empty placeholder (merges with stdin).
       expect(args[idx + 1]).toBe('');
+    } else {
+      // Current Copilot enters programmatic mode from piped stdin; its -p option requires a value.
+      expect(idx).toBe(-1);
     }
   });
 
@@ -174,7 +180,7 @@ describe.each([
     const session = fakeSession();
     session.resumeSessionId = 'prior-session-id';
     const args = await spec.buildArgs({
-      session, prompt: OVERSIZED_PROMPT, workspaceRoot: '/tmp/test-repo', executionRoot: '/tmp/test-repo', isResume: true,
+      session, prompt: OVERSIZED_PROMPT, attachmentAbsPaths: [], workspaceRoot: '/tmp/test-repo', executionRoot: '/tmp/test-repo', isResume: true,
     });
 
     for (const arg of args) {

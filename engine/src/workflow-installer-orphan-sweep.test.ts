@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { cleanOrphanedSkillFiles, detectWorkspaceFrameworks } from './workflow-installer.js';
+import { cleanOrphanedSkillFiles, detectWorkspaceFrameworks, resolveFramework } from './workflow-installer.js';
 
 /**
  * FLUX-882: the forced-reinstall hard-override deletes `event-horizon*` skill files an older install
@@ -132,9 +132,16 @@ describe('detectWorkspaceFrameworks (FLUX-942 multi-framework)', () => {
   it('detects every framework that has an installed EH skill file (Claude + Gemini + Copilot)', async () => {
     await write('.claude/rules/event-horizon.md');               // claude — single concatenated file
     await write('.gemini/skills/event-horizon.md');              // gemini — single concatenated file
-    await write('.github/skills/event-horizon/orchestrator.md'); // copilot — modular per-module file
+    await write('.github/skills/event-horizon/SKILL.md');        // copilot — directory skill
 
     expect(new Set(detectWorkspaceFrameworks(root, 'claude'))).toEqual(new Set(['claude', 'gemini', 'copilot']));
+  });
+
+  it('still detects copilot from the obsolete modular layout so boot migrates it', async () => {
+    await write('.claude/rules/event-horizon.md');
+    await write('.github/skills/event-horizon/orchestrator.md');
+
+    expect(new Set(detectWorkspaceFrameworks(root, 'claude'))).toEqual(new Set(['claude', 'copilot']));
   });
 
   it('does NOT treat a bare .github (CI only, no EH install) as Copilot; always includes the primary', async () => {
@@ -142,5 +149,44 @@ describe('detectWorkspaceFrameworks (FLUX-942 multi-framework)', () => {
 
     // primary 'claude' is always managed; .github without an EH skill file must not register copilot
     expect(detectWorkspaceFrameworks(root, 'claude')).toEqual(['claude']);
+  });
+
+  it('still detects grok from the pre-FLUX-1726 flat skill file so boot reinstalls it', async () => {
+    await write('.claude/rules/event-horizon.md');
+    await write('.grok/skills/event-horizon.md'); // FLUX-1722 dest — Grok does not load this
+
+    expect(new Set(detectWorkspaceFrameworks(root, 'claude'))).toEqual(new Set(['claude', 'grok']));
+  });
+
+  it('detects grok from the SKILL.md dest (FLUX-1726)', async () => {
+    await write('.grok/skills/event-horizon/SKILL.md');
+
+    expect(detectWorkspaceFrameworks(root, 'grok')).toEqual(['grok']);
+  });
+});
+
+describe('resolveFramework auto-detect (FLUX-1726)', () => {
+  let root: string;
+  async function write(rel: string): Promise<void> {
+    const full = path.join(root, rel);
+    await fs.mkdir(path.dirname(full), { recursive: true });
+    await fs.writeFile(full, 'x', 'utf-8');
+  }
+  beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-resolve-fw-')); });
+  afterEach(async () => { await fs.rm(root, { recursive: true, force: true }).catch(() => {}); });
+
+  it('picks grok when .grok exists and no earlier marker dir does', async () => {
+    await write('.grok/config.toml');
+    expect(resolveFramework(root, 'auto')).toBe('grok');
+  });
+
+  it('picks codex when .codex exists and no earlier marker dir does', async () => {
+    await write('.codex/config.toml');
+    expect(resolveFramework(root, 'auto')).toBe('codex');
+  });
+
+  it('explicit grok wins over auto-detect', async () => {
+    await write('.claude/settings.json');
+    expect(resolveFramework(root, 'grok')).toBe('grok');
   });
 });

@@ -39,10 +39,20 @@ mac:
   target: dmg
   category: public.app-category.developer-tools
   icon: build/icon-axis.png
+# FLUX-1712: real Linux installers alongside the portable AppImage — deb (Debian/Ubuntu),
+# rpm (Fedora/openSUSE), pacman (Arch). System install with a desktop-menu entry, launcher on
+# PATH, and package-manager uninstall. Note: agent-CLI discovery for GUI launches is the
+# engine's login-shell PATH resolution (FLUX-1711), not the installer's job.
 linux:
-  target: AppImage
+  target:
+    - AppImage
+    - deb
+    - rpm
+    - pacman
   category: Development
   icon: build/icon-axis.png
+  maintainer: guybnd
+  synopsis: Local-first ticket board and orchestration layer for coding agents
 
 nsis:
   oneClick: false

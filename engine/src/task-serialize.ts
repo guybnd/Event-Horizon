@@ -5,6 +5,7 @@ import { createHash } from 'crypto';
 import { getConfig } from './config.js';
 import { getWorkspace } from './workspace-context.js';
 import { digestHistoryForAgent, buildHistoryDigest, extractRecentUserComments, extractLaunchFocus, type HistoryEntryLike } from './history.js';
+import { gradeTicketHealth } from './ticket-health.js';
 import { getCliSessionSummaryForTask, getListCliSessionSummaryForTask, getListSessionSummariesForTask, slimSessionSummaryForAgent, getDetailCliSessionSummaryForTask, getDetailSessionSummariesForTask } from './session-store.js';
 
 // FLUX-343 (plan step 1): the stateless ticket surface, split out of task-store.ts so the
@@ -245,10 +246,28 @@ export function serializeTaskForList(task: TaskRecord) {
   const commentEntries: Array<{ i: number; e: HistoryEntryLike }> = [];
   const sessionEntries: Array<{ i: number; e: HistoryEntryLike }> = [];
   let entryIndex = 0;
+  // FLUX-1739: card health rides the pass that already runs. This file explicitly avoids a second
+  // O(n) walk over history on a board that re-serializes every card on a ~3s poll, so the signals a
+  // card can honestly show are accumulated HERE rather than in a separate scan: EventHorizon's own
+  // tool failures (durable `data.error` progress entries since step 9) and whether the ticket ever
+  // ran a session. The other graded signal — a turn that ended with no board action — needs no
+  // history at all; it is frontmatter.
+  let ehFailures = 0;
+  let sessionCount = 0;
   const historyDigest = buildHistoryDigest(fullHistory, task.status, task.swimlane, undefined, (e) => {
     const i = entryIndex++;
     if (e?.type === 'comment') commentEntries.push({ i, e });
-    else if (e?.type === 'agent_session' && e?.status === 'active') sessionEntries.push({ i, e });
+    else if (e?.type === 'agent_session') {
+      sessionCount++;
+      if (e?.status === 'active') sessionEntries.push({ i, e });
+      const progress = (e as { progress?: unknown[] }).progress;
+      if (Array.isArray(progress)) {
+        for (const p of progress) {
+          const err = (p as { data?: { error?: unknown } })?.data?.error;
+          if (typeof err === 'string' && err.includes('mcp__event-horizon__')) ehFailures++;
+        }
+      }
+    }
   }, task.planReviewState as string | null | undefined);
   // FLUX-1144: comments were ~50% of a full-board list response (4,257 comments / 11MB measured
   // 2026-07-05) — the hover popover only ever needs recent context at a glance ("Open in full
@@ -265,10 +284,40 @@ export function serializeTaskForList(task: TaskRecord) {
     ...rest,
     history: inlineHistory,
     historyDigest,
+    // Absent (not 'clean') for a ticket that never ran a session — the card shows nothing at all
+    // rather than a reassuring badge on work that was never executed.
+    health: sessionCount > 0 ? cardHealth(ehFailures) : undefined,
     // FLUX-1144: truncates `liveOutput` to a short tail — see getListCliSessionSummaryForTask.
     cliSession: getListCliSessionSummaryForTask(task.id),
     cliSessions: cliSessions.length > 0 ? cliSessions : undefined,
   };
+}
+
+/**
+ * The card's grade, from the signals a list serialization can see for free.
+ *
+ * Reuses `gradeTicketHealth` so a card and the modal can never disagree about what a grade means.
+ *
+ * Deliberately grades on EventHorizon's own tool failures ALONE, and NOT on `needsAction` /
+ * `require-input`. Those already have a first-class surface — the AttentionDock, the swimlane, the
+ * card's own require-input treatment — and re-badging them here just teaches the eye to skip the
+ * pill. Verified against the live board: including them flagged 31 tickets, almost all of them PR
+ * mirrors and parked cards the user could already see. The pill's whole job is to show friction that
+ * is otherwise INVISIBLE.
+ *
+ * It also does not grade session count: a real ticket is worked across grooming, implementation and
+ * review by design, and grading that marked every long-lived ticket broken (see ticket-health.ts).
+ *
+ * KNOWN LIMIT: the card sees only durable `data.error` progress entries, so it under-detects
+ * relative to the modal, which also reads the transcript. A clean pill is therefore "nothing
+ * durable was recorded", not a guarantee. The modal is the authority.
+ */
+function cardHealth(ehFailures: number) {
+  const signals: { key: string; label: string; count: number; locators: string[] }[] = [];
+  if (ehFailures > 0) {
+    signals.push({ key: 'ehToolFailures', label: "EventHorizon's own tools failed", count: ehFailures, locators: [] });
+  }
+  return gradeTicketHealth(signals);
 }
 
 /**

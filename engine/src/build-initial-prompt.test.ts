@@ -138,7 +138,7 @@ describe('buildInitialPrompt — parity by default (FLUX-960)', () => {
     }
   });
 
-  it('FLUX-1123: the edit-gated note wording matches chatEditGateEnforced — only Claude claims a real block', () => {
+  it('FLUX-1123: the edit-gated note wording matches chatEditGateEnforced', () => {
     for (const framework of FRAMEWORKS) {
       const gated = buildInitialPrompt(mockTask, '', { phase: 'chat', framework, editsGated: true });
       if (CLI_CAPABILITIES[framework].chatEditGateEnforced) {
@@ -167,6 +167,26 @@ describe('buildInitialPrompt — parity by default (FLUX-960)', () => {
       // FLUX-730: commit-before-Ready applies here exactly as it does for plain implementation.
       expect(prompt).toContain('FLUX-730');
       expect(prompt).toContain('completion summary');
+      // FLUX-1733: wrap-up is always in the persona (the contract — skills are not injected).
+      expect(prompt).toContain('ONESHOT WRAP-UP');
+      expect(prompt).toContain('Never finish_ticket');
+      expect(prompt).not.toContain('PLAN-FIRST');
+      expect(prompt).not.toContain('{{planFirstStep}}');
+    }
+  });
+
+  it('FLUX-1733: planFirst substitutes the in-session approval pause and never tells the agent to Todo for it', () => {
+    for (const framework of FRAMEWORKS) {
+      const prompt = buildInitialPrompt(mockTask, '', { phase: 'fast-path', framework, planFirst: true });
+      expect(prompt).toContain('PLAN-FIRST');
+      expect(prompt).toContain('ask_user_question');
+      expect(prompt).toContain('Do NOT change_status to "Todo" to get that approval');
+      expect(prompt).toContain('ONESHOT WRAP-UP');
+      expect(prompt).not.toContain('{{planFirstStep}}');
+      // PLAN-FIRST sits after the eligibility bail-out and before In Progress, so a
+      // too-big ticket never asks for plan approval then bails to Todo.
+      expect(prompt.indexOf('PLAN-FIRST')).toBeGreaterThan(prompt.indexOf('ELIGIBILITY CHECK'));
+      expect(prompt.indexOf('use change_status to move to "In Progress"')).toBeGreaterThan(prompt.indexOf('PLAN-FIRST'));
     }
   });
 

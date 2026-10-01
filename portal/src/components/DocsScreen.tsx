@@ -7,8 +7,8 @@ import { Table } from '@tiptap/extension-table';
 import { TableRow } from '@tiptap/extension-table-row';
 import { TableHeader } from '@tiptap/extension-table-header';
 import { TableCell } from '@tiptap/extension-table-cell';
-import TurndownService from 'turndown';
-import { gfm } from 'turndown-plugin-gfm';
+import { TaskList, TaskItem } from '@tiptap/extension-list';
+import type TurndownService from 'turndown';
 import { AlertCircle, Bold, ChevronDown, ChevronRight, Clock, Code, FileText, Heading1, Heading2, Info, Italic, Link as LinkIcon, List, ListOrdered, Lock, Network, Save, Share2, Trash2, X } from 'lucide-react';
 import { applyDocsPromotion, createDoc, deleteDoc, DocConflictError, fetchDoc, fetchDocRevisions, fetchDocs, fetchGroupStatus, renameDocsFolder, updateDoc, updateGroupDocsLabel, type DocRevision } from '../api';
 import { useAppSelector } from '../store/useAppSelector';
@@ -24,6 +24,7 @@ import { useConfirm } from '../hooks/useConfirm';
 import { formatRelative } from '../lib/relativeTime';
 import { normalizeDocPathInput, slugify, renderMarkdownToHtml, getBrokenWikiLinks, getWikiLinkDefinition } from '../lib/docMarkdown';
 import { detectUnsupported, parseBlocks, spliceEditedBlocks } from '../lib/blockSplice';
+import { createMarkdownSerializer, normalizeEditorDom, shapeTaskLists } from '../lib/markdownSerializer';
 
 function humanizeDocPath(docPath: string) {
   const basename = docPath.split('/').filter(Boolean).pop() || 'untitled';
@@ -48,13 +49,7 @@ function hasExtraFrontmatter(doc: Doc) {
 type EditorMode = 'rich' | 'raw';
 
 function createTurndownService() {
-  const service = new TurndownService({
-    headingStyle: 'atx',
-    codeBlockStyle: 'fenced',
-    bulletListMarker: '-',
-  });
-
-  service.use(gfm);
+  const service = createMarkdownSerializer();
 
   service.addRule('wiki-links', {
     filter: (node) => {
@@ -291,6 +286,8 @@ export function DocsScreen() {
       TableRow,
       TableHeader,
       TableCell,
+      TaskList,
+      TaskItem.configure({ nested: true }),
     ],
     content: '<p></p>',
     editable: false,
@@ -306,7 +303,7 @@ export function DocsScreen() {
       }
 
       setEditorSnapshot(getEditorDocumentSnapshot(activeEditor));
-      const nextMarkdown = normalizeMarkdownBody(turndownServiceRef.current?.turndown(activeEditor.getHTML()) || '');
+      const nextMarkdown = normalizeMarkdownBody(turndownServiceRef.current?.turndown(normalizeEditorDom(activeEditor.getHTML())) || '');
       setDraftBody(nextMarkdown);
     },
     onSelectionUpdate: ({ editor: activeEditor }) => {
@@ -392,7 +389,7 @@ export function DocsScreen() {
 
     const blocks = parseBlocks(bodyForBlocks);
     const combinedHtml = blocks.length > 0
-      ? blocks.map((block) => renderMarkdownToHtml(block.sourceText, docs)).join('')
+      ? blocks.map((block) => shapeTaskLists(renderMarkdownToHtml(block.sourceText, docs))).join('')
       : '<p></p>';
     setEditorContentSafely(combinedHtml);
 
@@ -403,7 +400,7 @@ export function DocsScreen() {
       return false;
     }
 
-    const cleanSigs = spliceableHtmls.map((html) => turndownServiceRef.current!.turndown(html));
+    const cleanSigs = spliceableHtmls.map((html) => turndownServiceRef.current!.turndown(normalizeEditorDom(html)));
     blockSpliceRef.current = { originalBody: bodyForBlocks, cleanSigs };
     setRawFallbackNotice(null);
     return true;
@@ -419,7 +416,7 @@ export function DocsScreen() {
     }
 
     const currentBlocks = getSpliceableTopLevelNodeHtmls(editor).map((html) => {
-      const content = turndownServiceRef.current!.turndown(html);
+      const content = turndownServiceRef.current!.turndown(normalizeEditorDom(html));
       return { signature: content, content };
     });
 
@@ -975,7 +972,7 @@ export function DocsScreen() {
       if (mode === 'rich' && editor) {
         blockSpliceRef.current = {
           originalBody: updatedDoc.body,
-          cleanSigs: getSpliceableTopLevelNodeHtmls(editor).map((html) => turndownServiceRef.current!.turndown(html)),
+          cleanSigs: getSpliceableTopLevelNodeHtmls(editor).map((html) => turndownServiceRef.current!.turndown(normalizeEditorDom(html))),
         };
       }
       setIsEditingTitle(false);

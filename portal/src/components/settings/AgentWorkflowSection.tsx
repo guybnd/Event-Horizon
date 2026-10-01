@@ -5,7 +5,9 @@ import type { SkillStatusState } from './useSkillStatus';
 import { useNotify } from '../../hooks/useNotify';
 import { useConfirm } from '../../hooks/useConfirm';
 
-const GLOBAL_MCP_FRAMEWORKS = ['claude', 'gemini', 'cursor'] as const;
+// FLUX-1738: antigravity has a user-writable global MCP config too
+// (`~/.gemini/config/mcp_config.json` — see globalMcpConfigPathFor).
+const GLOBAL_MCP_FRAMEWORKS = ['claude', 'gemini', 'cursor', 'grok', 'antigravity'] as const;
 
 interface AgentWorkflowSectionProps {
   targetFramework: string;

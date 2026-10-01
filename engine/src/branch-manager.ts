@@ -6,6 +6,7 @@ import { findWorktreeForBranch } from './task-worktree.js';
 // everything through the S1 runner (runGit/runGh), which always applies a bounded timeout,
 // buildGitSyncEnv's non-interactive+gh-authed env, and tree-kill on timeout/abort.
 import { runGit, runGh, resolveBranchCreationBase, warnIfLocalAheadOfOrigin } from './git-exec.js';
+import { getCiRunnerInfo, type CiRunnerInfo } from './ci-runner.js';
 import { log } from './log.js';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -73,7 +74,18 @@ export function branchName(ticketId: string, title: string): string {
   return `flux/${ticketId}-${slugify(title)}`;
 }
 
-export async function createTicketBranch(ticketId: string, title: string, baseBranch?: string): Promise<string> {
+/**
+ * FLUX-1739: `opts.push` defaults to TRUE, so every existing caller is unchanged. A benchmark run
+ * passes false: a 45-cell suite would otherwise push 45 throwaway branches to `origin` and put a
+ * network round-trip in the runner's hot path, for branches that exist only as the local record of
+ * what a configuration produced and are never merged.
+ */
+export async function createTicketBranch(
+  ticketId: string,
+  title: string,
+  baseBranch?: string,
+  opts: { push?: boolean } = {},
+): Promise<string> {
   if (!baseBranch) {
     // FLUX-1638: prefer the remote-tracking ref over the bare local default so a stray unpushed
     // commit on local master/main doesn't ride into this new branch's PR. Surface the divergence
@@ -97,7 +109,7 @@ export async function createTicketBranch(ticketId: string, title: string, baseBr
       if (!(await branchRefExists(name))) throw err;
     }
   }
-  await git(['push', '-u', 'origin', name]);
+  if (opts.push !== false) await git(['push', '-u', 'origin', name]);
   return name;
 }
 
@@ -402,6 +414,7 @@ export interface PrStatus {
   mergeable: string;              // MERGEABLE | CONFLICTING | UNKNOWN
   checks: { total: number; passed: number; failed: number; pending: number };
   headRefName: string;            // the PR's source branch (FLUX-944: used to tell a sibling PR from this ticket's own)
+  runner?: CiRunnerInfo;          // FLUX-1713: which pool (hosted/self-hosted) ran this PR's CI
 }
 
 /** A single `gh pr view` statusCheckRollup entry — either a CheckRun (status+conclusion) or a StatusContext (state). */
@@ -421,6 +434,7 @@ interface GhPrViewRaw {
   mergeable?: string;
   statusCheckRollup?: GhCheckRollupEntry[];
   headRefName?: string;
+  headRefOid?: string;
 }
 
 /**
@@ -434,10 +448,12 @@ interface GhPrViewRaw {
 export async function getPullRequestStatus(selector: string): Promise<PrStatus | null> {
   try {
     const { stdout } = await gh(
-      ['pr', 'view', selector, '--json', 'number,state,url,title,reviewDecision,mergeable,statusCheckRollup,headRefName'],
+      ['pr', 'view', selector, '--json', 'number,state,url,title,reviewDecision,mergeable,statusCheckRollup,headRefName,headRefOid'],
     );
     const raw = JSON.parse(stdout) as GhPrViewRaw;
     if (!raw || typeof raw.number !== 'number') return null;
+
+    const runner = await getCiRunnerInfo(raw.headRefOid, requireWorkspaceRoot());
 
     const rollup: GhCheckRollupEntry[] = Array.isArray(raw.statusCheckRollup) ? raw.statusCheckRollup : [];
     const checks = { total: rollup.length, passed: 0, failed: 0, pending: 0 };
@@ -460,6 +476,7 @@ export async function getPullRequestStatus(selector: string): Promise<PrStatus |
       mergeable: String(raw.mergeable ?? 'UNKNOWN'),
       checks,
       headRefName: String(raw.headRefName ?? ''),
+      ...(runner ? { runner } : {}),
     };
   } catch {
     return null; // no PR for this selector, or gh unavailable — best-effort
@@ -515,6 +532,7 @@ export interface CiGateOutcome {
   reason?: string;
   checks?: { total: number; passed: number; failed: number; pending: number };
   source?: 'github' | 'checkCommand';
+  runner?: CiRunnerInfo;
 }
 
 /**
@@ -555,6 +573,14 @@ async function resolveCheckCommandCwd(branch: string): Promise<string> {
   return worktree ?? workspaceRoot;
 }
 
+/** FLUX-1713: a short trailing sentence naming which pool ran the checks, for the CI-gate refusal message. */
+function describeRunner(info?: CiRunnerInfo): string {
+  if (!info || info.origin === 'unknown') return '';
+  if (info.origin === 'self-hosted') return ` Runner: self-hosted (${info.runnerName ?? 'unknown'}).`;
+  if (info.origin === 'mixed') return ' Runner: mixed.';
+  return ' Runner: hosted.';
+}
+
 /**
  * FLUX-560: the agnostic CI gate — consumes GitHub's check-rollup verdict (already read by
  * {@link getPullRequestStatus}) or, when the repo has no GitHub checks, the optional
@@ -587,9 +613,9 @@ export async function evaluateCiGate(
   if (checks && checks.total > 0) {
     source = 'github';
     if (checks.failed > 0) {
-      reason = `${checks.failed} check(s) failing on \`${branch}\` (${checks.passed} passed, ${checks.pending} pending).`;
+      reason = `${checks.failed} check(s) failing on \`${branch}\` (${checks.passed} passed, ${checks.pending} pending).${describeRunner(pr?.runner)}`;
     } else if (checks.pending > 0 && !policy.allowPending) {
-      reason = `${checks.pending} check(s) still running on \`${branch}\` — wait for them to finish, or set allowPending.`;
+      reason = `${checks.pending} check(s) still running on \`${branch}\` — wait for them to finish, or set allowPending.${describeRunner(pr?.runner)}`;
     }
   } else if (policy.checkCommand) {
     source = 'checkCommand';
@@ -602,7 +628,11 @@ export async function evaluateCiGate(
     }
   }
 
-  const withChecks = { ...(checks ? { checks } : {}), ...(source ? { source } : {}) };
+  const withChecks = {
+    ...(checks ? { checks } : {}),
+    ...(source ? { source } : {}),
+    ...(source === 'github' && pr?.runner ? { runner: pr.runner } : {}),
+  };
   if (!reason) return { blocked: false, ...withChecks };
   if (opts.force || gate === 'warn') return { blocked: false, reason, ...withChecks };
   return { blocked: true, reason, ...withChecks };

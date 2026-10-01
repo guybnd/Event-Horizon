@@ -12,6 +12,7 @@ import {
   unregisterSession,
   getCliSessionSummaryForTask,
   getAllSessionSummariesForTask,
+  getLiteSessionSummariesForTask,
   getFullLiveOutputForSession,
   getActiveSessionsForTask,
   stopCliSession,
@@ -29,7 +30,7 @@ import {
   awaitDelegation,
   cancelDelegation,
   dispatchKey,
-  findDispatch,
+  attachToExistingDelegation,
   reserveDispatch,
   type PendingCombinerSpec,
   type PendingRelaySpec,
@@ -41,7 +42,8 @@ import type { ChatAttachment } from '../projection.js';
 import { updateTaskWithHistory, subtaskIds } from '../task-store.js';
 import { broadcastEvent } from '../events.js';
 import { killProcessTree } from '../kill-process-tree.js';
-import { appendTranscriptEvent, readTranscriptMessages, clearTranscript, truncateTranscript, restoreTruncatedTail } from '../transcript.js';
+import { appendTranscriptEvent, readTranscriptMessages, clearTranscript, truncateTranscript, restoreTruncatedTail, sliceTurns } from '../transcript.js';
+import { extractTicket } from '../extract.js';
 import { resetBoardDigest } from '../board-digest.js';
 import { dismissNotificationsForTicket } from '../notifications.js';
 import { resolvePersonaPrompt, getPersonaById } from '../orchestration-personas.js';
@@ -257,6 +259,8 @@ interface SpawnOptions {
    *  CliSessionRecord.batchExcluded), computed once by the route's validation block above. */
   batchTicketIds?: string[] | undefined;
   batchExcluded?: { id: string; reason: string }[] | undefined;
+  /** FLUX-1733: for phase:'fast-path' — pause for in-session plan approval before implementing. */
+  planFirst?: boolean | undefined;
 }
 
 // FLUX-1373: derive session.taskKey from what a dispatch site knows at spawn time — phase +
@@ -363,6 +367,7 @@ function createPendingSession(task: TaskRecord, opts: SpawnOptions): CliSessionR
   if (opts.enableTools && opts.enableTools.length > 0) session.enableTools = opts.enableTools;
   if (opts.batchTicketIds && opts.batchTicketIds.length > 0) session.batchTicketIds = opts.batchTicketIds;
   if (opts.batchExcluded && opts.batchExcluded.length > 0) session.batchExcluded = opts.batchExcluded;
+  if (opts.planFirst) session.planFirst = true;
   if (opts.model) session.model = opts.model;
   if (opts.effortOverride) session.effortOverride = opts.effortOverride;
   if (opts.permissionMode) session.permissionMode = opts.permissionMode;
@@ -607,12 +612,15 @@ router.get('/:id/cli-session', (req, res) => {
   res.json({ session: getCliSessionSummaryForTask(sessionKeyFor(id, req)) || null });
 });
 
-// GET all sessions for a task
+// GET all sessions for a task. `?lite=1` (FLUX-1772: the start_session liveness probe) strips
+// `liveOutput` entirely instead of shipping every session's untruncated buffer — the default
+// shape here stays unchanged for the portal (portal/src/api.ts).
 router.get('/:id/cli-sessions', (req, res) => {
   const { id } = req.params;
   const task = reqWorkspace(req).tasks[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
-  res.json({ sessions: getAllSessionSummariesForTask(id) });
+  const sessions = req.query.lite === '1' ? getLiteSessionSummariesForTask(id) : getAllSessionSummariesForTask(id);
+  res.json({ sessions });
 });
 
 // FLUX-1685: on-demand full buffer for one session, fetched when the portal expands a terminal
@@ -1100,6 +1108,9 @@ router.post('/:id/cli-session/start', async (req, res) => {
       enableTools,
       batchTicketIds,
       batchExcluded,
+      // FLUX-1733: opt-in Show-plan-first for oneshot/fast-path. Ignored for every other phase
+      // (their persona templates have no {{planFirstStep}} token).
+      planFirst: phase === 'fast-path' && req.body?.planFirst === true,
     };
     const session = createPendingSession(task, spawnOpts);
 
@@ -1152,6 +1163,110 @@ router.post('/:id/cli-session/start', async (req, res) => {
     res.status(201).json({ session: getCliSessionSummaryForTask(id) });
   } catch (error: unknown) {
     res.status(500).json({ error: errorMessage(error, `Failed to launch ${framework}`) });
+  }
+});
+
+// FLUX-1733: Oneshot this — promote a scratch chat into a Grooming ticket, then start
+// phase:'fast-path' on the NEW card. The scratch is never the implementation session
+// (FLUX-1443 file-mutation gate; extract consumes the scratch per FLUX-1249).
+// Per-scratch lock: two overlapping first POSTs would both pass the mergedInto/archive
+// guards (those fields are written inside extractTicket), mint two Grooming cards, and
+// start two fast-path sessions. Check+add is synchronous before any await so Node's
+// event loop admits only one holder.
+const oneshotFromScratchInFlight = new Set<string>();
+
+router.post('/:id/oneshot-from-scratch', async (req, res) => {
+  const { id } = req.params;
+  const ws = reqWorkspace(req);
+  const source = ws.tasks[id];
+  if (!source) return res.status(404).json({ error: 'Task not found' });
+  if (source.kind !== 'scratch') {
+    return res.status(400).json({ error: 'oneshot-from-scratch is only available on scratch chats' });
+  }
+  // extractTicket archives the scratch but leaves kind:'scratch' (extract.ts), so a
+  // second POST — Recent-chats reopen, retry, or overlapping click — would otherwise
+  // mint another Grooming card. Mirror mergeTickets' mergedInto refusal (merge.ts).
+  if (typeof source.mergedInto === 'string' && source.mergedInto) {
+    return res.status(400).json({ error: `scratch already promoted into ${source.mergedInto}` });
+  }
+  const archiveStatus = getConfig().archiveStatus || 'Archived';
+  if (source.status === archiveStatus) {
+    return res.status(400).json({ error: 'scratch is archived and cannot be promoted' });
+  }
+  const live = getActiveSessionsForTask(id);
+  if (live.length > 0) {
+    return res.status(400).json({ error: 'scratch chat already has a live session — stop it before Oneshot this' });
+  }
+  const titleRaw = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+  const sourceTitle = typeof source.title === 'string' ? source.title.trim() : '';
+  const placeholder = !sourceTitle || /^Scratch(\s+\d+)?$/i.test(sourceTitle);
+  const title = titleRaw || (!placeholder ? sourceTitle : '');
+  if (!title) {
+    return res.status(400).json({ error: 'a title is required to promote this scratch' });
+  }
+  const launchedBy = typeof req.body?.user === 'string' && req.body.user.trim() ? req.body.user.trim() : 'User';
+  const planFirst = req.body?.planFirst === true;
+  const frameworkRaw = String(req.body?.framework || resolveDefaultFramework()).trim().toLowerCase();
+  if (!isKnownFramework(frameworkRaw)) {
+    return res.status(400).json({ error: `framework must be one of: ${getRuntimeFrameworks().join(', ')}` });
+  }
+  const framework = frameworkRaw as CliFramework;
+  // Validate the adapter BEFORE extractTicket — /start does the same (cli-session.ts).
+  // A 400 after extract would consume the scratch with no session.
+  try {
+    getAdapter(framework);
+  } catch {
+    return res.status(400).json({ error: `Unsupported framework: ${framework}` });
+  }
+
+  if (oneshotFromScratchInFlight.has(id)) {
+    return res.status(400).json({ error: 'scratch promotion already in flight' });
+  }
+  oneshotFromScratchInFlight.add(id);
+  try {
+    const turns = await sliceTurns(id);
+    if (turns.length === 0) {
+      return res.status(400).json({ error: 'scratch chat has no turns to promote' });
+    }
+
+    let extracted: { id: string };
+    try {
+      extracted = await extractTicket({
+        from: id,
+        fromSeq: turns[0]!.seq,
+        toSeq: turns[turns.length - 1]!.seq,
+        title,
+        by: launchedBy,
+        status: 'Grooming',
+      });
+    } catch (err: unknown) {
+      return res.status(400).json({ error: errorMessage(err, 'failed to promote scratch') });
+    }
+
+    const newTask = ws.tasks[extracted.id];
+    if (!newTask) {
+      return res.status(500).json({ error: `promoted ticket ${extracted.id} was not found after extract` });
+    }
+
+    const spawnOpts: SpawnOptions = {
+      framework,
+      appendPrompt: '',
+      effortOverride: '',
+      skipPermissions: true,
+      permissionMode: resolvePermissionMode(undefined, 'ticket'),
+      phase: 'fast-path',
+      planFirst,
+    };
+    try {
+      const session = createPendingSession(newTask, spawnOpts);
+      appendTranscriptEvent(extracted.id, { type: 'action', phase: 'fast-path', timestamp: new Date().toISOString() });
+      void prepareAndLaunchSession(session, newTask, spawnOpts, 'worktree', ws);
+      return res.status(201).json({ ticketId: extracted.id, session: getCliSessionSummaryForTask(extracted.id) });
+    } catch (error: unknown) {
+      return res.status(500).json({ error: errorMessage(error, `Failed to launch ${framework}`) });
+    }
+  } finally {
+    oneshotFromScratchInFlight.delete(id);
   }
 });
 
@@ -1345,21 +1460,23 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
   // child — this is what kept the review fleet running ~3× over.
   // FLUX-482: fold the per-call model into the effort component so two otherwise
   // identical delegations that differ only by model don't dedupe onto each other.
-  const idempotencyKey = dispatchKey(id, personaId, taskPrompt, modelOverride ? `${effortOverride}::model=${modelOverride}` : effortOverride);
-  const existing = findDispatch(idempotencyKey);
-  if (existing) {
-    try {
-      const result = await existing.promise;
+  // FLUX-1735: a retry that rewrote `task` misses the exact key; attach to the
+  // live (or just-finished) same-persona assistant instead of spawning again.
+  const effortKey = modelOverride ? `${effortOverride}::model=${modelOverride}` : effortOverride;
+  const idempotencyKey = dispatchKey(id, personaId, taskPrompt, effortKey);
+  try {
+    const attached = await attachToExistingDelegation(id, personaId, taskPrompt, effortKey);
+    if (attached) {
       return res.json({
-        sessionId: result.sessionId,
-        status: result.status,
-        output: result.output,
-        succeeded: result.succeeded,
+        sessionId: attached.sessionId,
+        status: attached.status,
+        output: attached.output,
+        succeeded: attached.succeeded,
         deduped: true,
       });
-    } catch (error: unknown) {
-      return res.status(500).json({ error: errorMessage(error, 'Delegation failed') });
     }
+  } catch (error: unknown) {
+    return res.status(500).json({ error: errorMessage(error, 'Delegation failed') });
   }
 
   // FLUX-844: reserve the idempotency key BEFORE spawn so a retry that lands
@@ -1718,7 +1835,10 @@ router.post('/:id/cli-session/stop', async (req, res) => {
   if (!session) return res.status(404).json({ error: 'CLI session not available' });
 
   if (!['pending', 'running', 'waiting-input', 'scheduled'].includes(session.status)) {
-    return res.status(409).json({ error: 'CLI session is already finished', session: getCliSessionSummaryForTask(id) || null });
+    // Idempotent: a failed Copilot spawn can leave the Stop button visible until the next poll.
+    // Returning 409 made Stop look dead. Reconcile with the finished session instead.
+    broadcastEvent('taskUpdated', { id });
+    return res.json({ session: getCliSessionSummaryForTask(id) || null });
   }
 
   try {

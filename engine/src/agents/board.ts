@@ -79,6 +79,8 @@ export interface BoardSpawnContext {
   session: CliSessionRecord;
   /** Full prompt text to send this turn (already includes digest/preamble/attachment suffix). */
   prompt: string;
+  /** Absolute sidecar paths for CLIs that support native prompt attachments. */
+  attachmentAbsPaths: string[];
   workspaceRoot: string;
   executionRoot: string;
   isResume: boolean;

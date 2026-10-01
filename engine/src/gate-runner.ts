@@ -34,7 +34,7 @@
 
 import { getWorkspace, getDefaultWorkspace, liveWorkspaces, runWithWorkspace, type Workspace } from './workspace-context.js';
 import { log } from './log.js';
-import { buildActivityEntry, buildCommentEntry } from './history.js';
+import { buildActivityEntry, buildCommentEntry, findSessionOutcome } from './history.js';
 import { nextColumnAfter, getConfig } from './config.js';
 import { updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
@@ -50,7 +50,6 @@ import {
   dispatchSession,
   resumeOrDispatchSession,
   parkTicketOnBoard,
-  findSessionOutcome,
   isLiveSessionRefusal,
   describeBlockingSession,
   lastCommentMatchesVerdictMarker,

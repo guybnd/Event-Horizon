@@ -10,6 +10,7 @@ import {
   type TranscriptMessage,
   type ChatAttachment,
 } from '../api';
+import type { CliFramework } from '../types';
 import { uploadChatImage } from '../taskAssetUploads';
 import { getTranscript, hasTranscript, setTranscript } from '../transcriptCache';
 import { getChatQueue, setChatQueue } from '../chatQueueCache';
@@ -144,6 +145,15 @@ export function useChatSession(
   working = false,
   isAnimating = false,
   workspaceKey?: string | null,
+  /**
+   * FLUX-1706: a per-chat CLI override (the task-chat header picker) — when set and it differs
+   * from whatever framework the current resumable session was actually started under, `send()`
+   * below skips resuming and starts a FRESH session under this framework instead. This is the
+   * only way a switched CLI actually takes effect: the resumable check is what would otherwise
+   * silently keep resuming the old process forever. Absent/undefined ⇒ unchanged behavior (follow
+   * the engine's configured default, whatever framework is already resumable).
+   */
+  framework?: string,
 ): UseChatSession {
   const { subscribeToEvent } = useAppActions();
   // FLUX-750: lazy-hydrate from the module-level transcript cache so a reopened (previously
@@ -381,7 +391,11 @@ export function useChatSession(
         // (terminal-or-active with a resumeSessionId) — this continues a dispatched grooming
         // session's thread instead of spawning a fresh, amnesiac chat. `completed` is now
         // included via the engine's `resumable` flag, not just running/waiting-input.
-        resumable = !!current?.resumable;
+        // FLUX-1706: a per-chat CLI override that differs from what the resumable session was
+        // actually started under means the user switched CLIs (and the old process was stopped) —
+        // never resume it back into the framework they just moved away from. Start fresh instead,
+        // which is the one place `framework` actually takes effect (see `startFresh` below).
+        resumable = !!current?.resumable && (!framework || current.framework === framework);
         // FLUX-714 (direct-send twin): is a turn genuinely IN FLIGHT right now? A cold first start
         // (spawn still booting — ensureMcp shared-server boot + first CLI launch + the CLI's own
         // first-run) sits `running` for seconds BEFORE it captures a resumeSessionId, so it is
@@ -406,9 +420,13 @@ export function useChatSession(
       }
       const startFresh = () =>
         startTaskCliSessionEx(conversationId, {
-          // FLUX-906 (audit E.4): no `framework` — the engine resolves the configured default
-          // (resolveDefaultFramework), so a fresh chat follows `defaultAgent` instead of Claude.
+          // FLUX-906 (audit E.4) / FLUX-1706: omitting `framework` lets the engine resolve the
+          // configured default (resolveDefaultFramework) so a fresh chat follows `defaultAgent`
+          // instead of Claude; when the task chat's own CLI picker has a sticky override, pass it
+          // explicitly so this fresh start — and ONLY a fresh start, never a resumed process —
+          // launches under the selected CLI instead.
           phase: 'chat',
+          framework: (framework || undefined) as CliFramework | undefined,
           appendPrompt: trimmed,
           skipPermissions: true,
           model: sendOpts?.model || undefined,

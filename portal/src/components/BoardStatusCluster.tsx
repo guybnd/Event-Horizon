@@ -5,6 +5,7 @@ import { useAppSelector } from '../store/useAppSelector';
 import { isActiveSession, isSessionStale } from '../orchestration';
 import { ActiveSessionsPopover } from './ActiveSessionsPopover';
 import { LifetimeTokenStats } from './LifetimeTokenStats';
+import { CapacityChip } from './CapacityChip';
 
 /**
  * Board-context status cluster — the live "working state" of the board:
@@ -77,6 +78,9 @@ export function BoardStatusCluster() {
           )}
         </AnimatePresence>
       </div>
+
+      {/* FLUX-1748: header capacity chip — the single worst gauge across providers. */}
+      <CapacityChip />
 
       {/* Token/cost is informational only — pinned to the far edge where it won't
           get in the way of the controls you actually click. */}

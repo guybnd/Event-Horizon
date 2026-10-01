@@ -32,7 +32,7 @@ export interface SendInputOptions {
 }
 
 export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'scheduled' | 'completed' | 'failed' | 'cancelled';
-export type CliFramework = 'claude' | 'copilot' | 'gemini' | 'codex';
+export type CliFramework = 'claude' | 'copilot' | 'gemini' | 'codex' | 'grok' | 'antigravity';
 export type ExecutionPattern = 'relay' | 'scatter-gather' | 'supervisor';
 export type PatternPosition = 'lead' | 'assistant' | 'combiner' | 'step' | 'standalone';
 export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize' | 'chat' | 'fast-path' | 'batch-grooming';
@@ -382,7 +382,10 @@ export const CLI_CAPABILITIES: Record<CliFramework, CliCapabilities> = {
   // live, no permission flag changes it. spawnTimeMcpConfig:true here means "copilot.ts explicitly
   // injects the event-horizon server via --additional-mcp-config", a different flag/JSON-shape than
   // Claude's --mcp-config but the same capability concept (B.6).
-  copilot: { resume: true, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false, effort: { supported: true, flag: '--effort' }, persistentChat: false, selfPause: true, partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: true, imageAttachments: false, chatEditGateEnforced: false, bakesPermissionAllowlist: false },
+  // Copilot CLI 1.0.82: JSON mode emits JSONL deltas, --no-ask-user disables its native HITL tool,
+  // --attachment accepts prompt images/documents, and deny rules override --yolo. The adapter uses
+  // `--deny-tool write --deny-tool shell` for status-gated chat, so that gate is now enforced.
+  copilot: { resume: true, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: true, effort: { supported: true, flag: '--effort' }, persistentChat: true, selfPause: true, partialDeltas: true, permissionGating: false, nativeAskBlocked: true, spawnTimeMcpConfig: true, imageAttachments: true, chatEditGateEnforced: true, bakesPermissionAllowlist: false },
   // FLUX-1625 Phase 0 (live probe, codex-cli 0.146.0, Windows): resume / structuredOutput /
   // spawnTimeMcpConfig / imageAttachments / partialDeltas / permissionGating /
   // bakesPermissionAllowlist are all CONFIRMED against the live CLI (see the ticket's Phase 0 note).
@@ -417,6 +420,80 @@ export const CLI_CAPABILITIES: Record<CliFramework, CliCapabilities> = {
   //    is never actually in force in the shipped configuration. This must reflect what's enforced by
   //    the real spawn, not what the CLI can enforce in principle — see `mcp-write-tools` above.
   codex: { resume: true, background: true, supervisor: false, scatter: true, toolGating: false, structuredOutput: true, effort: { supported: true, configKey: 'model_reasoning_effort' }, persistentChat: true, selfPause: true, partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: true, imageAttachments: true, chatEditGateEnforced: false, bakesPermissionAllowlist: false },
+  // FLUX-1723 (live probe, grok-build 1.0.13, Windows). Every entry below was settled by running
+  // the probe against the live CLI, not by reading docs. Notes on the non-obvious ones:
+  //  - resume: true — and structurally safer than the other adapters. `-s <uuid>` lets EH SUPPLY the
+  //    session id at spawn, so there is no capture-from-stream step to get wrong (the FLUX-959 class
+  //    of bug is eliminated, not merely avoided). Resume via `-r <uuid>`; never send both (`-s`+`-r`
+  //    is a hard error unless `--fork-session` is also passed — it fails loudly, which is fine).
+  //  - toolGating: TRUE BUT PARTIAL — `--disallowed-tools` genuinely removes ordinary tools
+  //    (verified against the system/init tool list), but CANNOT remove `run_terminal_command`, which
+  //    survives every deny configuration including when named alone. Never rely on this as a
+  //    containment boundary; anything EH must actually prevent goes through the EH MCP deny-list
+  //    (`disallowedEhTools`) or process sandboxing.
+  //  - chatEditGateEnforced: FALSE — probed and genuinely absent, both candidate mechanisms
+  //    eliminated. `--disallowed-tools` leaves the shell open (the agent wrote the file via
+  //    `run_terminal_command` after `write` was removed), and `--sandbox` is a no-op on Windows
+  //    (enforcement is Landlock/Seatbelt only; an invalid profile name is accepted without error).
+  //    PLATFORM-DEPENDENT: on a Linux/macOS host a `read-only`/`strict` profile may genuinely
+  //    enforce. Re-probe rather than inherit this value if EH ever spawns Grok off-Windows.
+  //  - supervisor: FALSE — probed, not unprobed. Subagents DO run (`spawn_subagent` returned a
+  //    correct delegated result), but zero events carry a `parent_tool_use_id`, so the subagent's
+  //    turns are invisible in the parent stream. Consequence: during subagent work the session
+  //    reports no progress and `currentActivity` goes stale.
+  //  - spawnTimeMcpConfig: FALSE — there is NO per-invocation MCP flag on `grok -p`. `--plugin-dir`
+  //    exists only on `grok agent`. MCP config is written into an EH-owned GROK_HOME (FLUX-1722
+  //    decision 3), not the user's repo. Grok expands `${VAR}` inside `headers`, so the FLUX-1213
+  //    per-conversation binding rides on per-spawn env vars against a static file. `--trust` is
+  //    required on every spawn (undocumented in 1.0.13; a fresh worktree is always untrusted) and
+  //    writes NO global state.
+  //  - permissionGating: NOT PROBED — conservative default. Grok has a hooks/plugins system that
+  //    might expose an external approval callback; nobody has driven it.
+  //  - effort: `--reasoning-effort` (aliased `--effort`), a real flag with no preconditions — it does
+  //    NOT require `--model` (the Copilot FLUX-977 trap does not apply). Verified live rather than
+  //    accepted-and-ignored: low vs high gave 390 vs 726 output tokens on an identical prompt.
+  grok: { resume: true, background: true, supervisor: false, scatter: true, toolGating: true, structuredOutput: true, effort: { supported: true, flag: '--reasoning-effort' }, persistentChat: true, selfPause: true, partialDeltas: true, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: false, imageAttachments: true, chatEditGateEnforced: false, bakesPermissionAllowlist: false },
+  // FLUX-1738 (live probe, agy 1.1.26, Windows). Antigravity CLI is Google's replacement for Gemini
+  // CLI, which stopped serving individual (free/Pro/Ultra) accounts on 18 Jun 2026 — so this row is
+  // NOT a copy of the `gemini` row above and must not be treated as one: the stream schema, every
+  // flag name, and the resume mechanism all differ. Probed entries:
+  //  - resume: TRUE, live-verified to the CAPABILITY_PROBES standard — `--conversation <id>` (NOT
+  //    `--resume`, which does not exist) answered a question only the prior turn could answer. The
+  //    id comes from `init.conversation_id` on the first stream event. `--continue`/`-c` also
+  //    exists for "most recent conversation" but EH always has an explicit id, so it is unused.
+  //  - structuredOutput: TRUE — `--output-format json|stream-json` plus a `--json-schema` flag that
+  //    enforces a schema on the final result.
+  //  - partialDeltas: TRUE — an ACTIVE `step_update` of `step_type:'agent_response'` carries
+  //    `text_delta`, a genuine incremental chunk (the DONE event for the same `step_index` closes it).
+  //  - effort: `--effort low|medium|high` ONLY — a real flag with no `--model` precondition (the
+  //    Copilot FLUX-977 trap does not apply), but it accepts just THREE of EH's five levels. Probed:
+  //    `--effort xhigh` is rejected outright, and under `--output-format json` that rejection exits
+  //    0 with `status:"ERROR"` (a session that looks fine and did nothing); under the `stream-json`
+  //    this adapter uses it exits 1. antigravity.ts clamps xhigh/max -> high rather than passing
+  //    them through. CAUTION, unresolved: most model slugs ALSO bake effort in
+  //    (`gemini-3.8-flash-high`, `gemini-3.1-pro-low`), so slug and flag can disagree. The adapter
+  //    sends ONE mechanism — the flag — and never appends a suffix to a slug.
+  //  - persistentChat: TRUE — resume is verified and the exit handler routes a clean `phase:'chat'`
+  //    turn to 'waiting-input' (same shape as codex.ts per FLUX-1630).
+  //  - toolGating: FALSE — probed absent, not unprobed: `agy --help` exposes no allow/deny-tool
+  //    surface at all. The only levers are `--dangerously-skip-permissions` (all-or-nothing),
+  //    a `permissions.allow` allowlist in `~/.gemini/antigravity-cli/settings.json`, and
+  //    `--sandbox` (terminal restrictions only). `--disable-slash-commands` gates skills, not tools.
+  //  - spawnTimeMcpConfig: FALSE — there is no per-invocation MCP flag. MCP config is file-based
+  //    (`~/.gemini/config/mcp_config.json` global, `.agents/mcp_config.json` per workspace) and is
+  //    managed through the `agy mcp {add,remove,list,enable,disable}` subcommand.
+  //  - chatEditGateEnforced: FALSE for now, but this is the ONE capability Antigravity plausibly has
+  //    that Gemini CLI never did: `--mode plan` (vs `accept-edits`). Flip it only after probing that
+  //    plan mode actually refuses a file write AND still permits mutating event-horizon MCP calls —
+  //    the codex FLUX-1631 trap, where a sandbox blocked the MCP writes too and made the gate
+  //    useless in the shipped configuration.
+  //  - background / supervisor / scatter / selfPause / permissionGating / nativeAskBlocked /
+  //    imageAttachments: NOT PROBED — conservative defaults, not findings. Leads for whoever probes
+  //    them: `init.tools` advertises `define_subagent`/`invoke_subagent`/`browser_subagent`
+  //    (supervisor), `ask_question`/`ask_permission` (selfPause, nativeAskBlocked), and
+  //    `init.permission_mode` reports `request-review` by default, flipping to `always-proceed`
+  //    under `--dangerously-skip-permissions` (permissionGating). Flip each only on a live probe.
+  antigravity: { resume: true, background: false, supervisor: false, scatter: false, toolGating: false, structuredOutput: true, effort: { supported: true, flag: '--effort' }, persistentChat: true, selfPause: false, partialDeltas: true, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: false, imageAttachments: false, chatEditGateEnforced: false, bakesPermissionAllowlist: false },
 };
 
 // FLUX-905 (audit C.17): model-family name fragments per framework, for detecting whether a
@@ -432,6 +509,14 @@ export const MODEL_FAMILIES: Record<CliFramework, string[]> = {
   copilot: ['copilot', 'gpt'],
   gemini: ['gemini'],
   codex: ['codex', 'gpt'],
+  grok: ['grok'],
+  // FLUX-1738: Antigravity serves Gemini, Claude and GPT-OSS model families through one CLI
+  // (`agy models`), so its fragment list is deliberately broad. 'antigravity'/'agy' are included
+  // because a slug-less session still needs to attribute history to this framework. NOTE the
+  // unavoidable overlap with `gemini` above: an `agy` session on `gemini-3.8-flash-high` matches
+  // both lists. That is correct for authorship display ("Gemini 3.8 Flash" IS the model) — the
+  // framework itself is never inferred from the model name, it is carried on the session record.
+  antigravity: ['antigravity', 'agy', 'gemini', 'claude', 'gpt-oss'],
 };
 
 // FLUX-931: framework -> its config key under `integrations.*` (config.ts: claudeCode/geminiCli/
@@ -442,6 +527,8 @@ export const INTEGRATION_CONFIG_KEYS: Record<CliFramework, string> = {
   gemini: 'geminiCli',
   copilot: 'copilotCli',
   codex: 'codexCli',
+  grok: 'grokCli',
+  antigravity: 'antigravityCli',
 };
 
 export interface AgentProcess {
@@ -547,6 +634,30 @@ export interface CliSessionSummary {
    *  (FLUX-1513). Absent on legacy/rehydrated sessions, which fall back to the default workspace —
    *  see `sessionBelongsToWorkspaceRoot` (session-store.ts). */
   workspaceRoot?: string;
+  /** FLUX-1378: the session's live context size as of the LAST `result` event (non-cumulative —
+   *  overwritten every turn, unlike inputTokens/etc. which accumulate). Used by
+   *  `resumeOrDispatchSession`'s viability check: a session sitting near its context window is
+   *  worse to resume (large cache-read bill, close to auto-compaction) than to cold-spawn fresh.
+   *  FLUX-1744: promoted from CliSessionRecord-only to here (portal-visible) — previously nothing
+   *  rendered these two gauges. */
+  lastTurnContextTokens?: number;
+  /** FLUX-1378: the resolved model's context window (from the CLI result event's `modelUsage`),
+   *  captured alongside `lastTurnContextTokens`. Undefined when the adapter/CLI doesn't report it —
+   *  callers fall back to a conservative default rather than treating undefined as "unlimited". */
+  contextWindow?: number;
+  /** FLUX-1744: structured shape of the most recent NON-ALLOWED `rate_limit_event` — reflects "last
+   *  observed wall", not cleared when a later `allowed` event arrives. `resetsAt` is normalised to
+   *  ISO (the wire event carries epoch seconds); `rateLimitType` is the provider's opaque window
+   *  label, kept as-is. Foundation for FLUX-1745 (Furnace cooldown) / FLUX-1748 (history render). */
+  lastRateLimit?: { status: string; rateLimitType?: string; resetsAt?: string; observedAt: string };
+  /** FLUX-1744: compaction telemetry parsed from `compact_boundary` frames. `cumulativeDroppedTokens`
+   *  is OUR running sum of each event's `preTokens - postTokens` — deliberately not the CLI's own
+   *  cumulative figure, so the total stays correct and provider-independent. */
+  compactionCount?: number;
+  cumulativeDroppedTokens?: number;
+  lastCompactionAt?: string;
+  lastCompactTrigger?: 'auto' | 'manual';
+  lastCompactDurationMs?: number;
 }
 
 export interface CliSessionRecord extends CliSessionSummary {
@@ -560,6 +671,11 @@ export interface CliSessionRecord extends CliSessionSummary {
   cumulativeOutput: string;
   flushTimer?: NodeJS.Timeout | undefined;
   requestedStop: boolean;
+  /** FLUX-1623: the human-readable `reason` a caller passed to `stopAllSessionsForTask` (e.g. `'furnace
+   *  parked ticket'`) — lets an adapter's exit handler attribute a `requestedStop` outcome to what
+   *  actually stopped it instead of unconditionally rendering "stopped by user". Left unset by a bare
+   *  `stopCliSession(sessionId)` route stop, which has no reason and genuinely is user-initiated. */
+  stopReason?: string;
   writeQueue: Promise<void>;
   skipPermissions: boolean;
   sessionHistoryEntry?: AgentSessionEntry;
@@ -577,6 +693,10 @@ export interface CliSessionRecord extends CliSessionSummary {
    *  "excluded and named" note. Internal (not part of CliSessionSummary — never exposed to the
    *  client); a one-time launch computation, not re-derived on resume. */
   batchExcluded?: { id: string; reason: string }[];
+  /** FLUX-1733: for phase:'fast-path' — when true, the initial mission includes the PLAN-FIRST
+   *  pause (in-session ask_user_question after writing the plan; must not move to Todo). Internal
+   *  (not part of CliSessionSummary); a one-time launch flag, same as batchExcluded. */
+  planFirst?: boolean;
   /** FLUX-1385: the launched persona id, if any — feeds disallowedEhToolsForPersona so a
    *  worker-role delegate's `event-horizon` MCP toolset is scoped down at spawn. Internal
    *  (not part of CliSessionSummary — never exposed to the client). */
@@ -650,15 +770,6 @@ export interface CliSessionRecord extends CliSessionSummary {
    *  on a fresh machine). One-shot latch so the lazy reaper never re-kills the same session while
    *  the exit event is still in flight. Internal — not part of CliSessionSummary. */
   hungSpawnKilledAt?: string;
-  /** FLUX-1378: the session's live context size as of the LAST `result` event (non-cumulative —
-   *  overwritten every turn, unlike inputTokens/etc. which accumulate). Used by
-   *  `resumeOrDispatchSession`'s viability check: a session sitting near its context window is
-   *  worse to resume (large cache-read bill, close to auto-compaction) than to cold-spawn fresh. */
-  lastTurnContextTokens?: number;
-  /** FLUX-1378: the resolved model's context window (from the CLI result event's `modelUsage`),
-   *  captured alongside `lastTurnContextTokens`. Undefined when the adapter/CLI doesn't report it —
-   *  callers fall back to a conservative default rather than treating undefined as "unlimited". */
-  contextWindow?: number;
   /** FLUX-1378 (absorbing FLUX-1375 step 6): running total of inputTokens/etc. already flushed into
    *  the ticket's `tokenMetadata`, since `session.inputTokens` etc. accumulate for the WHOLE session
    *  (never reset — they also drive the live per-session cost badge) across every resumed turn. Each
@@ -670,6 +781,22 @@ export interface CliSessionRecord extends CliSessionSummary {
   flushedCostUSD?: number;
   flushedCacheReadTokens?: number;
   flushedCacheCreationTokens?: number;
+  /** FLUX-1746: mid-turn live context gauge, updated from EVERY `assistant` frame's `message.usage`
+   *  (anthropic-stream.ts) — unlike `lastTurnContextTokens` (CliSessionSummary, above), which only
+   *  updates once per turn on the `result` event. Deliberately a SEPARATE field, read only by
+   *  `maybeWriteContextCheckpoint` (agents/shared.ts): `lastTurnContextTokens` is what
+   *  `findResumeCandidate` (furnace-stoker.ts) reads to refuse resuming a near-full session, and
+   *  writing a subagent frame's usage into that field would let a session parked mid-turn (no
+   *  `result` since) read a wrong, much-smaller value there. Internal — not part of
+   *  CliSessionSummary, never exposed to the client, never stubbed (an engine restart just leaves
+   *  the checkpoint un-armed until the next `result`/`assistant` frame recomputes it). */
+  liveContextTokens?: number;
+  /** FLUX-1746: the `compactionCount` (or `-1` if never compacted) as of the LAST context checkpoint
+   *  this session wrote — lets `maybeWriteContextCheckpoint` fire once per compaction epoch instead
+   *  of once per assistant frame above the ratio. Internal, same scoping as `liveContextTokens`
+   *  above (not stubbed — a restart re-arms the checkpoint, which can at most write one duplicate
+   *  note). */
+  checkpointEpoch?: number;
   /** FLUX-1378: count of successful `resumeOrDispatchSession` resumes since this session was COLD
    *  spawned (a fresh spawn always starts a new session object, so this is inherently scoped to "since
    *  last cold spawn" with no explicit reset needed). Fallback viability signal for a session with no

@@ -44,6 +44,9 @@ vi.mock('../api', async (importOriginal) => {
     fetchStorageMode: vi.fn().mockResolvedValue({ mode: 'in-repo' }),
     fetchPathInfo: vi.fn().mockResolvedValue({ binaryDir: null, isPkg: false, platform: 'linux' }),
     installWorkspaceSkill: vi.fn().mockResolvedValue({ success: true, skillInstalledPath: '/tmp/skill' }),
+    fetchConfig: vi.fn().mockResolvedValue({ users: [] }),
+    saveConfig: vi.fn().mockResolvedValue({}),
+    updateGlobalSettings: vi.fn().mockResolvedValue({}),
   };
 });
 

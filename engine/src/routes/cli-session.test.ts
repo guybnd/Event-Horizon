@@ -12,7 +12,8 @@ import os from 'os';
 import http from 'http';
 import type { AddressInfo } from 'net';
 import express from 'express';
-import { setWorkspaceRoot } from '../workspace.js';
+import { setWorkspaceRoot, getActiveFluxDir } from '../workspace.js';
+import { createTask } from '../task-store.js';
 import { requireWorkspace, attachWorkspace } from '../middleware.js';
 
 import { cliSessionsById, cliSessionsByTaskId, registerSession } from '../session-store.js';
@@ -678,6 +679,170 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
       await waitFor(() => cliSessionsById.get(session.id)?.status === 'running');
       expect(ensureTicketIsolation).not.toHaveBeenCalled();
     });
+
+    it('stamps planFirst on the session when the body asks for it (FLUX-1733)', async () => {
+      vi.mocked(ensureTicketIsolation).mockResolvedValue({ branch: 'flux/FLUX-1-test' });
+      const res = await startRoleless({ phase: 'fast-path', planFirst: true });
+      expect(res.status).toBe(201);
+      const { session } = await res.json();
+      await waitFor(() => cliSessionsById.get(session.id)?.status === 'running');
+      expect(cliSessionsById.get(session.id)?.planFirst).toBe(true);
+    });
+
+    it('omits planFirst on the session when the body omits it', async () => {
+      vi.mocked(ensureTicketIsolation).mockResolvedValue({ branch: 'flux/FLUX-1-test' });
+      const res = await startRoleless({ phase: 'fast-path' });
+      expect(res.status).toBe(201);
+      const { session } = await res.json();
+      await waitFor(() => cliSessionsById.get(session.id)?.status === 'running');
+      expect(cliSessionsById.get(session.id)?.planFirst).toBeUndefined();
+    });
+  });
+
+  describe('POST /:id/oneshot-from-scratch (FLUX-1733)', () => {
+    async function makeScratch(n: number, title = 'Scratch pad'): Promise<string> {
+      await fs.mkdir(getActiveFluxDir(), { recursive: true });
+      const { id } = await createTask({ title, author: 'Tester', kind: 'scratch', skipBroadcast: true });
+      for (let i = 0; i < n; i++) appendTranscriptEvent(id, { type: 'user', text: `s${i}` });
+      await flushTranscript(id);
+      return id;
+    }
+
+    it('promotes the scratch into a Grooming card and starts fast-path on the new ticket', async () => {
+      vi.mocked(ensureTicketIsolation).mockResolvedValue({ branch: 'flux/new-test' });
+      const scratch = await makeScratch(2, 'Build the widget');
+      const res = await fetch(`${baseUrl}/api/tasks/${scratch}/oneshot-from-scratch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ framework: TEST_FRAMEWORK }),
+      });
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.ticketId).toMatch(/^FLUX-\d+$/);
+      expect(body.ticketId).not.toBe(scratch);
+      expect(getWorkspace().tasks[body.ticketId].status).toBe('Grooming');
+      expect(getWorkspace().tasks[body.ticketId].kind).not.toBe('scratch');
+      expect(getWorkspace().tasks[scratch].status).toBe('Archived');
+      await waitFor(() => cliSessionsById.get(body.session.id)?.status === 'running');
+      expect(cliSessionsById.get(body.session.id)?.phase).toBe('fast-path');
+      expect(cliSessionsById.get(body.session.id)?.taskId).toBe(body.ticketId);
+      expect(ensureTicketIsolation).toHaveBeenCalled();
+    });
+
+    it('refuses a non-scratch ticket', async () => {
+      const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/oneshot-from-scratch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ framework: TEST_FRAMEWORK }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/scratch/i);
+      expect(startMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses an empty scratch', async () => {
+      const scratch = await makeScratch(0, 'Empty scratch');
+      const res = await fetch(`${baseUrl}/api/tasks/${scratch}/oneshot-from-scratch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ framework: TEST_FRAMEWORK, title: 'Nope' }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/no turns/i);
+      expect(startMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a scratch that already has a live session', async () => {
+      const scratch = await makeScratch(1, 'Live scratch');
+      const live = {
+        id: 'live-scratch', taskId: scratch, framework: TEST_FRAMEWORK, status: 'running',
+        command: 'claude', args: [], startedAt: new Date().toISOString(), label: 'Claude Code',
+        outputBuffer: '', liveOutputBuffer: '', pendingAssistantText: '', skipPermissions: true,
+        requestedStop: false, writeQueue: Promise.resolve(), inputTokens: 0, outputTokens: 0, costUSD: 0,
+      } as unknown as CliSessionRecord;
+      cliSessionsById.set(live.id, live);
+      cliSessionsByTaskId.set(scratch, [live.id]);
+      const res = await fetch(`${baseUrl}/api/tasks/${scratch}/oneshot-from-scratch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ framework: TEST_FRAMEWORK }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/live session/i);
+      expect(startMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a placeholder Scratch N title without a replacement', async () => {
+      const scratch = await makeScratch(1, 'Scratch 1');
+      const res = await fetch(`${baseUrl}/api/tasks/${scratch}/oneshot-from-scratch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ framework: TEST_FRAMEWORK }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/title/i);
+    });
+
+    it('refuses a second POST of the same scratch — still one Grooming card', async () => {
+      vi.mocked(ensureTicketIsolation).mockResolvedValue({ branch: 'flux/new-test' });
+      const scratch = await makeScratch(2, 'Build the widget');
+      const first = await fetch(`${baseUrl}/api/tasks/${scratch}/oneshot-from-scratch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ framework: TEST_FRAMEWORK }),
+      });
+      expect(first.status).toBe(201);
+      const firstBody = await first.json();
+      await waitFor(() => cliSessionsById.get(firstBody.session.id)?.status === 'running');
+      const second = await fetch(`${baseUrl}/api/tasks/${scratch}/oneshot-from-scratch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ framework: TEST_FRAMEWORK }),
+      });
+      expect(second.status).toBe(400);
+      const secondBody = await second.json();
+      expect(secondBody.error).toMatch(/already promoted|archived/i);
+      const grooming = Object.values(getWorkspace().tasks).filter((t) => t.status === 'Grooming');
+      expect(grooming).toHaveLength(1);
+      expect(grooming[0].id).toBe(firstBody.ticketId);
+      expect(startMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses an already-archived scratch even without mergedInto', async () => {
+      const scratch = await makeScratch(1, 'Old scratch');
+      getWorkspace().tasks[scratch].status = 'Archived';
+      const res = await fetch(`${baseUrl}/api/tasks/${scratch}/oneshot-from-scratch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ framework: TEST_FRAMEWORK }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/archived/i);
+      expect(startMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a concurrent second POST while the first promote is in flight', async () => {
+      vi.mocked(ensureTicketIsolation).mockResolvedValue({ branch: 'flux/new-test' });
+      const scratch = await makeScratch(2, 'Build the widget');
+      const post = () => fetch(`${baseUrl}/api/tasks/${scratch}/oneshot-from-scratch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ framework: TEST_FRAMEWORK }),
+      });
+      const [a, b] = await Promise.all([post(), post()]);
+      const statuses = [a.status, b.status].sort((x, y) => x - y);
+      expect(statuses).toEqual([201, 400]);
+      const failed = a.status === 400 ? a : b;
+      const failedBody = await failed.json();
+      expect(failedBody.error).toMatch(/in flight|already promoted|archived/i);
+      const grooming = Object.values(getWorkspace().tasks).filter((t) => t.status === 'Grooming');
+      expect(grooming).toHaveLength(1);
+    });
   });
 
   describe('phase:"batch-grooming" (FLUX-1383)', () => {
@@ -1080,6 +1245,45 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
       expect(res.status).toBe(404);
       const body = await res.json();
       expect(body.error).toBe('Task not found');
+    });
+  });
+
+  describe('GET /:id/cli-sessions?lite=1 (FLUX-1772 review Major 2)', () => {
+    function seedSession(id: string, taskId: string, over: Partial<CliSessionRecord> = {}): CliSessionRecord {
+      const session = {
+        id, taskId, framework: TEST_FRAMEWORK, status: 'completed', command: 'claude', args: [],
+        startedAt: new Date().toISOString(), label: `Claude Code ${id}`, outputBuffer: '', liveOutputBuffer: '',
+        pendingAssistantText: '', skipPermissions: true, requestedStop: false, writeQueue: Promise.resolve(),
+        inputTokens: 0, outputTokens: 0, costUSD: 0,
+        ...over,
+      } as unknown as CliSessionRecord;
+      cliSessionsById.set(id, session);
+      registerSession(taskId, id);
+      return session;
+    }
+
+    it('strips liveOutput but keeps status/lastOutputAt/terminalReason when lite=1', async () => {
+      seedSession('lite-1', 'FLUX-1', { liveOutputBuffer: 'x'.repeat(5000), status: 'failed', terminalReason: 'auth-expired' });
+
+      const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-sessions?lite=1`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const session = body.sessions.find((s: { id: string }) => s.id === 'lite-1');
+      expect(session.liveOutput).toBeUndefined();
+      expect(session.status).toBe('failed');
+      expect(session.terminalReason).toBe('auth-expired');
+    });
+
+    it('keeps the default (portal) shape unchanged — full liveOutput when lite is omitted', async () => {
+      seedSession('full-1', 'FLUX-1', { liveOutputBuffer: 'x'.repeat(5000) });
+
+      const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-sessions`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const session = body.sessions.find((s: { id: string }) => s.id === 'full-1');
+      expect(session.liveOutput).toHaveLength(5000);
     });
   });
 });

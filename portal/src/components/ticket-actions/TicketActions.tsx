@@ -176,8 +176,12 @@ function ActionControl({
       return <LaunchControl action={action} ctl={ctl} variant={variant} onOpenChange={onOpenChange} />;
     case 'picker':
       return <PickerControl action={action} ctl={ctl} variant={variant} onOpenChange={onOpenChange} />;
-    case 'engine':
     case 'agent':
+      if (action.menu && action.menu.length > 0) {
+        return <AgentSplitControl action={action} ctl={ctl} variant={variant} onOpenChange={onOpenChange} />;
+      }
+      return <SimpleControl action={action} ctl={ctl} variant={variant} />;
+    case 'engine':
     default:
       return <SimpleControl action={action} ctl={ctl} variant={variant} />;
   }
@@ -225,6 +229,91 @@ function SimpleControl({ action, ctl, variant }: { action: TicketAction; ctl: Us
       {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : action.kind === 'agent' ? <Sparkles className="h-3 w-3" /> : Icon ? <Icon className="h-3 w-3" /> : null}
       {action.label}
     </motion.button>
+  );
+}
+
+// ── agent + menu (split: one-click default + ▾ items, e.g. Oneshot / Show plan first) ─
+
+function AgentSplitControl({
+  action,
+  ctl,
+  variant,
+  onOpenChange,
+}: {
+  action: TicketAction;
+  ctl: UseTicketActions;
+  variant: Variant;
+  onOpenChange?: (open: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useOutsideClose(ref, open, () => setOpen(false));
+  useEffect(() => onOpenChange?.(open), [open, onOpenChange]);
+
+  const busy = ctl.busyKey === action.key || action.menu?.some((item) => ctl.busyKey === item.key);
+  const primary = action.tone === 'primary';
+  const Icon = action.icon ? ICONS[action.icon] : Sparkles;
+
+  const primaryBtn = primary ? primaryClass(variant) : defaultClass(variant);
+  const chevronBtn =
+    variant === 'card'
+      ? primary
+        ? 'flex items-center border-l border-white/25 bg-primary px-1 py-1 text-white transition-colors hover:bg-primary-hover disabled:opacity-50'
+        : 'flex items-center border border-l-0 border-gray-200 bg-white/80 px-1 py-1 text-gray-500 transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10'
+      : primary
+        ? 'flex items-center border-l border-white/20 bg-primary px-1.5 py-1 text-white transition-colors hover:bg-primary/90 disabled:opacity-50'
+        : 'eh-border flex items-center border bg-[var(--eh-input-bg)] px-1.5 py-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5';
+
+  const tokens = useMotionTokens();
+  return (
+    <div ref={ref} className="relative flex items-stretch overflow-visible rounded-md">
+      <motion.button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); void ctl.fire(action.key, action.run); }}
+        disabled={busy}
+        whileTap={tokens.instant ? undefined : PRESS_TAP}
+        transition={tokens.press}
+        title={`${action.label} — starts a tokenized agent session`}
+        className={`${primaryBtn} rounded-l-md`}
+      >
+        {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Icon className="h-3 w-3" />}
+        {busy ? '…' : action.label}
+      </motion.button>
+      <motion.button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+        disabled={busy}
+        whileTap={tokens.instant ? undefined : PRESS_TAP}
+        transition={tokens.press}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="More options"
+        className={`${chevronBtn} rounded-r-md`}
+      >
+        <ChevronDown className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </motion.button>
+      {open && action.menu && (
+        <div
+          role="menu"
+          onClick={(e) => e.stopPropagation()}
+          className="absolute bottom-full right-0 z-[90] mb-1.5 w-56 rounded-xl border border-[var(--eh-border)] bg-[var(--eh-surface)] p-1.5 shadow-xl"
+        >
+          {action.menu.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                void ctl.fire(item.key, item.run);
+              }}
+              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-[var(--eh-text-primary)] hover:bg-primary/5 hover:text-primary dark:hover:bg-primary/10"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -172,9 +172,12 @@ jobs:
       - name: Build Linux executable
         run: npm run dist:linux
 
-      - name: Build Linux desktop app (Electron AppImage)
+      - name: Build Linux desktop app (Electron AppImage + deb/rpm/pacman, FLUX-1712)
         continue-on-error: true # non-blocking, same policy as the mac/win desktop steps
         run: |
+          # rpmbuild for the rpm target, bsdtar (libarchive-tools) for the pacman target —
+          # neither ships on the ubuntu runner image by default (FLUX-1712).
+          sudo apt-get update -q && sudo apt-get install -y -q rpm libarchive-tools
           npm ci --prefix electron
           VER="${GITHUB_REF_NAME#v}"
           npm --prefix electron version "$VER" --no-git-tag-version --allow-same-version
@@ -187,6 +190,9 @@ jobs:
           files: |
             releases/event-horizon-linux-*.zip
             electron/dist/*.AppImage
+            electron/dist/*.deb
+            electron/dist/*.rpm
+            electron/dist/*.pacman
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

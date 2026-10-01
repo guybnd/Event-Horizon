@@ -76,7 +76,7 @@ Your IDE is still where you read code, debug, and make the precise edits you wan
 | Decisions vanish into disposable chat logs | Plans + history are **markdown committed to your repo** |
 | Sessions live in a vendor's cloud | **Local-first** — travels with a `git clone` |
 
-> **You bring the agent; Event Horizon is the environment around it.** It orchestrates a CLI you already use — **Claude Code, Gemini CLI, or GitHub Copilot CLI** — or a supported IDE (Cursor, Windsurf, Cline). It ships no LLM and needs no key of its own. Keep your editor, terminal, and debugger exactly as they are: every change still arrives as a normal **git branch + PR** you can pull into your own tools — Event Horizon just adds the board where agents do the building and you stay in command.
+> **You bring the agent; Event Horizon is the environment around it.** It orchestrates a CLI you already use — **Claude Code, Gemini CLI, GitHub Copilot CLI, Codex CLI, or Grok Build** — or a supported IDE (Cursor, Windsurf, Cline). It ships no LLM and needs no key of its own. Keep your editor, terminal, and debugger exactly as they are: every change still arrives as a normal **git branch + PR** you can pull into your own tools — Event Horizon just adds the board where agents do the building and you stay in command.
 
 ---
 
@@ -132,6 +132,8 @@ Event Horizon installs a workflow skill + MCP config for your framework so the a
 | Claude Code | `claude` | `.claude/rules/event-horizon.md` |
 | GitHub Copilot | `github-copilot-cli` | `.github/skills/event-horizon/` |
 | Gemini CLI | `gemini` | `.gemini/skills/event-horizon.md` |
+| Codex CLI | `codex` | `.codex/skills/event-horizon.md` |
+| Grok Build | `grok` | `.grok/skills/event-horizon/SKILL.md` |
 | Cursor | (IDE) | `.cursor/rules/event-horizon.mdc` |
 | Windsurf | (IDE) | `.windsurf/rules/event-horizon.md` |
 | Cline | (IDE) | `.cline/skills/event-horizon-*.md` |

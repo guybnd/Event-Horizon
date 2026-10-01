@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { JSX } from 'react';
-import { GitMerge, AlertTriangle, ShieldCheck, Loader2, Bot, Wrench, RotateCcw, Undo2, Plus, Link2, ExternalLink, CheckCircle2, XCircle, Clock } from 'lucide-react';
+import { GitMerge, AlertTriangle, ShieldCheck, Loader2, Bot, Wrench, RotateCcw, Undo2, Plus, Link2, ExternalLink, CheckCircle2, XCircle, Clock, Cloud, Server, Layers } from 'lucide-react';
 import type { Task } from '../types';
 import { reviewChip, internalApprovedChip, reviewProgressChip, aggregateMemberReviews, selectPrReviewChip } from './ReviewChip';
 import { useAppSelector, useAppActions, useParentByChildId } from '../store/useAppSelector';
@@ -277,6 +277,9 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
             existing PR-reconcile poll. No chip for 'unknown' (no checks configured) — see
             ciStatusChip. */}
         {ciStatusChip(task.ciStatus)}
+        {/* CI runner origin chip (FLUX-1713) — sourced from `task.ciRunner`, same PR-reconcile poll
+            as ciStatus. No chip for absent/'unknown' origin — see ciRunnerChip. */}
+        {ciRunnerChip(task.ciRunner)}
         {/* GitHub link (FLUX-1310) — icon-only so it doesn't compete visually with the status
             chips; uses the URL already on the ticket (`implementationLink`, set from `pr.url`). */}
         {prUrl && (
@@ -585,5 +588,38 @@ function ciStatusChip(ciStatus?: string) {
   const m = ciStatus ? map[ciStatus] : undefined;
   if (!m) return null;
   return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${m.cls}`}>{m.icon}{m.label}</span>;
+}
+
+/**
+ * CI runner origin chip (FLUX-1713), sourced from `task.ciRunner`. Absent or `origin: 'unknown'`
+ * renders no chip — metadata only, so it uses a neutral gray rather than competing visually with
+ * `ciStatusChip`'s pass/fail/pending colors.
+ */
+function ciRunnerChip(ciRunner?: Task['ciRunner']) {
+  if (!ciRunner || ciRunner.origin === 'unknown') return null;
+  const cls = 'bg-gray-100 text-gray-600 dark:bg-white/10 dark:text-gray-400';
+  if (ciRunner.origin === 'hosted') {
+    return (
+      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${cls}`} title="Ran on a GitHub-hosted runner">
+        <Cloud className="h-3 w-3" />Hosted
+      </span>
+    );
+  }
+  if (ciRunner.origin === 'self-hosted') {
+    const title = ciRunner.runnerName ? `Ran on self-hosted runner: ${ciRunner.runnerName}` : 'Ran on a self-hosted runner';
+    return (
+      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${cls}`} title={title}>
+        <Server className="h-3 w-3" />Self-hosted
+      </span>
+    );
+  }
+  // FLUX-1713 review (Minor 5): frontmatter is hand-editable, so a malformed `origin: mixed`
+  // block with no `jobs` array must not throw during render.
+  const title = (ciRunner.jobs ?? []).map(j => `${j.name}: ${j.origin}`).join(', ');
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${cls}`} title={title}>
+      <Layers className="h-3 w-3" />Mixed
+    </span>
+  );
 }
 

@@ -12,8 +12,8 @@ import {
 import { serializeTaskForApi, updateTaskWithHistory, syncParentSubtaskLinks, validateParentLink, subtaskIds, StaleBodyError } from '../../task-store.js';
 // FLUX-1044: the status-transition rulebook shared with the MCP tools — comment gates and the
 // schema-validation + tag-registration sequencing live there (one seam for both write paths).
-import { evaluateCommentGate, resolveTransitionStatusNames, validateAndRegisterTicketWrite } from '../../status-transition-service.js';
-import { stopAllSessionsForTask } from '../../session-store.js';
+import { evaluateCommentGate, resolveTransitionStatusNames, validateAndRegisterTicketWrite, buildCompactionHandoffEntry } from '../../status-transition-service.js';
+import { stopAllSessionsForTask, getAllSessionsForTask } from '../../session-store.js';
 import { broadcastEvent } from '../../events.js';
 import { emitDocRecap, emitDocRecapForBranch } from '../../doc-recap-emit.js';
 import { reqWorkspace } from './helpers.js';
@@ -209,6 +209,15 @@ router.put('/:id', async (req, res) => {
   // hasAppendedStatusChange checks in this handler).
   for (const entry of appendHistoryEntries) {
     entriesToAppend.push({ ...entry, date: activityTimestamp });
+  }
+
+  // FLUX-1746: review-handoff note — same builder + condition as the MCP change_status path
+  // (mcp-server.ts), wired independently per status-transition-service.ts's REST/MCP-asymmetry
+  // policy. Must land BEFORE `prospective` is built below — that snapshot is what
+  // validateAndRegisterTicketWrite schema-checks.
+  if (movingToReady) {
+    const handoffEntry = buildCompactionHandoffEntry(getAllSessionsForTask(id), activityTimestamp);
+    if (handoffEntry) entriesToAppend.push(handoffEntry);
   }
 
   // Bidirectional parentId sync — validate the link BEFORE any write. FLUX-1068: reject

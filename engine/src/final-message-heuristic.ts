@@ -18,8 +18,11 @@ const NEEDS_INPUT_RE =
  * or a word like "proceed", and must NOT be mis-flagged as a pending question — UNLESS it also ends
  * with a real question (see below).
  */
+// FLUX-1739 benchmark finding: "Ticket X is now **Ready**. Root cause: … which drifts …" was flagged
+// as needing the user — `which` tripped NEEDS_INPUT_RE and nothing here recognised a Ready hand-off
+// as done. A completion comment that announces the Ready move IS the done signal.
 const LOOKS_DONE_RE =
-  /\b(done|completed?|finished|merged|shipped)\b|moved to done|implementation link|no further action|nothing (?:more |else )?(?:needed|to do|required)/i;
+  /\b(done|completed?|finished|merged|shipped)\b|moved to done|implementation link|no further action|nothing (?:more |else )?(?:needed|to do|required)|\b(?:is now|moved to|now at)\s+\**ready\**|\bready for review\b|\bnow passes\b/i;
 
 /**
  * A question at the VERY END of the message (after optional trailing markdown/quotes/whitespace).

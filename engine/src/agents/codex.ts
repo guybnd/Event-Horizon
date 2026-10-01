@@ -22,7 +22,7 @@ import { getEnginePort } from '../packaged-mode.js';
 import { signConversation } from '../session-binding.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest, SendInputOptions } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, buildPhaseHandoffNote, resolveAttachmentAbsPaths, type CliTask } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, buildPhaseHandoffNote, resolveAttachmentAbsPaths, stopOutcomeText, type CliTask } from './shared.js';
 
 // codex item.type -> progress-activity label. Mirrors copilot.ts's TOOL_ACTIVITY_MAP, keyed by the
 // codex JSONL item shape instead of a bare tool name (FLUX-1625 Phase 0: item.type is the stable
@@ -441,7 +441,7 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
     : undefined);
 
   const editsGated = isChatEditGated(session, task) || isScratchSession(task);
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'codex', editsGated, batchTicketIds: session.batchTicketIds, batchExcluded: session.batchExcluded });
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'codex', editsGated, batchTicketIds: session.batchTicketIds, batchExcluded: session.batchExcluded, planFirst: session.planFirst });
 
   // FLUX-1625 Phase 0 gotcha 2/3: `-a/--ask-for-approval` is top-level-only and rejected by `exec`
   // (codex exec never prompts — it silently does whatever the sandbox mode permits). `-C/--cd` is
@@ -611,7 +611,7 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
     }
 
     const outcome = session.requestedStop
-      ? `${label} session stopped by user.`
+      ? `${label} session stopped ${stopOutcomeText(session)}.`
       : `${label} session ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
 
     const tokenUpdate = buildTokenMetadataUpdate(id, session);

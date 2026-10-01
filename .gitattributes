@@ -3,3 +3,9 @@
 # what the engine writes — otherwise they show as phantom-modified on every branch.
 .mcp.json text eol=lf
 .gemini/settings.json text eol=lf
+
+# Shebang scripts imported by vitest (classify-tests-partitioning, test-changed-resolution):
+# vite's transform rejects a CRLF shebang line ("Invalid or unexpected token"), so pin them to LF
+# on core.autocrlf=true checkouts.
+engine/scripts/*.mjs text eol=lf
+scripts/*.mjs text eol=lf

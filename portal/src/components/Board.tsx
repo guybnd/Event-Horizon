@@ -528,6 +528,9 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace, active =
     // never renders in a column or contributes a column. Excluding it here (the same choke point
     // that drops Released/Archived) keeps it out of decks, allColumns, and columnTasksByStatus.
     task.kind !== 'scratch' &&
+    // FLUX-1739: same choke point for benchmark run tickets — a 45-cell suite would otherwise flood
+    // every column with throwaway BENCH-n cards.
+    task.kind !== 'benchmark' &&
     !config.hiddenStatuses?.some((hiddenStatus) => hiddenStatus.name === task.status)
   ) : [], [tasks, config, archiveStatus]);
   const allColumns = useMemo(() => {

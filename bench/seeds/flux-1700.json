@@ -1,0 +1,50 @@
+{
+  "id": "flux-1700",
+  "title": "FLUX-1700 — board-chat Copilot precheck is PATH-only",
+  "track": "fix",
+  "seedTitle": "FLUX-1700 board-chat Copilot precheck is PATH-only",
+  "baseRef": "bench/flux-1700-holdout-v2",
+  "promptFile": "flux-1700.prompt.md",
+  "validation": {
+    "command": "node",
+    "args": [
+      "node_modules/vitest/vitest.mjs",
+      "run",
+      "--root",
+      "engine",
+      "src/agents/benchmark-holdout-flux-1700.test.ts"
+    ],
+    "paths": [
+      "engine/src/agents/benchmark-holdout-flux-1700.test.ts"
+    ],
+    "timeoutMs": 300000
+  },
+  "regression": {
+    "command": "node",
+    "args": [
+      "node_modules/typescript/bin/tsc",
+      "--noEmit",
+      "-p",
+      "engine"
+    ],
+    "timeoutMs": 600000
+  },
+  "repetitions": 3,
+  "concurrency": 3,
+  "wallClockBudgetMs": 1800000,
+  "notes": "Easy: three small edits across board.ts / board-core.ts / copilot-board.ts with the interface prescribed. ~8–13 min per run.",
+  "defaultMatrix": [
+    {
+      "framework": "claude",
+      "model": "claude-sonnet-5",
+      "effortOverride": "high",
+      "phase": "implementation"
+    },
+    {
+      "framework": "claude",
+      "model": "claude-opus-5",
+      "effortOverride": "high",
+      "phase": "implementation"
+    }
+  ]
+}

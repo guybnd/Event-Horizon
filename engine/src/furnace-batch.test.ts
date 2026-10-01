@@ -44,9 +44,9 @@ import {
   pickPrReview,
   mirrorReviewVerdictToPr,
   lastCommentMatchesVerdictMarker,
-  findSessionOutcome,
   upsertBatchPr,
   stokerTick,
+  resetsAtForCooldown,
 } from './furnace-stoker.js';
 import { setWorkspaceRoot } from './workspace.js';
 import { getWorkspace } from './workspace-context.js';
@@ -61,6 +61,7 @@ import {
 import { cliSessionsById, cliSessionsByTaskId, registerSession } from './session-store.js';
 import * as sessionStoreModule from './session-store.js';
 import type { CliSessionRecord } from './agents/types.js';
+import { findSessionOutcome } from './history.js';
 
 // FLUX-1057/FLUX-1049: mock the real GitHub call so verdict-gating tests never shell out to `gh`.
 const postPrReview = vi.fn(async () => 'approved' as const);
@@ -274,6 +275,43 @@ describe('decideTicketAction (pure decision core)', () => {
   it('a rate-limited failed session enters cooldown (not a park), sparing retryCap + the breaker', () => {
     const a = decideTicketAction({ ticket: mkTicket({ state: 'implementing' }), sessionStatus: 'failed', terminalReason: 'rate-limited', retryCap: 2 });
     expect(a).toEqual({ type: 'cooldown-rate-limited' });
+  });
+
+  // FLUX-1745: decideTicketAction carries the dead session's own provider reset time onto the action —
+  // advanceTicket (not this pure core) has no session in scope, so this is the only way it can travel.
+  it('a rate-limited failed session with a captured reset time carries it on the cooldown action', () => {
+    const a = decideTicketAction({
+      ticket: mkTicket({ state: 'implementing' }), sessionStatus: 'failed', terminalReason: 'rate-limited', retryCap: 2,
+      rateLimitResetsAt: '2026-09-05T05:00:00.000Z',
+    });
+    expect(a).toEqual({ type: 'cooldown-rate-limited', rateLimitResetsAt: '2026-09-05T05:00:00.000Z' });
+  });
+
+  // FLUX-1745: resetsAtForCooldown is the guard the reconcileTicket call site applies BEFORE handing
+  // rateLimitResetsAt to decideTicketAction above — it must reject a survivable warning or a stale
+  // observation so a transient failure can't get paired with an unrelated multi-hour reset wall.
+  describe('resetsAtForCooldown (FLUX-1745)', () => {
+    const nowMs = Date.parse('2026-09-05T05:00:00.000Z');
+    it('passes through a recent, actual rejection', () => {
+      const rl = { status: 'rejected', resetsAt: '2026-09-05T10:00:00.000Z', observedAt: '2026-09-05T04:59:00.000Z' };
+      expect(resetsAtForCooldown(rl, nowMs)).toBe('2026-09-05T10:00:00.000Z');
+    });
+    it('rejects an "allowed_warning" status — a survivable warning, not a rejection', () => {
+      const rl = { status: 'allowed_warning', resetsAt: '2026-09-05T10:00:00.000Z', observedAt: '2026-09-05T04:59:00.000Z' };
+      expect(resetsAtForCooldown(rl, nowMs)).toBeUndefined();
+    });
+    it('rejects a plain "allowed" status', () => {
+      const rl = { status: 'allowed', resetsAt: '2026-09-05T10:00:00.000Z', observedAt: '2026-09-05T04:59:00.000Z' };
+      expect(resetsAtForCooldown(rl, nowMs)).toBeUndefined();
+    });
+    it('rejects a stale observation even for an actual rejection (observed hours before the terminal failure)', () => {
+      const rl = { status: 'rejected', resetsAt: '2026-09-05T10:00:00.000Z', observedAt: '2026-09-05T02:00:00.000Z' };
+      expect(resetsAtForCooldown(rl, nowMs)).toBeUndefined();
+    });
+    it('returns undefined for undefined input or a missing resetsAt', () => {
+      expect(resetsAtForCooldown(undefined, nowMs)).toBeUndefined();
+      expect(resetsAtForCooldown({ status: 'rejected', observedAt: '2026-09-05T04:59:00.000Z' }, nowMs)).toBeUndefined();
+    });
   });
 
   // FLUX-1397: an expired/invalid credential is a whole-batch problem — halt immediately (one
@@ -1148,6 +1186,93 @@ describe('FLUX-1396 (Group E) — watchdog / stoker integration', () => {
       expect(after.state).toBe('reviewing'); // redrive keeps the same in-flight state, just a fresh session
       expect(after.currentSessionId).toBeTruthy();
       expect(after.currentSessionId).not.toBe('gone-sess'); // a brand-new session, not the stale one
+    });
+  });
+
+  // FLUX-1745: the cooldown clock prefers the provider's own reset time (dead session's
+  // lastRateLimit.resetsAt, FLUX-1744) over the fixed rateLimitRetryIntervalMs guess — applier-layer
+  // (advanceTicket, via stokerTick -> reconcileTicket) rather than the pure decision core, since
+  // nextRetryAt is computed in advanceTicket, not decideTicketAction.
+  describe('cooldown clock prefers the provider reset time (FLUX-1745)', () => {
+    it('schedules nextRetryAt from lastRateLimit.resetsAt + 60s margin when it is in the future', async () => {
+      const { id: ticketId } = await createTask({ title: 'Rate limited, future reset', status: 'In Progress' });
+      const batch = await createFurnaceBatch({ title: 'cooldown-resets-future', kind: 'parallel', tickets: [newBatchTicket(ticketId, 0)] });
+      await mutateFurnaceBatch(batch.id, (b) => {
+        b.status = 'burning';
+        const t = b.tickets[0]!;
+        t.state = 'implementing';
+        t.currentSessionId = 'rl-sess';
+        t.sessionIds = ['rl-sess'];
+      });
+      const resetsAt = new Date(Date.now() + 47 * 60_000).toISOString();
+      cliSessionsById.set('rl-sess', {
+        id: 'rl-sess', taskId: ticketId, status: 'failed', phase: 'implementation', terminalReason: 'rate-limited',
+        lastRateLimit: { status: 'rejected', resetsAt, observedAt: new Date().toISOString() },
+      } as CliSessionRecord);
+      registerSession(ticketId, 'rl-sess');
+
+      await stokerTick(batch.id);
+
+      const after = getFurnaceBatch(batch.id)!.tickets[0]!;
+      expect(after.state).toBe('cooling-down');
+      const expected = Date.parse(resetsAt) + 60_000;
+      expect(Math.abs(Date.parse(after.nextRetryAt!) - expected)).toBeLessThan(5_000);
+      expect(after.note).toContain('provider reset time');
+    });
+
+    it('falls back to rateLimitRetryIntervalMs when the session has no lastRateLimit', async () => {
+      const { id: ticketId } = await createTask({ title: 'Rate limited, no reset info', status: 'In Progress' });
+      const batch = await createFurnaceBatch({
+        title: 'cooldown-no-resets', kind: 'parallel', tickets: [newBatchTicket(ticketId, 0)], rateLimitRetryIntervalMs: 20 * 60_000,
+      });
+      await mutateFurnaceBatch(batch.id, (b) => {
+        b.status = 'burning';
+        const t = b.tickets[0]!;
+        t.state = 'implementing';
+        t.currentSessionId = 'rl-sess-2';
+        t.sessionIds = ['rl-sess-2'];
+      });
+      cliSessionsById.set('rl-sess-2', { id: 'rl-sess-2', taskId: ticketId, status: 'failed', phase: 'implementation', terminalReason: 'rate-limited' } as CliSessionRecord);
+      registerSession(ticketId, 'rl-sess-2');
+
+      await stokerTick(batch.id);
+
+      const after = getFurnaceBatch(batch.id)!.tickets[0]!;
+      expect(after.state).toBe('cooling-down');
+      const expected = Date.now() + 20 * 60_000;
+      expect(Math.abs(Date.parse(after.nextRetryAt!) - expected)).toBeLessThan(5_000);
+      expect(after.note).toContain('default interval');
+    });
+
+    it('falls back to rateLimitRetryIntervalMs when lastRateLimit.resetsAt is already in the past', async () => {
+      const { id: ticketId } = await createTask({ title: 'Rate limited, stale reset', status: 'In Progress' });
+      const batch = await createFurnaceBatch({
+        title: 'cooldown-resets-past', kind: 'parallel', tickets: [newBatchTicket(ticketId, 0)], rateLimitRetryIntervalMs: 20 * 60_000,
+      });
+      await mutateFurnaceBatch(batch.id, (b) => {
+        b.status = 'burning';
+        const t = b.tickets[0]!;
+        t.state = 'implementing';
+        t.currentSessionId = 'rl-sess-3';
+        t.sessionIds = ['rl-sess-3'];
+      });
+      const staleResetsAt = new Date(Date.now() - 5 * 60_000).toISOString(); // already elapsed
+      cliSessionsById.set('rl-sess-3', {
+        id: 'rl-sess-3', taskId: ticketId, status: 'failed', phase: 'implementation', terminalReason: 'rate-limited',
+        lastRateLimit: { status: 'rejected', resetsAt: staleResetsAt, observedAt: new Date().toISOString() },
+      } as CliSessionRecord);
+      registerSession(ticketId, 'rl-sess-3');
+
+      await stokerTick(batch.id);
+
+      const after = getFurnaceBatch(batch.id)!.tickets[0]!;
+      expect(after.state).toBe('cooling-down');
+      // Must NOT schedule off the stale resetsAt (which would fire immediately/in the past) — falls
+      // back to the default interval instead.
+      expect(Date.parse(after.nextRetryAt!)).toBeGreaterThan(Date.now());
+      const expected = Date.now() + 20 * 60_000;
+      expect(Math.abs(Date.parse(after.nextRetryAt!) - expected)).toBeLessThan(5_000);
+      expect(after.note).toContain('default interval');
     });
   });
 });

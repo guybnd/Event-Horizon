@@ -25,10 +25,15 @@ releases/
 # publish-public mirrors the dev tree 1:1, so they'd leak to the public repo too. EH regenerates
 # them locally on activation. KEPT on purpose (NOT generated): .github/workflows/ (CI),
 # .gemini/settings.json (hand-authored). .claude/ + .clauderc are already ignored above.
+# FLUX-1726: Grok's current dest is `.grok/skills/event-horizon/SKILL.md`; the flat
+# `.grok/skills/event-horizon.md` is the superseded FLUX-1722 dest (migrated on reinstall).
 .github/copilot-instructions.md
 .github/skills/event-horizon/
 .gemini/instructions.md
 .gemini/skills/event-horizon.md
+.codex/skills/event-horizon.md
+.grok/skills/event-horizon.md
+.grok/skills/event-horizon/
 engine/.event-horizon/
 engine/.gemini/
 
@@ -61,6 +66,10 @@ engine/vitest.config.d.ts.map
 # FLUX-1060: persisted active-session stubs — process-local runtime state for restart-safe worktree
 # reclaim, never committed/synced.
 .flux/sessions/
+# FLUX-1645: persisted background-process hold stubs — process-local runtime state, never committed/synced.
+.flux/process-holds/
+# FLUX-1771: persisted worktree-claim stubs — process-local runtime state, never committed/synced.
+.flux/worktree-claims/
 
 # orphan worktree directory (managed by git worktree, not committed to master)
 .flux-store/

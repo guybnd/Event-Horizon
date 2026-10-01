@@ -18,7 +18,7 @@ if (process.argv.includes('--mcp')) {
   process.exit(1);
 }
 
-import { getWorkspace, getDefaultWorkspace, liveWorkspaces, runWithWorkspace } from './workspace-context.js';
+import { getWorkspace, getDefaultWorkspace, liveBoundWorkspaces, runWithWorkspace } from './workspace-context.js';
 import { log, configureFileSink } from './log.js';
 import express from 'express';
 import cors from 'cors';
@@ -40,7 +40,9 @@ import { migrateFromLegacy } from './global-settings.js';
 import { activateWorkspace, updateTaskWithHistory } from './task-store.js';
 import { buildActivityEntry } from './history.js';
 import { setHoldHistoryWriter, sweepHolds, clearAllHolds, forceKillHeldSubtree, syncHoldStubs } from './background-process-holds.js';
+import { setClaimHistoryWriter, sweepClaims, syncClaimStubs } from './worktree-claims.js';
 import { resolveWorkspaceByRoot } from './workspace-context.js';
+import { restoreRememberedOpenWorkspaces } from './workspace-binding.js';
 // FLUX-705: statically imported so the in-process HTTP MCP mount runs on THIS engine's
 // task-store (shared getWorkspaceRoot()/getWorkspace().tasks/watchers). Bundling them together is what
 // makes the MCP tools and the engine one instance — in the packaged SEA build the old
@@ -80,6 +82,7 @@ import settingsRouter from './routes/settings.js';
 import orchestrationRouter from './routes/orchestration.js';
 import workflowsRouter from './routes/workflows.js';
 import furnaceRouter from './routes/furnace.js';
+import benchmarksRouter from './routes/benchmarks.js';
 import { startStoker } from './furnace-stoker.js';
 import { startTemper } from './temper.js';
 import { startScheduledWakeTicker } from './scheduled-wake.js';
@@ -94,11 +97,14 @@ import devOnboardingDraftRouter from './routes/dev-onboarding-draft.js';
 import { checkForUpdate, getCachedUpdateInfo, getLocalVersion } from './update-check.js';
 import { isGhAvailable, refreshGhAvailability, ensureGhAvailabilityFresh } from './gh-availability.js';
 import healthRouter from './routes/health.js';
+import usageRouter from './routes/usage.js';
+import { startUsageWatchers } from './usage/usage-store.js';
 import ghRouter from './routes/gh.js';
 import terminalRouter, { handleTerminalUpgrade } from './routes/terminal.js';
 import { reconcileOrphanedTerminalSessions, destroyAllTerminalSessions } from './terminal-session-store.js';
 import { reconcilePullRequests, pruneMergedBranches, reclaimReadyWorktrees, recheckDependentBranches } from './pr-cleanup.js';
 import { syncPrTickets } from './pr-tickets.js';
+import { closeTicketsFromDefaultBranchCommits } from './commit-close.js';
 
 const __dir = (() => {
   // Note: __dirname is a CJS-only global; this module runs as ESM, but Node's ambient
@@ -227,12 +233,15 @@ app.use('/api/settings', settingsRouter);
 app.use('/api/orchestration', requireWorkspace, orchestrationRouter);
 app.use('/api/workflows', requireWorkspace, workflowsRouter);
 app.use('/api/furnace', requireWorkspace, furnaceRouter);
+app.use('/api/benchmarks', requireWorkspace, benchmarksRouter);
 app.use('/api/agents', requireWorkspace, agentsRouter);
 app.use('/api/bootstrap', requireWorkspace, bootstrapRouter);
 app.use('/api/group', requireWorkspace, groupRouter);
 app.use('/api/terminal', requireWorkspace, terminalRouter);
 // No requireWorkspace: health must answer with no workspace, and the gh probe is workspace-independent.
 app.use('/api/health', healthRouter);
+// No requireWorkspace: capacity usage is account-level state (local CLI session files), like /api/settings.
+app.use('/api/usage', usageRouter);
 app.use('/api/gh', ghRouter);
 
 // S9 (epic FLUX-996): install the real git-exec telemetry sink once at bootstrap — before this,
@@ -476,10 +485,28 @@ setHoldHistoryWriter((workspaceRoot, taskId, message) => {
   });
 });
 
+// FLUX-1771: same injected-writer pattern as holds above, for worktree claims.
+setClaimHistoryWriter((workspaceRoot, taskId, message) => {
+  const ws = workspaceRoot ? resolveWorkspaceByRoot(workspaceRoot) : getDefaultWorkspace();
+  if (!ws) return;
+  runWithWorkspace(ws, () => {
+    updateTaskWithHistory(taskId, {
+      entries: [buildActivityEntry(message, 'Agent', new Date().toISOString())],
+      updatedBy: 'Agent',
+    }, ws).catch(() => {});
+  });
+});
+
 const holdSweepTimer = setInterval(() => {
   sweepHolds(Date.now(), { kill: forceKillHeldSubtree }).catch((err) => console.error('[background-process-holds] sweep failed', err));
+  // FLUX-1771: reuse this existing sweep interval rather than adding a second timer.
+  sweepClaims(Date.now());
 }, BACKGROUND_HOLD_SWEEP_INTERVAL_MS);
 holdSweepTimer.unref();
+
+// FLUX-1747: process-level (not workspace-scoped) — Codex/Copilot capacity files live under the
+// user's home directory, not a board's .flux dir.
+startUsageWatchers();
 
 app.post('/api/shutdown', (_req, res) => {
   stopAllCliSessions('shutdown');
@@ -738,6 +765,11 @@ async function startServer() {
       }
       const bound = await activateWorkspace(initial);
       await autoRegisterWorkspace(bound); // register the canonical bound path, not the raw input (FLUX-711)
+      // Multi-board: bring every board that was live when the engine last ran back up (sequential,
+      // never throws). Before this, only `lastWorkspace` survived a restart — every other board the
+      // user had open dropped out of the registry, so sessions dispatched on them silently rebound
+      // to this default board. Fire-and-forget so boot doesn't wait on N hydrations.
+      restoreRememberedOpenWorkspaces(bound).catch((err) => console.error('[workspace-binding] restore of open boards failed:', err));
     } else {
       const saved = cliWorkspace || settings.workspace;
       if (saved) {
@@ -774,7 +806,9 @@ async function startServer() {
       // `liveWorkspaces()`) instead of the one active `getWorkspaceRoot()`, so a second open board's
       // PRs/worktrees/branches get reconciled too. With exactly one live workspace (today's only
       // reachable configuration) this is a single-element loop — byte-for-byte the prior behavior.
-      const workspaces = liveWorkspaces().filter((ws) => ws.root !== null);
+      // FLUX-1710: `liveBoundWorkspaces()` is the shared "boards with a folder" filter — same
+      // predicate this line used to hand-roll, now also reused by furnace-stoker.ts's stoke tick.
+      const workspaces = liveBoundWorkspaces();
       if (workspaces.length === 0) return;
       const defaultWorkspaceRoot = getDefaultWorkspace().root;
       prReconcileInFlight = true;
@@ -807,6 +841,8 @@ async function startServer() {
               runWithWorkspace(ws, () => syncActiveSessionStubs(workspaceRoot, defaultWorkspaceRoot)),
               // FLUX-1645: same restart-durability refresh for background-process holds.
               runWithWorkspace(ws, () => syncHoldStubs(workspaceRoot)),
+              // FLUX-1771: same restart-durability refresh for worktree claims.
+              runWithWorkspace(ws, () => syncClaimStubs(workspaceRoot)),
               // FLUX-1031: proactively free task-worktree slots held by tickets resting at Ready
               // (or terminal) with no live session, so the board-wide pool doesn't exhaust while
               // PRs await review. Independent of gh — reclamation is a local git/worktree op — so
@@ -816,6 +852,11 @@ async function startServer() {
               // getActiveFluxDir()/getWorkspace() call reached from inside these must resolve to
               // `ws`, not whichever board happens to be ambiently active during this tick.
               runWithWorkspace(ws, () => reclaimReadyWorktrees(workspaceRoot, ws)),
+              // FLUX-1773: close tickets from `Closes: FLUX-123`-style trailers in commits landing
+              // straight on the default branch — a pure local git read, so it belongs in this
+              // always-run group, not the isGhAvailable()-gated array below (a board with no PR
+              // flow at all must still get it).
+              runWithWorkspace(ws, () => closeTicketsFromDefaultBranchCommits(workspaceRoot, ws)),
               // The remaining reconcilers depend on gh; skip them when it's unavailable. Reads
               // through gh-availability.ts (FLUX-1683/FLUX-1686), which this tick just refreshed
               // above, so both a mid-run Re-check AND this tick's own self-heal are picked up

@@ -51,6 +51,15 @@ async function execFileAsync(file: string, args: string[]) {
   }
 }
 
+// Idle-board heartbeat. Every other runSync trigger is *local*: a chokidar add/change/unlink, or
+// the post-failure retry timer. So an open board nobody is writing to never fetches — it can sit
+// arbitrarily far behind origin/flux-data (a board edited on another machine goes unnoticed until
+// some local write happens to debounce a tick, or the workspace is re-activated). This nudges the
+// SAME debounced scheduler a file change would, so it coalesces with real activity and inherits the
+// in-flight mutex rather than opening a second path to the worktree. A quiet board therefore pulls
+// on this cadence; a busy one is unaffected (its debounce already fired).
+const DEFAULT_SYNC_HEARTBEAT_MS = 5 * 60_000;
+
 // On an auth failure, stop the 30s retry hammer — back the retry timer off to a
 // slow cadence. A successful sync (or a manual retry) clears it (FLUX-895).
 const AUTH_RETRY_DELAY_MS = 5 * 60_000;
@@ -153,6 +162,7 @@ export class SyncWorker {
   private lastConflictNotifyAt = 0;
   private lastAuthNotifyAt = 0;
   private resurfaceTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   // FLUX-1428: see the call site in runSync's CAS loop — test-only, no-op unless a test sets it.
   private _testOnAfterResetHook: (() => Promise<void>) | null = null;
 
@@ -631,10 +641,13 @@ export class SyncWorker {
         }
       }
 
-      // A prepared HEAD owns exactly this journal prefix. Entries appended after this point may
-      // be picked up by a later commit, but they must remain durable journal suffixes until a
-      // prepared HEAD explicitly includes them; a successful push must never acknowledge them.
-      let preparedPrefixCount = (await readJournalEntries(storeDir)).length;
+      // A prepared HEAD owns exactly these journal entries (identity-keyed by opId, not a
+      // positional count — FLUX-1634 review fix: dropPendingCreateEntries can void a mid-file
+      // entry, which would desync a count-based prefix from what's actually still pending).
+      // Entries appended after this point may be picked up by a later commit, but they must
+      // remain durable journal suffixes until a prepared HEAD explicitly includes them; a
+      // successful push must never acknowledge them.
+      let preparedOpIds = new Set((await readJournalEntries(storeDir)).map((e) => e.opId));
 
       // Step 2: fetch remote
       try {
@@ -677,14 +690,14 @@ export class SyncWorker {
       // mergePrTicketConflict, etc.) intentionally stays in this file, unreachable from this path —
       // removed in a follow-up ticket once this is proven (see FLUX-1428's "delete nothing yet").
       for (let attempt = 1; attempt <= CAS_MAX_ATTEMPTS; attempt++) {
-        // Do not re-snapshot here: this HEAD was prepared with preparedPrefixCount. A late entry is
+        // Do not re-snapshot here: this HEAD was prepared with preparedOpIds. A late entry is
         // intentionally left in the journal even if it landed before the network push completed.
 
         try {
           await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
           log.info(`[sync-watcher] Pushed flux-data to remote (CAS, attempt ${attempt})`);
           this.markSynced();
-          await dropFlushedJournalEntries(storeDir, preparedPrefixCount);
+          await dropFlushedJournalEntries(storeDir, preparedOpIds);
           return;
         } catch (pushErr: unknown) {
           const errorMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
@@ -750,7 +763,7 @@ export class SyncWorker {
 
             for (const entry of journalBatch) {
               try {
-                await replayJournalEntry(entry);
+                await replayJournalEntry(entry, this.ws);
               } catch (replayErr: unknown) {
                 const replayMsg = replayErr instanceof Error ? replayErr.message : String(replayErr);
                 console.error(`[sync-watcher] Replay failed for ${entry.taskId} (op ${entry.opId}): ${replayMsg}`);
@@ -768,9 +781,9 @@ export class SyncWorker {
           if (porcelainAfterReplay.trim()) {
             await execFileAsync('git', ['-C', storeDir, 'commit', '-m', `flux: sync (replay ${journalBatch.length} op(s))`]);
           }
-          // The replacement commit can only acknowledge the prefix it replayed. Any mutation
-          // arriving while reset/replay ran is a suffix and survives the eventual successful push.
-          preparedPrefixCount = journalBatch.length;
+          // The replacement commit can only acknowledge what it replayed. Any mutation arriving
+          // while reset/replay ran is not in this set and survives the eventual successful push.
+          preparedOpIds = new Set(journalBatch.map((e) => e.opId));
           // loop continues → retry push against the new base
         }
       }
@@ -834,6 +847,15 @@ export class SyncWorker {
       this.maybeResurfaceAuthNotification();
     }, RESURFACE_INTERVAL_MS);
     this.resurfaceTimer.unref?.();
+
+    // See DEFAULT_SYNC_HEARTBEAT_MS — keeps an open-but-idle board pulling. Goes through
+    // `scheduler.schedule()` rather than runSync directly so it shares the debounce, the max-wait
+    // deadline and the in-flight mutex with every other trigger. `0` disables it.
+    const heartbeatMs = getConfig().syncSettings?.heartbeatMs ?? DEFAULT_SYNC_HEARTBEAT_MS;
+    if (heartbeatMs > 0) {
+      this.heartbeatTimer = setInterval(() => this.scheduler?.schedule(), heartbeatMs);
+      this.heartbeatTimer.unref?.();
+    }
   }
 
   /** Explicit stop: clears the watcher/scheduler/resurface timer. Leaves status/conflicts as-is. */
@@ -841,6 +863,7 @@ export class SyncWorker {
     if (this.scheduler) { this.scheduler.reset(); this.scheduler = null; }
     if (this.watcher) { void this.watcher.close(); this.watcher = null; }
     if (this.resurfaceTimer) { clearInterval(this.resurfaceTimer); this.resurfaceTimer = null; }
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
   }
 }
 
@@ -1024,7 +1047,7 @@ export function mergeAppendOnlyHistory(baseContent: string, oursContent: string,
 // syncPrTickets poll every cycle (pr-tickets.ts `prTicketFields`), so two sides disagreeing on
 // these is never a real conflict to reason about, just staleness the next poll fixes regardless.
 const PR_GITHUB_OWNED_SCALAR_FIELDS = [
-  'prState', 'reviewDecision', 'isDraft', 'ciStatus', 'prNumber', 'branch', 'title', 'implementationLink',
+  'prState', 'reviewDecision', 'isDraft', 'ciStatus', 'ciRunner', 'prNumber', 'branch', 'title', 'implementationLink',
 ] as const;
 
 // Sticky, EH-set swimlanes the poller deliberately preserves (FLUX-986). When both sides carry a

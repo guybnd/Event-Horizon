@@ -4,6 +4,7 @@ import { Cloud, CloudOff, RefreshCw, AlertCircle, AlertTriangle, WifiOff, Lock, 
 import { ConflictResolutionModal } from './ConflictResolutionModal';
 import * as api from '../api';
 import { ehFetch, ehEventSourceUrl } from '../api';
+import { useAppSelector } from '../store/useAppSelector';
 import type { ConflictInfo, ResolutionStrategy, SyncRemediation } from '../api';
 
 export type SyncStatus =
@@ -40,6 +41,14 @@ const ERROR_CONFIRM_DELAY_MS = 12000;
 const SYNC_STATUS_STALE_MS = 40_000; // ~2.6x the 15s server heartbeat, same ratio as AppContext.tsx
 
 export function SyncStatusIndicator() {
+  // The board this indicator reports on. `ehFetch`/`ehEventSourceUrl` read api.ts's module-level
+  // board key at CALL time, so the connect effect below must re-run whenever the active board
+  // changes — otherwise the stream stays pinned to whichever board was active at mount and this
+  // reports a board the user isn't looking at (an idle board's hours-old `lastSyncTime` shown over
+  // a board syncing every debounce tick). Same fix ChatDock uses for the same class of bug. Still
+  // connects while null (the pre-resolution window, and single-board setups) — the effect just
+  // re-points once the board resolves.
+  const activeBoardId = useAppSelector((s) => s.activeBoardId);
   const [status, setStatus] = useState<SyncStatus>({ state: 'idle' });
   const [isOffline, setIsOffline] = useState(false);
   const [showConflictModal, setShowConflictModal] = useState(false);
@@ -134,6 +143,12 @@ export function SyncStatusIndicator() {
       }
     }
 
+    // Board changed — drop the previous board's status so its (possibly hours-old) `lastSyncTime`
+    // isn't shown against the new board during the reconnect gap. No-ops on first mount (already
+    // the initial state, so React bails out on the same value).
+    setStatus({ state: 'idle' });
+    setErrorConfirmed(false);
+
     connect();
 
     // Update time every 30 seconds to refresh time-ago displays
@@ -169,7 +184,7 @@ export function SyncStatusIndicator() {
       }
       clearInterval(watchdog);
     };
-  }, []);
+  }, [activeBoardId]);
 
   // Debounce error → confirmed-error. When sync enters the error state, wait
   // ERROR_CONFIRM_DELAY_MS before treating it as a real error; if a non-error

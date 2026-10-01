@@ -3,16 +3,17 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { buildMcpServer } from './mcp-server.js';
+import { buildMcpServer, clientReadsStructuredContent } from './mcp-server.js';
 
 import { getConfig } from './config.js';
 
 /**
- * FLUX-950: MCP structured output (outputSchema + structuredContent).
+ * FLUX-950 / FLUX-1721: MCP structured output (outputSchema + structuredContent).
  *
  * `get_ticket` / `list_tickets` / `get_board_config` were migrated to `registerTool`
- * with an `outputSchema` and now return their payload as `structuredContent` — the
- * SINGLE wire representation. This pins the AXI #1 contract for that change:
+ * with an `outputSchema` and now return their payload as `structuredContent`. For a
+ * client on the known-good allowlist (`clientReadsStructuredContent`), that's the
+ * SINGLE wire representation. This pins the AXI #1 contract for that bare path:
  *
  *  - structuredContent is present and well-shaped (the SDK validates it against the
  *    advertised outputSchema on the way out — a throw here fails the round-trip).
@@ -22,6 +23,12 @@ import { getConfig } from './config.js';
  *  - the on-wire payload did NOT inflate vs. the old `jsonResult` text shape — it
  *    shrinks, because structuredContent skips the JSON-in-a-JSON-string escaping.
  *  - tools/list advertises the outputSchema so typed clients can validate.
+ *
+ * FLUX-1721: an UNKNOWN client (one not on the allowlist, including one that sends no
+ * `clientInfo` at all) instead gets the JSON *mirrored* into `content[0]` as well —
+ * a client that only reads `content[]` (e.g. Grok Build) was silently receiving `{}`
+ * otherwise. A second describe block below pins that path with its own server/client
+ * pair using an unrecognized client name.
  */
 
 // Mirrors the chars/4 token heuristic in agent-payload-metrics.ts `measure` (good
@@ -89,7 +96,9 @@ describe('FLUX-950 structured output (outputSchema + structuredContent)', () => 
     getConfig().readyForMergeStatus = 'Ready';
 
     server = buildMcpServer();
-    client = new Client({ name: 'eh-structured-output-test', version: '1.0.0' }, { capabilities: {} });
+    // FLUX-1721: a known-good name (substring-matches 'claude') so these assertions
+    // keep pinning the bare path — content stays empty, structuredContent only.
+    client = new Client({ name: 'claude-code-test', version: '1.0.0' }, { capabilities: {} });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   });
@@ -176,5 +185,82 @@ describe('FLUX-950 structured output (outputSchema + structuredContent)', () => 
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/not found/i);
     expect(res.structuredContent?.code).toBe('not_found');
+  });
+});
+
+describe('FLUX-1721 unknown-client text mirror', () => {
+  let client: Client;
+  let server: ReturnType<typeof buildMcpServer>;
+
+  beforeAll(async () => {
+    getWorkspace().tasks[TICKET] = {
+      id: TICKET,
+      title: 'Structured output round-trip (unknown client)',
+      status: 'In Progress',
+      priority: 'Low',
+      effort: 'S',
+      assignee: 'unassigned',
+      tags: ['mcp', 'engine'],
+      body: 'Body text.',
+      history: [],
+    };
+
+    server = buildMcpServer();
+    // A name that does not substring-match any KNOWN_STRUCTURED_CONTENT_CLIENTS entry —
+    // the Grok Build shape this ticket exists to fix.
+    client = new Client({ name: 'grok-cli', version: '1.0.0' }, { capabilities: {} });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  });
+
+  afterAll(async () => {
+    delete getWorkspace().tasks[TICKET];
+    await client.close().catch(() => {});
+    await server.close().catch(() => {});
+  });
+
+  async function callTool(args: Parameters<Client['callTool']>[0]): Promise<CallToolResult> {
+    const res: unknown = await client.callTool(args);
+    if (!isCallToolResult(res)) throw new Error('expected a content-bearing tool result');
+    return res;
+  }
+
+  it.each(['get_ticket', 'list_tickets', 'get_board_config', 'read_skill', 'list_workspaces'])(
+    '%s mirrors structuredContent into content[0] text for an unrecognized client',
+    async (name) => {
+      const args =
+        name === 'get_ticket'
+          ? { ticketId: TICKET }
+          : name === 'read_skill'
+            ? { module: 'orchestrator' }
+            : {};
+      const res = await callTool({ name, arguments: args });
+      expect(res.isError).toBeFalsy();
+      expect(res.structuredContent).toBeTruthy();
+      const text = textOf(res);
+      expect(text, `${name} should carry a text[0] block for an unknown client`).toBeTruthy();
+      expect(JSON.parse(text!)).toEqual(res.structuredContent);
+    },
+  );
+});
+
+describe('FLUX-1721 clientReadsStructuredContent', () => {
+  it('matches every known-good client name', () => {
+    expect(clientReadsStructuredContent({ name: 'claude-code', version: '1.0.0' })).toBe(true);
+    expect(clientReadsStructuredContent({ name: 'codex', version: '1.0.0' })).toBe(true);
+    expect(clientReadsStructuredContent({ name: 'gemini-cli', version: '1.0.0' })).toBe(true);
+    expect(clientReadsStructuredContent({ name: 'copilot', version: '1.0.0' })).toBe(true);
+  });
+
+  it('is case-insensitive', () => {
+    expect(clientReadsStructuredContent({ name: 'Claude-Code', version: '1.0.0' })).toBe(true);
+  });
+
+  it('returns false for an unrecognized client name', () => {
+    expect(clientReadsStructuredContent({ name: 'grok-cli', version: '1.0.0' })).toBe(false);
+  });
+
+  it('returns false when clientInfo is undefined (no initialize yet, or none sent)', () => {
+    expect(clientReadsStructuredContent(undefined)).toBe(false);
   });
 });

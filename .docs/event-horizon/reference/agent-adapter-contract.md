@@ -33,7 +33,7 @@ export interface AgentAdapter {
 
 `SendInputOptions` carries optional per-turn extras: `{ attachments?: ChatAttachment[] }` (FLUX-674). `attachments` are pasted-image refs the chat composer uploaded; the Claude adapter resolves each to its absolute sidecar path and appends a Read-the-image instruction to the resumed prompt (the `claude` CLI is driven via `-p`, not a stream-json content-block stdin). Adapters that don't support image input ignore it — the param is optional, so their 4-arg implementations still satisfy the interface.
 
-Four adapters ship today: `ClaudeCodeAdapter`, `CopilotAdapter`, `GeminiAdapter`, `CodexAdapter`. They are registered by string id in [`agents/index.ts`](../../../engine/src/agents/index.ts):
+Six adapters ship today: `ClaudeCodeAdapter`, `CopilotAdapter`, `GeminiAdapter`, `CodexAdapter`, `GrokAdapter`, `AntigravityAdapter`. They are registered by string id in [`agents/index.ts`](../../../engine/src/agents/index.ts):
 
 ```ts
 const registry: Map<string, AgentAdapter> = new Map([
@@ -41,10 +41,21 @@ const registry: Map<string, AgentAdapter> = new Map([
   ['copilot', new CopilotAdapter()],
   ['gemini', new GeminiAdapter()],
   ['codex', new CodexAdapter()],
+  ['grok', new GrokAdapter()],
+  ['antigravity', new AntigravityAdapter()],
 ]);
 ```
 
-`getAdapter('claude' | 'copilot' | 'gemini' | 'codex')` is the only entry point used by routes and the MCP server.
+`getAdapter('claude' | 'copilot' | 'gemini' | 'codex' | 'grok' | 'antigravity')` is the only entry point used by routes and the MCP server.
+
+> **`gemini` is now a legacy/enterprise entry (FLUX-1738).** Gemini CLI stopped serving requests for
+> free, Pro and Ultra accounts on 18 Jun 2026; access remains fully supported only for Gemini Code
+> Assist Standard/Enterprise licences and paid API-key auth. `GeminiAdapter` delegates auth wholly to
+> the user's own binary (it spawns `gemini` with `cleanChildEnv` and handles no key itself), so for a
+> user on individual Google auth it fails at Google's backend, not in EH. It stays registered rather
+> than deleted — that would remove working functionality for the enterprise cohort, and upstream
+> gemini-cli is frozen Apache-2.0, so the cost of keeping it is a stale file, not maintenance load.
+> `AntigravityAdapter` is the successor for everyone else.
 
 ## Launch phases
 
@@ -69,7 +80,7 @@ Persona resolution precedence for a solo/dispatched session is: an explicit `per
 
 Applying the handoff is `handoffChatSessionPhase(taskId, newStatus)` (`shared.ts` — deliberately NOT `claude-code.ts`, so `mcp-server.ts` can call it without deep-importing a concrete adapter file; `check-adapter-boundary.mjs` forbids per-CLI coupling outside `agents/`), called from `mcp-server.ts`'s `change_status` MCP handler right after a forward status move commits (`getChatSessionForTask` in `session-store.ts` locates the persistent chat session by `phase === 'chat'`, if one exists and is still resumable). It only mutates `handoffPhase`/`handoffPhaseAnnounced` — it does NOT call `stampDisallowedEhTools` itself. "Hot-swap" (mutate the existing session record) was chosen over relaunching into a new session: every turn of a `claude -p` chat is already a fresh spawn/resume by construction (FLUX-1389, one-shot process per turn), and `disallowedToolsArgs`/`stampDisallowedEhTools` already run unconditionally on every one of those spawns/resumes, reading `resolveEffectivePhase(session)` — so the deny-list recompute happens for real on the very next turn with no extra call needed here.
 
-The actual Mission-block "takeover" is delivered as a one-time announcement prepended to the NEXT resumed turn's prompt — `buildPhaseHandoffNote(session, task, framework)` (`shared.ts`) resolves the destination phase's persona + module fragment (reusing the same rendering `buildInitialPrompt`'s initial-spawn path uses, factored into the shared `renderPhasePersonaMission` helper so the two never drift) and returns `''` once already announced or when there is no pending handoff. All four adapters' `sendCliSessionInput` (claude-code.ts/copilot.ts/gemini.ts/codex.ts) prepend it ahead of the ordinary FLUX-926/1123 edit-gate note and set `handoffPhaseAnnounced = true` once delivered — the prompt-text takeover is framework-agnostic; only the deny-list re-stamp is Claude-only (Copilot/Gemini/Codex have no `--disallowed-tools` equivalent, FLUX-1123).
+The actual Mission-block "takeover" is delivered as a one-time announcement prepended to the NEXT resumed turn's prompt — `buildPhaseHandoffNote(session, task, framework)` (`shared.ts`) resolves the destination phase's persona + module fragment (reusing the same rendering `buildInitialPrompt`'s initial-spawn path uses, factored into the shared `renderPhasePersonaMission` helper so the two never drift) and returns `''` once already announced or when there is no pending handoff. All five adapters' `sendCliSessionInput` (claude-code.ts/copilot.ts/gemini.ts/codex.ts/grok.ts) prepend it ahead of the ordinary FLUX-926/1123 edit-gate note and set `handoffPhaseAnnounced = true` once delivered — the prompt-text takeover is framework-agnostic; only the deny-list re-stamp is Claude-only (Copilot/Gemini/Codex have no `--disallowed-tools` equivalent, FLUX-1123).
 
 **Per-phase `persona.model` override (FLUX-1226 Phase F, FLUX-1479).** `OrchestrationPersona` gained an optional `model?: string` field — a phase-default or custom persona can pin its own model tier. For a solo/dispatched **Claude** session, `claude-code.ts`'s `startCliSession` resolves it between the explicit per-conversation override and the task-tier policy: `session.model || resolveSoloChatPersona(resolveEffectivePhase(session), session.personaId, isScratchSession(task))?.model || selectedModel`. Skipped entirely for a delegate/relay spawn (`patternPosition` `'assistant'`/`'step'`) — those already resolve their model through the `/delegate` route (`routes/cli-session.ts`, FLUX-482/1373) before this ever runs, and `session.model` is typically already set by the time `startCliSession` sees it, so the `||` chain naturally defers to the delegate route's own resolution. Claude-only by design: Copilot/Gemini derive their own `taskPhase` fallback and never read this field (FLUX-931 kept them on the delegate/task-tier resolution path only; unchanged by this ticket).
 
@@ -79,7 +90,7 @@ export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize' 
 
 - `grooming` / `implementation` / `review` / `finalize` — the standard per-status phases; each has its own mission text and, for `grooming`, is forced branchless (no isolation) since it only reads/writes ticket metadata via MCP tools.
 - `chat` — the persistent ticket-chat session (not a dispatched phase session). Resolves the Scratchpad persona instead of the plain chat default for a Scratch ticket (`task.kind === 'scratch'`); can also carry a phase HANDOFF (`handoffPhase`) that takes over its Mission text/deny-list without leaving `phase` itself — see "Phase->persona handoff on status change" above.
-- `fast-path` (FLUX-1380) — one session grooms AND implements an XS/S ticket in a single sitting (`Grooming → In Progress → Ready`), structurally bypassing the plan gate (which only ever fires on a `Grooming → Todo` move). Unlike `grooming`, isolation is **forced on** server-side: an omitted `isolation` defaults to `'worktree'`, and an explicit `'branch'` request is honored (the FLUX-1018 branch⇒worktree spawn invariant isolates it anyway) — it writes code and commits like `implementation`, and the portal's fast-path launch sends no `isolation` of its own, so the route cannot rely on callers to request it. The launch route refuses `fast-path` with `400` for an `L`/`XL`-effort ticket or a ticket that is itself an epic parent (has its own subtasks); a ticket that merely has a `parentId` (a small epic member) stays eligible. If the session's own inline grooming step finds the work is bigger than XS/S, its mission has it write a full plan and `change_status → Todo` instead — re-entering the plan gate exactly as a normal groom would.
+- `fast-path` (FLUX-1380, user-facing name **Oneshot**, FLUX-1733) — one session grooms AND implements an XS/S ticket in a single sitting (`Grooming → In Progress → Ready`), structurally bypassing the plan gate (which only ever fires on a `Grooming → Todo` move). Engine identifier stays `phase:'fast-path'` — there is no new `LaunchPhase` value. Unlike `grooming`, isolation is **forced on** server-side: an omitted `isolation` defaults to `'worktree'`, and an explicit `'branch'` request is honored (the FLUX-1018 branch⇒worktree spawn invariant isolates it anyway) — it writes code and commits like `implementation`, and the portal's Oneshot launch sends no `isolation` of its own, so the route cannot rely on callers to request it. The launch route refuses `fast-path` with `400` for an `L`/`XL`-effort ticket or a ticket that is itself an epic parent (has its own subtasks); a ticket that merely has a `parentId` (a small epic member) stays eligible. If the session's own inline grooming step finds the work is bigger than XS/S, its mission has it write a full plan and `change_status → Todo` instead — re-entering the plan gate exactly as a normal groom would. Fast-path has **no injected phase skill**; the mission (`FAST_PATH_PHASE_PERSONA`) is the contract: before Ready it posts an **Oneshot wrap-up** comment (docs / follow-up tickets created / validation / residual risk) and never `finish_ticket` / never a product build. Optional `planFirst: true` on `POST /api/tasks/:id/cli-session/start` (and MCP `start_session`) substitutes a PLAN-FIRST pause: the same session writes the plan, waits via `ask_user_question`, then continues — it must not `change_status → Todo` to get that approval. Scratch chats compose via `POST /api/tasks/:id/oneshot-from-scratch` (extract, then a **new** fast-path session on the new Grooming card).
 - `batch-grooming` (FLUX-1383) — one session grooms 1-5 SIBLING tickets (all sharing one `parentId`) in a single sitting instead of one grooming session per ticket, amortizing the shared parent context read + skill prelude across the set. Carried via a new `batchTicketIds: string[]` field on the start-route body / `CliSessionSummary`/`CliSessionRecord` (the launched `ticketId` is always one of them — the "anchor" member the session/board history attaches to). Like `grooming`, isolation is forced OFF (branchless) — it writes no code either. The launch route validates `batchTicketIds` deterministically: refuses `400` for an empty/missing array, more than 5 ids, ids that don't all share one `parentId`, or a set with zero eligible members; otherwise it filters to the eligible subset (effort ∈ {None,XS,S,M}, not itself an epic parent, status ∈ {Grooming, Require Input}) and excludes-and-names the rest (never silently dropped) in `CliSessionRecord.batchExcluded`. A batch that resolves to exactly one eligible member degrades to plain `phase:'grooming'` rather than launching a batch mission for one ticket. The mission (`BATCH_GROOMING_PHASE_PERSONA`, `orchestration-personas.ts`) reads the shared parent once, then grooms each listed member independently — each ending in its own `change_status` call (`Todo`, or `Require Input` with that member's own question, never blocking the others) — so the existing per-ticket plan-review gate (FLUX-1263) still fires once per member, exactly as single-ticket grooming; this ticket collapses AUTHORING sessions only, not gate-review passes.
 
 ## Manifest
@@ -118,8 +129,71 @@ export const CLI_CAPABILITIES: Record<CliFramework, CliCapabilities> = {
              persistentChat: false, selfPause: true,  partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: true,  imageAttachments: false, chatEditGateEnforced: false },
   codex:   { resume: true, background: false, supervisor: false, scatter: false, toolGating: false, structuredOutput: true,  effort: { supported: true, configKey: 'model_reasoning_effort' },
              persistentChat: true,  selfPause: true,  partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: true,  imageAttachments: true,  chatEditGateEnforced: false },
+  antigravity: { resume: true, background: false, supervisor: false, scatter: false, toolGating: false, structuredOutput: true, effort: { supported: true, flag: '--effort' },
+             persistentChat: true,  selfPause: false, partialDeltas: true,  permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: false, imageAttachments: false, chatEditGateEnforced: false },
 };
 ```
+
+### Antigravity CLI (`agy`) — FLUX-1738
+
+Google's replacement for Gemini CLI. **Not a fork of `gemini.ts`**: the two share no flag and no
+stream field, so a copied argv or parser fails outright. Everything below was settled against the
+live binary (agy 1.1.26, Windows), per the "never from docs" rule above.
+
+| Concern | Gemini CLI | Antigravity (`agy`) |
+|---|---|---|
+| Permissions | `--yolo --skip-trust` | `--dangerously-skip-permissions` |
+| Resume | `--resume <id>` | `--conversation <id>` |
+| Resume id source | `evt.session_id` | `init.conversation_id` |
+| Group scope | `--include-directories` | `--add-dir` (native, no translation) |
+| Accessibility | `--screen-reader` | *(no equivalent)* |
+| MCP config | `.gemini/settings.json`, `httpUrl` | `.agents/mcp_config.json` (or `~/.gemini/config/mcp_config.json`), `serverUrl` + `disabled` |
+| Skills | `.gemini/skills/` | `.agents/skills/` |
+| Instructions | `.gemini/instructions.md` | `AGENTS.md` |
+
+Stream schema — three event kinds, nothing else observed:
+
+```jsonc
+{"event":"init","conversation_id":"…","init":{"cwd":"…","tools":[…],"permission_mode":"request-review"}}
+{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"…"}}
+{"event":"result","result":{"status":"SUCCESS","response":"…","num_turns":1,"usage":{…}}}
+```
+
+`state` is `ACTIVE | DONE | ERROR`; `step_type` is `user_input | agent_response | tool`. A tool step
+carries `tool_name` + `tool_info.{name,parameters}`, and `tool_info.error.{type,message}` on ERROR —
+a per-step ERROR is **not** fatal (the run still exits 0 with `status:"SUCCESS"`). Parameter keys are
+**PascalCase** (`TargetFile`, `CommandLine`, `DirectoryPath`), so Gemini's `file_path`/`command`
+lookups silently find nothing here.
+
+Three traps this adapter exists to avoid, each found by probing rather than reading:
+
+1. **`result.usage` is CUMULATIVE across the conversation, not per-turn.** Turn 1 reported
+   `input_tokens` 13705; the resumed turn 2 reported 27646 = 13705 + 13941, its own per-step figure.
+   `accumulateAntigravityUsage` therefore reads per-step DONE usage only and never touches
+   `result.usage` — accumulating both double-counts every resumed turn (the FLUX-1375 failure mode).
+   `thinking_tokens` is likewise a **subset** of `output_tokens`, not an addition to it.
+2. **`--print-timeout` defaults to 5 minutes.** No other adapter has a wall-clock cap to defeat, so
+   this is invisible until sessions start dying at exactly 5:00 with a clean exit and a truncated
+   transcript. Every spawn sends `--print-timeout 24h`.
+3. **`--effort` accepts only `low|medium|high`** — three of EH's five `EFFORT_LEVELS`. `xhigh` is
+   rejected outright, and under `--output-format json` that rejection **exits 0** with
+   `status:"ERROR"` (a session that looks successful and did nothing); under the `stream-json` this
+   adapter uses it exits 1. `clampAntigravityEffort` maps `xhigh`/`max` → `high`.
+
+Windows binary resolution is a `windows-binary-resolution` preflight case in its own right: the
+installer drops `agy.exe` at `%LOCALAPPDATA%\agy\bin\agy.exe`, *not* the documented
+`~/.local/bin/agy`, and the `…\Programs\Antigravity\bin` entry the IDE puts on PATH does not exist —
+so `agy` is absent from a non-login shell's PATH on a perfectly good install and a `where agy`
+preflight false-negatives it. `resolveAntigravityBinary` probes the pinned path first.
+
+Unprobed, carrying conservative defaults (leads, not findings): `background`, `supervisor`,
+`scatter`, `selfPause`, `permissionGating`, `nativeAskBlocked`, `imageAttachments`. `init.tools`
+advertises `define_subagent`/`invoke_subagent` (supervisor) and `ask_question`/`ask_permission`
+(selfPause, nativeAskBlocked). `chatEditGateEnforced` is the most promising: `--mode plan` exists,
+but flip it only after confirming plan mode blocks a file write **while still permitting mutating
+event-horizon MCP calls** — the codex FLUX-1631 trap, where a sandbox blocked both and made the gate
+useless in the shipped configuration. The `${EH_CONVERSATION_ID}` header interpolation the MCP entry
+relies on is also unverified; see `antigravity-mcp-config.ts`.
 
 Codex's row (FLUX-1625) mixes CONFIRMED live-probe results (`resume`, `structuredOutput`, `spawnTimeMcpConfig`, `imageAttachments`, `partialDeltas: false`, `permissionGating: false`) with conservative UNPROBED defaults (`background`, `supervisor`, `scatter`, `toolGating`, `nativeAskBlocked` — all `false`/unsupported until a live probe says otherwise; see the inline comment above `CLI_CAPABILITIES.codex` in `types.ts`). `chatEditGateEnforced: false` (flipped from FLUX-1625 Phase 0's `true` by **FLUX-1631**): Codex's `-s read-only` sandbox mode CAN block all file writes in isolation — mechanically stronger than Claude's per-tool `--disallowed-tools` deny for this gate's actual purpose — but FLUX-1631 found that same sandbox (in EITHER mode) also silently cancels every *mutating* event-horizon MCP call ("user cancelled MCP tool call"): non-interactive `exec` can never answer codex's approval elicitation for a tool call, and no config short of `--dangerously-bypass-approvals-and-sandbox` clears it. That flag lifts the sandbox too, so `codex.ts`/`codex-board.ts` now spawn with it unconditionally (mirroring Copilot's `--yolo` / Gemini's `--yolo --skip-trust`) — the sandbox is never actually in force in the shipped configuration, so this flag must read `false` (what's enforced by the real spawn), not `true` (what the CLI can enforce in principle). `request_permissions_tool` (`codex features list`) is the eventual narrower fix; it is `under development` as of codex-cli 0.146.0. `persistentChat: true` (FLUX-1630): resume is live-verified and `codex.ts`'s exit-handler now routes a clean `phase:'chat'` turn to `waiting-input`, matching Claude — previously it forced `completed`, posting the reply as a ticket comment and tripping the FLUX-651 parked backstop.
 
@@ -230,6 +304,28 @@ Key fields adapters touch:
 | `resumeSessionId` | The framework's native resume id (Claude: stream-json `init`/`system` frame; Copilot: the final `result` event's `sessionId` field; Gemini: `session_id`; Codex: `thread.started`'s `thread_id`), passed back as `--resume <id>` (Codex: `codex exec resume <id>`). Renamed from `claudeSessionId` in FLUX-902 — it is the resume token for any CLI, not a Claude-only concept. **FLUX-959 fix:** Copilot previously captured a `user.message` event's `parentId` — a different id in the internal event-parent chain, not the value `copilot --resume` accepts — so every resumed Copilot turn failed. Live-verified against the installed CLI: the corrected capture (`result.sessionId`) resumes correctly across multiple turns. `session.updated`/`session.created`'s `data.sessionId`/`data.id` remains as a fallback capture path (unverified live; not observed in the captured event stream). Codex's `thread_id` was live-verified the same way (FLUX-1625 Phase 0) — a stream can emit several id-shaped fields and only one round-trips; `thread_id` is the one confirmed to. |
 | `sessionHistoryEntry` | start (the `AgentSessionEntry` being mutated) |
 | `requestedStop` | user-initiated stop |
+| `lastTurnContextTokens` / `contextWindow` | each usage frame (FLUX-1378; portal-visible on `CliSessionSummary` since FLUX-1744) |
+| `lastRateLimit` | a non-`allowed` `rate_limit_event` (FLUX-1744, `recordRateLimit` in `agents/shared.ts`) — structured `{status, rateLimitType?, resetsAt?, observedAt}`, `resetsAt` normalised to ISO. Reflects the last OBSERVED wall; not cleared when a later `allowed` event arrives. Distinct from `lastRateLimitKey` (FLUX-981, a dedupe key for the human-readable chat line) — both are set from the same event. The CLI's status enum is `allowed \| allowed_warning \| rejected`, so a soft `allowed_warning` also populates this field (and refreshes `observedAt`) alongside a hard `rejected` wall — consumers that need "am I actually walled?" must test `status === 'rejected'`, not merely "is `lastRateLimit` set". |
+| `compactionCount` / `cumulativeDroppedTokens` / `lastCompactionAt` / `lastCompactTrigger` / `lastCompactDurationMs` | a `type:'system', subtype:'compact_boundary'` frame (FLUX-1744, `recordCompaction` in `agents/shared.ts`). Wire shape is snake_case — `compact_metadata: {trigger, pre_tokens, post_tokens?, cumulative_dropped_tokens?, duration_ms?}` (verified against the shipped `@anthropic-ai/claude-code` binary's own zod schema and wire serializer; the CLI's internal in-memory shape is camelCase but that never reaches stdout). `cumulativeDroppedTokens` is the engine's own running sum of each event's `pre_tokens - post_tokens` — not the CLI's own cumulative figure, so it stays correct and provider-independent — and is only accumulated when both `pre_tokens` and `post_tokens` are present (`post_tokens` is optional on the wire; treating a missing value as 0 would over-report). The trigger/duration fields reflect the MOST RECENT compaction, not an aggregate. |
+| `liveContextTokens` | FLUX-1746: **internal, not part of `CliSessionSummary`, never stubbed.** Every `assistant` frame's `message.usage` (input + cache_read + cache_creation), skipping frames with a non-null `parent_tool_use_id` (a subagent's own usage, not the main conversation's). Read only by `maybeWriteContextCheckpoint` (`agents/shared.ts`) — deliberately NOT `lastTurnContextTokens` above, which `findResumeCandidate` (`furnace-stoker.ts`) reads to refuse resuming a near-full session; writing subagent usage into that field would corrupt the resume-safety gate. |
+| `checkpointEpoch` | FLUX-1746: **internal, not part of `CliSessionSummary`, never stubbed.** Set to the session's `compactionCount ?? 0` each time `maybeWriteContextCheckpoint` fires, so the checkpoint writes at most once per compaction epoch instead of once per assistant frame above `CHECKPOINT_CONTEXT_RATIO` (0.85, `agents/shared.ts`). The `-1` sentinel is READ-side only — the guard compares `(session.checkpointEpoch ?? -1) === epoch`, so a never-checkpointed session (field absent, reads as `-1`) is distinct from one already checkpointed at epoch 0 (field present, reads as `0`); the field itself is never written as `-1`. Not stubbed — an engine restart re-arms the checkpoint, which can write at most one duplicate note. Only ever set when `contextWindow` is known, so the checkpoint fires exclusively for the Claude/Grok dialect (the only frameworks that populate `contextWindow`) — Codex/Copilot/Gemini/Antigravity sessions are silent no-ops. |
+
+## Capacity probes (FLUX-1747)
+
+`engine/src/usage/` reads each provider's OWN local session files — not our child processes' `CliSessionRecord` fields above — because a terminal session, another board, or the desktop app can drain the same account quota outside the engine entirely. `GET /api/usage` (`rest-api.md`) and the `usageChanged` SSE event (`realtime-channels.md`) are built from this module, not from `session-store.ts`.
+
+| Provider | Source file(s) | How it's read |
+|----------|----------------|----------------|
+| Codex | `~/.codex/sessions/<year>/<month>/<day>/rollout-*.jsonl` | `codex-probe.ts`: newest file by mtime (recursive walk, unbounded depth), 64KB tail, scan backwards for the last well-formed line carrying a `rate_limits` object. **`rate_limits` lives under the line's `payload` key** (`{"timestamp":...,"payload":{"rate_limits":{...}}}`), not at the top level — a top-level `rate_limits` is accepted too, but only as a defensive fallback; no real rollout line has been observed to use it. `primary`/`secondary` become two independent gauges — each is run through the freshness rule separately, since one window can be expired while the other is still live from the exact same line. `resets_at` (epoch seconds) is normalised to ISO. `observedAt` is the line's own top-level `timestamp` field (falling back to the file's mtime if absent/unparseable) — never the probe's own read time, or a stale reading could never surface as `'stale'`. Also captures `rate_limit_reached_type` → `lastWall.rateLimitType` + `lastWall.resetsAt` (from whichever window — primary or secondary — actually reached its limit), `plan_type`, and `credits{has_credits,unlimited,balance}`. |
+| Copilot | `~/.copilot/session-state/*/events.jsonl` | `copilot-probe.ts`: **searches by content, not recency** — Copilot writes `quotaSnapshots` rarely (at session setup, not per turn), so the file that carries it is often NOT among the newest by mtime. Walks files newest-mtime-first, UNBOUNDED in count, reading each whole file (skipping, not aborting on, any file over 5MB) until one yields a `quotaSnapshots` object; one gauge per snapshot key (e.g. `chat`). **`quotaSnapshots` lives under the line's `data` key** (`{"type":...,"data":{"quotaSnapshots":{...}},"timestamp":...}`), not at the top level — same defensive-fallback caveat as Codex above. `observedAt` is the line's own top-level `timestamp` (falling back to the file's mtime). `resetDate` is normalised to full ISO-UTC (`new Date(x).toISOString()`) since the real value omits milliseconds. `isUnlimitedEntitlement` is captured as the gauge's `unlimited` flag, so a non-binding count doesn't get rendered as a used/limit bar. Per-file memoized on `(path, mtimeMs, size)`, including negative "scanned, no snapshot" entries, since only ~1 file in 30 has one and Copilot appends continuously; a superseded (path, mtime, size) key for the same path is evicted on insert, so an actively-appended file holds exactly one memo entry, not one-per-tick forever. |
+| Claude | in-process only — `agents/claude-floor.ts` | No local quota file exists; aggregates `inputTokens + outputTokens` across this engine's own `cliSessionsById` entries for `framework === 'claude'`. `provenance: 'floor'` (a true floor — can only under-count, never invent usage) with NO `percentFloor` (no denominator exists). No derivable window start for a 5-hour rolling window with no server anchor, so it never invents one: the gauge omits BOTH `windowMinutes` and `resetsAt` (that absence is the "not aligned to any window" signal — distinct from `freshness`, which only ever means "this observation is old"), so it is always `freshness: 'live'`, never `'stale'`. `lastWall` comes from the most recent `lastRateLimit` (FLUX-1744) across those sessions. |
+| Gemini / Grok / Antigravity | none | `provenance: 'unknown'` with a `reason` — listed, never dropped, so the client can render a row for every known `CliFramework`. |
+
+**Freshness rule** (`usage/freshness.ts`, evaluated per gauge from each gauge's own `observedAt`/`resetsAt`): `resetsAt` in the past ⇒ `'expired'` (and `percent`/`used`/`percentFloor` are dropped — the window rolled over, so the last reading is void, not "still correct"); `resetsAt` in the future and the observation is older than `min(windowMinutes / 2, 6h)` ⇒ `'stale'`; no `resetsAt` at all and the observation is older than 6h ⇒ `'stale'`; otherwise `'live'`. The underlying probes are re-run (and freshness recomputed against the current clock) at most once per `SNAPSHOT_TTL_MS` (4s, `usage-store.ts`) — see the caching note below.
+
+**Snapshot caching (`usage-store.ts`):** `getUsageSnapshot()` on the production (default-probes) path is memoized for `SNAPSHOT_TTL_MS` (4s) so a chatty caller — the 500ms-debounced chokidar watcher, the 30s poll, or repeated `GET /api/usage` requests — can force at most one real filesystem scan per window; Codex's rollout walk and Copilot's directory listing both `statSync` every file in their tree synchronously on the shared event loop, and the route carries no auth or rate limit. The 24h in-memory history ring (`recordHistory`) is separately bucketed to 5-minute resolution per `gaugeId`, independent of how often `getUsageSnapshot` is actually called, so the ring stays at ~288 entries/gauge/day regardless of poll/watch frequency.
+
+**Boundary-clean by construction:** `claude-floor.ts` sits under `engine/src/agents/` (the one sanctioned per-CLI home, `check-adapter-boundary.mjs`); `engine/src/usage/` dispatches only on `CliFramework` values, never an inline `=== 'claude'` literal, so it needed no addition to `adapter-boundary-allowlist.json` or `EXCLUDE_DIR_PREFIXES`.
 
 ## SSE events the adapter emits
 
@@ -254,7 +350,7 @@ Via the helpers in [`history.ts`](../../../engine/src/history.ts):
 | `appendSessionProgress` | (mutates the `agent_session.progress[]`) | each flushed chunk (in-memory until session end) |
 | `closeAgentSession` | (mutates the `agent_session`) | session exit — flushes progress, sets `endedAt` and final `status` |
 | `buildAgentMessageEntry` | `agent_message` | each user input sent into the session |
-| `buildActivityEntry` | `activity` | engine-level events (rarely from the adapter itself) |
+| `buildActivityEntry` | `activity` | engine-level events (rarely from the adapter itself) — also how FLUX-1746's `maybeWriteContextCheckpoint` (`agents/shared.ts`) writes its "Context checkpoint at NN% of window" note when `liveContextTokens` crosses `CHECKPOINT_CONTEXT_RATIO` (0.85) of a known `contextWindow`, at most once per compaction epoch (`checkpointEpoch`, see the Session record table above) |
 | `buildCommentEntry` | `comment` | not used by adapters today; reserved for explicit agent comments |
 
 Always write through `updateTaskWithHistory` (atomic) — never construct frontmatter and write the file directly.
@@ -307,7 +403,7 @@ Enforcement lives in [`mcp-readonly.ts`](../../../engine/src/mcp-readonly.ts) an
 
 ## Phase skill module injection (instruction-layer, FLUX-1377)
 
-Distinct from the MCP server injection above (that's tool-layer/schemas; this is instruction-layer/prompt content — the FLUX-477 vs FLUX-261 split). Since FLUX-1377, the Claude installer no longer concatenates all 6 `.docs/skills/event-horizon-*.md` modules into `.claude/rules/event-horizon.md` — it writes a trimmed **core** (~2-4k tok: invariants + a phase-routing table) built by `buildCoreSkillDocument()` in [`skill-core.ts`](../../../engine/src/skill-core.ts). Copilot/cline (Option B, one file per module) and gemini/cursor/windsurf/generic (Option A concatenation) are unchanged — they have no engine-driven spawn-time injection path, so they still need everything installed statically.
+Distinct from the MCP server injection above (that's tool-layer/schemas; this is instruction-layer/prompt content — the FLUX-477 vs FLUX-261 split). Since FLUX-1377, the Claude installer no longer concatenates all 6 `.docs/skills/event-horizon-*.md` modules into `.claude/rules/event-horizon.md` — it writes a trimmed **core** (~2-4k tok: invariants + a phase-routing table) built by `buildCoreSkillDocument()` in [`skill-core.ts`](../../../engine/src/skill-core.ts). Current Copilot CLI releases require a directory skill at `.github/skills/event-horizon/SKILL.md`, so the installer concatenates the phase modules there with skill frontmatter; Cline retains the modular Option B layout. Gemini/cursor/windsurf/generic also use Option A concatenation because they have no engine-driven spawn-time injection path.
 
 Phase content is instead appended at spawn time by `buildInitialPrompt` (`agents/shared.ts`), which loads the matching module body synchronously via `loadSkillModuleBodySync` in [`skill-modules.ts`](../../../engine/src/skill-modules.ts) and appends it under a `## Phase Skill: <phase>` heading. Gated on all three:
 - **Framework `claude` only** — copilot/gemini keep their full static install; injecting there too would double-load.

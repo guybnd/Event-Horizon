@@ -1,0 +1,50 @@
+{
+  "id": "flux-1695",
+  "title": "FLUX-1695 — surfaceResumeFailure durable writes unbound",
+  "track": "fix",
+  "seedTitle": "FLUX-1695 surfaceResumeFailure durable writes unbound",
+  "baseRef": "bench/flux-1695-holdout",
+  "promptFile": "flux-1695.prompt.md",
+  "validation": {
+    "command": "node",
+    "args": [
+      "node_modules/vitest/vitest.mjs",
+      "run",
+      "--root",
+      "engine",
+      "src/agents/benchmark-holdout-flux-1695.test.ts"
+    ],
+    "paths": [
+      "engine/src/agents/benchmark-holdout-flux-1695.test.ts"
+    ],
+    "timeoutMs": 300000
+  },
+  "regression": {
+    "command": "node",
+    "args": [
+      "node_modules/typescript/bin/tsc",
+      "--noEmit",
+      "-p",
+      "engine"
+    ],
+    "timeoutMs": 600000
+  },
+  "repetitions": 3,
+  "concurrency": 3,
+  "wallClockBudgetMs": 1800000,
+  "notes": "Easy: one-file fix (wrap two store writes in a workspace binding) with the fix sketched. ~8–15 min per run.",
+  "defaultMatrix": [
+    {
+      "framework": "claude",
+      "model": "claude-sonnet-5",
+      "effortOverride": "high",
+      "phase": "implementation"
+    },
+    {
+      "framework": "claude",
+      "model": "claude-opus-5",
+      "effortOverride": "high",
+      "phase": "implementation"
+    }
+  ]
+}

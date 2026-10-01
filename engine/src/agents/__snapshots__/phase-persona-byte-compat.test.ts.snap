@@ -74,14 +74,15 @@ Latest activity:
 
 ## Your Mission: FAST-PATH this ticket (groom + implement in one session)
 
-This ticket is small enough to skip the normal Grooming -> Todo handoff. Do the following, in order, in this one session:
+This ticket is small enough to skip the normal Grooming -> Todo handoff. The product name for this path is Oneshot; the engine identifier stays phase:'fast-path'. Do the following, in order, in this one session:
 1. GROOM IT INLINE: use update_ticket to fill in effort/priority/tags and write a tight TL;DR + a short implementation plan into the body.
 2. ELIGIBILITY CHECK (bail-out contract): if it turns out this needs M+ effort, touches a UI artifact, or spans many unrelated surfaces, STOP here — finish writing the full plan, then use change_status to move to "Todo" (this fires the normal plan-review gate) and end your turn. Do not implement.
 3. Otherwise, use change_status to move to "In Progress".
 4. Implement the plan.
 5. Validate it (typecheck/tests).
 6. Commit your changes — a branch with 0 commits ahead of base cannot open a PR, and change_status to "Ready" is refused in that state (FLUX-730).
-7. Use change_status to move to "Ready" with a completion summary of what you implemented and validated.
+7. ONESHOT WRAP-UP (before Ready): post an add_note comment titled "Oneshot wrap-up" covering only applicable items — docs updated or "no docs because …"; follow-up tickets created via create_ticket for deferred/audit work or "none because …"; validation run; residual risk. Never finish_ticket. Never run a product build or release from this session. This is not a blocking user confirmation.
+8. Use change_status to move to "Ready" with a completion summary of what you implemented and validated. Pass a completion payload (docsUpdated, residualRisk) when the change is non-trivial.
 
 CRITICAL: Use the "event-horizon" MCP tools (change_status, update_ticket, add_note) for ALL ticket updates. Do NOT edit .flux/ files directly — direct edits corrupt session tracking.
 
@@ -248,14 +249,15 @@ Latest activity:
 
 ## Your Mission: FAST-PATH this ticket (groom + implement in one session)
 
-This ticket is small enough to skip the normal Grooming -> Todo handoff. Do the following, in order, in this one session:
+This ticket is small enough to skip the normal Grooming -> Todo handoff. The product name for this path is Oneshot; the engine identifier stays phase:'fast-path'. Do the following, in order, in this one session:
 1. GROOM IT INLINE: use update_ticket to fill in effort/priority/tags and write a tight TL;DR + a short implementation plan into the body.
 2. ELIGIBILITY CHECK (bail-out contract): if it turns out this needs M+ effort, touches a UI artifact, or spans many unrelated surfaces, STOP here — finish writing the full plan, then use change_status to move to "Todo" (this fires the normal plan-review gate) and end your turn. Do not implement.
 3. Otherwise, use change_status to move to "In Progress".
 4. Implement the plan.
 5. Validate it (typecheck/tests).
 6. Commit your changes — a branch with 0 commits ahead of base cannot open a PR, and change_status to "Ready" is refused in that state (FLUX-730).
-7. Use change_status to move to "Ready" with a completion summary of what you implemented and validated.
+7. ONESHOT WRAP-UP (before Ready): post an add_note comment titled "Oneshot wrap-up" covering only applicable items — docs updated or "no docs because …"; follow-up tickets created via create_ticket for deferred/audit work or "none because …"; validation run; residual risk. Never finish_ticket. Never run a product build or release from this session. This is not a blocking user confirmation.
+8. Use change_status to move to "Ready" with a completion summary of what you implemented and validated. Pass a completion payload (docsUpdated, residualRisk) when the change is non-trivial.
 
 CRITICAL: Use the "event-horizon" MCP tools (change_status, update_ticket, add_note) for ALL ticket updates. Do NOT edit .flux/ files directly — direct edits corrupt session tracking.
 

@@ -1,17 +1,17 @@
 import { useState, useRef, useEffect } from 'react';
-import { ChevronDown, Bot, Zap, Code, Cloud, Terminal, Cpu, Layout, Braces } from 'lucide-react';
+import { ChevronDown, Bot, Zap, Code, Cloud, Terminal, Cpu, Layout, Braces, Sparkles, Rocket } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useConfig } from '../store/useAppSelector';
 import { isRuntimeFramework } from '../utils';
 
-export type ExtendedFramework = 'auto' | 'claude' | 'gemini' | 'copilot' | 'codex' | 'cursor' | 'cline' | 'windsurf' | 'antigravity' | 'generic';
+export type ExtendedFramework = 'auto' | 'claude' | 'gemini' | 'copilot' | 'codex' | 'grok' | 'cursor' | 'cline' | 'windsurf' | 'antigravity' | 'generic';
 
 /** FLUX-907 (split semantics): a small pill marking a framework EH can install skills for but NOT
  *  launch a session against. `auto` is never marked (it's a resolve-at-launch sentinel, not a CLI). */
 function SkillsOnlyBadge() {
   return (
     <span
-      title="Event Horizon installs its skill files for this agent, but can't launch or drive a session against it. Pick a runnable agent (Claude, Copilot, Gemini) to run tickets."
+      title="Event Horizon installs its skill files for this agent, but can't launch or drive a session against it. Pick a runnable agent (Claude, Copilot, Antigravity, Codex, Grok) to run tickets."
       className="shrink-0 rounded bg-amber-100 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-500/15 dark:text-amber-400"
     >
       Skills only
@@ -30,13 +30,18 @@ interface Props {
 const FRAMEWORKS: { id: ExtendedFramework; label: string; icon: LucideIcon; color: string; description: string }[] = [
   { id: 'auto', label: 'Auto-Detect', icon: Cpu, color: 'text-gray-400', description: 'Detect based on workspace' },
   { id: 'claude', label: 'Claude Code', icon: Bot, color: 'text-orange-500', description: 'Anthropic\'s CLI agent' },
-  { id: 'gemini', label: 'Gemini CLI', icon: Zap, color: 'text-blue-500', description: 'Google\'s CLI agent' },
+  // FLUX-1738: Gemini CLI stopped serving individual (free/Pro/Ultra) accounts on 18 Jun 2026 and is
+  // now only reachable with a Gemini Code Assist Standard/Enterprise licence or a paid API key. It
+  // stays selectable for that cohort, but the description says so rather than letting an individual
+  // user pick a CLI that will simply fail to authenticate.
+  { id: 'gemini', label: 'Gemini CLI', icon: Zap, color: 'text-blue-500', description: 'Google (legacy — enterprise/API key only)' },
+  { id: 'antigravity', label: 'Antigravity CLI', icon: Rocket, color: 'text-yellow-500', description: 'Google\'s CLI agent (replaces Gemini CLI)' },
   { id: 'copilot', label: 'Copilot CLI', icon: Terminal, color: 'text-purple-500', description: 'GitHub CLI extension' },
   { id: 'codex', label: 'Codex CLI', icon: Braces, color: 'text-teal-500', description: 'OpenAI\'s CLI agent' },
+  { id: 'grok', label: 'Grok Build', icon: Sparkles, color: 'text-red-500', description: "xAI's CLI agent" },
   { id: 'cursor', label: 'Cursor', icon: Code, color: 'text-cyan-500', description: 'AI Code Editor rules' },
   { id: 'cline', label: 'Cline', icon: Cloud, color: 'text-sky-500', description: 'VS Code Extension' },
   { id: 'windsurf', label: 'Windsurf', icon: Layout, color: 'text-emerald-500', description: 'AI Agent Editor' },
-  { id: 'antigravity', label: 'Antigravity', icon: Zap, color: 'text-yellow-500', description: 'Custom agent framework' },
   { id: 'generic', label: 'Generic', icon: Terminal, color: 'text-gray-500', description: 'Standard markdown rules' },
 ];
 

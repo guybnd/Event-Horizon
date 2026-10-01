@@ -52,6 +52,10 @@ Each step below is paired with the MCP tool that carries it out. The full tool r
 13.  If the work needs to spawn child tickets, use `create_ticket` with `parentId` rather than `create_ticket` + manual linking \u2014 it wires the parent's `subtasks` array atomically.
 
 
+## Oneshot (fast-path)
+
+**Oneshot** is the user-facing name for `phase:'fast-path'` (FLUX-1380 / FLUX-1733): one session grooms and implements a small Grooming-column ticket, then stops at **Ready** for review. It does not skip code review, does not `finish_ticket`, and does not run a product build. An opt-in **Show plan first** pause happens in that same session via `ask_user_question` — never via Grooming→Todo (that fires the plan gate). Scratch chats promote first (`POST /api/tasks/:id/oneshot-from-scratch`) then start oneshot on the new ticket. Before Ready the session posts an **Oneshot wrap-up** comment (docs updated or why not; follow-up tickets created or why none; validation; residual risk). The engine identifier stays `fast-path`; there is no new launch phase.
+
 ## Documentation touchpoints
 
 Treat docs as part of the deliverable, not a follow-up ticket. Check these before flipping to `Ready` or `Done`:

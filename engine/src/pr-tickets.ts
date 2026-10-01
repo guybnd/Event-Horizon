@@ -3,6 +3,7 @@ import { upsertManagedTicket, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { TERMINAL_TICKET_STATUSES } from './schema.js';
 import { runGh } from './git-exec.js';
+import { getCiRunnerInfo, type CiRunnerInfo } from './ci-runner.js';
 import { isSyncUnhealthy } from './sync-watcher.js';
 import { emitDocRecapForBranch } from './doc-recap-emit.js';
 
@@ -39,6 +40,7 @@ interface GhPr {
   isDraft: boolean;
   body: string; // the PR description (markdown) — pulled into the PR card body (FLUX-751)
   statusCheckRollup?: GhCheckRollupEntry[] | null; // FLUX-1315: CI/check status, verified live shape below
+  headRefOid?: string | null;
 }
 
 /**
@@ -164,7 +166,7 @@ function isReopened(existing: ExistingPrState | null): boolean {
  *  - otherwise omit status — an existing open PR keeps its status so a send-for-review move to
  *    In Progress isn't clobbered on the next poll.
  */
-export function prTicketFields(pr: GhPr, members: string[], existing: ExistingPrState | null): Record<string, unknown> {
+export function prTicketFields(pr: GhPr, members: string[], existing: ExistingPrState | null, ciRunner?: CiRunnerInfo): Record<string, unknown> {
   const changesRequested = pr.reviewDecision === 'CHANGES_REQUESTED';
   // FLUX-986: merge-conflict is set OUTSIDE this mapper (the portal-Merge conflict bounce in
   // routes/tasks.ts, for kind:'pr' deck-card merges) and this poller doesn't own clearing it —
@@ -188,6 +190,15 @@ export function prTicketFields(pr: GhPr, members: string[], existing: ExistingPr
     // otherwise no swimlane.
     swimlane: changesRequested ? 'changes-requested' : (preserveMergeConflict ? 'merge-conflict' : null),
   };
+  // FLUX-1713: omit (not null) on a miss so a transient gh failure never blanks the last-known-good chip.
+  // FLUX-1713 review (Major 3): drop checkedAt before persisting — nothing reads it, but
+  // task-store's deep-compare treats a fresh timestamp as a real change, so keeping it here
+  // rewrote (and in orphan-store mode, committed+pushed) every open PR's card on every cache-TTL
+  // re-probe, forever, even when the underlying verdict never moved.
+  if (ciRunner) {
+    const { checkedAt: _checkedAt, ...persisted } = ciRunner;
+    fields.ciRunner = persisted;
+  }
   if (changesRequested) {
     fields.status = 'In Progress'; // review-fail bounce (decision #3) — owned here in P4.
   } else if (!existing || isReopened(existing)) {
@@ -246,7 +257,7 @@ async function bounceMembersToInProgress(memberIds: string[], comment: string, w
 async function listOpenPrs(workspaceRoot: string): Promise<GhPr[]> {
   try {
     const { stdout } = await runGh(
-      ['pr', 'list', '--state', 'open', '--json', 'number,title,url,state,headRefName,reviewDecision,isDraft,body,statusCheckRollup'],
+      ['pr', 'list', '--state', 'open', '--json', 'number,title,url,state,headRefName,reviewDecision,isDraft,body,statusCheckRollup,headRefOid'],
       { cwd: workspaceRoot },
     );
     const arr = JSON.parse(stdout);
@@ -286,7 +297,8 @@ export async function syncPrTickets(workspaceRoot: string, ws: Workspace = getWo
     const existing = ws.tasks[id] as TicketRecord | undefined;
     if (!existing && deferCreation) continue;
     const members = membersForBranch(pr.headRefName, ws);
-    const fields = prTicketFields(pr, members, existing ?? null);
+    const ciRunner = await getCiRunnerInfo(pr.headRefOid, workspaceRoot).catch(() => undefined);
+    const fields = prTicketFields(pr, members, existing ?? null, ciRunner);
     // Pull the gh PR description into the card's markdown body (FLUX-751). Passed as the
     // separate 3rd arg (NOT a frontmatter field); upsert rewrites only when it actually
     // differs, so a null/empty description coerces to '' and never churns.

@@ -421,7 +421,7 @@ export function useTaskModalController() {
   };
 
   // FLUX-1592: returns the saved task (created or updated) so create-time callers — the image
-  // "persist then upload" path and the Save & Groom / Save & Fast-path footer actions — can launch
+  // "persist then upload" path and the Save & Groom / Save & Oneshot footer actions — can launch
   // against the new id without relying on a stale closure over `modalTask`. Returns undefined on
   // failure (saveError is already set for the banner).
   const handleSave = async (customHistory?: HistoryEntry[], keepOpen = false): Promise<Task | undefined> => {
@@ -550,7 +550,7 @@ export function useTaskModalController() {
       setCliSession(session);
       triggerRefresh();
     } catch (error) {
-      setCliSessionError(error instanceof Error ? error.message : 'Failed to start fast-path session.');
+      setCliSessionError(error instanceof Error ? error.message : 'Failed to start oneshot session.');
     } finally {
       setCliSessionBusy(false);
     }

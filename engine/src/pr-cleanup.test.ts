@@ -7,10 +7,23 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { setWorkspaceRoot } from './workspace.js';
-import { syncDefaultBranch, isWorktreeReclaimable, reclaimReadyWorktrees, cleanupMergedBranch } from './pr-cleanup.js';
+import { syncDefaultBranch, isWorktreeReclaimable, reclaimReadyWorktrees, cleanupMergedBranch, reconcilePullRequests } from './pr-cleanup.js';
 import { clearNotifications, getNotifications } from './notifications.js';
 import { createTaskWorktree, listTaskWorktrees } from './task-worktree.js';
 import { createTask, updateTaskWithHistory } from './task-store.js';
+import type { PrStatus } from './branch-manager.js';
+
+// reconcilePullRequests' PR-closed-unmerged path (FLUX-1782) needs a controllable PR state
+// without shelling out to `gh` — mock only getPullRequestStatus, keep every other branch-manager.js
+// export (getOpenPullRequestsWithBase, etc.) real, mirroring pr-cleanup-dependent-branch.test.ts.
+const getPullRequestStatusMock = vi.fn(async (_selector: string): Promise<PrStatus | null> => null);
+vi.mock('./branch-manager.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./branch-manager.js')>();
+  return {
+    ...actual,
+    getPullRequestStatus: (selector: string) => getPullRequestStatusMock(selector),
+  };
+});
 
 import {
   cliSessionsById,
@@ -55,6 +68,8 @@ let origin: string;
 
 beforeEach(async () => {
   clearNotifications();
+  getPullRequestStatusMock.mockReset();
+  getPullRequestStatusMock.mockResolvedValue(null);
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-pr-cleanup-'));
   origin = path.join(tmp, 'origin.git');
   repo = path.join(tmp, 'repo');
@@ -93,8 +108,23 @@ async function advanceOrigin(): Promise<void> {
   await gitC(work, ['push', 'origin', 'master']);
 }
 
-describe('syncDefaultBranch dirty-root backstop (FLUX-741)', () => {
-  it('syncs a behind master WITHOUT losing a conflicting uncommitted root edit', async () => {
+describe('syncDefaultBranch never stashes the main tree (FLUX-1770)', () => {
+  it('fast-forwards WITHOUT stashing when a dirty edit does not conflict with the incoming commit', async () => {
+    await advanceOrigin();
+    // Dirty an UNRELATED file — `merge --ff-only` can carry this without a stash.
+    await fs.writeFile(path.join(repo, 'unrelated.txt'), 'wip\n', 'utf8');
+
+    const ok = await syncDefaultBranch(repo);
+
+    expect(ok).toBe(true);
+    expect(await fs.readFile(path.join(repo, 'feat.txt'), 'utf8')).toContain('v-origin');
+    // The dirty edit survived in the working tree — never touched, never stashed.
+    expect(await fs.readFile(path.join(repo, 'unrelated.txt'), 'utf8')).toBe('wip\n');
+    expect(await gitC(repo, ['stash', 'list'])).toBe('');
+    expect(getNotifications().find((n) => n.title === 'Uncommitted root changes stashed')).toBeUndefined();
+  });
+
+  it('skips the sync WITHOUT stashing when a dirty edit conflicts with the incoming commit', async () => {
     await advanceOrigin();
     // Local root (on master) is now behind origin AND dirty on the very file the incoming
     // commit changes — the case a plain `merge --ff-only` refuses (would overwrite).
@@ -102,18 +132,17 @@ describe('syncDefaultBranch dirty-root backstop (FLUX-741)', () => {
 
     const ok = await syncDefaultBranch(repo);
 
-    // The sync proceeded (the backstop unblocked it)...
-    expect(ok).toBe(true);
-    expect(await fs.readFile(path.join(repo, 'feat.txt'), 'utf8')).toContain('v-origin');
-    // ...and the dirty edit was NOT discarded — it's preserved in a recoverable stash.
-    const stashList = await gitC(repo, ['stash', 'list']);
-    expect(stashList).toContain('EH pre-sync');
-    const stashDiff = await gitC(repo, ['stash', 'show', '-p', 'stash@{0}']);
-    expect(stashDiff).toContain('v2-uncommitted');
-    // The user is told where the work went.
-    const note = getNotifications().find((n) => n.title === 'Uncommitted root changes stashed');
+    // The sync was skipped — never forced through with a stash (FLUX-1770).
+    expect(ok).toBe(false);
+    // The tree is completely untouched: the conflicting edit is exactly as the caller left it,
+    // and master never moved.
+    expect(await fs.readFile(path.join(repo, 'feat.txt'), 'utf8')).toBe('v2-uncommitted\n');
+    expect(await gitC(repo, ['rev-parse', 'HEAD'])).not.toBe(await gitC(origin, ['rev-parse', 'master']));
+    expect(await gitC(repo, ['stash', 'list'])).toBe('');
+    expect(getNotifications().find((n) => n.title === 'Uncommitted root changes stashed')).toBeUndefined();
+    const note = getNotifications().find((n) => n.title === 'Main branch not fast-forwarded');
     expect(note).toBeTruthy();
-    expect(note!.message).toContain('git stash apply');
+    expect(note!.message).toContain('feat.txt');
   });
 
   it('is a clean no-op (no stash, no notification) when the root tree is clean', async () => {
@@ -125,6 +154,25 @@ describe('syncDefaultBranch dirty-root backstop (FLUX-741)', () => {
     expect(await fs.readFile(path.join(repo, 'feat.txt'), 'utf8')).toContain('v-origin');
     expect(await gitC(repo, ['stash', 'list'])).toBe('');
     expect(getNotifications().find((n) => n.title === 'Uncommitted root changes stashed')).toBeUndefined();
+  });
+
+  it('skips the sync WITHOUT touching the tree when a rebase is in progress', async () => {
+    await advanceOrigin();
+    // Put `repo` into a genuine in-progress rebase against its own history so HEAD stays on
+    // master (mirrors what a `git rebase` conflict pause looks like on disk).
+    await fs.writeFile(path.join(repo, 'feat.txt'), 'v-local\n', 'utf8');
+    await gitC(repo, ['commit', '-am', 'local work']);
+    await gitC(repo, ['fetch', 'origin']);
+    await execFileAsync('git', ['-C', repo, 'rebase', 'origin/master'], { windowsHide: true }).catch(() => {});
+    expect(existsSync(path.join(repo, '.git', 'rebase-merge')) || existsSync(path.join(repo, '.git', 'rebase-apply'))).toBe(true);
+
+    const ok = await syncDefaultBranch(repo);
+
+    expect(ok).toBe(false);
+    expect(await gitC(repo, ['stash', 'list'])).toBe('');
+    const note = getNotifications().find((n) => n.title === 'Main branch not synced');
+    expect(note).toBeTruthy();
+    expect(note!.message).toContain('rebase');
   });
 });
 
@@ -851,5 +899,179 @@ describe('cleanupMergedBranch defers teardown for a live sibling session (FLUX-1
     expect(existsSync(wt)).toBe(false);
     expect(getWorkspace().tasks[c.id]?.status).toBe('Done');
     expect(getWorkspace().tasks[d.id]?.status).toBe('Done');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLUX-1770: `cleanupMergedBranch`'s OWN pre-cleanup switch-off block (pr-cleanup.ts ~809-846) —
+// the main working tree has the merged branch checked out directly (no dedicated task worktree,
+// e.g. a `worktree:false` ticket). This is a SEPARATE code path from `syncDefaultBranch` (already
+// covered above): here the branch about to be switched OFF is the one currently checked out.
+//
+// FLUX-1776: `findWorktreeForBranch` used to match the main tree itself (git reports it as a
+// worktree like any other), so the EARLIER worktree-dirty gate in `cleanupMergedBranch` (the
+// `if (worktree) { ... porcelain ... }` block) always intercepted a dirty/conflicted main tree
+// first and returned `'unsafe'/'dirty-worktree'` before this block ever ran. `cleanupMergedBranch`
+// now calls `findWorktreeForBranch` with `excludeMainTree: true`, so it naturally returns null when
+// only the main tree holds the branch — no mocking needed for these tests to reach this block.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('cleanupMergedBranch pre-cleanup switch-off never stashes the main tree (FLUX-1770)', () => {
+  it('does not stash when checkout carries a non-conflicting dirty edit off the merged branch', async () => {
+    await gitC(repo, ['checkout', '-b', 'flux/FLUX-10']);
+    await fs.writeFile(path.join(repo, 'unrelated.txt'), 'wip\n', 'utf8');
+
+    await cleanupMergedBranch(repo, 'flux/FLUX-10');
+
+    expect(await gitC(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('master');
+    expect(await fs.readFile(path.join(repo, 'unrelated.txt'), 'utf8')).toBe('wip\n');
+    expect(await gitC(repo, ['stash', 'list'])).toBe('');
+    expect(getNotifications().find((n) => n.title === 'Uncommitted root changes stashed')).toBeUndefined();
+  });
+
+  it('stashes as a last resort when checkout refuses due to a conflicting dirty edit', async () => {
+    await gitC(repo, ['checkout', '-b', 'flux/FLUX-11']);
+    // Advance the (not-checked-out) local master ref to a commit that changes feat.txt — allowed
+    // since master isn't the current branch. Mirrors `advanceOrigin` but updates the LOCAL ref
+    // directly rather than via a second clone, since we need master to diverge while `repo` sits
+    // on `flux/FLUX-11`.
+    const work = path.join(tmp, 'work');
+    await execFileAsync('git', ['clone', origin, work], { windowsHide: true });
+    await gitC(work, ['config', 'user.email', 'test@test.com']);
+    await gitC(work, ['config', 'user.name', 'Test']);
+    await gitC(work, ['config', 'commit.gpgsign', 'false']);
+    await fs.writeFile(path.join(work, 'feat.txt'), 'v-master\n', 'utf8');
+    await gitC(work, ['commit', '-am', 'master advances feat.txt']);
+    await gitC(work, ['push', 'origin', 'master']);
+    await gitC(repo, ['fetch', 'origin', 'master:master']);
+    // Uncommitted edit on the branch to the SAME file master just changed — checkout must refuse.
+    await fs.writeFile(path.join(repo, 'feat.txt'), 'v2-uncommitted\n', 'utf8');
+
+    await cleanupMergedBranch(repo, 'flux/FLUX-11');
+
+    expect(await gitC(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('master');
+    expect(await gitC(repo, ['stash', 'list'])).toContain('EH pre-cleanup flux/FLUX-11');
+    const note = getNotifications().find((n) => n.title === 'Uncommitted root changes stashed');
+    expect(note).toBeTruthy();
+    expect(note!.message).toContain('flux/FLUX-11');
+  });
+
+  it('leaves the branch checked out and does not switch when a merge is in progress', async () => {
+    await gitC(repo, ['checkout', '-b', 'flux/FLUX-12']);
+    await fs.writeFile(path.join(repo, 'feat.txt'), 'branch-version\n', 'utf8');
+    await gitC(repo, ['commit', '-am', 'branch changes feat.txt']);
+    // Advance master with a CONFLICTING change to feat.txt, then merge it in — a conflicted merge
+    // (unlike a rebase) keeps HEAD attached to the current branch, which is what this block's
+    // `cur.trim() === branch` gate requires to even run.
+    const work = path.join(tmp, 'work');
+    await execFileAsync('git', ['clone', origin, work], { windowsHide: true });
+    await gitC(work, ['config', 'user.email', 'test@test.com']);
+    await gitC(work, ['config', 'user.name', 'Test']);
+    await gitC(work, ['config', 'commit.gpgsign', 'false']);
+    await fs.writeFile(path.join(work, 'feat.txt'), 'master-version\n', 'utf8');
+    await gitC(work, ['commit', '-am', 'master changes feat.txt']);
+    await gitC(work, ['push', 'origin', 'master']);
+    await gitC(repo, ['fetch', 'origin']);
+    await execFileAsync('git', ['-C', repo, 'merge', 'origin/master'], { windowsHide: true }).catch(() => {});
+    expect(existsSync(path.join(repo, '.git', 'MERGE_HEAD'))).toBe(true);
+
+    await cleanupMergedBranch(repo, 'flux/FLUX-12');
+
+    // Still on the branch — the switch-off never ran while the merge was unresolved.
+    expect(await gitC(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('flux/FLUX-12');
+    expect(await gitC(repo, ['stash', 'list'])).toBe('');
+    const note = getNotifications().find((n) => n.title === 'Main branch not switched');
+    expect(note).toBeTruthy();
+    expect(note!.message).toContain('merge');
+  });
+
+  it('clears the in-progress dedupe key once resolved, so a LATER recurrence notifies again (FLUX-1777)', async () => {
+    await gitC(repo, ['checkout', '-b', 'flux/FLUX-12']);
+    await fs.writeFile(path.join(repo, 'feat.txt'), 'branch-version\n', 'utf8');
+    await gitC(repo, ['commit', '-am', 'branch changes feat.txt']);
+    const work = path.join(tmp, 'work');
+    await execFileAsync('git', ['clone', origin, work], { windowsHide: true });
+    await gitC(work, ['config', 'user.email', 'test@test.com']);
+    await gitC(work, ['config', 'user.name', 'Test']);
+    await gitC(work, ['config', 'commit.gpgsign', 'false']);
+    await fs.writeFile(path.join(work, 'feat.txt'), 'master-version\n', 'utf8');
+    await gitC(work, ['commit', '-am', 'master changes feat.txt']);
+    await gitC(work, ['push', 'origin', 'master']);
+    await gitC(repo, ['fetch', 'origin']);
+    await execFileAsync('git', ['-C', repo, 'merge', 'origin/master'], { windowsHide: true }).catch(() => {});
+    expect(existsSync(path.join(repo, '.git', 'MERGE_HEAD'))).toBe(true);
+
+    await cleanupMergedBranch(repo, 'flux/FLUX-12');
+    expect(getNotifications().filter((n) => n.title === 'Main branch not switched')).toHaveLength(1);
+
+    // Resolve the merge — the ELSE arm now runs and must clear the dedupe key it left behind.
+    await gitC(repo, ['merge', '--abort']);
+    await cleanupMergedBranch(repo, 'flux/FLUX-12');
+    expect(await gitC(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('master');
+
+    // Recreate the same in-progress condition on a fresh branch — same dedupe key
+    // (`pre-cleanup-in-progress-merge`, branch-independent). Without the clear above, this
+    // second occurrence would be silently swallowed by the stale dedupe entry.
+    await gitC(repo, ['checkout', '-b', 'flux/FLUX-12b']);
+    await fs.writeFile(path.join(repo, 'feat.txt'), 'branch-version-2\n', 'utf8');
+    await gitC(repo, ['commit', '-am', 'branch changes feat.txt again']);
+    await fs.writeFile(path.join(work, 'feat.txt'), 'master-version-2\n', 'utf8');
+    await gitC(work, ['commit', '-am', 'master changes feat.txt again']);
+    await gitC(work, ['push', 'origin', 'master']);
+    await gitC(repo, ['fetch', 'origin']);
+    await execFileAsync('git', ['-C', repo, 'merge', 'origin/master'], { windowsHide: true }).catch(() => {});
+    expect(existsSync(path.join(repo, '.git', 'MERGE_HEAD'))).toBe(true);
+
+    await cleanupMergedBranch(repo, 'flux/FLUX-12b');
+
+    expect(getNotifications().filter((n) => n.title === 'Main branch not switched')).toHaveLength(2);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLUX-1782 — reconcilePullRequests' "PR closed on GitHub without merging" branch resolves the
+// worktree to detach BY BRANCH (FLUX-557), which used to match the MAIN checkout itself when a
+// worktree:false ticket had its branch checked out there. detachTaskWorktree's `applyToMain: false`
+// stashes a dirty tree and deliberately never re-applies it — against the main tree that silently
+// empties the user's uncommitted work. Fixed by passing `excludeMainTree: true` at the
+// findWorktreeForBranch call site (mirrors the FLUX-1776 fix already applied to cleanupMergedBranch).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('reconcilePullRequests PR-closed-unmerged path never stashes the main tree (FLUX-1782)', () => {
+  beforeEach(async () => {
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
+    // createTask persists a real ticket markdown file — needs the .flux dir the outer suite's
+    // beforeEach doesn't create.
+    await fs.mkdir(path.join(repo, '.flux'), { recursive: true });
+  });
+  afterEach(() => {
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
+  });
+
+  it("does not stash a dirty main checkout when its branch's PR is closed unmerged", async () => {
+    const branch = 'flux/FLUX-99';
+    await gitC(repo, ['checkout', '-b', branch]);
+    const ticket = await createTask({ title: 'Main-tree ticket', status: 'Ready' });
+    await updateTaskWithHistory(ticket.id, { updatedBy: 'Agent', extraFields: { branch } });
+    await gitC(repo, ['add', '-A']);
+    await gitC(repo, ['commit', '-m', 'seed ticket']);
+
+    // Dirty, uncommitted edit in the main checkout — the work reconcilePullRequests must not lose.
+    await fs.writeFile(path.join(repo, 'feat.txt'), 'dirty-uncommitted\n', 'utf8');
+
+    getPullRequestStatusMock.mockResolvedValue({
+      number: 1,
+      state: 'CLOSED',
+      url: 'https://github.com/acme/repo/pull/1',
+      title: 'PR',
+      reviewDecision: null,
+      mergeable: 'UNKNOWN',
+      checks: { total: 0, passed: 0, failed: 0, pending: 0 },
+      headRefName: branch,
+    });
+
+    await reconcilePullRequests(repo);
+
+    expect(await gitC(repo, ['stash', 'list'])).toBe('');
+    expect(await fs.readFile(path.join(repo, 'feat.txt'), 'utf8')).toBe('dirty-uncommitted\n');
+    expect(getWorkspace().tasks[ticket.id]?.status).toBe('In Progress');
   });
 });

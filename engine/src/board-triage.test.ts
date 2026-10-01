@@ -7,7 +7,20 @@ vi.mock('./branch-manager.js', () => ({
   getPullRequestStatus: (...args: [string]) => getPullRequestStatus(...args),
 }));
 
+// FLUX-1775: mock the session-store lookup so the "active session suppresses the signal" case
+// doesn't need a real running session in the store.
+const getActiveSessionsForTask = vi.fn((_ticketId: string, _root?: string | null, _defaultRoot?: string | null): unknown[] => []);
+vi.mock('./session-store.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./session-store.js')>();
+  return {
+    ...actual,
+    getActiveSessionsForTaskInWorkspace: (ticketId: string, root: string | null, defaultRoot: string | null) =>
+      getActiveSessionsForTask(ticketId, root, defaultRoot),
+  };
+});
+
 import { buildTriageFragment, STALE_GROOMING_MS, STALE_REQUIRE_INPUT_MS, MAX_PR_CHECKS } from './board-triage.js';
+import { STALE_IN_PROGRESS_MS } from './ticket-health.js';
 
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -40,6 +53,8 @@ describe('buildTriageFragment', () => {
     for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
     getPullRequestStatus.mockReset();
     getPullRequestStatus.mockResolvedValue(null);
+    getActiveSessionsForTask.mockReset();
+    getActiveSessionsForTask.mockReturnValue([]);
   });
 
   afterEach(() => {
@@ -219,6 +234,37 @@ describe('buildTriageFragment', () => {
       const fragment = await buildTriageFragment();
       expect(getPullRequestStatus).toHaveBeenCalledTimes(MAX_PR_CHECKS);
       expect(fragment).toContain(`Dead-PR check capped: only checked ${MAX_PR_CHECKS} of ${total} Ready+branched tickets`);
+    });
+  });
+
+  describe('stale In Progress', () => {
+    it('flags a stale In Progress parent with correct child counts and suggestion', async () => {
+      const hours = Math.ceil(STALE_IN_PROGRESS_MS / (60 * 60 * 1000)) + 1;
+      seed('FLUX-100', { status: 'Done' });
+      seed('FLUX-101', { status: 'Done' });
+      seed('FLUX-102', {
+        status: 'In Progress',
+        subtasks: ['FLUX-100', 'FLUX-101'],
+        history: [{ type: 'activity', date: isoDaysAgo(hours / 24) }],
+      });
+      const fragment = await buildTriageFragment();
+      expect(fragment).toContain('FLUX-102: In Progress, no session for');
+      expect(fragment).toContain('2/2 children done — suggest Done');
+    });
+
+    it('does not flag a recently-active In Progress ticket', async () => {
+      seed('FLUX-103', { status: 'In Progress', history: [{ type: 'activity', date: isoDaysAgo(1) }] });
+      const fragment = await buildTriageFragment();
+      expect(fragment).not.toContain('FLUX-103');
+      expect(fragment).not.toContain('stale in-progress');
+    });
+
+    it('does not flag an In Progress ticket that has a live session', async () => {
+      getActiveSessionsForTask.mockReturnValue([{ id: 'sess-1' }]);
+      const days = Math.ceil(STALE_IN_PROGRESS_MS / DAY_MS) + 1;
+      seed('FLUX-104', { status: 'In Progress', history: [{ type: 'activity', date: isoDaysAgo(days) }] });
+      const fragment = await buildTriageFragment();
+      expect(fragment).not.toContain('FLUX-104');
     });
   });
 

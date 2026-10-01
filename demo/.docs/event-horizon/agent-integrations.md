@@ -39,7 +39,9 @@ All three frameworks plug in through the same `AgentAdapter` interface. To add a
 
 1. Install: `npm install -g @github/copilot`
 2. Authenticate: Ensure you're logged in via `gh auth login` (requires GitHub Copilot subscription)
-3. Verify: `copilot -p "say hello" --output-format json` should produce JSONL output
+3. Verify: `echo "say hello" | copilot --output-format json --no-ask-user` should produce JSONL output
+4. Event Horizon installs the workflow as `.github/skills/event-horizon/SKILL.md`, the directory-skill format current Copilot CLI versions discover.
+5. Portal-spawned sessions pass `-p ""` and stream the prompt over stdin. Settings → Global CLI install can write `~/.copilot/mcp-config.json`.
 
 ---
 
@@ -126,7 +128,7 @@ Each framework needs workflow skills installed so the agent understands Event Ho
 
 | Target | Files Installed |
 |--------|----------------|
-| `copilot` | `.github/skills/event-horizon/*.md` + patches `.github/copilot-instructions.md` |
+| `copilot` | `.github/skills/event-horizon/SKILL.md` + patches `.github/copilot-instructions.md` |
 | `claude` | `.claude/rules/event-horizon.md` |
 | `gemini` | `.gemini/skills/event-horizon.md` |
 | `cursor` | `.cursor/rules/event-horizon.mdc` |
@@ -243,7 +245,7 @@ Event Horizon handles this internally by spawning `node` directly with the Copil
 
 - Claude: Reports exact tokens — cost should populate automatically
 - Gemini: Reports exact tokens — cost should populate automatically  
-- Copilot: Does not currently report token counts in JSON output; cost tracking is limited
+- Copilot: JSONL result events report token usage; Event Horizon records it and estimates cost when needed
 
 ---
 

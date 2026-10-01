@@ -25,6 +25,7 @@ import {
 } from '../orchestration';
 import { TopologyGlyph } from './OrchestrationTopology';
 import { TokenBadge } from './TokenBadge';
+import { ContextStrip } from './ContextStrip';
 
 /**
  * FLUX-962: the reusable, topology-aware session card. Presentational only — every value comes in
@@ -228,6 +229,10 @@ function AgentRow({ session, isLead = false }: { session: CliSessionSummary; isL
         {session.currentActivity && (
           <div className="truncate text-[9px] text-gray-400 dark:text-gray-500">{session.currentActivity}</div>
         )}
+        {/* FLUX-1748: per-member context strip — group context is never summed (see ContextStrip's
+            doc comment), so this renders once per member here rather than beside the group's
+            aggregate token badge. */}
+        <ContextStrip session={session} className="mt-1" />
       </div>
     </div>
   );
@@ -272,6 +277,8 @@ function GroupBreakdown({ group }: { group: SessionGroup }) {
               </span>
               <Icon className="h-3 w-3 shrink-0 text-gray-500 dark:text-gray-400" />
               <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-gray-800 dark:text-gray-200">{agentLabel(s)}</span>
+              {/* FLUX-1748: per-member context strip — see the same note in AgentRow. */}
+              <ContextStrip session={s} className="w-16 shrink-0" />
               <StatusDot session={s} />
               <span className="sr-only">{statusDotLabel(s.status)}</span>
               {active && s.status !== 'waiting-input' && (
@@ -465,6 +472,10 @@ export const SessionCard = memo(function SessionCard({
       ) : (
         <span className="min-w-0" />
       )}
+      {/* FLUX-1748: context strip renders only for a SOLO session — a group's `tokenData` is a sum
+          across members and context is not summable (see ContextStrip's doc comment); group cards
+          get one strip per member in GroupBreakdown instead. */}
+      {!group && session && <ContextStrip session={session} className="w-20 shrink-0" />}
       {tokenData && <TokenBadge data={tokenData} config={config} variant="card" />}
     </div>
   );

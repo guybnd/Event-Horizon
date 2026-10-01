@@ -5,6 +5,8 @@ import os from 'os';
 import { setWorkspaceRoot } from './workspace.js';
 import { verifyConversation } from './session-binding.js';
 import { buildGeminiMcpServerEntry, installMcpConfig } from './workflow-installer.js';
+import { buildAntigravityMcpServerEntry } from './agents/antigravity-mcp-config.js';
+import { getEnginePort } from './packaged-mode.js';
 import { cleanChildEnv } from './agents/shared.js';
 
 /**
@@ -70,7 +72,12 @@ describe('buildGeminiMcpServerEntry / installMcpConfig — Gemini HITL header ro
     expect(entry).not.toHaveProperty('alwaysLoad');
   });
 
-  for (const framework of ['gemini', 'antigravity'] as const) {
+  // FLUX-1738: `antigravity` was dropped from this loop. It used to share Gemini's schema and
+  // destination, but `agy` reads `.agents/mcp_config.json` with its OWN shape (`serverUrl` +
+  // `disabled` — probed by driving `agy mcp add`); the Gemini `httpUrl` entry registered a server
+  // with no URL that failed at connect time rather than at install time. Its own coverage lives in
+  // `agents/antigravity-mcp-config.test.ts` plus the assertion below.
+  for (const framework of ['gemini'] as const) {
     it(`installMcpConfig(${framework}) writes the Gemini-schema entry to .gemini/settings.json, preserving other servers`, async () => {
       const settingsPath = path.join(root, '.gemini', 'settings.json');
       await fs.mkdir(path.dirname(settingsPath), { recursive: true });
@@ -91,6 +98,21 @@ describe('buildGeminiMcpServerEntry / installMcpConfig — Gemini HITL header ro
       expect((written as Record<string, unknown>).theme).toBe('Dracula');
     });
   }
+
+  it('installMcpConfig(antigravity) writes the agy-schema entry to .agents/mcp_config.json, not the Gemini one', async () => {
+    await installMcpConfig(root, root, 'antigravity');
+
+    // Destination moved: `.agents/mcp_config.json`, and `.gemini/settings.json` is left alone.
+    const written = await readJson('.agents/mcp_config.json');
+    const entry = written.mcpServers['event-horizon'] as Record<string, unknown>;
+    expect(entry).toEqual(buildAntigravityMcpServerEntry());
+    expect(entry.serverUrl).toBe(`http://127.0.0.1:${getEnginePort()}/mcp`);
+    // The regression this guards: Gemini's transport keys are unrecognised by agy, so an entry
+    // carrying them registers a server with no URL and fails at CONNECT time, not install time.
+    expect(entry).not.toHaveProperty('httpUrl');
+    expect(entry).not.toHaveProperty('url');
+    await expect(fs.access(path.join(root, '.gemini', 'settings.json'))).rejects.toThrow();
+  });
 
   it('installMcpConfig(claude) still writes the Claude schema to .mcp.json (no cross-contamination)', async () => {
     await installMcpConfig(root, root, 'claude');

@@ -26,12 +26,13 @@ export function buildCoreInstructionsBlock(): string {
   ].join('\n');
 }
 
-/** Bump when CORE_INVARIANTS or the document body below changes, so
- * `checkSkillVersionStaleness` (workflow-installer.ts) flags existing Claude installs (still
- * carrying the old 6-module concatenation) as stale and refreshes them to the trimmed core.
- * MUST stay in lockstep with the orchestrator module's `Version:` line — staleness compares the
- * SOURCE orchestrator version against the INSTALLED file's stamp (this constant), so a mismatch
- * makes every refreshed install immediately stale again (perpetual reinstall loop). */
+/** Display version stamped into the installed core doc's `Version:` line. Bump it when
+ * CORE_INVARIANTS or the document body below changes so the staleness notification / install
+ * status shows a meaningful "installed vs. source" pair. It is DISPLAY-ONLY as of FLUX-1749:
+ * `checkSkillVersionStaleness` (workflow-installer.ts) compares the installed file's CONTENT
+ * against `buildCoreSkillDocument()`, so forgetting to bump (or drifting from the orchestrator
+ * module's `Version:` line, which this used to have to match) can no longer cause a missed
+ * refresh or a perpetual reinstall loop. */
 export const CORE_SKILL_VERSION = '2.14.0';
 
 /**

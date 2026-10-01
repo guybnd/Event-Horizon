@@ -42,6 +42,12 @@ export interface EnsureIsolationOptions {
   baseBranch?: string | undefined;
   /** History author for the branch/worktree entries (default 'Agent'). */
   updatedBy?: string | undefined;
+  /**
+   * FLUX-1739: push the newly-created branch to `origin`. Defaults to TRUE (today's behavior, so no
+   * existing caller changes). A benchmark run passes false — its branch is local-only, and nothing a
+   * suite does may reach the remote.
+   */
+  pushBranch?: boolean | undefined;
 }
 
 export interface EnsureIsolationResult {
@@ -62,7 +68,7 @@ export async function ensureTicketIsolation(
   // instead of erroring with a raw git "already exists".
   let branch = task.branch as string | undefined;
   if (!branch) {
-    branch = await createTicketBranch(ticketId, task.title || ticketId, opts.baseBranch);
+    branch = await createTicketBranch(ticketId, task.title || ticketId, opts.baseBranch, { push: opts.pushBranch !== false });
     await updateTaskWithHistory(ticketId, { updatedBy, extraFields: { branch } });
     // Reflect onto the live cache object so callers spawning in the same tick
     // (resolveTaskExecutionRoot reads task.branch) see the new branch.

@@ -910,3 +910,27 @@ export function normalizeHistoryEntries(history: unknown[] = []): { history: His
 
   return { history: normalized, changed };
 }
+
+/**
+ * FLUX-1156: the ticket's own recorded `outcome` for a given session id, read straight off durable
+ * history (`tasksCache`, kept current by `updateTaskWithHistory`/`updateAgentSession`) rather than the
+ * in-memory `CliSessionRecord` — the adapters only ever mutate the ON-DISK entry's `outcome` via
+ * `updateAgentSession` (see claude-code.ts's exit handler), never the in-memory `sessionHistoryEntry`
+ * copy, so reading history here is what makes this work uniformly for BOTH a pre-spawn failure (which
+ * sets both copies) and an ordinary post-spawn one (which only ever updates the durable copy).
+ *
+ * FLUX-1739: moved here from `furnace-stoker.ts`. It is a pure history scan with no Furnace concept in
+ * it, and the benchmark runner needs the same durable outcome — importing it from the Stoker would have
+ * pulled the whole Furnace module graph into `benchmark-runner.ts`, against that ticket's scope
+ * decision that the benchmark reuses Furnace's PATTERNS and none of its types.
+ */
+export function findSessionOutcome(task: { history?: unknown[] } | null | undefined, sessionId: string | undefined): string | undefined {
+  if (!task || !sessionId || !Array.isArray(task.history)) return undefined;
+  for (let i = task.history.length - 1; i >= 0; i--) {
+    const e = task.history[i] as { type?: string; sessionId?: string; outcome?: string } | undefined;
+    if (e?.type === 'agent_session' && e.sessionId === sessionId && typeof e.outcome === 'string' && e.outcome.trim()) {
+      return e.outcome.trim();
+    }
+  }
+  return undefined;
+}

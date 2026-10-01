@@ -20,7 +20,7 @@ import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { appendTranscriptLine } from '../transcript.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, buildPhaseHandoffNote } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, isScratchSession, prependEditGateNote, resolveModel, buildTokenMetadataUpdate, buildPhaseHandoffNote, stopOutcomeText } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   Bash: 'Running command',
@@ -575,7 +575,7 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
 
   // FLUX-1123: Gemini has no --disallowed-tools equivalent (see FILE_MUTATION_TOOLS's comment in
   // claude-code.ts), so this can only be an advisory note in the prompt, not a real block.
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'gemini', editsGated: isChatEditGated(session, task) || isScratchSession(task), batchTicketIds: session.batchTicketIds, batchExcluded: session.batchExcluded });
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'gemini', editsGated: isChatEditGated(session, task) || isScratchSession(task), batchTicketIds: session.batchTicketIds, batchExcluded: session.batchExcluded, planFirst: session.planFirst });
 
   const geminiArgs = [
     ...(selectedModel ? ['--model', selectedModel] : []),
@@ -738,7 +738,7 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
     }
 
     const outcome = session.requestedStop
-      ? `${label} session stopped by user.`
+      ? `${label} session stopped ${stopOutcomeText(session)}.`
       : `${label} session ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
 
     // FLUX-1375: delta-based (buildTokenMetadataUpdate advances session.flushed*Tokens), so the

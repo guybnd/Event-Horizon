@@ -1,12 +1,13 @@
 import express from 'express';
 import path from 'path';
 import { existsSync } from 'fs';
-import { getWorkspacesList, addWorkspaceEntry, removeWorkspaceEntry, updateWorkspaceLabel, saveAppSettings, loadAppSettings, autoRegisterWorkspace, getWorkspaceRoot, pathsEqual } from '../workspace.js';
+import { getWorkspacesList, addWorkspaceEntry, removeWorkspaceEntry, updateWorkspaceLabel, saveAppSettings, loadAppSettings, autoRegisterWorkspace, getWorkspaceRoot, pathsEqual, rememberOpenWorkspace, forgetOpenWorkspace } from '../workspace.js';
 import { activateWorkspace, openWorkspaceLive } from '../task-store.js';
 import { isAgentAuthenticatedRequest } from '../middleware.js';
 import { getLiveProcessSessionCountForWorkspace, stopCliSessionsForWorkspace } from '../session-store.js';
 import { resolveWorkspaceGroups, type WorkspaceGroupInfo } from '../group.js';
 import { getDefaultWorkspace, getWorkspaceByRoot, closeWorkspace, canonicalizeWorkspaceRoot } from '../workspace-context.js';
+import { broadcastToAllWorkspaces } from '../events.js';
 
 const router = express.Router();
 
@@ -180,7 +181,10 @@ router.post('/open', async (req, res) => {
     return res.status(400).json({ error: `Folder not found: ${resolved}` });
   }
   try {
-    await openWorkspaceLive(resolved, { reload: true });
+    const ws = await openWorkspaceLive(resolved, { reload: true });
+    // Remember the open set so an engine restart brings this board back up (workspace-binding.ts's
+    // `restoreRememberedOpenWorkspaces`) instead of collapsing to the boot board alone.
+    if (ws.root) await rememberOpenWorkspace(ws.root);
     const list = await getWorkspacesList();
     res.json(await enrichList(list));
   } catch (err) {
@@ -219,6 +223,9 @@ router.post('/close', async (req, res) => {
   }
 
   await closeWorkspace(resolved);
+  await forgetOpenWorkspace(resolved);
+  // Counterpart of openWorkspaceLive's `opened` broadcast — other portal tabs drop the closed tab.
+  broadcastToAllWorkspaces('workspacesChanged', { action: 'closed', root: resolved });
   const list = await getWorkspacesList();
   res.json(await enrichList(list));
 });

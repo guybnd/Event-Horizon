@@ -16,11 +16,12 @@
  */
 import { getWorkspace } from './workspace-context.js';
 import { getConfig } from './config.js';
-import { updateTaskWithHistory } from './task-store.js';
+import { updateTaskWithHistory, awaitTicketWritesIdle } from './task-store.js';
 import { generateNeedsActionNotification } from './notifications.js';
 import { isAgentAuthor } from './history.js';
 import { broadcastEvent } from './events.js';
 import type { CliSessionRecord } from './agents/types.js';
+import { BENCHMARK_KIND } from './models/benchmark.js';
 
 /** The subset of a ticket's shape this module reads/writes. Tickets are loosely-typed
  *  gray-matter frontmatter records validated at runtime (schema.ts) — this covers only the
@@ -111,7 +112,13 @@ export function isParked(s: ParkedSnapshot): boolean {
   const createdSubtask = s.subtaskCount > (s.subtaskCountAtTurnStart ?? s.subtaskCount);
   const tookBoardAction = statusChanged || raisedRequireInput || createdSubtask;
 
-  if (workingStatuses().has(s.status)) return !tookBoardAction;
+  // FLUX-1761: a turn that ENDS in a working status has not handed the ticket off, whatever moves it
+  // made on the way. The Todo → In Progress move every implementation session makes first counted as
+  // "took a board action" and silenced this detector for a session that then died mid-work (a
+  // benchmark run that solved its task, said it would wait for a background command, and exited
+  // four seconds later with no record). Only a Require Input park or a created subtask is a real
+  // hand-off from a working status; a status change only counts when it LEFT the working set.
+  if (workingStatuses().has(s.status)) return !(raisedRequireInput || createdSubtask);
 
   // Resting/terminal: only nudge when the agent actually left a fresh comment this turn.
   const addedComment = (s.commentCount ?? 0) > (s.commentCountAtTurnStart ?? s.commentCount ?? 0);
@@ -185,6 +192,12 @@ export async function raiseNeedsAction(taskId: string, message: string): Promise
       });
       broadcastEvent('taskUpdated', { id: taskId });
     }
+    // FLUX-1739: a benchmark run PARKING is expected — the friction layer counts exactly that as a
+    // protocol-violation signal, and a 45-cell suite would otherwise fire 45 user notifications for
+    // behavior the benchmark exists to measure. The needsAction FLAG is still written above (it is
+    // the evidence the friction extractor reads off frontmatter); only the user-facing notification
+    // is suppressed.
+    if ((task as { kind?: string }).kind === BENCHMARK_KIND) return;
     generateNeedsActionNotification(taskId, task.title || taskId, task.status ?? '', message);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -303,6 +316,9 @@ export function wouldPark(session: CliSessionRecord, taskId: string): boolean {
  */
 export async function flagIfParked(session: CliSessionRecord, taskId: string, unarmedWaitMessage?: string): Promise<void> {
   try {
+    // FLUX-1760: the session's own last change_status may still be in the ticket's write chain.
+    // Deciding "took no board action" from a snapshot taken before it lands is the false positive.
+    await awaitTicketWritesIdle(taskId);
     const built = computeParkedSnapshot(session, taskId);
     if (!built) return;
     const { snapshot } = built;

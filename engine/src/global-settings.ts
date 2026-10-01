@@ -6,6 +6,14 @@ import os from 'os';
 export interface GlobalSettings {
   workspaces: WorkspaceEntry[];
   lastWorkspace?: string;
+  /**
+   * Canonical roots of the secondary boards that were live (opened via the switcher's tab strip,
+   * `POST /api/workspaces/open`, an `X-EH-Workspace` auto-open, or MCP `bind_workspace`) when the
+   * engine last ran. Restored at boot after the default board (`lastWorkspace`) activates, so an
+   * engine restart no longer silently drops every board but the boot one — which left sessions
+   * dispatched on those boards binding to the wrong workspace. Never contains `lastWorkspace`.
+   */
+  openWorkspaces?: string[];
   defaultUser?: string;
   preferredFramework?: string;
   defaultAgent?: string;

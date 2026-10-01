@@ -1,6 +1,7 @@
 import express from 'express';
 import { getWorkspaceRoot } from './workspace.js';
-import { getDefaultWorkspace, getWorkspace, getWorkspaceByRoot, normalizeWorkspaceKey, runWithWorkspace, type Workspace } from './workspace-context.js';
+import { getDefaultWorkspace, getWorkspace, getWorkspaceByRoot, normalizeWorkspaceKey, runWithWorkspace, type Workspace, type WorkspaceBindingSource } from './workspace-context.js';
+import { resolveWorkspaceBinding } from './workspace-binding.js';
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace -- Express request augmentation requires the ambient namespace
@@ -14,6 +15,11 @@ declare global {
        * {@link requireWorkspace} to refuse misrouted mutations (FLUX-1675).
        */
       workspaceHeaderUnresolved?: boolean;
+      /** How `workspace` was resolved — forwarded into the {@link runWithWorkspace} binding by
+       *  {@link workspaceScope} so `getRequestBinding()` is truthful for REST callers too. */
+      workspaceBindingSource?: WorkspaceBindingSource;
+      /** The header/`?ws=` value when it could not be resolved (`workspaceHeaderUnresolved`). */
+      workspaceRequestedRoot?: string;
     }
   }
 }
@@ -81,9 +87,36 @@ export function attachWorkspace(req: express.Request, _res: express.Response, ne
     else if (Array.isArray(q)) root = q.filter((v): v is string => typeof v === 'string');
   }
   const key = Array.isArray(root) ? root[0] : root;
-  req.workspaceHeaderUnresolved = !!key && !isRegisteredOrDefaultRoot(key);
-  req.workspace = resolveWorkspaceFromRoot(root);
-  next();
+  if (!key || isRegisteredOrDefaultRoot(key)) {
+    // Fast path (the overwhelmingly common case: no header, or a header naming a live board) stays
+    // fully synchronous — no await, `next()` on the same tick — so nothing downstream observes a
+    // latency or ordering change.
+    req.workspaceHeaderUnresolved = false;
+    req.workspaceBindingSource = key ? 'header' : 'default-fallback';
+    req.workspace = resolveWorkspaceFromRoot(root);
+    next();
+    return;
+  }
+  // Miss: the header names a board that isn't live in this process. Before this, that silently
+  // resolved to the default board — wrong for a *registered* board that simply hasn't been opened
+  // since the engine restarted (the "my board is definitely open but the engine says otherwise"
+  // failure). Try the non-destructive auto-open (workspace-binding.ts); only a root nothing on this
+  // engine knows about stays unresolved.
+  void resolveWorkspaceBinding(key)
+    .then((binding) => {
+      req.workspaceHeaderUnresolved = binding.source === 'header-unresolved';
+      req.workspaceBindingSource = binding.source;
+      if (binding.requestedRoot !== undefined) req.workspaceRequestedRoot = binding.requestedRoot;
+      req.workspace = binding.ws ?? getWorkspace();
+    })
+    .catch((err) => {
+      console.error('[middleware] workspace binding resolution failed — falling back to the default board:', err);
+      req.workspaceHeaderUnresolved = true;
+      req.workspaceBindingSource = 'header-unresolved';
+      req.workspaceRequestedRoot = key;
+      req.workspace = getWorkspace();
+    })
+    .finally(() => next());
 }
 
 /**
@@ -97,7 +130,10 @@ export function attachWorkspace(req: express.Request, _res: express.Response, ne
  * anyway (resolveWorkspaceFromRoot's fallback), so behavior is unchanged there.
  */
 export function workspaceScope(req: express.Request, _res: express.Response, next: express.NextFunction) {
-  runWithWorkspace(req.workspace ?? null, () => next());
+  const opts: Parameters<typeof runWithWorkspace>[2] = {};
+  if (req.workspaceBindingSource) opts.source = req.workspaceBindingSource;
+  if (req.workspaceRequestedRoot !== undefined) opts.requestedRoot = req.workspaceRequestedRoot;
+  runWithWorkspace(req.workspace ?? null, () => next(), opts);
 }
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);

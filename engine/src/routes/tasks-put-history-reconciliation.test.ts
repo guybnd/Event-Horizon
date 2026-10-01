@@ -14,6 +14,8 @@ import type { AddressInfo } from 'net';
 import express from 'express';
 import { setWorkspaceRoot } from '../workspace.js';
 import { requireWorkspace } from '../middleware.js';
+import { cliSessionsById, registerSession, unregisterSession } from '../session-store.js';
+import type { CliSessionRecord } from '../agents/types.js';
 
 
 describe('PUT /api/tasks/:id — history reconciliation by identity (FLUX-1308)', () => {
@@ -125,5 +127,105 @@ describe('PUT /api/tasks/:id — history reconciliation by identity (FLUX-1308)'
     expect(comments).toContain('delta comment');
     expect(comments).toContain('second (client will not have seen this)');
     expect(updated.history).toHaveLength(4);
+  });
+});
+
+// FLUX-1746: the portal-PUT half of the review-handoff note's two independently-wired Ready
+// paths (the other is MCP change_status, mcp-compaction-handoff.test.ts). Deleting the
+// `entriesToAppend.push` in routes/tasks/update.ts must fail this test.
+describe('PUT /api/tasks/:id — compaction review-handoff note on Ready (FLUX-1746)', () => {
+  let root: string;
+  let server: http.Server;
+  let baseUrl: string;
+  const SESSION_ID = 'flux1746-test-session';
+  // adapter-boundary: keep the framework value out of a `framework: 'claude'` literal (see
+  // check-adapter-boundary.mjs's framework-literal-assign pattern) — this fixture doesn't
+  // exercise per-CLI behavior, it just needs a valid CliFramework value.
+  const TEST_FRAMEWORK = 'claude';
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-tasks-put-compaction-'));
+    await fs.mkdir(path.join(root, '.flux'), { recursive: true });
+    setWorkspaceRoot(root);
+
+    for (const k of Object.keys(getWorkspace().tasks)) delete getWorkspace().tasks[k];
+
+    const { default: tasksRouter } = await import('./tasks.js');
+    const app = express();
+    app.use(express.json());
+    app.use('/api/tasks', requireWorkspace, tasksRouter);
+    server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const addr = server.address() as AddressInfo;
+    baseUrl = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterEach(async () => {
+    cliSessionsById.delete(SESSION_ID);
+    unregisterSession('FLUX-2', SESSION_ID);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await fs.rm(root, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('a ticket with a registered compacted implementation session moved to Ready via PUT lands the handoff entry in the written history', async () => {
+    getWorkspace().tasks['FLUX-2'] = {
+      id: 'FLUX-2',
+      title: 'Compaction handoff test',
+      status: 'In Progress',
+      body: '',
+      history: [],
+      _path: path.join(root, '.flux', 'FLUX-2.md'),
+    };
+    cliSessionsById.set(SESSION_ID, {
+      id: SESSION_ID,
+      taskId: 'FLUX-2',
+      framework: TEST_FRAMEWORK,
+      status: 'completed',
+      command: 'claude',
+      args: [],
+      startedAt: new Date().toISOString(),
+      label: 'Test',
+      phase: 'implementation',
+      compactionCount: 2,
+      cumulativeDroppedTokens: 50_000,
+    } as unknown as CliSessionRecord);
+    registerSession('FLUX-2', SESSION_ID);
+
+    const res = await fetch(`${baseUrl}/api/tasks/FLUX-2`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'Ready',
+        appendHistory: [{ type: 'comment', user: 'reviewer', comment: 'Looks good, moving to Ready.' }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const updated = await res.json();
+    const comments = (updated.history as Array<{ comment?: string }>).map((e) => e.comment ?? '');
+    expect(comments.some((c) => c.includes('compacted 2 times') && c.includes('50k'))).toBe(true);
+  });
+
+  it('a ticket with no compacted sessions moved to Ready adds no handoff entry', async () => {
+    getWorkspace().tasks['FLUX-2'] = {
+      id: 'FLUX-2',
+      title: 'Compaction handoff test (clean)',
+      status: 'In Progress',
+      body: '',
+      history: [],
+      _path: path.join(root, '.flux', 'FLUX-2.md'),
+    };
+
+    const res = await fetch(`${baseUrl}/api/tasks/FLUX-2`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'Ready',
+        appendHistory: [{ type: 'comment', user: 'reviewer', comment: 'Looks good, moving to Ready.' }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const updated = await res.json();
+    const comments = (updated.history as Array<{ comment?: string }>).map((e) => e.comment ?? '');
+    expect(comments.some((c) => c.includes('compacted'))).toBe(false);
   });
 });

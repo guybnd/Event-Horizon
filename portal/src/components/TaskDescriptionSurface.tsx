@@ -8,8 +8,8 @@ import { Table } from '@tiptap/extension-table';
 import TableCell from '@tiptap/extension-table-cell';
 import TableHeader from '@tiptap/extension-table-header';
 import TableRow from '@tiptap/extension-table-row';
-import TurndownService from 'turndown';
-import { gfm } from 'turndown-plugin-gfm';
+import { TaskList, TaskItem } from '@tiptap/extension-list';
+import type TurndownService from 'turndown';
 import { marked } from 'marked';
 import { Bold, Code, Eye, Heading1, Heading2, Italic, Link as LinkIcon, List, ListOrdered } from 'lucide-react';
 import { buildUnsupportedImageMessage, uploadTaskImageMarkdownLinks } from '../taskAssetUploads';
@@ -18,6 +18,7 @@ import { parseAcceptanceCriteriaProgress } from '../lib/acceptanceCriteria';
 import { EpicProgressBar } from './EpicProgressBar';
 import { useAppSelector } from '../store/useAppSelector';
 import { PromptModal, type PromptModalState } from './task-modal/PromptModal';
+import { createMarkdownSerializer, normalizeEditorDom, shapeTaskLists } from '../lib/markdownSerializer';
 
 type TaskDescriptionSurfaceMode = 'popup' | 'full' | 'backlog';
 
@@ -25,21 +26,17 @@ marked.setOptions({ gfm: true, breaks: false });
 
 const normalizeMarkdownBody = normalizeTaskMarkdownBody;
 
+// FLUX-1719: this surface deliberately keeps its OWN markdown->HTML step rather than moving onto
+// docMarkdown.ts's renderMarkdownToHtml(markdown, docs) -- that one also runs stripFrontmatter,
+// which would delete a leading `---`-fenced region out of a ticket body, and needs a `docs: Doc[]`
+// this surface has no access to. markdownSerializer.ts only ever deals in HTML<->HTML / HTML->markdown.
 function renderMarkdownToHtml(markdown: string) {
   const rendered = marked.parse(markdown) as string;
-  return rendered || '<p></p>';
+  return shapeTaskLists(rendered || '<p></p>');
 }
 
-function createTurndownService() {
-  const service = new TurndownService({
-    headingStyle: 'atx',
-    codeBlockStyle: 'fenced',
-    bulletListMarker: '-',
-  });
-
-  service.use(gfm);
-
-  return service;
+function createTurndownService(): TurndownService {
+  return createMarkdownSerializer();
 }
 
 function getEditorDocumentSnapshot(editor: { getJSON: () => unknown }) {
@@ -196,6 +193,8 @@ export function TaskDescriptionSurface({
       TableRow,
       TableHeader,
       TableCell,
+      TaskList,
+      TaskItem.configure({ nested: true }),
       Placeholder.configure({ placeholder }),
     ],
     content: '<p></p>',
@@ -231,7 +230,7 @@ export function TaskDescriptionSurface({
         return;
       }
 
-      const nextMarkdown = normalizeMarkdownBody(turndownServiceRef.current?.turndown(activeEditor.getHTML()) || '');
+      const nextMarkdown = normalizeMarkdownBody(turndownServiceRef.current?.turndown(normalizeEditorDom(activeEditor.getHTML())) || '');
       editorSnapshotRef.current = nextSnapshot;
 
       if (!hasPendingUserEditRef.current && nextMarkdown !== lastSyncedValueRef.current) {

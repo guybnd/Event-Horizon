@@ -207,5 +207,26 @@ describe('blockSplice', () => {
       const result = detectUnsupported(CORPUS_BODY);
       expect(result).toEqual({ supported: true });
     });
+
+    // FLUX-1719: a top-level list mixing checkbox and plain items gets split into sibling
+    // checkbox/plain lists by shapeTaskLists, turning 1 top-level source block into 2 top-level
+    // editor nodes -- inexpressible by this module's positional splice, so it must fall back raw.
+    it('flags a top-level list mixing checkbox and plain items', () => {
+      const body = ['- [ ] alpha', '- plain bravo'].join('\n');
+      const result = detectUnsupported(body);
+
+      expect(result.supported).toBe(false);
+      expect(result.reason?.toLowerCase()).toContain('mixing checkbox and plain items');
+    });
+
+    it('reports supported=true for a uniformly-checkbox list', () => {
+      const body = ['- [ ] alpha', '- [x] beta'].join('\n');
+      expect(detectUnsupported(body)).toEqual({ supported: true });
+    });
+
+    it('reports supported=true for a uniformly-plain list', () => {
+      const body = ['- alpha', '- beta'].join('\n');
+      expect(detectUnsupported(body)).toEqual({ supported: true });
+    });
   });
 });

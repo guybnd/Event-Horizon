@@ -13,7 +13,7 @@ Scope: Judge a diff against the ticket's intent and record a machine-readable ve
 
 # Event Horizon Agent — Review Skill
 
-Version: 1.6.0
+Version: 1.7.0
 
 ## When This Skill Applies
 
@@ -42,6 +42,16 @@ Lead the review comment with the verdict (**APPROVED** / **CHANGES NEEDED**) and
 ## Test Coverage — the "tested leaf, untested glue" flag
 
 When a change extracts a pure helper "for testability," the **caller that sequences it** needs coverage too — a tested leaf with an untested orchestrator is a red flag, not a green check. Prefer a test that drives the assembled behavior through the caller's seam, not only the leaf in isolation. Grade a gap here at **Major** (per the taxonomy above), not Minor.
+
+## Finite Testability
+
+Beyond "does it work," ask whether the diff's new behavior *can* be exhaustively tested:
+
+- **External-state coupling** — does a function the diff adds or changes read/write module-level or ambient state instead of receiving it as an argument, making it untestable in isolation? Name the symbol and the state.
+- **Decision-space coverage** — is each *new* enumerable decision the diff introduces (enum arm, switch/match case, dispatch-map key, config flag) exercised by a test? Line coverage can look high while a new dispatch key is never driven. Grade a gap **Major**, per the taxonomy above.
+- **Test determinism** — do new tests depend on wall-clock time, unseeded randomness, execution order, or shared module-level state bleeding between tests? Judge statically by reading the test code; do not re-run the suite to check.
+
+Scope is this diff, never a repo-wide audit — no numeric score, no execution of the target's test suite.
 
 ## Acceptance Criteria Checklist (FLUX-1148)
 

@@ -16,9 +16,10 @@ import {
   Package,
   RefreshCw,
 } from 'lucide-react';
-import { pickWorkspaceFolder, setWorkspace, installWorkspaceSkill, fetchPathInfo, setupPath, migrateStorage, restoreStorage, fetchStorageMode, fetchConfig, saveConfig as apiSaveConfig, recheckGh, type GhRecheckResult } from '../api';
+import { pickWorkspaceFolder, setWorkspace, installWorkspaceSkill, fetchPathInfo, setupPath, migrateStorage, restoreStorage, fetchStorageMode, fetchConfig, saveConfig as apiSaveConfig, updateGlobalSettings, recheckGh, type GhRecheckResult } from '../api';
 import { useAppActions, useConfig } from '../store/useAppSelector';
 import { isRuntimeFramework, resolveEffectiveAgent } from '../utils';
+import type { CliFramework } from '../types';
 import { BootstrapPreview } from './BootstrapPreview';
 import { FEATURE_PANELS } from '../config/onboardingFeatures';
 import { OnboardingContentPage } from './onboarding/OnboardingContentPage';
@@ -98,10 +99,12 @@ function browserToGhPlatform(browserPlatform: string): 'win32' | 'darwin' | 'lin
 const FRAMEWORKS = [
   { id: 'claude', label: 'Claude Code' },
   { id: 'copilot', label: 'GitHub Copilot' },
+  { id: 'gemini', label: 'Gemini CLI' },
+  { id: 'codex', label: 'Codex CLI' },
+  { id: 'grok', label: 'Grok Build' },
   { id: 'cursor', label: 'Cursor' },
   { id: 'cline', label: 'Cline' },
   { id: 'windsurf', label: 'Windsurf' },
-  { id: 'gemini', label: 'Gemini CLI' },
   { id: 'generic', label: 'Generic / Other' },
 ];
 
@@ -225,8 +228,8 @@ export function OnboardingWizard() {
   // actually picked, never the hardcoded 'claude' default (FLUX-1684). Persisted at
   // the pick-assistant "Continue →" click; hydrated here once config is available.
   // Gated on `resuming` so first-run preselection is untouched. If the fallback
-  // doesn't resolve to a framework this wizard knows about (e.g. 'codex' isn't in
-  // FRAMEWORKS), leave the 'claude' default rather than naming an unrenderable choice.
+  // doesn't resolve to a framework this wizard knows about, leave the 'claude'
+  // default rather than naming an unrenderable choice.
   useEffect(() => {
     if (!resuming) return;
     const stored = readAssistant();
@@ -378,6 +381,20 @@ export function OnboardingWizard() {
     } finally {
       setModeLoading(false);
     }
+  }
+
+  async function handlePickAssistant() {
+    setAssistant(selectedFramework);
+    try {
+      if (isRuntimeFramework(config, selectedFramework)) {
+        const cfg = await fetchConfig();
+        await apiSaveConfig({ ...cfg, defaultAgent: selectedFramework as CliFramework });
+      }
+      await updateGlobalSettings({ preferredFramework: selectedFramework });
+    } catch {
+      // Non-fatal: install-skill still uses selectedFramework for this session.
+    }
+    onAdvance();
   }
 
   // Step 3 — install
@@ -709,7 +726,7 @@ export function OnboardingWizard() {
         <div className="grid grid-cols-2 gap-2 mb-2 sm:grid-cols-3">
           {FRAMEWORKS.map((fw) => {
             // FLUX-907 (split semantics): EH installs skill files for any of these, but can only LAUNCH
-            // sessions against the runtime adapters (claude/copilot/gemini). Mark the rest "Skills only".
+            // sessions against the runtime adapters (claude/copilot/gemini/codex/grok). Mark the rest "Skills only".
             const installOnly = !isRuntimeFramework(config, fw.id);
             return (
               <button
@@ -740,12 +757,12 @@ export function OnboardingWizard() {
         </div>
         {/* FLUX-907 (split semantics): make the install-vs-runtime gap explicit at first run. */}
         <p className="mb-6 text-[11px] leading-relaxed text-gray-400 dark:text-gray-500">
-          <strong className="font-semibold text-gray-500 dark:text-gray-400">Claude Code, Copilot &amp; Gemini</strong> can be launched and driven by Event Horizon.
-          The rest get EH's skill files installed (so their own agent can manage tickets), but EH can’t run sessions against them yet.
+          <strong className="font-semibold text-gray-500 dark:text-gray-400">Claude Code, Copilot, Gemini, Codex &amp; Grok</strong> can be launched and driven by Event Horizon.
+          The rest get EH's skill files installed (so their own agent can manage tickets), but EH can’t run sessions against them.
         </p>
 
         <button
-          onClick={() => { setAssistant(selectedFramework); onAdvance(); }}
+          onClick={() => { void handlePickAssistant(); }}
           className="flex h-11 w-full items-center justify-center rounded-2xl bg-primary px-6 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover"
         >
           Continue →

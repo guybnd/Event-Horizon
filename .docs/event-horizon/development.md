@@ -62,6 +62,41 @@ Key rules:
 
 ---
 
+## CI & Releases
+
+### CI (per-PR / push checks)
+
+`.github/workflows/ci.yml` runs typecheck + lint + boundary/classification guards + the full engine suite on every PR and master push. Since 2026-08-22 it runs on a **self-hosted runner** (label `[self-hosted, Linux, X64]`, ~2 min/run) instead of paid GitHub-hosted minutes — the repo is private.
+
+- The runner lives at `~/actions-runner-eh` on the primary Linux box, installed as a systemd service (`actions.runner.guybnd-EventHorizon-dev.*`). If a check sits **queued forever**, that machine is off or the service is down: `sudo systemctl status 'actions.runner.*'`.
+- Additional dev machines (macOS/Windows) can register as runners with their own labels — download the runner agent, `./config.sh --url <repo> --token $(gh api -X POST repos/guybnd/EventHorizon-dev/actions/runners/registration-token --jq .token)`, then `svc.sh install`. Matrix the check job across platforms once they exist.
+- Caution: self-hosted runners execute PR code. Fine while all committers are trusted; revisit before accepting outside contributions.
+
+Locally, the same gate is `npm run check` (see CLAUDE.md / AGENTS.md).
+
+### Cutting a release
+
+1. Land everything; per-ticket PRs must be CI-green (`finish_ticket` enforces this).
+2. `npm run flux:release -w engine -- vX.Y.Z` — sweeps all **Done** tickets → Released, writes `.docs/release-notes/vX.Y.Z.md` + the INDEX block, and bumps every package.json/lockfile version.
+3. Hand-write the TL;DR + `### Highlights` narrative above the generated `### Tickets` list (house style — see v1.11.0/v1.12.0).
+4. Commit `Release vX.Y.Z`, push.
+5. `npm run publish-public -- vX.Y.Z` — squashes to the public repo (`public` remote → guybnd/Event-Horizon) and pushes the tag, which fires `.github/workflows/release.yml`. Post-release fixes cut a new version; `--re-cut` exists for replacing a tag that never successfully published.
+
+### Release artifacts
+
+`release.yml` (tag-driven, on GitHub-hosted runners — the mac/win builds need real Apple/MS images and run once per release) produces:
+
+| Platform | Artifacts |
+|---|---|
+| macOS | `event-horizon-macos-<v>.zip` (standalone binary), `.dmg` (desktop app) |
+| Windows | `event-horizon-win-<v>.zip` (SEA binary, smoke-tested in CI), `Setup.exe` (NSIS) |
+| Linux | `event-horizon-linux-<v>.zip` (standalone binary), `.AppImage`, `.deb`, `.rpm`, `.pacman` |
+| Source | `event-horizon-source.zip` |
+
+The `finalize` job requires all four core zips before flipping the draft release public; missing desktop installers only downgrade it to a warned "partial release". Note for Linux desktop installs: the engine resolves the user's login-shell PATH at startup (FLUX-1711), so agent CLIs in `~/.local/bin` etc. are found even when launched from the app menu.
+
+---
+
 ## Related Docs
 
 - [[Code Map]]
