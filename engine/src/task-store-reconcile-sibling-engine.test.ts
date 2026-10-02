@@ -52,7 +52,7 @@ describe('reconcileOrphanedSessions leaves live-sibling-owned sessions alone (FL
 
   it('skips a session whose enginePid is still alive (a live sibling engine owns it)', async () => {
     const ticketPath = await writeTicket(aliveTaskId, [
-      { type: 'agent_session', sessionId: 's-alive', status: 'active', enginePid: process.pid },
+      { type: 'agent_session', sessionId: 's-alive', status: 'active', enginePid: process.pid, startedAt: new Date().toISOString() },
     ]);
 
     await reconcileOrphanedSessions(getWorkspace());
@@ -75,6 +75,34 @@ describe('reconcileOrphanedSessions leaves live-sibling-owned sessions alone (FL
     const history = onDisk.data.history as Array<{ status?: string; outcome?: string }>;
     expect(history[0]?.status).toBe('cancelled');
     expect(history[0]?.outcome).toBe('Session abandoned (engine restarted).');
+  });
+
+  // FLUX-1798: pid reuse — a days-old session whose recorded engine pid now belongs to some other live
+  // process is still an orphan.
+  it('abandons an old session even when its recorded enginePid is alive again (pid reuse)', async () => {
+    const ticketPath = await writeTicket(aliveTaskId, [
+      { type: 'agent_session', sessionId: 's-reused', status: 'active', enginePid: process.pid, startedAt: '2026-08-02T00:00:00.000Z' },
+    ]);
+    await reconcileOrphanedSessions(getWorkspace());
+    const history = matter(await fs.readFile(ticketPath, 'utf-8')).data.history as Array<{ status?: string }>;
+    expect(history[0]?.status).toBe('cancelled');
+  });
+
+  // FLUX-1798: the same zombies were "recovered" on every restart — the update hit the stale cancelled
+  // copy (first match by sessionId) and never the active duplicate behind it.
+  it('closes an active duplicate shadowed by an earlier cancelled copy of the same session', async () => {
+    const ticketPath = await writeTicket(deadTaskId, [
+      { type: 'agent_session', sessionId: 's-dup', status: 'cancelled', endedAt: '2026-08-03T00:00:00.000Z', outcome: 'Session abandoned (engine restarted).' },
+      { type: 'comment', user: 'Agent', comment: 'x' },
+      { type: 'agent_session', sessionId: 's-dup', status: 'active' },
+    ]);
+
+    await reconcileOrphanedSessions(getWorkspace());
+
+    const history = matter(await fs.readFile(ticketPath, 'utf-8')).data.history as Array<{ type?: string; status?: string; endedAt?: string }>;
+    expect(history[2]?.status).toBe('cancelled');
+    expect(history[0]?.endedAt).toBe('2026-08-03T00:00:00.000Z'); // the stale copy is left alone
+    expect(history.filter((e) => e.type === 'agent_session' && e.status === 'active')).toHaveLength(0);
   });
 
   it('abandons a legacy session with no enginePid (pre-fix entries keep the old behavior)', async () => {

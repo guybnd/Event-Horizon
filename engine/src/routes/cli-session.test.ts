@@ -1039,6 +1039,48 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
       expect(entry.comment).not.toBe(entry.summary);
       expect(entry.summary).toContain("read_skill('review', 'Plan-review methodology')");
     });
+
+    // FLUX-1788: a gate-dispatched session (no persona) only ever saw its focus through history,
+    // and the adapter was handed the pre-write task snapshot — so its "Latest activity" showed the
+    // PREVIOUS session's focus, never its own.
+    it('stamps the phase, inlines the session\'s own focus, and launches from the post-write task', async () => {
+      const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ framework: TEST_FRAMEWORK, phase: 'review', focusComment: 'Review the plan, record a verdict.' }),
+      });
+      expect(res.status).toBe(201);
+      expect(launchFocusEntry().phase).toBe('review');
+
+      await waitFor(() => startMock.mock.calls.length > 0);
+      const [, launchedTask, appendPrompt] = startMock.mock.calls[0] as unknown as [CliSessionRecord, { history?: { comment?: string }[] }, string];
+      expect(appendPrompt).toContain('## Launch focus (this session)\nReview the plan, record a verdict.');
+      expect(launchedTask.history?.some((e) => e.comment === '🎯 Launch focus: Review the plan, record a verdict.')).toBe(true);
+    });
+
+    // FLUX-1789: backstop — a plan-review pass has no plan to judge once the ticket left Grooming.
+    it('refuses a planReview dispatch against a ticket that is not in Grooming', async () => {
+      const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ framework: TEST_FRAMEWORK, phase: 'review', taskKey: 'planReview', focusComment: 'Review the plan.' }),
+      });
+      expect(res.status).toBe(400);
+      expect(startMock).not.toHaveBeenCalled();
+    });
+
+    it('a programmatic resume with a focus persists it stamped with the resumed session\'s phase', async () => {
+      seedBlockingSession({ status: 'waiting-input', resumeSessionId: 'resume-me', phase: 'grooming' });
+      const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/input`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'Revise the plan.', user: 'Furnace', sessionId: 'pre', focusComment: 'Revise the plan.' }),
+      });
+      expect(res.status).toBe(200);
+      const entry = launchFocusEntry();
+      expect(entry.comment).toBe('🎯 Launch focus: Revise the plan.');
+      expect(entry.phase).toBe('grooming');
+    });
   });
 
   // FLUX-1494: the board branch's FLUX-714 guard (`status === 'running' || 'pending'`) reads

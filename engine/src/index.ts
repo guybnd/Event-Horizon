@@ -19,6 +19,7 @@ if (process.argv.includes('--mcp')) {
 }
 
 import { getWorkspace, getDefaultWorkspace, liveBoundWorkspaces, runWithWorkspace } from './workspace-context.js';
+import { RESTART_EXIT_CODE } from './engine-exit-policy.js';
 import { log, configureFileSink } from './log.js';
 import express from 'express';
 import cors from 'cors';
@@ -509,6 +510,7 @@ holdSweepTimer.unref();
 startUsageWatchers();
 
 app.post('/api/shutdown', (_req, res) => {
+  exitReason = 'api-shutdown';
   stopAllCliSessions('shutdown');
   shutdownSharedServers();
   res.json({ ok: true });
@@ -517,14 +519,16 @@ app.post('/api/shutdown', (_req, res) => {
 
 app.post('/api/restart', (_req, res) => {
   res.json({ ok: true });
-  void gracefulShutdown('restart');
+  // FLUX-1797: exit with the RESTART code so the dev supervisor respawns regardless of whether its
+  // file-watcher had a restart flagged (it used to exit 0 — "stay down" — under dev:stable).
+  void gracefulShutdown('restart', RESTART_EXIT_CODE);
 });
 
 app.post('/api/events/restart-pending', (_req, res) => {
   broadcastEvent('restart_pending', {});
   setAutoRestartCallback(() => {
     broadcastEvent('auto_restarting', {});
-    setTimeout(() => void gracefulShutdown('auto-restart'), 500);
+    setTimeout(() => void gracefulShutdown('auto-restart', RESTART_EXIT_CODE), 500);
   });
   res.json({ ok: true });
 });
@@ -947,7 +951,8 @@ async function startServer() {
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
 
-async function gracefulShutdown(signal: string) {
+async function gracefulShutdown(signal: string, exitCode = 0) {
+  exitReason = signal;
   destroyAllTerminalSessions();
   stopAllCliSessions(signal);
   // FLUX-1645: belt-and-suspenders — stopAllCliSessions already clears every ACTIVE session's own
@@ -962,7 +967,7 @@ async function gracefulShutdown(signal: string) {
   // explicitly for deterministic durability instead of relying on the 400ms grace.
   await flushOpenPrompts();
   await new Promise(r => setTimeout(r, 400));
-  process.exit(0);
+  process.exit(exitCode);
 }
 process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
 process.on('SIGINT',  () => { void gracefulShutdown('SIGINT'); });
@@ -1000,7 +1005,33 @@ function logCrash(kind: string, detail: unknown): void {
   }
 }
 
+// FLUX-1797: "the engine died sometimes" was undiagnosable — only an uncaughtException left a trace.
+// Record EVERY exit (code, why, uptime, memory) next to the crash log, and let Node write a fatal-error
+// report (OOM / native abort — no JS handler runs for those). A hard kill (taskkill /F) still can't
+// log itself; the dev supervisor records that exit from the outside, into the same file.
+let exitReason = 'unknown (no shutdown path ran)';
+const ENGINE_STARTED_AT = Date.now();
+function exitLogPath(): string {
+  return path.join(path.dirname(crashLogPath()), 'event-horizon-exits.log');
+}
+process.on('exit', (code) => {
+  try {
+    const mem = process.memoryUsage();
+    const mb = (n: number) => Math.round(n / 1_048_576);
+    appendFileSync(
+      exitLogPath(),
+      `[${new Date().toISOString()}] engine: exit code ${code} — ${exitReason} — uptime ${Math.round((Date.now() - ENGINE_STARTED_AT) / 1000)}s, rss ${mb(mem.rss)}MB, heap ${mb(mem.heapUsed)}/${mb(mem.heapTotal)}MB (v${getLocalVersion()})\n`,
+      'utf-8',
+    );
+  } catch { /* never throw on the way out */ }
+});
+try {
+  process.report.reportOnFatalError = true;
+  process.report.directory = path.dirname(crashLogPath());
+} catch { /* diagnostic reports unavailable on this runtime */ }
+
 process.on('uncaughtException', (err) => {
+  exitReason = `uncaughtException: ${err instanceof Error ? err.message : String(err)}`;
   console.error('CRITICAL: Uncaught Exception:', err);
   console.error(`A crash log was written to: ${crashLogPath()}`);
   logCrash('uncaughtException', err);

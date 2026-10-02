@@ -431,3 +431,8 @@ Context-budget visibility: `computeSkillModuleMetrics(phase)` and `computeLaunch
 - [Reference: Realtime Channels](realtime-channels.md) — where `progress` / `activity` events go.
 - [Reference: Ticket Schema](ticket-schema.md) — `agent_session` history entry shape.
 - [Reference: MCP Tools](mcp-tools.md) — the surface the agent uses to read and mutate tickets.
+
+### Synthetic limit messages (FLUX-1791)
+
+Claude Code can report a hit usage/session limit only as a **synthetic assistant message** (`message.model === "<synthetic>"`, text like `You've hit your session limit · resets …`) and then exit `0` with no error `result` frame. `anthropic-stream.ts` runs the dialect's `classifyResultError` over that message's text; a `rate-limited` classification stamps `terminalReason: 'rate-limited'` and `syntheticLimitHit` on the session, and both Claude exit handlers pass the exit code through `effectiveExitCode` (`claude-code.ts`), which reports a clean exit as `1` when the flag is set (then clears it). The session therefore ends `failed` + `rate-limited`, which the Furnace and Temper route to their rate-limit cooldown rather than treating the turn as a normal completion.
+

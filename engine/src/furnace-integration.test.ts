@@ -726,6 +726,34 @@ describe('Furnace integration (FLUX-1057)', () => {
     });
   });
 
+  // FLUX-1791: TOWERO-15 — a review died, the ticket was retried, and the Furnace re-ran a whole
+  // implementation session on finished work. A retried ticket already at Ready on a branch resumes at review.
+  describe('FLUX-1791 — retryTicket resumes an already-implemented ticket at review', () => {
+    it('dispatches review, not implementation, when the parked ticket sits at Ready on a branch', async () => {
+      const { id } = await createTask({ title: 'Already built', status: 'Ready' });
+      getWorkspace().tasks[id]!.branch = `flux/${id}`;
+      const batch = await createFurnaceBatch({ title: 'resume at review', kind: 'parallel', tickets: [newBatchTicket(id, 0)] });
+      await mutateFurnaceBatch(batch.id, (d) => {
+        d.status = 'burning';
+        d.workspaceRoot = root; // as every furnace_build batch is stamped (FLUX-1548)
+        const t = d.tickets[0]!;
+        t.state = 'failed';
+        t.failureClass = 'hard-fail';
+      });
+
+      const r = await retryTicket(batch.id, id);
+      expect(r.ok).toBe(true);
+      await stokerTick(batch.id);
+
+      const starts = fetchMock.mock.calls.filter((c) => /\/cli-session\/start/.test(String(c[0])));
+      expect(starts).toHaveLength(1);
+      expect((JSON.parse((starts[0]![1] as StubFetchInit).body) as CliSessionStartRequestBody).phase).toBe('review');
+      const t = getFurnaceBatch(batch.id)!.tickets[0]!;
+      expect(t.state).toBe('reviewing');
+      expect(t.currentPhase).toBe('review');
+    });
+  });
+
   describe('FLUX-1070 — resumeBatch (halted → burning, breaker reset, halt-skipped tickets re-queued)', () => {
     it('resets the breaker, clears the stop request, re-queues halt-skipped tickets, and starts burning', async () => {
       const batch = await createFurnaceBatch({ title: 'halted', kind: 'parallel', tickets: [newBatchTicket('RB-1', 0)] });

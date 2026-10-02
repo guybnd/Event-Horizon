@@ -14,6 +14,7 @@ import {
   CONSEQUENCE_CHECK,
   DUPLICATE_CHECK,
   ADVERSARIAL_CHECK,
+  deltaAnchorCheck,
 } from './gate-runner.js';
 import { planLint, formatLintFindings, BODY_WARN_CHARS } from './models/plan-lint.js';
 
@@ -73,9 +74,33 @@ describe('planReviewFocus (FLUX-1469 text-split)', () => {
   });
 
   it('an oversize body (W2, FLUX-1584) rides the deterministic-lint path into the dispatched focus', () => {
-    const lint = planLint({ body: 'x'.repeat(BODY_WARN_CHARS + 1), effort: 'M', hasArtifact: true });
+    const lint = planLint({ body: 'x'.repeat(BODY_WARN_CHARS + 1), effort: 'L', hasArtifact: true });
     const focus = planReviewFocus('quick', true, formatLintFindings(lint.warns));
     expect(focus).toContain('W2');
     expect(focus).toContain(`soft limit ${BODY_WARN_CHARS}`);
+  });
+});
+
+// FLUX-1790: a re-review pass scopes its anchor check to the delta instead of re-deriving every citation.
+describe('planReviewFocus — re-review delta (FLUX-1790)', () => {
+  const prior = { head: '0123456789abcdef0123', verdictEntryId: 'c-2026-09-22t15-09-30-000z' };
+
+  it('pass 1 keeps the full anchor check', () => {
+    expect(planReviewFocus('thorough', true)).toContain(ANCHOR_CHECK);
+  });
+
+  it('a re-review pass swaps in the delta check naming the prior commit + findings entry', () => {
+    const focus = planReviewFocus('thorough', true, '', prior);
+    expect(focus).not.toContain(ANCHOR_CHECK);
+    expect(focus).toContain(deltaAnchorCheck(prior));
+    expect(focus).toContain('`git diff --stat 0123456789abcdef0123..HEAD`');
+    expect(focus).toContain('c-2026-09-22t15-09-30-000z');
+    // the rest of the pass is unchanged — still the verdict contract and the other checks
+    expect(focus).toContain(PLAN_VERDICT_CONTRACT);
+    expect(focus).toContain(ADVERSARIAL_CHECK);
+  });
+
+  it('the verdict contract asks for one write-up', () => {
+    expect(PLAN_VERDICT_CONTRACT).toContain('Write the full review ONCE');
   });
 });

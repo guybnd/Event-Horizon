@@ -395,6 +395,18 @@ export function isContextExhaustionError(message: string | undefined | null): bo
  * usage-limit phrasings; the caller additionally treats an explicit HTTP 429 (`api_error_status`) as a
  * rate limit. Anything else stays a hard `failed` → park.
  */
+/**
+ * FLUX-1791: a turn that hit a usage/session limit (reported as a synthetic assistant message — see
+ * anthropic-stream.ts) is a failure even when the CLI exits 0, so the session ends `failed` with
+ * `terminalReason: 'rate-limited'` and the Furnace/Temper cooldown engages instead of a "no verdict" park.
+ * Consumes the flag so a later resumed turn starts clean.
+ */
+export function effectiveExitCode(session: { syntheticLimitHit?: boolean | undefined }, code: number | null): number | null {
+  const hit = session.syntheticLimitHit === true;
+  session.syntheticLimitHit = undefined;
+  return code === 0 && hit ? 1 : code;
+}
+
 export function isRateLimitError(message: string | undefined | null): boolean {
   if (!message) return false;
   const m = String(message).toLowerCase();
@@ -1218,6 +1230,7 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
   }, 15000);
 
   proc.on('exit', async (code, signal) => {
+    code = effectiveExitCode(session, code);
     // FLUX-1207: best-effort reap of any orphaned descendants (e.g. a Bash-tool-launched vitest
     // run) on every exit, not only engine-initiated stop(). FLUX-1645: an ORDINARY exit (this is
     // not requestedStop — that path force-clears in stop() below and never passes exemptions)
@@ -1614,6 +1627,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   replyProc.on('exit', async (code, signal) => {
+    code = effectiveExitCode(session, code);
     // FLUX-1207: best-effort reap of any orphaned descendants (e.g. a Bash-tool-launched vitest
     // run) on every exit, not only engine-initiated stop(). FLUX-1645: spare this session's own
     // held pids on an ordinary exit — see the matching comment on the initial-spawn handler above.

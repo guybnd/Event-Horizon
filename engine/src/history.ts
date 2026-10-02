@@ -428,11 +428,17 @@ export const LAUNCH_FOCUS_PREFIX = '🎯 Launch focus: ';
  *    `comment` (a same-entry duplication FLUX-1469 stopped writing, but old history still has it).
  *  - **Current entries (FLUX-1469):** no `launchFocus` field — `comment` (behind the prefix above)
  *    is the single source of truth, so the text is never held twice in one entry.
+ *
+ * FLUX-1788: entries written since then also carry the `phase` of the session the focus was for.
+ * Pass `phase` to skip focuses recorded for a DIFFERENT phase — otherwise a resumed plan-gate
+ * groomer read back the reviewer's "You are reviewing a TICKET PLAN" focus (and vice versa).
+ * Entries with no `phase` (legacy) match any phase.
  */
-export function extractLaunchFocus(history: unknown[] = []): { launchFocus: string; date: string } | undefined {
+export function extractLaunchFocus(history: unknown[] = [], phase?: string): { launchFocus: string; date: string } | undefined {
   for (let i = history.length - 1; i >= 0; i--) {
     const e = asEntry(history[i]);
     if (!e) continue;
+    if (phase && typeof e.phase === 'string' && e.phase && e.phase !== phase) continue;
     if (typeof e.launchFocus === 'string' && e.launchFocus.trim()) {
       return { launchFocus: e.launchFocus.trim(), date: e.date ?? '' };
     }
@@ -467,6 +473,27 @@ export function buildLaunchFocusSummary(focusComment: string): string | undefine
   if (!match) return undefined;
   const [, module, section] = match;
   return `Launch focus recorded (${focusComment.length} chars) — methodology detail via read_skill('${module}'${section ? `, '${section}'` : ''}). Full text recoverable via expand.`;
+}
+
+/**
+ * The persisted launch-focus activity entry — shared by the fresh-spawn route and the resume path
+ * (FLUX-1788) so both stamp the same shape: prefixed `comment`, digest `summary` for a large
+ * pull-backed focus, and the `phase` the focus was written for (read by {@link extractLaunchFocus}).
+ */
+export function buildLaunchFocusEntry(focusComment: string, user: string, date: string, phase?: string) {
+  const summary = buildLaunchFocusSummary(focusComment);
+  return buildActivityEntry(`${LAUNCH_FOCUS_PREFIX}${focusComment}`, user, date, {
+    ...(summary ? { summary } : {}),
+    ...(phase ? { phase } : {}),
+  });
+}
+
+/** True for a persisted launch-focus activity entry (either shape — see {@link extractLaunchFocus}). */
+export function isLaunchFocusEntry(entry: unknown): boolean {
+  const e = asEntry(entry);
+  if (!e) return false;
+  return (typeof e.launchFocus === 'string' && !!e.launchFocus.trim())
+    || (typeof e.comment === 'string' && e.comment.startsWith(LAUNCH_FOCUS_PREFIX));
 }
 
 /**

@@ -13,7 +13,7 @@ Scope: Write code, validate logic, format commits, and close tickets during the 
 
 # Event Horizon Agent — Implementation Skill
 
-Version: 2.18.0
+Version: 2.20.0
 
 ## When This Skill Applies
 
@@ -32,6 +32,8 @@ Load this skill when a ticket's status is `Todo` or `In Progress`.
 ## End-of-Turn Action Contract (FLUX-651/826)
 
 Full contract: `read_skill('orchestrator', 'End-of-Turn Action Contract')`. For implementation specifically: complete and validated → `change_status` to `Ready` with a completion summary; blocked on a decision → `change_status` to `Require Input` with the question + a proposed default. "Cannot decide whether to proceed" is itself a `Require Input` — raise it, don't leave it only in your final chat message. This applies just as much on a ticket that's already **Done / Ready / Todo / Backlog / Released / Archived** (a PR follow-up, a backfill, a "should I commit this / file a ticket / leave it?" call) — raise it via `ask_user_question`, not chat prose.
+
+**Never end your turn waiting on a background command (FLUX-1761/1790).** The session ends the moment your turn does, and the engine tree-kills every process the session started — a backgrounded test run, build, or monitor never reports back, and the ticket is left with no board action. Run validation in the foreground and act on its result in the same turn. The one sanctioned exception is a process you explicitly protect with `hold_background_process` (`read_skill('tools', 'hold_background_process')`), and even then you finish the turn with a board action rather than "waiting for the notification".
 
 ## Implementation Workflow
 
@@ -52,7 +54,7 @@ Full contract: `read_skill('orchestrator', 'End-of-Turn Action Contract')`. For 
     - Reference docs for schema/tool/API/contract changes — e.g. this repo keeps its own at `.docs/event-horizon/reference/*` (a MUST-update in *this* repo when a ticket changes ticket schema, MCP tools, REST endpoints, realtime channels, or the agent-adapter contract); apply the equivalent convention if this project has one, skip if it doesn't.
     - An architecture/code-map doc, if this project keeps one — add an entry when a new module becomes the right "land here first" file for future agents (this repo's copy: `.docs/event-horizon/architecture/code-map.md`).
     - Root `README.md`, integration guides, and any installed skill templates, when user-facing or agent-facing behavior changes.
-    - `.docs/design/style-guide.md` (if present) — if the ticket changes the visual system (palette, type scale, spacing/radius, component vocabulary, interaction conventions), update the guide in the same ticket. See `read_skill('grooming', 'Design Style Guide')` for the convention and the bootstrap flow if the guide doesn't exist yet.
+    - `.docs/design/style-guide.md` (if present) — if the ticket changes the visual system (palette, type scale, spacing/radius, component vocabulary, interaction conventions), update the guide in the same ticket. See `read_skill('orchestrator', 'Design Style Guide')` for the convention and the bootstrap flow if the guide doesn't exist yet.
     - If nothing needs updating, say so explicitly in the completion comment ("no docs needed because …") instead of skipping the check silently.
 11. On `finish <ticket>`:
     - **Branchless tickets:** stage all relevant files (code + docs), create the commit, then use `finish_ticket` with `implementationLink` (commit hash) and `completionComment`. Status moves to Done atomically. If you skipped the `completion` payload at `Ready` (or the ticket has no `Ready` step at all), `finish_ticket` accepts the same `completion` param — same judgment call as step 9.

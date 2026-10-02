@@ -187,7 +187,17 @@ async function updateAgentSessionLocked(taskId: string, sessionId: string, updat
 
   const { frontmatter, body } = await readTaskFromDisk(task);
   const history = Array.isArray(frontmatter.history) ? frontmatter.history : [];
-  let sessionIndex = history.findIndex((entry) => entry?.type === 'agent_session' && entry?.sessionId === sessionId);
+  // FLUX-1798: a ticket can carry DUPLICATE agent_session entries for one sessionId (a cancelled copy
+  // ahead of an active one — HomeUp had 132, from 2026-08). Matching the first entry made every update
+  // hit the stale copy: the boot reconcile re-stamped the already-cancelled copy's endedAt on every
+  // restart and never closed the active one, so the same zombies were "recovered" forever. Prefer the
+  // active copy, else the newest.
+  const matches = history
+    .map((entry, i) => ({ entry, i }))
+    .filter(({ entry }) => entry?.type === 'agent_session' && entry?.sessionId === sessionId);
+  let sessionIndex = matches.length === 0
+    ? -1
+    : (matches.find(({ entry }) => entry?.status === 'active') ?? matches[matches.length - 1]!).i;
 
   if (sessionIndex === -1) {
     const recovered = recoverSessionEntry(taskId, sessionId, task);
@@ -1472,6 +1482,10 @@ export async function loadGroupDocs(ws: Workspace = getWorkspace()) {
   await loadGroupDocsDirectory(storeDir, storeDir, ws);
 }
 
+/** FLUX-1798: an `active` session older than this is never treated as a live sibling engine's —
+ *  its recorded `enginePid` has most likely been reused by an unrelated process. */
+const SIBLING_SESSION_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+
 export async function reconcileOrphanedSessions(ws: Workspace = getWorkspace()) {
   const now = new Date().toISOString();
   let recoveredCount = 0;
@@ -1492,7 +1506,12 @@ export async function reconcileOrphanedSessions(ws: Workspace = getWorkspace()) 
       // falsely mark a still-running session dead out from under the engine that owns it. Entries
       // written before this field existed have no `enginePid` and fall back to the old
       // unconditional-abandon behavior (this engine restarting itself is still the common case).
-      if (typeof session.enginePid === 'number' && isPidAlive(session.enginePid)) {
+      // FLUX-1798: pids get reused — eight 2026-08 sessions stayed "active" because their dead engine's
+      // pid now belonged to an unrelated node.exe. A live sibling's session is never days old, so the
+      // pid check only counts for recent sessions.
+      const startedMs = Date.parse(String(session.startedAt ?? session.date ?? ''));
+      const recent = Number.isFinite(startedMs) && Date.now() - startedMs < SIBLING_SESSION_MAX_AGE_MS;
+      if (typeof session.enginePid === 'number' && recent && isPidAlive(session.enginePid)) {
         log.info(`Skipping reconcile of session ${session.sessionId} in task ${task.id} — owning engine pid ${session.enginePid} is still alive (likely a sibling engine on this workspace).`);
         continue;
       }

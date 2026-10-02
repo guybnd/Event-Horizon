@@ -13,7 +13,7 @@ Scope: Judge a diff against the ticket's intent and record a machine-readable ve
 
 # Event Horizon Agent — Review Skill
 
-Version: 1.7.0
+Version: 1.8.0
 
 ## When This Skill Applies
 
@@ -36,6 +36,8 @@ Tag every finding with one of these three levels — normalize on this scale eve
 **Synthesizing multiple reviewers' findings** (orchestrator/supervisor leads): merge overlapping findings and remove duplicates — if multiple reviewers raised the same issue, state it once and note the consensus instead of repeating it per-reviewer. Lead the consolidated list with Blockers first, and resolve any disagreements on the merits of the argument, not a raw vote count.
 
 ## Verdict Readability (FLUX-1502)
+
+**One write-up per review (FLUX-1790).** The full review goes in ONE `add_note` comment. When you also record the verdict via `change_status`, its `comment` is a short verdict line — the counts (Blockers/Majors/Minors) and a pointer to the note — never the review pasted a second time: every later session on the ticket re-reads both copies through `get_ticket`.
 
 Lead the review comment with the verdict (**APPROVED** / **CHANGES NEEDED**) and a one-sentence reason — the user and the implementer both get the point from line one. Each finding is self-contained: file:line, what's wrong, the concrete fix — never "as noted above" or a reference to another reviewer's comment. Anything the user reads (the verdict line, the synthesis summary) stays plain-language; the structured skeleton (severity tags, `reviewState`) stays intact. Full rules: `read_skill('orchestrator', 'Communication Style')`.
 
@@ -64,7 +66,7 @@ If the ticket body has a `## Acceptance criteria` section (the grooming skill's 
 - **Orchestrated review (multiple reviewers, one synthesizer):** individual reviewer personas post findings via `add_note` and do **not** call `change_status` — an orchestrator synthesizes all reviews and makes the call. Only call `change_status` yourself if your focus instructions don't say someone else will.
 - **Sole reviewer of record:** when your focus instructions say you are the SOLE reviewer — no orchestrator will synthesize other reviews and decide for you — you MUST call `change_status` yourself before ending your turn, passing `reviewState` to match your verdict:
   - No Blocker or Major items → `change_status` to `Ready` with `reviewState: 'approved'`.
-  - Any Blocker or Major item → `change_status` to `In Progress` with `reviewState: 'changes-requested'` and a comment summarizing the required changes, Blockers first.
+  - Any Blocker or Major item → `change_status` to `In Progress` with `reviewState: 'changes-requested'` and a short comment naming the required changes, Blockers first (one line each — the full write-up stays in your `add_note`).
 
 Skipping the `change_status` call strands the ticket — from the outside it looks like the review never happened even though it did, and costs a human a round-trip to unblock it.
 

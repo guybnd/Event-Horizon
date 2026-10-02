@@ -14,7 +14,7 @@ Scope: Route the agent to the correct phase-specific skill based on ticket statu
 
 # Event Horizon Agent — Orchestrator
 
-Version: 2.17.0
+Version: 2.19.0
 
 ## Overview
 
@@ -253,7 +253,16 @@ Read this before your **first emit** on a ticket and before every **revision**. 
 - **Open with a chip-list of locked decisions** so reviews don't relitigate settled points.
 - **Show interaction states** (pressed, sheet open, hover reveal) — not just a static layout.
 - **Every revision answers annotations explicitly** — show the annotated element before → after at the top, and state in the `note` what changed and why. Never silently redesign elements the user already approved.
-- **Style-guide lookup** — if `.docs/design/style-guide.md` exists, derive mockup tokens from it rather than re-deriving from source; if it's missing on a UI/UX ticket, pull `read_skill('grooming', 'Design Style Guide')` for the non-blocking bootstrap offer.
+- **Style-guide lookup** — if `.docs/design/style-guide.md` exists, derive mockup tokens from it rather than re-deriving from source; if it's missing on a UI/UX ticket, pull `read_skill('orchestrator', 'Design Style Guide')` for the non-blocking bootstrap offer.
+
+
+### Guided annotation controls in grooming plans (moved from the grooming skill, FLUX-1795)
+
+A plan with a genuinely open-ended "feel" variable (no right answer on paper — scroll speed, easing, spacing) or several pivotal choices buried in prose is a strong signal to emit — and to use the `data-eh-feel`/`data-eh-decision` guided-annotation controls so the user settles them directly on the rendering instead of guessing in a comment. This reinforces the UI-or-M+ rule above; it doesn't replace it.
+
+**Guided-control markup contract (FLUX-1440).** The viewer script upgrades two declarative attributes — `data-eh-feel` (an open-ended value the user dials in on a slider) and `data-eh-decision` (a pivotal either/or, rendered as a decision card) — into live, auto-staging controls; you write plain markup, the viewer injects the interactive UI. **Do not hand-render your own chips, sliders, or option buttons** (they'd be dead pixels — only the injected controls stage annotations). Pull the exact markup shapes via `read_skill('orchestrator', 'Rich Artifacts')` before using either one.
+
+Interacting stages the annotation into the same "N changes" pill as manual select/right-click annotations; the user still sends the batch explicitly (auto-stage ≠ auto-send). Opt-in, not ceremony: cap around 3-4 decisions per plan, and don't sprout controls on a plan that doesn't call for them.
 
 ## Ceremony by effort — scale mandated writing to ticket size (FLUX-1382)
 
@@ -309,11 +318,57 @@ Prompt injection of these rules is config-driven (`communicationStyle` in board 
 - The `finish <ticket>` handoff is required before committing. Commit creation, `implementationLink` update, and status → `Done` happen as one atomic step.
 - **If this repo keeps a `.docs/event-horizon/reference/*` doc set, keep it in sync with code.** If the ticket changes ticket-schema, MCP tools, REST endpoints, realtime channels, or the agent-adapter contract, update the matching reference page in the same ticket. This is an Event Horizon-repo-specific convention, not every project's — if no such directory exists here, there is nothing to do for this rule.
 
+## Grooming launch overrides (FLUX-1380 / FLUX-1383 / FLUX-1733)
+
+Moved out of the injected grooming skill (FLUX-1795) — each override is restated in its own launch mission, so a normal grooming session never needs it.
+
+- **Fast-path / Oneshot.** When the launch mission identifies the session as `fast-path` (product name **Oneshot**, `phase:'fast-path'`), it overrides "stop at Todo" for that launch only: continue straight into implementation per the mission. With a PLAN-FIRST pause, write the plan then wait for approval via `ask_user_question` in-session — do **not** `change_status` to Todo for that approval (it fires the plan gate and ends oneshot). Before Ready, post an **Oneshot wrap-up** comment (docs / follow-up tickets / validation / residual risk); never `finish_ticket`. Fast-path sessions get no injected grooming skill; the persona mission is the contract.
+- **Batch-grooming.** When the mission identifies the session as `batch-grooming` (`phase:'batch-grooming'` with a `batchTicketIds` set — several siblings sharing one parent), read the shared parent once, then groom each member independently and in turn, ending each with its own `change_status` (`Todo`, or `Require Input` with that member's question) made immediately — never deferred or batched. One member's outcome never blocks the others. Ineligible members are excluded server-side; don't re-derive eligibility. End with a one-line summary of which members moved where, and why.
+
+## "Reground before starting" — tickets filed from point-in-time analysis (FLUX-1048)
+
+Tickets born from a **point-in-time codebase analysis** — tech-debt sweeps, refactor epics, audit/churn findings — cite file:line evidence that is only valid on the day of the analysis. When such a ticket is expected to be picked up **later** (Backlog/Todo queue, epic members), its body MUST include a `## ⚠️ Reground before starting` section (placed right after the TL;DR / Problem prose) that tells the implementer to:
+
+1. **State the snapshot date** — "the findings below are a snapshot from YYYY-MM-DD" — so staleness is visible at a glance.
+2. **Re-derive the evidence** — re-verify cited file:line references via Serena/grep against current code; recorded line numbers are historical, never trust them as-is.
+3. **Check for partial fixes already landed** — check `<releaseNotesPath>/INDEX.md` (default `.docs/release-notes/INDEX.md`) first, the agent-consumable index of every released ticket with a one-line completion gist (FLUX-1151); it only covers already-*released* work, so also scan sibling tickets and recently Done/Released tickets — another ticket may have absorbed part (or all) of the work.
+4. **Update the plan against current reality before coding** — rewrite the body (keep the TL;DR honest) to match what the code looks like now. If the finding no longer exists, re-scope or propose archiving — implementing a stale plan is worse than doing nothing.
+
+See epic **FLUX-1043** and its subtasks **FLUX-1044/1045/1046** for the reference format. When grooming an analysis-derived ticket, add this section if it's missing. The section binds the *implementer* too — the implementation skill's "Reground Before Coding" section requires executing it before any code change.
+
+- *Skip for:* tickets being implemented immediately after grooming, and tickets whose plan cites no point-in-time evidence (pure feature requests, UI tweaks, bug reports with a live repro).
+
+## Design Style Guide (`.docs/design/style-guide.md`) — convention + bootstrap mission (FLUX-1399)
+
+**The convention.** A project's de-facto visual language belongs in one checkable doc instead of being re-derived from source on every artifact: `.docs/design/style-guide.md` per repo (or a `group_doc` for a multi-repo group, so every member reads the same guide). When it exists, mockup and prototype work should pull tokens from it — palette + semantic colors, type scale, spacing/radius scale, iconography rules, the component vocabulary in active use, interaction conventions (e.g. swipe/hold/hover-reveal on `pointer: fine`), theming constraints, and the primary target viewport — instead of re-reading component source on every revision. Re-deriving the same visual language from scratch each time is exactly the drift this convention removes.
+
+**The bootstrap mission — when the guide is missing.** Any normal grooming session can run this; no engine change or new persona is required:
+1. Read the real design system from code — theme/tailwind config (or equivalent), shared/primitive components, a few representative screens — never a prose description of it.
+2. Extract the de-facto system from what you read: palette + semantic color roles, type scale, spacing/radius scale, the component vocabulary actually in use, interaction conventions, theming constraints, primary viewport.
+3. Publish it as a visual artifact via `publish_artifact` — color swatches, a type ramp, and a small component zoo (buttons, cards, inputs, chips — whatever the project actually uses) — so the user reasons against a rendering, not prose.
+4. Iterate through the normal annotation round-trip (see "Rich Artifacts") until the user is satisfied.
+5. Once approved, write the doc to the conventional path (or submit it via `group_doc` for a multi-repo group) in the same ticket that ran the bootstrap.
+
+**When to offer it.** Non-blocking: a UI/UX ticket with no style guide present is a natural moment to flag the gap and offer to bootstrap one — never block a ticket on it. Small or single-screen projects may never need one; that's fine.
+
+## Epic → Subtask Splitting — Affordance Coverage Check (FLUX-1274)
+
+An epic with published artifact revisions can get cut into well-scoped subtasks that, individually, all look correct — and still **collectively drop an affordance the approved mockup showed**, because no subtask's own review has visibility into what its siblings cover. The plan-review gate (FLUX-1263) doesn't close this either: it reviews one ticket's plan in isolation, so it approves each subtask individually and still misses an epic-level coverage hole. This happened for real on `FLUX-1247`: rev 1-2 of its mockup showed the flagged plan surfacing three ways — a rich panel (artifact embedded inline + an annotation/notes thread), an in-chat prompt, and a board-card stripe — but the 4 subtasks cut from it (`FLUX-1261`-`1264`) only ever scoped the tray item; the panel and in-chat surfacing had no owning subtask and shipped nothing until the user tried the feature and a human filed the gap (`FLUX-1273`).
+
+When you reach "design finalized — ready to split into subtasks" for an epic that has one or more `publish_artifact` revisions, before creating any subtask ticket:
+
+1. **Enumerate every distinct affordance the *latest* revision of each published artifact shows.** A revision supersedes earlier ones — the latest is the approved scope, not the sum of every draft. List screens, panels, and interactions as separate line items, not one blob ("rich panel with inline artifact", "in-chat prompt", "board-card stripe" — not just "the UX").
+2. **Map every affordance to the subtask(s) whose Acceptance Criteria will build it.** An affordance with no owner is a blocking gap — fold it into an existing subtask's Acceptance Criteria or `create_ticket` a new subtask for it before any subtask moves to `Todo`. A subtask's own scoping note (e.g. "no new component needed") is not a substitute for this — it only reasons about that subtask's own scope, with no visibility into whether a *sibling* covers what it's excluding.
+3. **Write the map into the epic's own body** as a `## Subtask Coverage Map` table (`| Affordance | Subtask |`), inside or directly under its `## Acceptance criteria`. An uncounted mental pass is exactly what failed here — the map only works if it's checkable, not remembered.
+4. Only move the epic (and let its subtasks proceed to `Todo`) once every row has an owning subtask.
+
+- *Skip for:* epics with no published artifacts (nothing to drop), and subtask splits with no design/mockup phase behind them.
+
 ## Plan-review methodology (FLUX-1469)
 
 This section is for the **plan-review gate** (`gate-runner.ts`) — it fires on a `Grooming` ticket that has no diff yet, judging the ticket's plan text (title, body, `## Acceptance criteria`, latest artifact) instead of a PR. The gate session's launch focus names each check with a one-line headline and points here (`read_skill('orchestrator', 'Plan-review methodology')`) for the full method — pulled on demand instead of pushed into every dispatch and re-persisted into ticket history on every pass (FLUX-1469). It lives in THIS module (never injected into any phase's prelude) rather than the review module, which review-phase sessions — including the gate's own — receive injected at spawn: parking it there would push the methodology into every code-review session's prelude, the exact cost the pull design avoids.
 
-- **Anchor check.** For every file/symbol/line the plan cites, verify with Serena/grep that it still exists and still means what the plan says. Re-derive this fresh from the CURRENT code every pass — never trust a prior pass's citations, even your own. A plan is written against a snapshot of the code; by the time it's reviewed (or re-reviewed after a revise), the snapshot may have drifted. Plans should favor symbol names over bare line numbers (Plan Discipline item 1) since a line drifts the moment an earlier item lands — flag heavy line-number reliance as a Minor gap when a stable symbol was available instead.
+- **Anchor check.** For every file/symbol/line the plan cites, verify with Serena/grep that it still exists and still means what the plan says. On the **first pass** of a gate run, re-derive every citation fresh from the CURRENT code — never trust the plan's own citations. A plan is written against a snapshot of the code; by the time it's reviewed, the snapshot may have drifted. On a **re-review pass** (FLUX-1790 — your focus then names the commit the previous pass judged against and its findings' history entry), scope to the delta instead of re-deriving all of them again: confirm each prior finding is resolved or still stands, review every section the revision changed, run `git diff --stat <that commit>..HEAD` and re-derive the citations in any cited file main changed since, and carry the rest forward — saying so explicitly in your review. Fall back to a full re-derivation when the body was largely rewritten or main moved broadly under the plan. Plans should favor symbol names over bare line numbers (Plan Discipline item 1) since a line drifts the moment an earlier item lands — flag heavy line-number reliance as a Minor gap when a stable symbol was available instead.
 - **Reground (FLUX-1048).** Check `.docs/release-notes/INDEX.md` plus recently Done/Released and sibling tickets (same parent) for work that already landed part or all of this plan. A plan that duplicates already-shipped work should be flagged, not approved as if the gap still exists.
 - **Acceptance-criteria coverage.** If the ticket body has a `## Acceptance criteria` section, confirm it's concrete/testable and that the Implementation Plan actually addresses every item — flag any item the plan leaves uncovered. An untestable or unaddressed AC item is a real gap, not a formality.
 - **Consequence tracing** (standard depth+, FLUX-1480). For every destination the plan moves content or config INTO (a file, a constant, a list, another module), name who actually consumes that destination and confirm the move still achieves the plan's stated goal — don't just check that the destination exists or that the plan is internally consistent. This is the check PR #584 was missing: its plan said "move the methodology into the review module," which is internally consistent and cites a real file, but nobody asked "review-phase sessions get that module INJECTED at spawn — does pushing content there still serve the goal of keeping it a pull?" The answer was no. Re-derive the consuming code path fresh (Serena/grep) — don't trust the plan's own description of what a destination does.

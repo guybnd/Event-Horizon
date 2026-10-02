@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { planLint, formatLintFindings, BODY_WARN_CHARS, type PlanLintInput } from './plan-lint.js';
+import { planLint, formatLintFindings, BODY_WARN_CHARS, bodyBudgetForEffort, type PlanLintInput } from './plan-lint.js';
 
 /** Long-enough filler so body-length-gated rules (B1/B3 thresholds) can be crossed deliberately. */
 const filler = (n: number) => 'x'.repeat(n);
@@ -145,7 +145,7 @@ describe('planLint (FLUX-1379)', () => {
     });
 
     it('is silent at exactly the threshold (over, not at-or-over)', () => {
-      const result = planLint(base({ effort: 'M', body: filler(BODY_WARN_CHARS) }));
+      const result = planLint(base({ effort: 'L', body: filler(BODY_WARN_CHARS) }));
       expect(result.warns.map((f) => f.code)).not.toContain('W2');
     });
 
@@ -157,6 +157,17 @@ describe('planLint (FLUX-1379)', () => {
     it('applies regardless of effort tier (XS/S included — the soft limit is universal)', () => {
       const result = planLint(base({ effort: 'XS', body: filler(BODY_WARN_CHARS + 1) }));
       expect(result.warns.map((f) => f.code)).toContain('W2');
+    });
+
+    // FLUX-1795: the budget scales with effort — EHGAUNTL-1's ~10k S plan drew no warning under the flat 10k.
+    it('scales the budget with effort (XS 1.5k, S 3k, M 6k, L/XL/unset 10k)', () => {
+      expect(bodyBudgetForEffort('XS')).toBe(1_500);
+      expect(bodyBudgetForEffort('S')).toBe(3_000);
+      expect(bodyBudgetForEffort('M')).toBe(6_000);
+      expect(bodyBudgetForEffort('L')).toBe(BODY_WARN_CHARS);
+      expect(bodyBudgetForEffort(undefined)).toBe(BODY_WARN_CHARS);
+      expect(planLint(base({ effort: 'S', body: `${TLDR}${filler(3_100)}` })).warns.map((f) => f.code)).toContain('W2');
+      expect(planLint(base({ effort: 'L', body: `${TLDR}${AC_CHECKLIST}${TESTS_HEADING}${filler(3_100)}` })).warns.map((f) => f.code)).not.toContain('W2');
     });
 
     it('names the char count in the message', () => {

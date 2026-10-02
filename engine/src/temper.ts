@@ -20,10 +20,11 @@
 // Scope choices (see the ticket's Open Questions — using the groomed defaults):
 //   • Only tickets WITH a branch auto-loop ("green PR" is only meaningful with a PR).
 //   • A ticket already driven by an active Furnace batch is skipped (the batch wins — AC #7).
-//   • Transient failure sub-machines the Furnace has (rate-limit cooldown, context-exhaustion retry) are
-//     intentionally NOT reimplemented here — a Temper ticket whose session dies from a rate/context limit
-//     simply parks for the (present) human. Temper omits `terminalReason`, so `decideTicketAction` routes
-//     those to a plain park instead of a cooldown/retry action this module can't service.
+//   • The context-exhaustion retry sub-machine the Furnace has is intentionally NOT reimplemented here —
+//     a Temper ticket whose session runs out of context parks for the (present) human. FLUX-1791: a RATE
+//     limit (incl. the Claude session limit) does cool down and retry the same phase, reusing the
+//     Furnace's cooldown settings — parking on it sent finished work back through implementation
+//     (TOWERO-15). Only a `rate-limited` terminalReason is passed to `decideTicketAction`.
 //
 // FLUX-1261: the board-wide on/off switch used to be the standalone `temperEnabled` boolean; it is
 // now `gatePolicy.boardDefault.review === 'auto'` (+ a per-ticket override), generalized alongside
@@ -40,6 +41,8 @@ import {
   isActiveTicketState,
   isTerminalTicketState,
   DEFAULT_RETRY_CAP,
+  DEFAULT_RATE_LIMIT_RETRY_INTERVAL_MS,
+  DEFAULT_RATE_LIMIT_MAX_WAIT_MS,
   type BatchTicket,
   type FurnacePhase,
 } from './models/furnace.js';
@@ -58,6 +61,7 @@ import {
   describeBlockingSession,
   lastCommentMatchesVerdictMarker,
   pickSessionForPhase,
+  resetsAtForCooldown,
   refreshWorktreePool,
   resolveOriginatingFramework,
   SOLE_REVIEWER_FOCUS,
@@ -272,11 +276,23 @@ export async function disarmTemperForExternalStop(ticketId: string, ws: Workspac
   log.info(`[temper] ${ticketId} disarmed ahead of an external session stop (finish/merge flow).`);
 }
 
+/** FLUX-1791: Temper reuses the Furnace's global rate-limit cooldown settings. */
+function temperRateLimitIntervalMs(): number {
+  return getConfig().furnaceSettings?.rateLimitRetryIntervalMs ?? DEFAULT_RATE_LIMIT_RETRY_INTERVAL_MS;
+}
+function temperRateLimitMaxWaitMs(): number {
+  return getConfig().furnaceSettings?.rateLimitMaxWaitMs ?? DEFAULT_RATE_LIMIT_MAX_WAIT_MS;
+}
+
 /** Park a Temper ticket for a human (Require Input swimlane) and clear its Temper state. */
 async function parkTemper(ticketId: string, reason: string, ws: Workspace): Promise<void> {
-  await parkTicketOnBoard(ticketId, `Temper: ${reason}`);
-  // parkTicketOnBoard set the swimlane + moved the ticket to In Progress; this only drops the two
-  // Temper fields (deleteFields is scoped, so the swimlane/status it just wrote are preserved).
+  // FLUX-1791: a park during the review phase leaves the ticket at Ready (flagged) — moving a finished
+  // implementation to In Progress made the next session re-implement it.
+  const entry = getEntry(ticketId, ws);
+  const inReview = entry !== undefined && (entry.state === 'reviewing' || (entry.state === 'cooling-down' && entry.preCooldownState === 'reviewing'));
+  await parkTicketOnBoard(ticketId, `Temper: ${reason}`, inReview ? { status: readyStatus() } : {});
+  // parkTicketOnBoard set the swimlane + status; this only drops the two Temper fields (deleteFields is
+  // scoped, so the swimlane/status it just wrote are preserved).
   await stopTemper(ticketId, ws);
   log.info(`[temper] ${ticketId} parked: ${reason}`);
 }
@@ -448,10 +464,55 @@ async function advanceTemperTicket(ticketId: string, ws: Workspace, action: Tick
       break;
     }
 
-    // Temper never produces these (it omits the rate-limit/exhaustion inputs) — ignore defensively.
+    case 'cooldown-rate-limited': {
+      // FLUX-1791: mirrors the Stoker's cooldown entry — the ceiling clock starts on the first entry
+      // of this episode; the retry uses the provider's reset time when it is known and still ahead.
+      const resetsAtMs = action.rateLimitResetsAt ? Date.parse(action.rateLimitResetsAt) : NaN;
+      const usingResetsAt = Number.isFinite(resetsAtMs) && resetsAtMs > Date.now();
+      const nextRetryAt = usingResetsAt
+        ? new Date(resetsAtMs + 60_000).toISOString()
+        : new Date(Date.now() + temperRateLimitIntervalMs()).toISOString();
+      const firstEntry = !ticket.rateLimitFirstSeenAt;
+      if (firstEntry) ticket.rateLimitFirstSeenAt = nowIso();
+      if (isActiveTicketState(ticket.state)) ticket.preCooldownState = ticket.state;
+      ticket.nextRetryAt = nextRetryAt;
+      ticket.state = 'cooling-down';
+      delete ticket.currentSessionId;
+      delete ticket.sessionStartedAt;
+      if (firstEntry) {
+        try {
+          await updateTaskWithHistory(ticketId, {
+            entries: [{ type: 'activity', user: 'Temper', comment: `Temper: rate-limited — cooling down, next retry ${nextRetryAt}${usingResetsAt ? " (from the provider's reset time)" : ''}. No action needed.`, date: nowIso() }],
+            updatedBy: 'Temper',
+          }, ws);
+        } catch { /* best-effort note */ }
+      }
+      log.info(`[temper] ${ticketId} rate-limited — cooling down, next retry ~${nextRetryAt}.`);
+      break;
+    }
+
+    case 'retry-rate-limited': {
+      const restored = ticket.preCooldownState === 'reviewing' || ticket.preCooldownState === 'reimplementing' ? ticket.preCooldownState : 'implementing';
+      ticket.state = restored;
+      ticket.currentPhase = action.phase;
+      ticket.rateLimitAttempts = action.attempt;
+      delete ticket.nextRetryAt;
+      delete ticket.currentSessionId;
+      delete ticket.sessionStartedAt;
+      if (action.phase === 'review') {
+        ticket.reviewNudgeSent = false;
+        await clearReviewState(ticketId, ws);
+        await spawnTemper(ticket, 'review', SOLE_REVIEWER_FOCUS + deltaReviewFocus(ticketId, ws));
+      } else {
+        await spawnTemper(ticket, 'implementation', restored === 'reimplementing' ? REIMPLEMENT_FOCUS : undefined, false, resolveOriginatingFramework(ticketId, 'implementation'));
+      }
+      log.info(`[temper] ${ticketId} rate-limit cooldown elapsed — retrying ${action.phase} with a fresh session (attempt ${action.attempt}).`);
+      break;
+    }
+
+    // Temper never produces these (it omits the exhaustion input; the plan-gate-only flag) — ignore defensively.
     case 'retry-exhausted':
-    case 'cooldown-rate-limited':
-    case 'retry-rate-limited':
+    case 'revise-noop-retry': // FLUX-1789: plan gate only (reviseBodyUnchanged is never passed here)
       return;
   }
 }
@@ -469,7 +530,8 @@ async function reconcileTemperTicket(ticketId: string, ws: Workspace): Promise<v
     log.info(`[temper] ${ticketId} now owned by an active Furnace batch — Temper yielding.`);
     return;
   }
-  if (!isActiveTicketState(ticket.state)) return;
+  // FLUX-1791: a cooling-down ticket is non-active but still needs the retry/ceiling decision.
+  if (!isActiveTicketState(ticket.state) && ticket.state !== 'cooling-down') return;
 
   const currentPhase: FurnacePhase = ticket.state === 'reviewing' ? 'review' : 'implementation';
   // Prefer the tracked session (it stays resolvable after it terminates); else adopt the live phase
@@ -486,10 +548,16 @@ async function reconcileTemperTicket(ticketId: string, ws: Workspace): Promise<v
   const task = ws.tasks[ticketId];
   const prUrl = extractPrUrl(task);
   const sessionOutcome = findSessionOutcome(task, sess?.id ?? ticket.currentSessionId);
+  // FLUX-1791: only a rate limit is passed through (cooldown + retry); context exhaustion / auth still park.
+  const rateLimited = sess?.terminalReason === 'rate-limited';
+  const rateLimitResetsAt = rateLimited ? resetsAtForCooldown(sess?.lastRateLimit) : undefined;
   const action = decideTicketAction({
     ticket,
-    ...(sess ? { sessionStatus: sess.status } : {}),
-    // NB: deliberately NOT passing terminalReason — Temper parks on rate/context limits (see file header).
+    ...(sess && ticket.state !== 'cooling-down' ? { sessionStatus: sess.status } : {}),
+    ...(rateLimited ? { terminalReason: 'rate-limited' as const } : {}),
+    ...(rateLimitResetsAt ? { rateLimitResetsAt } : {}),
+    rateLimitRetryIntervalMs: temperRateLimitIntervalMs(),
+    rateLimitMaxWaitMs: temperRateLimitMaxWaitMs(),
     ...(sessionOutcome ? { sessionOutcome } : {}),
     reviewState: task?.reviewState ?? null,
     ...(task?.status ? { ticketStatus: task.status } : {}),

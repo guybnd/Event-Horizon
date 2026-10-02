@@ -39,6 +39,7 @@ import {
   isTriggerSatisfied,
   isHumanTakeover,
   decideReconcile,
+  implementationAwaitsReview,
   retryRejectionReason,
   countsTowardBreaker,
   pickPrReview,
@@ -403,6 +404,22 @@ describe('decideTicketAction (pure decision core)', () => {
   // past the last verdict (some OTHER session — e.g. a misrouted reviewer — produced the revision).
   // `reconcileGateTicket` (gate-runner.ts) is the only caller that ever sets this; every other caller
   // (Temper, the plain Furnace loop) leaves it unset, so this is a no-op for them.
+  // FLUX-1789: plan gate only — a revise that completed with the body unchanged since the last verdict.
+  describe('reviseBodyUnchanged (FLUX-1789)', () => {
+    it('a completed no-op revise gets one fresh revise instead of a review', () => {
+      const a = decideTicketAction({ ticket: mkTicket({ state: 'reimplementing', attempts: 1 }), sessionStatus: 'completed', retryCap: 2, reviseBodyUnchanged: true });
+      expect(a).toEqual({ type: 'revise-noop-retry' });
+    });
+    it('parks (needs-input) once the fresh revise was already spent', () => {
+      const a = decideTicketAction({ ticket: mkTicket({ state: 'reimplementing', attempts: 1, reviseNoopRetried: true }), sessionStatus: 'completed', retryCap: 2, reviseBodyUnchanged: true });
+      expect(a).toMatchObject({ type: 'park', failureClass: 'needs-input' });
+    });
+    it('is unchanged when the flag is unset (Temper / Furnace callers)', () => {
+      const a = decideTicketAction({ ticket: mkTicket({ state: 'reimplementing', attempts: 1 }), sessionStatus: 'completed', retryCap: 2 });
+      expect(a).toEqual({ type: 'review' });
+    });
+  });
+
   describe('bodyHashDrifted redrive (FLUX-1585)', () => {
     it('a cancelled reimplementing session with a drifted body reviews instead of parking — and burns no attempt (no `reimplement` dispatched here)', () => {
       const a = decideTicketAction({
@@ -723,6 +740,24 @@ describe('FLUX-1066 — isHumanTakeover (M1: identity, not phase; ignores stalle
   });
   it('FLUX-1090: isDispatching defaults to false (existing callers unaffected)', () => {
     expect(isHumanTakeover([{ id: 'human-impl', status: 'running', phase: 'implementation' }], ticket)).toBe(true);
+  });
+});
+
+// FLUX-1791: a review-phase park rests at Ready with the require-input flag — that is not a success.
+describe('FLUX-1791 — review-phase parks at Ready', () => {
+  it('decideReconcile does not reflect a flagged parked ticket sitting at Ready as a success', () => {
+    expect(decideReconcile(mkTicket({ state: 'failed' }), { takenOver: false, boardSuccess: true, boardFlagged: true })).toBeNull();
+    expect(decideReconcile(mkTicket({ state: 'parked' }), { takenOver: false, boardSuccess: true, boardFlagged: true })).toBeNull();
+  });
+  it('reflects success once the human clears the flag, or the ticket merged', () => {
+    expect(decideReconcile(mkTicket({ state: 'failed' }), { takenOver: false, boardSuccess: true, boardFlagged: false })?.reflectPrOpen).toBe(true);
+    expect(decideReconcile(mkTicket({ state: 'failed' }), { takenOver: false, boardSuccess: true, boardFlagged: true, boardMerged: true })?.reflectPrOpen).toBe(true);
+  });
+  it('implementationAwaitsReview: Ready on a branch only', () => {
+    expect(implementationAwaitsReview({ status: 'Ready', branch: 'flux/X-1' })).toBe(true);
+    expect(implementationAwaitsReview({ status: 'Ready' })).toBe(false);
+    expect(implementationAwaitsReview({ status: 'In Progress', branch: 'flux/X-1' })).toBe(false);
+    expect(implementationAwaitsReview(undefined)).toBe(false);
   });
 });
 

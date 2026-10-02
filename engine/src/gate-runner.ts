@@ -82,7 +82,29 @@ const PLAN_REVIEW_BASE =
 
 /** Exported for tests (FLUX-1469): assert each one-line stub survives the split (stub integrity). */
 export const ANCHOR_CHECK =
-  'Anchor check: verify every cited file/symbol/line still exists and means what the plan says — re-derive fresh every pass, never trust a prior citation.';
+  'Anchor check: verify every cited file/symbol/line still exists and means what the plan says — re-derive fresh, never trust a prior citation.';
+
+/** FLUX-1790: what a re-review pass (pass 2+ of one gate run) knows about the pass before it. */
+export interface PriorPlanReviewPass {
+  /** Commit the previous pass judged the plan against (`planReviewHead`). */
+  head: string;
+  /** History id of the previous pass's CHANGES NEEDED write-up, when one can be found. */
+  verdictEntryId?: string;
+}
+
+/** FLUX-1790: the anchor check for a re-review pass. Re-deriving all ~35-40 citations from scratch on
+ *  every pass was ~$2/pass on Opus (towero audit, FLUX-1787) while the findings that mattered on later
+ *  passes came from the prior findings, the revised sections, and main moving under the plan — so a
+ *  later pass checks exactly those, and carries the rest forward explicitly. */
+export function deltaAnchorCheck(prior: PriorPlanReviewPass): string {
+  const where = prior.verdictEntryId ? ` (its findings: history entry \`${prior.verdictEntryId}\`)` : '';
+  return `Anchor check — RE-REVIEW pass: the previous pass judged this plan against main @ \`${prior.head.slice(0, 12)}\`${where}. ` +
+    'Scope this pass to the delta instead of re-deriving every citation: (a) confirm each prior finding is resolved, or say it still stands; ' +
+    '(b) review every section the revision changed; ' +
+    `(c) run \`git diff --stat ${prior.head}..HEAD\` and re-derive the citations in any cited file main changed since; ` +
+    '(d) carry the remaining citations forward and say so in your review. ' +
+    'Re-derive everything fresh only when the body was largely rewritten or main moved broadly under the plan.';
+}
 
 export const REGROUND_CHECK =
   'Reground (FLUX-1048): check `.docs/release-notes/INDEX.md` + sibling/recently-Done tickets for work that already landed part of this plan.';
@@ -116,7 +138,10 @@ function artifactCheckText(hasArtifact: boolean): string {
  *  plan-review focus at every depth — the hard constraint that must never move behind a pull. */
 export const PLAN_VERDICT_CONTRACT =
   'Record your verdict via `change_status` — leave `newStatus` as "Grooming" (do NOT move the ticket) and set `planReviewState` to "approved" or "changes-requested" (never `reviewState`; that is a different field for the post-Todo code-review gate). ' +
-  'Posting a comment that starts with **APPROVED** or **CHANGES NEEDED** is not enough by itself — without the `change_status` call the ticket will be parked for a human over an unrecorded verdict.';
+  'Posting a comment that starts with **APPROVED** or **CHANGES NEEDED** is not enough by itself — without the `change_status` call the ticket will be parked for a human over an unrecorded verdict. ' +
+  // FLUX-1790: reviewers posted the full write-up twice (add_note + change_status comment), and every
+  // later session re-read both through get_ticket.
+  'Write the full review ONCE, as an `add_note` comment starting with the verdict; keep the `change_status` comment to a short verdict line (Blocker/Major/Minor counts, pointing at that note) — never paste the review a second time.';
 
 /** FLUX-1379: deterministic lint (`models/plan-lint.ts`) already ran ahead of this session — any bounce
  *  finding would have refused the move before a session was ever dispatched, so only WARN findings (e.g.
@@ -137,8 +162,8 @@ export const METHODOLOGY_PULL_POINTER = "Full method for each check below: `read
  *  checks themselves are now one-line stubs — full methodology is pulled via `read_skill`, not pushed
  *  (and re-persisted into history) on every pass; only the verdict contract and the dynamic facts
  *  (depth, artifact fact, lint findings) stay pushed verbatim. */
-export function planReviewFocus(depth: PlanReviewDepth, hasArtifact: boolean, warnFindingsText = ''): string {
-  const checks = [ANCHOR_CHECK, artifactCheckText(hasArtifact)];
+export function planReviewFocus(depth: PlanReviewDepth, hasArtifact: boolean, warnFindingsText = '', prior?: PriorPlanReviewPass): string {
+  const checks = [prior ? deltaAnchorCheck(prior) : ANCHOR_CHECK, artifactCheckText(hasArtifact)];
   if (depth === 'standard' || depth === 'thorough') checks.push(REGROUND_CHECK, AC_COVERAGE_CHECK, CONSEQUENCE_CHECK);
   if (depth === 'thorough') checks.push(DUPLICATE_CHECK, ADVERSARIAL_CHECK);
   return `${PLAN_REVIEW_BASE} Depth: ${depth}. ${METHODOLOGY_PULL_POINTER} ${checks.join(' ')} ${PLAN_VERDICT_CONTRACT}${lintFocusBlock(warnFindingsText)}`;
@@ -150,6 +175,14 @@ export const PLAN_REVISE_FOCUS =
   'Do not call `change_status` yourself and do not start implementing; the plan-review gate automatically re-reviews your revision. ' +
   'Write the revision as if the plan had been right the first time — ticket history already records what changed; never annotate the body with what a prior draft got wrong or which review round/annotation resolved a point. ' +
   'When revising an artifact: revise minimally — answer every annotation explicitly, show the annotated element before→after, and never silently redesign elements the user already approved.';
+
+/** FLUX-1789: the one-shot fresh revise after a revise pass that left the plan body byte-identical to
+ *  the version the last review judged — dispatched cold (not resumed), so it can't inherit whatever
+ *  context made the previous turn skip the edit. */
+export const PLAN_REVISE_NOOP_FOCUS =
+  "The previous revise pass on this ticket ended WITHOUT changing the ticket body — the plan still reads exactly as the last plan review judged it, so none of that review's findings were applied. " +
+  'Read the latest plan-review comment (CHANGES NEEDED) in the ticket history, apply every finding to the body via `update_ticket` (if you judge a finding wrong, say why in an `add_note` comment instead), then STOP. ' +
+  'Do not call `change_status` and do not start implementing — the plan-review gate re-reviews the revised body automatically, and parks the ticket for a human if the body is still unchanged.';
 
 /** Mirrors Temper's `REVIEW_NUDGE_FOCUS`, keyed to `planReviewState` instead of `reviewState`. */
 export const PLAN_REVIEW_NUDGE_FOCUS =
@@ -184,7 +217,7 @@ interface GateRunSpec {
   skipIsolation: boolean;
   /** Built once per dispatch from the CURRENT ticket (effort/depth may change between passes). Async
    *  since FLUX-1379 — it reads the deterministic lint's findings off disk (artifact revisions). */
-  reviewFocus: (ticketId: string) => Promise<string>;
+  reviewFocus: (ticketId: string, prior?: PriorPlanReviewPass) => Promise<string>;
   reviseFocus: string;
   reviewNudgeFocus: string;
   /** FLUX-1437: focus for the one-shot retry when a review pass ends with no verdict AND no
@@ -265,7 +298,7 @@ const PLAN_GATE_SPEC: GateRunSpec = {
   attemptsField: 'planGateAttempts',
   revisePhase: 'grooming',
   skipIsolation: true,
-  reviewFocus: async (ticketId: string) => {
+  reviewFocus: async (ticketId: string, prior?: PriorPlanReviewPass) => {
     const task = getWorkspace().tasks[ticketId];
     const depth = resolvePlanReviewDepth(task?.effort, getConfig().planReviewDepth);
     // FLUX-1379: bounce findings can never reach here — the `change_status`/`start_plan_review`
@@ -273,7 +306,7 @@ const PLAN_GATE_SPEC: GateRunSpec = {
     // be injected, plus the deterministic `hasArtifact` fact that reworks the artifact check.
     const hasArtifact = (await listArtifactRevisionsOnDisk(ticketId)).length > 0;
     const lint = planLint({ body: typeof task?.body === 'string' ? task.body : '', effort: task?.effort ?? null, hasArtifact });
-    return planReviewFocus(depth, hasArtifact, formatLintFindings(lint.warns));
+    return planReviewFocus(depth, hasArtifact, formatLintFindings(lint.warns), prior);
   },
   reviseFocus: PLAN_REVISE_FOCUS,
   reviewNudgeFocus: PLAN_REVIEW_NUDGE_FOCUS,
@@ -287,7 +320,7 @@ const PLAN_GATE_SPEC: GateRunSpec = {
       // path (mcp-server.ts change_status, dismissPlanReview, approvePlanToTodo, the panel's
       // handleApprove) already does this; leaving it stale here would violate that invariant even
       // though nothing currently reads the hash once planReviewState is null.
-      extraFields: { planReviewState: null, planReviewBodyHash: null },
+      extraFields: { planReviewState: null, planReviewBodyHash: null, planReviewHead: null },
       entries: [{
         type: 'activity',
         user: 'Plan Gate',
@@ -353,6 +386,22 @@ async function parkGate(spec: GateRunSpec, ticketId: string, reason: string, ws:
   log.info(`[gate:${spec.gate}] ${ticketId} parked: ${reason}`);
 }
 
+/** FLUX-1790: the pass before this one, when this gate run already revised the plan at least once
+ *  (`attempts >= 1` — set by every revise dispatch) and that pass stamped `planReviewHead`. Read BEFORE
+ *  `clearGateVerdict` — the verdict id lookup wants the write-up that verdict came with. */
+function priorReviewPass(ticket: BatchTicket, ws: Workspace): PriorPlanReviewPass | undefined {
+  const task = ws.tasks[ticket.ticketId];
+  if (!task || ticket.attempts < 1 || typeof task.planReviewHead !== 'string' || !task.planReviewHead) return undefined;
+  const history: unknown[] = Array.isArray(task.history) ? task.history : [];
+  for (let i = history.length - 1; i >= 0; i--) {
+    const e = history[i] as { type?: unknown; comment?: unknown; id?: unknown } | null;
+    if (e && e.type === 'comment' && typeof e.comment === 'string' && e.comment.trimStart().startsWith('**CHANGES NEEDED**')) {
+      return { head: task.planReviewHead, ...(typeof e.id === 'string' ? { verdictEntryId: e.id } : {}) };
+    }
+  }
+  return { head: task.planReviewHead };
+}
+
 /** Clear a stale verdict before dispatching a fresh review (mirrors Temper's `clearReviewState`). */
 async function clearGateVerdict(spec: GateRunSpec, ticketId: string, ws: Workspace): Promise<void> {
   const t = ws.tasks[ticketId];
@@ -373,6 +422,17 @@ async function clearGateVerdict(spec: GateRunSpec, ticketId: string, ws: Workspa
  *  verdict instead of judging the revision on its own merits. */
 async function spawnGate(entry: GateRunEntry, phase: FurnacePhase | 'grooming', focusComment: string, useResume = false): Promise<void> {
   const { spec, ticket, ws } = entry;
+  // FLUX-1789: re-check status right before a review dispatch — callers checked it once, then awaited
+  // (verdict clear, focus build, persists), and a Grooming->Todo move landing in that window used to
+  // dispatch a plan review against a Todo ticket (TOWERO-77).
+  if (phase === 'review') {
+    const status = ws.tasks[ticket.ticketId]?.status;
+    if (status !== undefined && status !== GROOMING_STATUS) {
+      await stopGateRun(spec, ticket.ticketId, ws, `${spec.gate} gate stopped — the ticket left ${GROOMING_STATUS} (now ${status}) before its review pass dispatched.`);
+      log.info(`[gate:${spec.gate}] ${ticket.ticketId} left ${GROOMING_STATUS} before a review dispatch — stopping.`);
+      return;
+    }
+  }
   // FLUX-1373: this module ONLY drives the plan gate (see file header) — so every 'review' dispatch
   // here IS the plan gate's own review pass, never Temper's separate code-review pass (a different
   // module, temper.ts, which calls dispatchSession with no taskKey override and so derives the
@@ -425,8 +485,10 @@ async function advanceGateTicket(ticketId: string, ws: Workspace, action: Ticket
       delete ticket.currentSessionId;
       delete ticket.sessionStartedAt;
       ticket.reviewNudgeSent = false;
+      ticket.reviseNoopRetried = false;
+      const prior = priorReviewPass(ticket, ws);
       await clearGateVerdict(spec, ticketId, ws);
-      await spawnGate(entry, 'review', await spec.reviewFocus(ticketId));
+      await spawnGate(entry, 'review', await spec.reviewFocus(ticketId, prior));
       break;
     }
 
@@ -465,10 +527,23 @@ async function advanceGateTicket(ticketId: string, ws: Workspace, action: Ticket
       }
       ticket.state = 'reimplementing';
       ticket.attempts = action.attempt;
+      ticket.reviseNoopRetried = false;
       delete ticket.currentSessionId;
       delete ticket.sessionStartedAt;
       await persistGateAttempts(spec, ticketId, action.attempt, ws);
       await spawnGate(entry, spec.revisePhase, spec.reviseFocus, true);
+      break;
+    }
+
+    case 'revise-noop-retry': {
+      // FLUX-1789: the revise turn completed but the body is unchanged since the last verdict — don't
+      // re-review a plan that was already judged. One COLD revise (no resume) with an explicit
+      // "nothing was applied" focus; decideTicketAction parks if this one changes nothing either.
+      ticket.reviseNoopRetried = true;
+      delete ticket.currentSessionId;
+      delete ticket.sessionStartedAt;
+      await spawnGate(entry, spec.revisePhase, PLAN_REVISE_NOOP_FOCUS);
+      log.info(`[gate:${spec.gate}] ${ticketId} revise completed with the plan body unchanged — one fresh revise before parking.`);
       break;
     }
 
@@ -479,7 +554,11 @@ async function advanceGateTicket(ticketId: string, ws: Workspace, action: Ticket
       delete ticket.currentSessionId;
       delete ticket.sessionStartedAt;
       const isReview = action.phase === 'review';
-      const focus = isReview ? await spec.reviewFocus(ticketId) : (ticket.state === 'reimplementing' ? spec.reviseFocus : await spec.reviewFocus(ticketId));
+      // FLUX-1789: like the 'review' case — a stale verdict left on file while a fresh review runs
+      // would be read as THIS pass's verdict.
+      const prior = priorReviewPass(ticket, ws);
+      if (isReview) await clearGateVerdict(spec, ticketId, ws);
+      const focus = isReview ? await spec.reviewFocus(ticketId, prior) : (ticket.state === 'reimplementing' ? spec.reviseFocus : await spec.reviewFocus(ticketId, prior));
       await spawnGate(entry, isReview ? 'review' : spec.revisePhase, focus);
       break;
     }
@@ -583,9 +662,18 @@ async function reconcileGateTicket(ticketId: string, ws: Workspace): Promise<voi
   const bodyHashDrifted = verdict === 'changes-requested' && typeof task?.planReviewBodyHash === 'string'
     ? planBodyHash(typeof task.body === 'string' ? task.body : '') !== task.planReviewBodyHash
     : false;
+  // FLUX-1789: the hash is compared directly (not through the verdict-gated `bodyHashDrifted`) — a
+  // revise that finished with the body still matching the judged version applied nothing.
+  const bodyMatchesLastVerdict = typeof task?.planReviewBodyHash === 'string'
+    && planBodyHash(typeof task.body === 'string' ? task.body : '') === task.planReviewBodyHash;
+  // FLUX-1789: a review pass whose session is gone (engine restart, evicted record) but whose verdict
+  // is on file for the CURRENT body already concluded — act on that verdict instead of redriving a
+  // review (which would clear it and re-judge the same body).
+  const concludedReviewWithoutSession = !sess && ticket.state === 'reviewing' && verdict !== null && bodyMatchesLastVerdict;
+  const sessionStatus = sess ? sess.status : concludedReviewWithoutSession ? ('completed' as const) : undefined;
   const action = decideTicketAction({
     ticket,
-    ...(sess ? { sessionStatus: sess.status } : {}),
+    ...(sessionStatus ? { sessionStatus } : {}),
     // Deliberately NOT passing terminalReason — a gate run parks on rate/context limits, same as Temper.
     ...(sessionOutcome ? { sessionOutcome } : {}),
     reviewState: verdict,
@@ -594,6 +682,7 @@ async function reconcileGateTicket(ticketId: string, ws: Workspace): Promise<voi
     retryCap: DEFAULT_RETRY_CAP,
     reviewVerdictMarkerSeen: lastCommentMatchesVerdictMarker(task?.history, ticket.sessionStartedAt),
     bodyHashDrifted,
+    reviseBodyUnchanged: ticket.state === 'reimplementing' && bodyMatchesLastVerdict,
   });
   await advanceGateTicket(ticketId, ws, action);
 }
@@ -908,7 +997,13 @@ export function rehydrateGateRunner(): void {
         // a run rehydrated mid-REVISE as 'reviewing' would redrive a plan-review session concurrently
         // with the still-running grooming revise (two agents writing the same ticket at once).
         const liveRevise = pickSessionForPhase(getActiveSessionsForTaskInWorkspace(id, ws.root, getDefaultWorkspace().root), spec.revisePhase);
-        const state = liveRevise ? ('reimplementing' as const) : ('reviewing' as const);
+        // FLUX-1789: with no live revise session, a `changes-requested` verdict still on file for the
+        // CURRENT body means the run stopped between the verdict and its revise (e.g. checkAutoRestart
+        // at a 0-session moment) — resume as a revise. Restoring 'reviewing' here redrove a review of
+        // the very body that was just judged.
+        const reviseDue = t[spec.verdictField] === 'changes-requested' && typeof t.planReviewBodyHash === 'string'
+          && planBodyHash(typeof t.body === 'string' ? t.body : '') === t.planReviewBodyHash;
+        const state = liveRevise || reviseDue ? ('reimplementing' as const) : ('reviewing' as const);
         ticketsFor(ws).set(id, { spec, mode, ws, ticket: { ticketId: id, order: 0, state, attempts, sessionIds: [] } });
         log.info(`[gate:${spec.gate}] rehydrated ${id} (attempts ${attempts}, mode ${mode}, state ${state}, workspace ${ws.root}) — will re-drive on the next tick.`);
       }

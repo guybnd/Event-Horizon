@@ -103,6 +103,22 @@ describe('extractLaunchFocus', () => {
     expect(extractLaunchFocus(history)).toEqual({ launchFocus: 'newest', date: '2026-07-17T09:00:00.000Z' });
   });
 
+  // FLUX-1788: a resumed plan-gate groomer was handed the reviewer's focus (and vice versa).
+  it('skips a focus recorded for a different phase when a phase is given', () => {
+    const history = [
+      { type: 'activity', user: 'Furnace', date: '2026-09-22T15:00:00.000Z', comment: `${LAUNCH_FOCUS_PREFIX}revise the plan`, phase: 'grooming' },
+      { type: 'activity', user: 'Furnace', date: '2026-09-22T15:05:00.000Z', comment: `${LAUNCH_FOCUS_PREFIX}review the plan`, phase: 'review' },
+    ];
+    expect(extractLaunchFocus(history, 'grooming')?.launchFocus).toBe('revise the plan');
+    expect(extractLaunchFocus(history, 'review')?.launchFocus).toBe('review the plan');
+    expect(extractLaunchFocus(history)?.launchFocus).toBe('review the plan');
+  });
+
+  it('treats a legacy entry with no phase as matching any phase', () => {
+    const history = [{ type: 'activity', user: 'User', date: 'd', comment: `${LAUNCH_FOCUS_PREFIX}legacy` }];
+    expect(extractLaunchFocus(history, 'grooming')?.launchFocus).toBe('legacy');
+  });
+
   it('does not mistake an unrelated activity comment for a launch focus', () => {
     const history = [{ type: 'activity', user: 'Agent', date: 'd', comment: 'Created ticket.' }];
     expect(extractLaunchFocus(history)).toBeUndefined();

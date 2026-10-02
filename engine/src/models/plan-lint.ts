@@ -15,7 +15,7 @@
 //        linter can't judge B2-B4's applicability without it.
 //   W1 — M+ effort with no published artifact revision — flag, not a blocker (mirrors gate-runner's
 //        `ARTIFACT_CHECK`, itself advisory: "UI-shaped" is a judgment call a linter can't make).
-//   W2 — body over `BODY_WARN_CHARS` — flag, not a blocker. Gives the plan-review pass standing to
+//   W2 — body over its effort's budget (`bodyBudgetForEffort`, FLUX-1795) — flag, not a blocker. Gives the plan-review pass standing to
 //        request a trim; `update_ticket` surfaces the same soft limit to the groomer at write time
 //        (FLUX-1584), but the groomer who just wrote the body has no incentive to act on it alone.
 
@@ -27,6 +27,20 @@ const TLDR_LOOKAHEAD_CHARS = 600;
 // nudge so both surfaces agree on one number (FLUX-1584). The body is injected in full into every future
 // agent session on the ticket, so an oversized body taxes every session, not just the one that wrote it.
 export const BODY_WARN_CHARS = 10_000;
+
+/**
+ * FLUX-1795: the soft body budget scaled to the ticket's effort. One flat 10k ceiling let an S ticket
+ * ship a ~10k plan (EHGAUNTL-1 — 4x the board's S median) with no nudge at all. `BODY_WARN_CHARS`
+ * stays the ceiling for L/XL and for an unset effort (nothing to scale by yet).
+ */
+export function bodyBudgetForEffort(effort: string | null | undefined): number {
+  switch (effort) {
+    case 'XS': return 1_500;
+    case 'S': return 3_000;
+    case 'M': return 6_000;
+    default: return BODY_WARN_CHARS;
+  }
+}
 
 export type PlanLintCode = 'B1' | 'B2' | 'B3' | 'B4' | 'B5' | 'W1' | 'W2';
 
@@ -101,10 +115,11 @@ export function planLint(input: PlanLintInput): PlanLintResult {
     });
   }
 
-  if (body.length > BODY_WARN_CHARS) {
+  const budget = bodyBudgetForEffort(effort);
+  if (body.length > budget) {
     warns.push({
       code: 'W2',
-      message: `Body is ${body.length} chars (soft limit ${BODY_WARN_CHARS}). Usual causes: a constraint restated across sections instead of stated once (FLUX-1582), revision-archaeology from a prior plan-review round (FLUX-1583), or dense line-number citations in place of stable symbol anchors (FLUX-1582). Worth a trim, but not by itself grounds to reject an otherwise-sound plan.`,
+      message: `Body is ${body.length} chars (soft limit ${budget} for ${effort || 'unsized'} effort). Usual causes: a constraint restated across sections instead of stated once (FLUX-1582), revision-archaeology from a prior plan-review round (FLUX-1583), or dense line-number citations in place of stable symbol anchors (FLUX-1582). Worth a trim, but not by itself grounds to reject an otherwise-sound plan.`,
     });
   }
 

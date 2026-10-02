@@ -115,7 +115,9 @@ describe('probeCopilotUsage', () => {
   });
 
   it('memoizes a scanned file by (path, mtimeMs, size) — an unchanged file is not re-read', () => {
-    const mtimeMs = Date.now();
+    // FLUX-1800: a whole-second mtime survives the stat → Date → utimes round-trip exactly on every
+    // filesystem; a sub-ms APFS mtime didn't, so on macOS the re-stamp changed the key and the memo missed.
+    const mtimeMs = Math.floor(Date.now() / 1000) * 1000;
     writeSession(root, 'session-1', QUOTA_LINE + '\n', mtimeMs);
 
     const first = probeCopilotUsage(root);
@@ -127,7 +129,7 @@ describe('probeCopilotUsage', () => {
     const filePath = path.join(root, 'session-1', 'events.jsonl');
     const original = fs.statSync(filePath);
     fs.writeFileSync(filePath, Buffer.alloc(original.size, 'a'));
-    fs.utimesSync(filePath, new Date(original.mtimeMs), new Date(original.mtimeMs));
+    fs.utimesSync(filePath, new Date(mtimeMs), new Date(mtimeMs));
 
     const second = probeCopilotUsage(root);
     expect(second.gauges).toHaveLength(1); // memoized result, not the mutated (quota-less) content

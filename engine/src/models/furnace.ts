@@ -163,6 +163,11 @@ export interface BatchTicket {
    */
   reviewNudgeSent?: boolean;
   /**
+   * FLUX-1789 (plan gate only): the one-shot fresh revise for a revise pass that left the plan body
+   * unchanged already fired. Reset whenever a review or a new revise attempt is dispatched.
+   */
+  reviseNoopRetried?: boolean;
+  /**
    * FLUX-1245: set while this queued ticket is blocked on a full shared worktree pool, so `feedCoal`
    * emits the "waiting for a slot" chat activity exactly ONCE per waiting transition (not every tick).
    * Cleared when the ticket is finally fed, so a later re-block announces again. FLUX-1250: also cleared

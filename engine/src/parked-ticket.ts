@@ -33,6 +33,8 @@ interface HistoryEntry {
 
 interface ParkableTask {
   status?: string;
+  reviewState?: string | null;
+  planReviewState?: string | null;
   swimlane?: string | null;
   subtasks?: unknown[];
   history?: HistoryEntry[];
@@ -89,6 +91,16 @@ export interface ParkedSnapshot {
    *  backstop must defer to it: re-raising would keep the flag (the write is idempotent) but refresh
    *  the deduped notification with the generic message, degrading the specific one. */
   needsActionSet?: boolean | undefined;
+  /** FLUX-1793: a review verdict (`reviewState` / `planReviewState`) was recorded this turn — the
+   *  verdict hands the ticket to its owner (Temper, the plan gate, or a human confirm). */
+  recordedVerdict?: boolean | undefined;
+}
+
+/** FLUX-1793: the ticket's current review verdicts as one comparable key (null when neither is set). */
+export function reviewVerdictKey(task: { reviewState?: string | null; planReviewState?: string | null } | undefined): string | null {
+  const r = task?.reviewState ?? null;
+  const p = task?.planReviewState ?? null;
+  return r === null && p === null ? null : `${r ?? '-'}|${p ?? '-'}`;
 }
 
 /**
@@ -110,7 +122,10 @@ export function isParked(s: ParkedSnapshot): boolean {
   const statusChanged = s.statusAtTurnStart !== undefined && s.statusAtTurnStart !== s.status;
   const raisedRequireInput = s.swimlane === 'require-input' || s.status === s.requireInputStatus;
   const createdSubtask = s.subtaskCount > (s.subtaskCountAtTurnStart ?? s.subtaskCount);
-  const tookBoardAction = statusChanged || raisedRequireInput || createdSubtask;
+  // FLUX-1793: recording a verdict IS the reviewer's board action — an approval on a ticket already in
+  // Ready changes no status, so it used to read as "left a comment without a board action".
+  const recordedVerdict = s.recordedVerdict === true;
+  const tookBoardAction = statusChanged || raisedRequireInput || createdSubtask || recordedVerdict;
 
   // FLUX-1761: a turn that ENDS in a working status has not handed the ticket off, whatever moves it
   // made on the way. The Todo → In Progress move every implementation session makes first counted as
@@ -118,7 +133,7 @@ export function isParked(s: ParkedSnapshot): boolean {
   // benchmark run that solved its task, said it would wait for a background command, and exited
   // four seconds later with no record). Only a Require Input park or a created subtask is a real
   // hand-off from a working status; a status change only counts when it LEFT the working set.
-  if (workingStatuses().has(s.status)) return !(raisedRequireInput || createdSubtask);
+  if (workingStatuses().has(s.status)) return !(raisedRequireInput || createdSubtask || recordedVerdict);
 
   // Resting/terminal: only nudge when the agent actually left a fresh comment this turn.
   const addedComment = (s.commentCount ?? 0) > (s.commentCountAtTurnStart ?? s.commentCount ?? 0);
@@ -133,6 +148,7 @@ export function captureTurnStartState(session: CliSessionRecord, taskId: string)
   session.statusAtTurnStart = task?.status;
   session.subtaskCountAtTurnStart = Array.isArray(task?.subtasks) ? task.subtasks.length : 0;
   session.commentCountAtTurnStart = countAgentComments(task);
+  session.reviewVerdictAtTurnStart = reviewVerdictKey(task);
   session.askedThisTurn = false;
 }
 
@@ -292,6 +308,9 @@ function computeParkedSnapshot(session: CliSessionRecord, taskId: string): { tas
       requireInputStatus: getConfig().requireInputStatus || 'Require Input',
       isDelegated: isDelegatedMember(session),
       needsActionSet: !!task.needsAction,
+      recordedVerdict: session.reviewVerdictAtTurnStart !== undefined
+        && reviewVerdictKey(task) !== null
+        && reviewVerdictKey(task) !== session.reviewVerdictAtTurnStart,
     },
   };
 }

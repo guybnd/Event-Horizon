@@ -88,3 +88,8 @@ portal/src/config/*.tmp
 /keep-open.js
 /lock-file.js
 /test-unlink.js
+
+# FLUX-1797: engine exit/crash forensics (dev writes them in engine/, packaged beside the exe)
+event-horizon-exits.log
+event-horizon-crash.log
+report.*.json

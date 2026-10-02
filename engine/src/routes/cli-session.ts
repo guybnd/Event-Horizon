@@ -49,7 +49,7 @@ import { dismissNotificationsForTicket } from '../notifications.js';
 import { resolvePersonaPrompt, getPersonaById } from '../orchestration-personas.js';
 import { ensureTicketIsolation } from '../ticket-isolation.js';
 import { raiseNeedsAction, isDelegatedMember } from '../parked-ticket.js';
-import { buildActivityEntry, buildAgentSessionEntry, LAUNCH_FOCUS_PREFIX, buildLaunchFocusSummary } from '../history.js';
+import { buildActivityEntry, buildAgentSessionEntry, buildLaunchFocusEntry } from '../history.js';
 import {
   captureDiffForPrompt,
   getMergeBase,
@@ -855,6 +855,12 @@ router.post('/:id/cli-session/start', async (req, res) => {
   const taskKey: TaskKey | undefined = (TASK_KEYS as readonly string[]).includes(taskKeyRaw)
     ? (taskKeyRaw as TaskKey)
     : undefined;
+  // FLUX-1789: backstop for the plan gate's own status re-check — a plan-review pass on a ticket that
+  // already left Grooming has no plan to judge (TOWERO-77: one ran against a branchless Todo ticket).
+  // Deliberately not a 409: the gate reads 409 as "a live session blocks you, wait".
+  if (taskKey === 'planReview' && task.status !== 'Grooming') {
+    return res.status(400).json({ error: `${id} is ${task.status}, not Grooming — a plan-review pass only runs on a Grooming ticket.` });
+  }
 
   // FLUX-1380: fast-path lets one session groom AND implement an XS/S ticket, structurally
   // bypassing the plan gate (which only fires on Grooming→Todo). Refuse it deterministically
@@ -949,6 +955,11 @@ router.post('/:id/cli-session/start', async (req, res) => {
     const resolved = resolvePersonaPrompt(personaId, focusComment, phase);
     if (!resolved) return res.status(400).json({ error: `Unknown personaId: ${personaId}` });
     appendPrompt = resolved;
+  } else if (focusComment && phase !== 'chat' && !appendPrompt.includes(focusComment)) {
+    // FLUX-1788: without a persona the focus was only ever visible through ticket history (the
+    // "Latest activity" lines / get_ticket.launchFocus) — so a plan-gate session effectively read
+    // whichever focus was written last, often another phase's. Hand the session its own focus.
+    appendPrompt = [appendPrompt, `## Launch focus (this session)\n${focusComment}`].filter(Boolean).join('\n\n');
   }
 
   // FLUX-845: server-side isolation policy. Agent-driven dispatch (start_session / board-rebase)
@@ -1141,24 +1152,23 @@ router.post('/:id/cli-session/start', async (req, res) => {
     // pull-backed focus (gate/temper/furnace, names a `read_skill(...)` call) also gets a
     // `summary` so it collapses to one line in the agent digest once it ages out — a short
     // ad-hoc focus gets no summary and stays exactly as visible as before.
+    // FLUX-1788: the entry is stamped with this session's phase so get_ticket's `launchFocus`
+    // (extractLaunchFocus) never hands a later session of a different phase this focus.
     if (focusComment) {
       try {
-        const summary = buildLaunchFocusSummary(focusComment);
         await updateTaskWithHistory(id, {
           updatedBy: 'Agent',
-          entries: [buildActivityEntry(
-            `${LAUNCH_FOCUS_PREFIX}${focusComment}`,
-            launchedBy,
-            new Date().toISOString(),
-            summary ? { summary } : {},
-          )],
+          entries: [buildLaunchFocusEntry(focusComment, launchedBy, new Date().toISOString(), phase)],
         }, req.workspace);
       } catch (focusErr: unknown) {
         console.warn(`[cli-session] Failed to persist launch focus for ${id}: ${focusErr instanceof Error ? focusErr.message : focusErr}`);
       }
     }
 
-    void prepareAndLaunchSession(session, task, spawnOpts, isolation, reqWorkspace(req));
+    // FLUX-1788: launch from the CURRENT record, not the `task` snapshot taken at the top of this
+    // handler — updateTaskWithHistory above replaces ws.tasks[id], so the stale snapshot's
+    // "Latest activity" showed the PREVIOUS session's launch focus instead of this one's.
+    void prepareAndLaunchSession(session, reqWorkspace(req).tasks[id] ?? task, spawnOpts, isolation, reqWorkspace(req));
 
     res.status(201).json({ session: getCliSessionSummaryForTask(id) });
   } catch (error: unknown) {
@@ -1701,8 +1711,23 @@ router.post('/:id/cli-session/input', async (req, res) => {
   // replacement turn landed before a LATER step failed — if so it no-ops instead of resurrecting
   // the dropped tail after the new turn (see restoreTruncatedTail's doc comment).
   let truncateResult: { dropped: string[]; keptLength: number } | undefined;
+  // FLUX-1788: a programmatic resume (the plan gate's revise, Temper/Furnace re-implement) names the
+  // turn's focus so it is persisted like a fresh launch's — stamped with the RESUMED session's phase.
+  // Without it the resumed agent's get_ticket.launchFocus kept returning the previous dispatch's
+  // focus (the reviewer's "You are reviewing a TICKET PLAN") while its resume message said revise.
+  const resumeFocus = typeof req.body?.focusComment === 'string' ? req.body.focusComment.trim() : '';
   try {
     if (truncateFromSeq !== undefined) truncateResult = await truncateTranscript(id, truncateFromSeq);
+    if (resumeFocus) {
+      try {
+        await updateTaskWithHistory(id, {
+          updatedBy: 'Agent',
+          entries: [buildLaunchFocusEntry(resumeFocus, user, new Date().toISOString(), session.phase)],
+        }, req.workspace);
+      } catch (focusErr: unknown) {
+        console.warn(`[cli-session] Failed to persist resume focus for ${id}: ${focusErr instanceof Error ? focusErr.message : focusErr}`);
+      }
+    }
     await adapter.sendInput(session, message, user, getWorkspaceRoot()!, { attachments });
 
     // Clear swimlane when user sends input (they answered the question)

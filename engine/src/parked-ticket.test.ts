@@ -62,6 +62,18 @@ describe('isParked', () => {
       expect(isParked({ ...resting, commentCount: 1, commentCountAtTurnStart: 0 })).toBe(true);
     });
 
+    // FLUX-1793: EHGAUNTL-1 — a sole reviewer approved a ticket already in Ready (Ready → Ready), posting
+    // its write-up as a comment; recording the verdict is the board action, so no flag.
+    it('does not flag a Ready ticket whose reviewer recorded a verdict this turn', () => {
+      const ready = { ...resting, status: 'Ready', statusAtTurnStart: 'Ready', commentCount: 2, commentCountAtTurnStart: 0 };
+      expect(isParked(ready)).toBe(true);
+      expect(isParked({ ...ready, recordedVerdict: true })).toBe(false);
+    });
+
+    it('a recorded verdict also hands off a working-status ticket (plan review staying in Grooming)', () => {
+      expect(isParked({ ...base, status: 'Grooming', statusAtTurnStart: 'Grooming', recordedVerdict: true })).toBe(false);
+    });
+
     it('flags across every resting/terminal status', () => {
       for (const status of ['Todo', 'Ready', 'Done', 'Backlog', 'Released', 'Archived']) {
         expect(isParked({ ...resting, status, statusAtTurnStart: status, commentCount: 2, commentCountAtTurnStart: 1 })).toBe(true);

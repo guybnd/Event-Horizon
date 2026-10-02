@@ -173,8 +173,11 @@ export function serializeTaskForAgent(task: TaskRecord, historyLimit?: number, o
   // them without pulling full history.
   const keepUserComments = getConfig()?.commentDigest?.recentUserComments ?? 3;
   const recentUserComments = extractRecentUserComments(fullHistory, keepUserComments);
-  const launchFocus = extractLaunchFocus(fullHistory);
   const cliSession = getCliSessionSummaryForTask(task.id);
+  // FLUX-1788: scope the focus to the phase of the session currently working this ticket, so a
+  // resumed plan-gate groomer isn't handed the reviewer's focus (or vice versa).
+  const activePhase = cliSession && ['pending', 'running', 'waiting-input', 'scheduled'].includes(cliSession.status) ? cliSession.phase : undefined;
+  const launchFocus = extractLaunchFocus(fullHistory, activePhase);
   const cliSessions = getListSessionSummariesForTask(task.id).map(slimSessionSummaryForAgent);
   return {
     ...task,

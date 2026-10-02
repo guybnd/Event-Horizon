@@ -46,10 +46,16 @@ describe('evaluatePlanGateTrigger (FLUX-1263)', () => {
     expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto', planReviewState: undefined })).toBe(true);
   });
 
-  it('lets the move through once a verdict already exists (the human/agent confirm)', () => {
+  it('lets the move through once an approved verdict exists (the human/agent confirm)', () => {
     expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto-then-you', planReviewState: 'approved' })).toBe(false);
-    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto-then-you', planReviewState: 'changes-requested' })).toBe(false);
     expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto', planReviewState: 'approved' })).toBe(false);
+  });
+
+  // FLUX-1789: an unaddressed change request is not a confirm — a resumed groomer used it to skip the
+  // gate straight to Todo mid-loop (TOWERO-77).
+  it('still intercepts when the verdict on file is changes-requested', () => {
+    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto-then-you', planReviewState: 'changes-requested' })).toBe(true);
+    expect(evaluatePlanGateTrigger({ ...base, gateValue: 'auto', planReviewState: 'changes-requested' })).toBe(true);
   });
 
   it('never intercepts a move that is not Grooming -> Todo', () => {

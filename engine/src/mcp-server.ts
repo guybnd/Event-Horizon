@@ -33,7 +33,7 @@ import { sanitizeCompletion, completionInputSchema } from './completion-payload.
 import { getActiveFluxDir, getWorkspacesList, getWorkspaceRoot, resolveSkillSourceRoot, isOrphanMode, resolveRegisteredWorkspaceForPath, rememberOpenWorkspace, type WorkspaceEntry } from './workspace.js';
 import { enrichList } from './routes/workspaces.js';
 import { log } from './log.js';
-import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, getGhAvailability, ghUnavailableMessage, captureDiff, resolveCommit, planFinishPr, evaluateCiGate, type DiffFileSummary } from './branch-manager.js';
+import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, getGhAvailability, ghUnavailableMessage, captureDiff, resolveCommit, hasOriginRemote, planFinishPr, evaluateCiGate, type DiffFileSummary } from './branch-manager.js';
 import { detachTaskWorktree, resolveTaskWorktreePath, findWorktreeForBranch, worktreeUncommittedCount, reclaimWorktrees } from './task-worktree.js';
 import { ensureTicketIsolation } from './ticket-isolation.js';
 import { cleanupMergedBranch, isWorktreeReclaimable } from './pr-cleanup.js';
@@ -68,7 +68,7 @@ import { igniteBatch, stopBatch, burnRateClampWarning, retryTicket, resumeBatch,
 import { newBatchTicket, isBatchActive, isTerminalTicketState, validateBatchTrigger, batchBelongsToWorkspaceRoot, DEFAULT_RETRY_CAP, type BatchKind, type BatchTrigger, type FurnaceBatch } from './models/furnace.js';
 import { maybeStartTemper, isChangesRequestedBounceOwned } from './temper.js';
 import { planBodyHash, resolveGateValue, hasHumanGateTouch, SELF_ATTESTED_AUTHOR_FIELD } from './models/gate-policy.js';
-import { planLint, formatLintFindings, BODY_WARN_CHARS } from './models/plan-lint.js';
+import { planLint, formatLintFindings, bodyBudgetForEffort } from './models/plan-lint.js';
 import { startPlanGateNow, resolvePlanVerdictNow, type PlanGateMode } from './gate-runner.js';
 import type { OrchestrationPersonaMeta } from './orchestration-personas.js';
 import { formatAuthDiagnosisMessage, type AuthDiagnosis } from './agents/auth-diagnostics.js';
@@ -396,8 +396,12 @@ export function shouldFlagUnownedChangesRequested(input: {
  *   `you`           -> never intercepts (no automatic trigger at all — a human/agent can still explicitly
  *                      run one pass via the `start_plan_review` tool, but a direct move is never blocked).
  *   `auto`/`auto-then-you`, no verdict yet -> intercept: the gate runs instead of the direct move.
- *   `auto`/`auto-then-you`, a verdict already exists -> let it through (this IS the human's confirm of an
+ *   `auto`/`auto-then-you`, an `approved` verdict exists -> let it through (this IS the human's confirm of an
  *      `auto-then-you` pass, or of a manually-run one under `you`) — `resolvePlanReviewStateOnMove` clears it.
+ *   `auto`/`auto-then-you`, a `changes-requested` verdict exists -> intercept (FLUX-1789): an unaddressed
+ *      change request is not a confirm. Treating it as one let a resumed groomer skip the gate straight to
+ *      Todo mid-loop (TOWERO-77); the redirect re-reviews the revised plan (or no-ops into the run already
+ *      in flight — `already-running` keeps the ticket in Grooming).
  *
  * FLUX-1379: `effort`/`skipSmall` add one more suppression — an XS/S ticket under `planGateSkipSmall`
  * never triggers the auto gate (a plan review can't pay for itself on a ticket that small). Both
@@ -416,7 +420,7 @@ export function evaluatePlanGateTrigger(input: {
   const { priorStatus, newStatus, groomingStatus, todoStatus, gateValue, planReviewState, effort, skipSmall } = input;
   if (priorStatus !== groomingStatus || newStatus !== todoStatus) return false;
   if (gateValue === 'you') return false;
-  if (planReviewState != null) return false;
+  if (planReviewState === 'approved') return false;
   if (skipSmall && (effort === 'XS' || effort === 'S')) return false;
   return true;
 }
@@ -845,9 +849,12 @@ function decodeResourceVar(value: string | string[] | undefined): string {
   }
 }
 
-function bodySizeWarning(body: string | undefined | null): string | undefined {
-  if (!body || body.length <= BODY_WARN_CHARS) return undefined;
-  return `Body is ${body.length} chars (soft limit ${BODY_WARN_CHARS}). Large bodies bloat every agent session on this ticket — keep the body a concise plan and move bulk material (logs, dumps, research) to .docs/ with a link.`;
+/** FLUX-1795: the budget scales with effort (`bodyBudgetForEffort`) — an S plan is a few short steps,
+ *  not a research dump, and the warning lands in the same turn so the groomer can trim it. */
+function bodySizeWarning(body: string | undefined | null, effort?: string | null): string | undefined {
+  const budget = bodyBudgetForEffort(effort);
+  if (!body || body.length <= budget) return undefined;
+  return `Body is ${body.length} chars (soft limit ${budget} for ${effort || 'unsized'} effort). Every later session on this ticket re-reads the body — trim it to decisions and non-obvious constraints (what reading the code won't tell the implementer), and move bulk material (logs, dumps, research) to .docs/ or a summarized add_note.`;
 }
 
 /** Extra fields `finish_ticket` writes onto the ticket record via `updateTaskWithHistory` —
@@ -1495,7 +1502,7 @@ export function buildMcpServer(): McpServer {
         if (tags) opts.tags = tags;
         if (body !== undefined) opts.body = body;
         const { id, task } = await createTask(opts);
-        const warning = bodySizeWarning(body);
+        const warning = bodySizeWarning(body, effort);
 
         if (parentId && parent) {
           // Link to parent through the locked write path (FLUX-987): appendSubtask reads
@@ -1712,7 +1719,7 @@ export function buildMcpServer(): McpServer {
       }
 
       broadcastEvent('taskUpdated', { id: ticketId });
-      const warning = body !== undefined ? bodySizeWarning(body) : undefined;
+      const warning = body !== undefined ? bodySizeWarning(body, effort ?? (task?.effort as string | undefined)) : undefined;
       return textResult(`Updated ${ticketId}${warning ? `\nWarning: ${warning}` : ''}`);
     },
   );
@@ -1921,6 +1928,11 @@ export function buildMcpServer(): McpServer {
         extraFields.planReviewBodyHash = planVerdictMove.planReviewState != null
           ? planBodyHash(typeof task.body === 'string' ? task.body : '')
           : null;
+        // FLUX-1790: also stamp the commit the plan was judged against, so the gate's next pass can
+        // scope its anchor re-check to what main changed since (`git diff <head>..HEAD`). Best-effort.
+        extraFields.planReviewHead = planVerdictMove.planReviewState != null
+          ? await resolveCommit('HEAD').catch(() => null)
+          : null;
       }
 
       // Clear swimlane when moving out of a blocked state (e.g. user answered the question)
@@ -2025,6 +2037,10 @@ export function buildMcpServer(): McpServer {
                 ticketId,
                 actions: [{ label: 'Open worktree', actionId: 'open-worktree' }],
               });
+            } else if (!(await hasOriginRemote())) {
+              // FLUX-1792: a local-only repo has nowhere to push or open a PR — say so quietly
+              // instead of raising a "PR creation failed" error notification on every Ready move.
+              entries.push({ type: 'activity', user: 'Agent', comment: `No \`origin\` remote — the work stays on local branch \`${task.branch}\`; no PR opened.`, date: new Date().toISOString() });
             } else {
               try {
                 const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${ticketId}`;

@@ -235,6 +235,11 @@ export type TicketAction =
   // `ticket.reviewNudgeSent` with `review-nudge` above (one nudge budget per review pass total, not
   // per failure mode — see the ticket's "Layer 3 nudge accounting").
   | { type: 'review-retry' }
+  // FLUX-1789: plan gate only — the revise session completed but the ticket body still hashes to the
+  // last verdict's `planReviewBodyHash` (the revise applied nothing). Dispatch ONE fresh (non-resumed)
+  // revise before parking, instead of re-reviewing a body the reviewer already judged. Capped by
+  // `ticket.reviseNoopRetried`.
+  | { type: 'revise-noop-retry' }
   // FLUX-1297: a CANCELLED session (a deliberate stop, not a crash) on a ticket whose board status
   // already reads merged/terminal — something else (a finish/merge flow) intentionally killed this
   // session because the ticket's work already landed, not a failure to report. Settle it the same way
@@ -308,6 +313,10 @@ export function decideTicketAction(input: {
   // (Temper's review loop, the plain Furnace implementation loop) never sets this, so their
   // behavior is unchanged.
   bodyHashDrifted?: boolean;
+  // FLUX-1789: plan gate only — true when a 'reimplementing' (revise) run's ticket body still hashes to
+  // the last verdict's recorded body hash, i.e. the revise changed nothing. Every other caller leaves it
+  // unset, so their completed-revise -> review transition is unchanged.
+  reviseBodyUnchanged?: boolean;
   // FLUX-1745: the dead session's own `lastRateLimit.resetsAt` (FLUX-1744) — when present, lets
   // advanceTicket schedule the retry off the provider's actual wall-reset instead of a fixed guess.
   rateLimitResetsAt?: string;
@@ -404,6 +413,12 @@ export function decideTicketAction(input: {
   if (ticket.state === 'implementing' || ticket.state === 'reimplementing') {
     if (ticketStatus && ticketStatus === requireInput) {
       return { type: 'park', reason: 'implementation ended with the ticket in Require Input', failureClass: 'needs-input' };
+    }
+    // FLUX-1789: a revise that left the body byte-identical would otherwise send the SAME plan back to
+    // review — the TOWERO-77 review→review→review loop that burned the whole retry cap on one body.
+    if (ticket.state === 'reimplementing' && input.reviseBodyUnchanged) {
+      if (!ticket.reviseNoopRetried) return { type: 'revise-noop-retry' };
+      return { type: 'park', reason: 'the plan revise made no change to the ticket body (twice) — the review findings were never applied', failureClass: 'needs-input' };
     }
     return { type: 'review' };
   }
@@ -695,7 +710,7 @@ export function resolveOriginatingFramework(ticketId: string, phase: FurnacePhas
 
 /** POST a resumed turn to the existing session — mirrors `dispatchSession`'s self-fetch pattern.
  *  FLUX-1548: `workspaceRoot` mirrors `dispatchSession`'s opt — same X-EH-Workspace routing need. */
-async function postResumeInput(ticketId: string, sessionId: string, message: string, workspaceRoot?: string | null): Promise<DispatchOutcome> {
+async function postResumeInput(ticketId: string, sessionId: string, message: string, workspaceRoot?: string | null, focusComment?: string): Promise<DispatchOutcome> {
   try {
     const res = await fetch(`${engineBase()}/api/tasks/${encodeURIComponent(ticketId)}/cli-session/input`, {
       method: 'POST',
@@ -703,7 +718,8 @@ async function postResumeInput(ticketId: string, sessionId: string, message: str
         'Content-Type': 'application/json',
         ...((workspaceRoot ?? getWorkspaceRoot()) ? { 'X-EH-Workspace': (workspaceRoot ?? getWorkspaceRoot())! } : {}),
       },
-      body: JSON.stringify({ message, user: 'Furnace', sessionId }),
+      // FLUX-1788: `focusComment` makes the input route persist this turn's focus (phase-stamped).
+      body: JSON.stringify({ message, user: 'Furnace', sessionId, ...(focusComment ? { focusComment } : {}) }),
     });
     if (!res.ok) {
       const err = (await res.json().catch(() => ({}))) as { error?: string };
@@ -744,9 +760,9 @@ export async function resumeOrDispatchSession(
     const message = candidate.worktreeRecreated
       ? `${opts.resumeMessage}\n\n⚠️ Your worktree was reclaimed and has been recreated from the branch tip — any uncommitted scratch state is gone. Re-verify the current file state before editing.`
       : opts.resumeMessage;
-    let outcome = await postResumeInput(ticketId, candidate.session.id, message, opts.workspaceRoot);
+    let outcome = await postResumeInput(ticketId, candidate.session.id, message, opts.workspaceRoot, opts.resumeMessage);
     // Resume POST failed — retry once (transient EBUSY/network) before giving up on resume entirely.
-    if (!outcome.sid) outcome = await postResumeInput(ticketId, candidate.session.id, message, opts.workspaceRoot);
+    if (!outcome.sid) outcome = await postResumeInput(ticketId, candidate.session.id, message, opts.workspaceRoot, opts.resumeMessage);
     if (outcome.sid) {
       candidate.session.resumeTurnCount = (candidate.session.resumeTurnCount ?? 0) + 1;
       return { ...outcome, resumed: true };
@@ -809,6 +825,19 @@ export async function parkTicketOnBoard(ticketId: string, reason: string, opts: 
   if (opts.stopSessions !== false) {
     try { stopAllSessionsForTask(ticketId, 'furnace parked ticket'); } catch { /* best effort */ }
   }
+}
+
+/** The configured "ready for merge" board status (default `Ready`). */
+export function readyStatusName(): string {
+  return (getConfig().readyForMergeStatus as string) || 'Ready';
+}
+
+/**
+ * FLUX-1791: the board ticket already carries a finished implementation awaiting review — it sits at
+ * Ready on a branch. A Furnace retry/resume of such a ticket resumes at REVIEW instead of re-implementing.
+ */
+export function implementationAwaitsReview(task: { status?: unknown; branch?: unknown } | undefined): boolean {
+  return !!task && task.status === readyStatusName() && typeof task.branch === 'string' && task.branch.length > 0;
 }
 
 /**
@@ -993,9 +1022,12 @@ export interface ReconcileChange {
  */
 export function decideReconcile(
   ticket: BatchTicket,
-  gt: { takenOver: boolean; boardSuccess: boolean; boardMerged?: boolean; prUrl?: string },
+  gt: { takenOver: boolean; boardSuccess: boolean; boardMerged?: boolean; prUrl?: string; boardFlagged?: boolean },
 ): ReconcileChange | null {
-  if (gt.boardSuccess && ticket.state !== 'pr-open' && ticket.state !== 'skipped') {
+  // FLUX-1791: a review-phase park rests at Ready WITH the require-input flag — that Ready is the park,
+  // not a human completing the ticket. Only reflect success once the flag is cleared (or it merged).
+  const parkedAtReady = (ticket.state === 'parked' || ticket.state === 'failed') && gt.boardFlagged === true && !gt.boardMerged;
+  if (gt.boardSuccess && !parkedAtReady && ticket.state !== 'pr-open' && ticket.state !== 'skipped') {
     const c: ReconcileChange = { ticketId: ticket.ticketId, reflectPrOpen: true, dropFlag: true };
     if (gt.prUrl !== undefined) c.prUrl = gt.prUrl;
     return c;
@@ -1023,6 +1055,7 @@ export async function reconcileBatch(batchId: string, ws: Workspace = getWorkspa
       takenOver: debouncedTakeover(ticket.ticketId, detectHumanTakeover(ticket)),
       boardSuccess: isBoardSuccessStatus(task?.status),
       boardMerged: isBoardMergedStatus(task?.status),
+      boardFlagged: task?.swimlane === 'require-input',
       ...(prUrl !== undefined ? { prUrl } : {}),
     });
     if (change) changes.push(change);
@@ -1262,7 +1295,11 @@ async function parkTicket(batchId: string, ticketId: string, reason: string, fai
   const pre = getFurnaceBatch(batchId);
   const preT = pre ? findTicket(pre, ticketId) : undefined;
   if (preT && isHumanOwned(preT)) return; // yielded to a human — don't park under them.
-  await parkTicketOnBoard(ticketId, reason, opts);
+  // FLUX-1791: a park during the REVIEW phase leaves the ticket at Ready (flagged). The default move to
+  // In Progress made everything downstream (status-derived phase, a later retry) treat a finished
+  // implementation as unstarted — TOWERO-15 re-ran a whole implementation session just to get back.
+  const inReview = preT !== undefined && (preT.state === 'reviewing' || (preT.state === 'cooling-down' && preT.preCooldownState === 'reviewing'));
+  await parkTicketOnBoard(ticketId, reason, { ...opts, ...(inReview ? { status: readyStatusName() } : {}) });
   await mutateFurnaceBatch(batchId, (b) => {
     const t = findTicket(b, ticketId);
     if (t) {
@@ -2539,8 +2576,17 @@ export async function retryTicket(batchId: string, ticketId: string, opts: { for
 
   // FLUX-1554: bind to the batch's OWN board — see igniteBatch's identical note. `clearFurnaceFlag`
   // writes to the board via `updateTaskWithHistory`'s ambient default, so it must resolve here too.
-  return runWithWorkspace(resolveWorkspaceByRoot(batch.workspaceRoot ?? ''), async () => {
-    await clearFurnaceFlag(ticketId, `Furnace retrying ${ticketId} — flag cleared, fresh attempt budget.`);
+  const ws = resolveWorkspaceByRoot(batch.workspaceRoot ?? '');
+  return runWithWorkspace(ws, async () => {
+    // FLUX-1791: the implementation already landed (Ready, on a branch — e.g. its REVIEW session died and
+    // was parked there) → resume at review. Re-queueing sent it back through feedCoal's implementation
+    // spawn, re-running finished work just to move it back to Ready (TOWERO-15). The ticket goes straight
+    // to `reviewing` with no session, so the next tick's reconcile redrives a fresh review pass.
+    const resumeAtReview = !!ws && implementationAwaitsReview(ws.tasks[ticketId]);
+    await clearFurnaceFlag(ticketId, resumeAtReview
+      ? `Furnace retrying ${ticketId} at review — the implementation is already at ${readyStatusName()}; flag cleared.`
+      : `Furnace retrying ${ticketId} — flag cleared, fresh attempt budget.`);
+    if (resumeAtReview) await clearReviewState(ticketId, ws!);
     const updated = await mutateFurnaceBatch(batchId, (b) => {
       const x = findTicket(b, ticketId);
       if (!x) return;
@@ -2561,9 +2607,15 @@ export async function retryTicket(batchId: string, ticketId: string, opts: { for
       // `feedCoal` won't re-announce a fresh block until it has been fed once.
       delete x.waitingForSlot;
       clearCooldownState(x);
+      if (resumeAtReview) {
+        x.state = 'reviewing';
+        x.currentPhase = 'review';
+        x.reviewNudgeSent = false;
+        if (!x.startedAt) x.startedAt = nowIso();
+      }
     });
     if (batch.status === 'burning') void stokerTick(batchId);
-    log.info(`[furnace] ${ticketId} retried — reset to queued (fresh attempt budget).`);
+    log.info(`[furnace] ${ticketId} retried — ${resumeAtReview ? 'resuming at review (implementation already at Ready)' : 'reset to queued (fresh attempt budget)'}.`);
     return { ok: true, batch: updated };
   });
 }

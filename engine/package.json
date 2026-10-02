@@ -1,12 +1,12 @@
 {
   "name": "engine",
-  "version": "1.13.0",
+  "version": "1.14.0",
   "description": "Event Horizon engine — Express + TypeScript API, MCP server, and agent orchestration for the local-first ticket board.",
   "main": "dist/index.js",
   "bin": "dist/index.js",
   "scripts": {
     "dev": "tsx src/dev-watcher.ts -- --workspace ..",
-    "dev:no-watch": "tsx src/index.ts --workspace ..",
+    "dev:no-watch": "tsx src/dev-watcher.ts --no-watch -- --workspace ..",
     "build": "node scripts/build.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",

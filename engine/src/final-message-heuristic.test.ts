@@ -27,6 +27,16 @@ describe('finalMessageNeedsUser (FLUX-570/777/945 session-end backstop)', () => 
     expect(finalMessageNeedsUser(fm, null)).toBe(false);
   });
 
+  it('does NOT flag a recorded review verdict whose write-up happens to say "which" (FLUX-1798, EHGAUNTL-2)', () => {
+    const fm = '**APPROVED** — EHGAUNTL-2 recorded as `reviewState: approved` at Ready.\n\nThe implementer deviated from the groomed plan (which wrongly claimed the button was already wired).';
+    expect(finalMessageNeedsUser(fm, null)).toBe(false);
+    expect(finalMessageNeedsUser('CHANGES NEEDED — 1 Major. Which file? see the note.', null)).toBe(false);
+  });
+
+  it('a verdict that ENDS with a real question still surfaces', () => {
+    expect(finalMessageNeedsUser('**APPROVED**. Want me to file the Minor as a follow-up?', null)).toBe(true);
+  });
+
   it('does NOT flag a pure completion summary (FLUX-777 false-positive guard preserved)', () => {
     const done =
       'Done — implemented, validated, and moved to Done. Implementation link: PR #209 (merged). ' +

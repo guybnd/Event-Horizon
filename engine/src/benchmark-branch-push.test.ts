@@ -15,7 +15,7 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { setWorkspaceRoot } from './workspace.js';
-import { createTicketBranch } from './branch-manager.js';
+import { createTicketBranch, getTicketBranchStatus } from './branch-manager.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -85,3 +85,30 @@ describe('createTicketBranch push control', () => {
     expect(await remoteBranchExists(name)).toBe(false);
   });
 });
+
+// FLUX-1792: a repo with no `origin` remote (the gauntlet board) — the default push must not throw and
+// abort the session launch; the branch is created locally.
+describe('createTicketBranch on a repo with no origin remote', () => {
+  it('creates the branch locally and skips the push instead of throwing', async () => {
+    await gitC(repo, ['remote', 'remove', 'origin']);
+    const name = await createTicketBranch('EHG-1', 'no remote', 'master');
+    expect(await localBranchExists(name)).toBe(true);
+  });
+});
+
+// FLUX-1796: the commit-before-Ready guard on a `main`-only repo with no remote read 0 commits ahead,
+// because the default branch fell back to a non-existent 'master'.
+describe('getTicketBranchStatus on a main-only repo with no remote', () => {
+  it('counts the branch commits against the local main', async () => {
+    await gitC(repo, ['remote', 'remove', 'origin']);
+    await gitC(repo, ['branch', '-m', 'master', 'main']);
+    const name = await createTicketBranch('EHG-2', 'main only', 'main');
+    await gitC(repo, ['checkout', '-q', name]);
+    await fs.writeFile(path.join(repo, 'x.txt'), 'x', 'utf8');
+    await gitC(repo, ['add', '.']);
+    await gitC(repo, ['commit', '-q', '-m', 'work']);
+    await gitC(repo, ['checkout', '-q', 'main']);
+    expect((await getTicketBranchStatus(name)).aheadCount).toBe(1);
+  });
+});
+

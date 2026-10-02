@@ -9,15 +9,27 @@ import { spawn, type ChildProcess } from 'child_process';
 import { killProcessTree } from './kill-process-tree.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { readFileSync } from 'fs';
+import { readFileSync, appendFileSync } from 'fs';
 import { createHash } from 'crypto';
+import { decideAfterEngineExit } from './engine-exit-policy.js';
 
 const __dir = path.dirname(fileURLToPath(import.meta.url));
 const ENGINE_ENTRY = path.join(__dir, 'index.ts');
 
-const args = process.argv.slice(2);
+// FLUX-1797: `--no-watch` (dev:stable) keeps this process as the engine's SUPERVISOR but skips the
+// file-watcher. Before, dev:stable ran the engine with no supervisor at all — any exit was final.
+const noWatch = process.argv.includes('--no-watch');
+const args = process.argv.slice(2).filter((a) => a !== '--no-watch');
 let child: ChildProcess | null = null;
 let restartPending = false;
+let stopping = false;
+const crashTimes: number[] = [];
+// Same file the engine's own exit hook appends to (index.ts) — the engine's cwd is engine/ in dev.
+const EXIT_LOG = path.join(__dir, '..', 'event-horizon-exits.log');
+
+function logSupervisorExit(line: string): void {
+  try { appendFileSync(EXIT_LOG, `[${new Date().toISOString()}] supervisor: ${line}\n`, 'utf-8'); } catch { /* best effort */ }
+}
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 const isWin = process.platform === 'win32';
@@ -28,17 +40,27 @@ function spawnEngine() {
     shell: isWin,
   });
 
-  child.on('exit', (code) => {
+  child.on('exit', (code, signal) => {
     child = null;
-    if (restartPending) {
-      restartPending = false;
-      log.info('[dev-watcher] Restarting engine...');
-      spawnEngine();
-    } else if (code !== null && code !== 0) {
-      console.error(`[dev-watcher] Engine exited with code ${code}, restarting in 1s...`);
-      setTimeout(spawnEngine, 1000);
+    // FLUX-1797: one tested policy for every exit — a restart (watcher flag or the engine's own
+    // RESTART_EXIT_CODE from /api/restart) respawns now; a crash or signal kill respawns with backoff
+    // until a crash loop; a clean exit stays down. Previously a signal kill (code null) fell through
+    // to process.exit(0) and took the whole dev stack down silently.
+    const now = Date.now();
+    const decision = decideAfterEngineExit({ code, signal, restartPending, stopping, recentCrashTimes: crashTimes, now });
+    restartPending = false;
+    logSupervisorExit(`engine exited (code ${code}, signal ${signal ?? 'none'}) → ${decision.action}: ${decision.reason}`);
+    if (decision.action === 'respawn') {
+      if (decision.crash) {
+        crashTimes.push(now);
+        console.error(`[dev-watcher] Engine ${decision.reason} — respawning in ${Math.round(decision.delayMs / 1000)}s...`);
+      } else {
+        log.info('[dev-watcher] Restarting engine...');
+      }
+      setTimeout(spawnEngine, decision.delayMs);
     } else {
-      process.exit(0);
+      if (decision.reason !== 'clean exit' && decision.reason !== 'supervisor stopping') console.error(`[dev-watcher] Not respawning: ${decision.reason}`);
+      process.exit(decision.reason === 'clean exit' || decision.reason === 'supervisor stopping' ? 0 : 1);
     }
   });
 }
@@ -137,6 +159,11 @@ async function handleFileChange(file: string, event: 'add' | 'change' | 'unlink'
 }
 
 async function startWatcher() {
+  if (noWatch) {
+    log.info('[dev-watcher] File-watch disabled (dev:stable) — supervising the engine only.');
+    spawnEngine();
+    return;
+  }
   const { watch } = await import('chokidar');
   // FLUX-988: ignoreInitial:false so chokidar's initial scan seeds the content-hash baseline BEFORE
   // we act on any event — otherwise the first git-checkout churn after startup has no baseline to
@@ -163,10 +190,12 @@ async function startWatcher() {
 }
 
 process.on('SIGINT', () => {
+  stopping = true;
   if (child) killProcessTree(child);
   process.exit(0);
 });
 process.on('SIGTERM', () => {
+  stopping = true;
   if (child) killProcessTree(child);
   process.exit(0);
 });

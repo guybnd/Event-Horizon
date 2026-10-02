@@ -575,6 +575,9 @@ export interface CliSessionSummary {
    * An extensible enum — the durable seam FLUX-996's hardened runner can build on.
    */
   terminalReason?: 'context-exhausted' | 'rate-limited' | 'auth-expired';
+  /** FLUX-1791: the CLI emitted a synthetic usage/session-limit message this turn. The exit handler
+   *  treats a clean (code 0) exit as a failure when set (so the rate-limit cooldown engages), then clears it. */
+  syntheticLimitHit?: boolean;
   /** FLUX-1599: structured self-diagnosis attached whenever `terminalReason` is 'auth-expired' —
    *  which binary was spawned vs. what the login shell resolves, duplicate installs, and
    *  settings/env credential shadowing. See `agents/auth-diagnostics.ts`. Portal-visible (the
@@ -747,6 +750,9 @@ export interface CliSessionRecord extends CliSessionSummary {
    *  (status moved / Require Input raised / subtask created) or just parked. */
   statusAtTurnStart?: string | undefined;
   subtaskCountAtTurnStart?: number;
+  /** FLUX-1793: `reviewVerdictKey` of the ticket at turn start — a changed, non-null key at turn end
+   *  means the session recorded a review verdict (a board action for the parked-turn backstop). */
+  reviewVerdictAtTurnStart?: string | null | undefined;
   /** FLUX-826: agent-comment count at turn start + whether the agent raised a structured
    *  `ask_user_question` this turn — feed the SOFT resting-status backstop (a fresh comment
    *  with no board action and no structured prompt surfaces a needs-action nudge). */

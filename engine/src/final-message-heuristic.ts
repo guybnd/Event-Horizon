@@ -21,8 +21,11 @@ const NEEDS_INPUT_RE =
 // FLUX-1739 benchmark finding: "Ticket X is now **Ready**. Root cause: … which drifts …" was flagged
 // as needing the user — `which` tripped NEEDS_INPUT_RE and nothing here recognised a Ready hand-off
 // as done. A completion comment that announces the Ready move IS the done signal.
+// FLUX-1798 (EHGAUNTL-2): a reviewer's closing message leading with its recorded verdict ("**APPROVED** —
+// … recorded as reviewState: approved …") is a hand-off, not a question — it was flagged because the
+// write-up said "which" and named no "done"/"is now Ready" phrase.
 const LOOKS_DONE_RE =
-  /\b(done|completed?|finished|merged|shipped)\b|moved to done|implementation link|no further action|nothing (?:more |else )?(?:needed|to do|required)|\b(?:is now|moved to|now at)\s+\**ready\**|\bready for review\b|\bnow passes\b/i;
+  /\b(done|completed?|finished|merged|shipped)\b|moved to done|implementation link|no further action|nothing (?:more |else )?(?:needed|to do|required)|\b(?:is now|moved to|now at)\s+\**ready\**|\bready for review\b|\bnow passes\b|^\W*(?:approved|changes needed)\b|\b(?:reviewState|planReviewState)\W{0,3}(?:approved|changes-requested)\b/i;
 
 /**
  * A question at the VERY END of the message (after optional trailing markdown/quotes/whitespace).

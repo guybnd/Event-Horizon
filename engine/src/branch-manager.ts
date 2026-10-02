@@ -5,7 +5,7 @@ import { findWorktreeForBranch } from './task-worktree.js';
 // prompt hung branch create/push/PR-raise/merge forever (the spawn/Ready/finish paths). Route
 // everything through the S1 runner (runGit/runGh), which always applies a bounded timeout,
 // buildGitSyncEnv's non-interactive+gh-authed env, and tree-kill on timeout/abort.
-import { runGit, runGh, resolveBranchCreationBase, warnIfLocalAheadOfOrigin } from './git-exec.js';
+import { runGit, runGh, resolveBranchCreationBase, warnIfLocalAheadOfOrigin, resolveDefaultBranchName } from './git-exec.js';
 import { getCiRunnerInfo, type CiRunnerInfo } from './ci-runner.js';
 import { log } from './log.js';
 import { exec } from 'child_process';
@@ -109,8 +109,24 @@ export async function createTicketBranch(
       if (!(await branchRefExists(name))) throw err;
     }
   }
-  if (opts.push !== false) await git(['push', '-u', 'origin', name]);
+  if (opts.push !== false) {
+    // FLUX-1792: a repo with no `origin` remote (a local-only board, e.g. the benchmark gauntlet)
+    // can't push — and a failed push here used to abort the whole session launch before it spawned.
+    // The branch is all the session needs locally; publishing is a later concern (PR/Ready).
+    if (await hasOriginRemote()) await git(['push', '-u', 'origin', name]);
+    else log.warn(`[branch] ${name}: no 'origin' remote — created locally, not pushed.`);
+  }
   return name;
+}
+
+/** FLUX-1792: whether the workspace repo has an `origin` remote configured at all. */
+export async function hasOriginRemote(): Promise<boolean> {
+  try {
+    const { stdout } = await git(['remote']);
+    return stdout.split(/\r?\n/).some((r) => r.trim() === 'origin');
+  } catch {
+    return false;
+  }
 }
 
 async function branchRefExists(name: string): Promise<boolean> {
@@ -123,12 +139,11 @@ async function branchRefExists(name: string): Promise<boolean> {
 }
 
 export async function getDefaultBranch(): Promise<string> {
-  try {
-    const { stdout } = await git(['symbolic-ref', 'refs/remotes/origin/HEAD']);
-    return stdout.trim().replace('refs/remotes/origin/', '') || 'master';
-  } catch {
-    return 'master';
-  }
+  // FLUX-1796: with no `origin/HEAD` (a repo with no remote) this used to return a hard-coded
+  // 'master' — on a `main`-only repo every `master...<branch>` rev-list then failed and the
+  // commit-before-Ready guard read 0 commits ahead. The shared resolver falls back to whichever
+  // of master/main actually exists locally.
+  return resolveDefaultBranchName((args) => git(args));
 }
 
 export async function getTicketBranchStatus(name: string, base?: string): Promise<{ exists: boolean; aheadCount: number; behindCount: number }> {

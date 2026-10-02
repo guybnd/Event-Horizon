@@ -416,6 +416,7 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
       const res = await startPlanReviseNow('RV-2', { user: 'Guy' });
       expect(res.ok).toBe(true);
       expect(getWorkspace().tasks['RV-2'].planGateMode).toBe('loop-confirm');
+      getWorkspace().tasks['RV-2'].body = 'revised plan body'; // the revise actually applied changes
       putSession(`sess-${sessionSeq}`, 'grooming', 'completed');
       dispatchSession.mockClear();
       await gateRunnerTick();
@@ -429,10 +430,13 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
       getConfig().gatePolicy = { boardDefault: { plan: 'you', review: 'you' } };
       await startPlanReviseNow('RV-3', { user: 'Guy' });
       expect(getWorkspace().tasks['RV-3'].planGateMode).toBe('one-pass');
+      getWorkspace().tasks['RV-3'].body = 'revised plan body';
       putSession(`sess-${sessionSeq}`, 'grooming', 'completed');
       await gateRunnerTick(); // dispatches the single re-review
       putSession(`sess-${sessionSeq}`, 'review', 'completed');
+      // As the reviewer's change_status does: the verdict is stamped with the body it judged.
       getWorkspace().tasks['RV-3'].planReviewState = 'changes-requested';
+      getWorkspace().tasks['RV-3'].planReviewBodyHash = planBodyHash('revised plan body');
       dispatchSession.mockClear();
       await gateRunnerTick();
       // one-pass: a second changes-requested verdict stops the run instead of auto-revising again
@@ -810,6 +814,108 @@ describe('Plan-review gate runner (FLUX-1263)', () => {
       expect(isGateRunning('PW-3')).toBe(false); // left alone — the sweep did not re-register it
       expect(dispatchSession).not.toHaveBeenCalled();
       cliSessionsByTaskId.delete('PW-3');
+    });
+  });
+
+  // FLUX-1789: TOWERO-77 — three plan reviews judged a byte-identical body because a completed revise
+  // turn was always taken as "revision done", whether or not it changed anything.
+  describe('FLUX-1790 — re-review passes get a delta-scoped focus', () => {
+    it('the review after a revise names the prior pass\'s commit and findings; the first pass does not', async () => {
+      seedGrooming('DL-1', { body: 'plan v1' });
+      await startPlanGateNow('DL-1', { mode: 'loop-auto' });
+      const firstFocus = (dispatchSession.mock.calls[0]![2] as { focusComment: string }).focusComment;
+      expect(firstFocus).not.toContain('RE-REVIEW pass');
+
+      // the reviewer records changes-requested (stamping hash + head) after its write-up
+      Object.assign(getWorkspace().tasks['DL-1'], {
+        planReviewState: 'changes-requested',
+        planReviewBodyHash: planBodyHash('plan v1'),
+        planReviewHead: 'feedfacecafe0000',
+        history: [{ type: 'comment', id: 'c-rev-1', user: 'Agent', comment: '**CHANGES NEEDED** — B1 ...', date: '2026-09-22T15:09:30.000Z' }],
+      });
+      putSession(`sess-${sessionSeq}`, 'review', 'completed');
+      await gateRunnerTick(); // → revise
+      getWorkspace().tasks['DL-1'].body = 'plan v2';
+      putSession(`sess-${sessionSeq}`, 'grooming', 'completed');
+      dispatchSession.mockClear();
+      await gateRunnerTick(); // → re-review
+
+      expect(dispatchSession).toHaveBeenCalledWith('DL-1', 'review', expect.objectContaining({
+        focusComment: expect.stringMatching(/RE-REVIEW pass[\s\S]*feedfacecafe[\s\S]*c-rev-1[\s\S]*git diff --stat feedfacecafe0000\.\.HEAD/),
+      }));
+    });
+  });
+
+  describe('FLUX-1789 — a revise that changes nothing never re-reviews the same body', () => {
+    it('re-dispatches ONE cold revise (not a review), then parks if the body is still unchanged', async () => {
+      seedGrooming('NO-1', { body: 'plan v1', planReviewState: 'changes-requested' });
+      await startPlanReviseNow('NO-1', { user: 'Guy' });
+      putSession(`sess-${sessionSeq}`, 'grooming', 'completed'); // body untouched
+      dispatchSession.mockClear();
+
+      await gateRunnerTick();
+      expect(dispatchSession).toHaveBeenCalledTimes(1);
+      expect(dispatchSession).toHaveBeenCalledWith('NO-1', 'grooming', expect.objectContaining({ focusComment: expect.stringContaining('WITHOUT changing the ticket body') }));
+      expect(getWorkspace().tasks['NO-1'].planReviewState).toBe('changes-requested'); // not cleared for a review
+
+      putSession(`sess-${sessionSeq}`, 'grooming', 'completed'); // still untouched
+      dispatchSession.mockClear();
+      parkTicketOnBoard.mockClear();
+      await gateRunnerTick();
+      expect(dispatchSession).not.toHaveBeenCalled();
+      expect(parkTicketOnBoard).toHaveBeenCalledWith('NO-1', expect.stringContaining('made no change to the ticket body'), expect.anything());
+      expect(isGateRunning('NO-1')).toBe(false);
+    });
+
+    it('a no-op revise followed by a real revise goes to review', async () => {
+      seedGrooming('NO-2', { body: 'plan v1', planReviewState: 'changes-requested' });
+      await startPlanReviseNow('NO-2', { user: 'Guy' });
+      putSession(`sess-${sessionSeq}`, 'grooming', 'completed');
+      await gateRunnerTick(); // → fresh revise
+      getWorkspace().tasks['NO-2'].body = 'plan v2';
+      putSession(`sess-${sessionSeq}`, 'grooming', 'completed');
+      dispatchSession.mockClear();
+      await gateRunnerTick();
+      expect(dispatchSession).toHaveBeenCalledWith('NO-2', 'review', expect.anything());
+    });
+
+    it('never dispatches a review once the ticket has left Grooming', async () => {
+      seedGrooming('LG-1', { body: 'plan v1', planReviewState: 'changes-requested' });
+      await startPlanReviseNow('LG-1', { user: 'Guy' });
+      getWorkspace().tasks['LG-1'].body = 'plan v2';
+      putSession(`sess-${sessionSeq}`, 'grooming', 'completed');
+      getWorkspace().tasks['LG-1'].status = 'Todo';
+      dispatchSession.mockClear();
+      await gateRunnerTick();
+      expect(dispatchSession).not.toHaveBeenCalled();
+      expect(isGateRunning('LG-1')).toBe(false);
+    });
+
+    it('rehydrates a run stopped between a changes-requested verdict and its revise as a revise, not a review', async () => {
+      seedGrooming('RH-1', {
+        body: 'plan v1',
+        planGateRunning: true,
+        planGateAttempts: 1,
+        planGateMode: 'loop-auto',
+        planReviewState: 'changes-requested',
+        planReviewBodyHash: planBodyHash('plan v1'),
+      });
+      rehydrateGateRunner();
+      dispatchSession.mockClear();
+      await gateRunnerTick();
+      expect(dispatchSession).toHaveBeenCalledWith('RH-1', 'grooming', expect.anything());
+      expect(dispatchSession).not.toHaveBeenCalledWith('RH-1', 'review', expect.anything());
+    });
+
+    it('acts on a verdict already recorded for the current body when the review session is gone', async () => {
+      seedGrooming('CV-1', { body: 'plan v1' });
+      await startPlanGateNow('CV-1', { mode: 'loop-auto' });
+      cliSessionsById.clear(); // review session record lost (e.g. engine restart)
+      Object.assign(getWorkspace().tasks['CV-1'], { planReviewState: 'approved', planReviewBodyHash: planBodyHash('plan v1') });
+      dispatchSession.mockClear();
+      await gateRunnerTick();
+      expect(dispatchSession).not.toHaveBeenCalled(); // no redundant re-review
+      expect(getWorkspace().tasks['CV-1'].status).toBe('Todo'); // loop-auto approval consumed
     });
   });
 

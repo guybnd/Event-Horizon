@@ -54,7 +54,7 @@ Latest activity:
 
 ## Your Mission: GROOM this ticket
 
-1. Use update_ticket to fill metadata (priority, effort, tags) and rewrite the body with a Problem/Motivation section and Implementation Plan.
+1. Decide effort first, then use update_ticket to fill metadata (priority, effort, tags) and rewrite the body sized to that effort — XS/S: a TL;DR plus a few short steps and the non-obvious constraints only (see the grooming skill's workflow step 6).
 2. If questions are unresolved, use change_status to move to "Require Input" with a comment containing your question.
 3. When grooming is complete, use change_status to move to "Todo".
 
@@ -170,7 +170,7 @@ This session grooms several sibling tickets that share one parent, reading the s
 
 Do the following:
 1. Read the shared parent ticket (get_ticket on its id) once — that context applies to every member below.
-2. Groom each listed ticket independently and in turn: call get_ticket(id) to read its current body/history, use update_ticket to fill metadata (priority, effort, tags) and rewrite the body with a Problem/Motivation section and Implementation Plan — the same bar as single-ticket grooming — then use change_status on THAT ticket to move it to "Todo", or to "Require Input" with a comment containing your question if that ticket alone has a blocking question.
+2. Groom each listed ticket independently and in turn: call get_ticket(id) to read its current body/history, use update_ticket to fill metadata (priority, effort, tags) and rewrite the body sized to its effort — the same bar as single-ticket grooming — then use change_status on THAT ticket to move it to "Todo", or to "Require Input" with a comment containing your question if that ticket alone has a blocking question.
 3. Each ticket's outcome is independent: a "Require Input" (or anything else) on one member must never block, skip, or change how you groom the others.
 4. Make every status move its own change_status call, immediately after finishing that ticket's grooming — do not defer or batch the calls together.
 5. End your final turn with a one-line summary naming which tickets moved to Todo and which (if any) moved to Require Input, and why.
@@ -196,7 +196,7 @@ This session grooms several sibling tickets that share one parent, reading the s
 
 Do the following:
 1. Read the shared parent ticket (get_ticket on its id) once — that context applies to every member below.
-2. Groom each listed ticket independently and in turn: call get_ticket(id) to read its current body/history, use update_ticket to fill metadata (priority, effort, tags) and rewrite the body with a Problem/Motivation section and Implementation Plan — the same bar as single-ticket grooming — then use change_status on THAT ticket to move it to "Todo", or to "Require Input" with a comment containing your question if that ticket alone has a blocking question.
+2. Groom each listed ticket independently and in turn: call get_ticket(id) to read its current body/history, use update_ticket to fill metadata (priority, effort, tags) and rewrite the body sized to its effort — the same bar as single-ticket grooming — then use change_status on THAT ticket to move it to "Todo", or to "Require Input" with a comment containing your question if that ticket alone has a blocking question.
 3. Each ticket's outcome is independent: a "Require Input" (or anything else) on one member must never block, skip, or change how you groom the others.
 4. Make every status move its own change_status call, immediately after finishing that ticket's grooming — do not defer or batch the calls together.
 5. End your final turn with a one-line summary naming which tickets moved to Todo and which (if any) moved to Require Input, and why.
@@ -297,7 +297,7 @@ Latest activity:
 
 ## Your Mission: GROOM this ticket
 
-1. Use update_ticket to fill metadata (priority, effort, tags) and rewrite the body with a Problem/Motivation section and Implementation Plan.
+1. Decide effort first, then use update_ticket to fill metadata (priority, effort, tags) and rewrite the body sized to that effort — XS/S: a TL;DR plus a few short steps and the non-obvious constraints only (see the grooming skill's workflow step 6).
 2. If questions are unresolved, use change_status to move to "Require Input" with a comment containing your question.
 3. When grooming is complete, use change_status to move to "Todo".
 

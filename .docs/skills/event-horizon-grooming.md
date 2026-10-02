@@ -13,7 +13,7 @@ Scope: Interpret requirements, update frontmatter, and handle `.flux` metadata d
 
 # Event Horizon Agent — Grooming Skill
 
-Version: 2.19.0
+Version: 2.20.0
 
 ## When This Skill Applies
 
@@ -26,17 +26,20 @@ Full contract: `read_skill('orchestrator', 'End-of-Turn Action Contract')`. For 
 ## Grooming Workflow
 
 1. Use `get_ticket` to read the full ticket, including all history.
-2. Read `.docs/INDEX.md` to identify relevant docs, then read only those files. Skip docs entirely for XS/S effort tickets.
-3. Treat `Grooming` as a planning phase — do not code. Use `update_ticket` to tighten the ticket body into a concrete plan and fill inferable metadata (`priority`, `effort`, `tags`, hierarchy links).
-4. If implementation-critical choices are unresolved, use `change_status` with `newStatus: 'Require Input'` and a `comment` containing one question + proposed defaults, then wait. For ambiguity that *isn't* blocking, see Plan Discipline item 3 below instead — don't flip status for something you can resolve with a stated default.
-5. **Decide the artifact call, and record it (FLUX-1313).** Per the "Rich Artifacts" section below, decide whether this ticket needs a published mockup/diagram/prototype — then either call `publish_artifact`, or note in the plan why one wasn't warranted. Treat this as a checkbox in the workflow, not a standalone judgment call that's easy to forget: under `## Dynamic Delegation` launch focus (grooming split across specialist sessions — Context Scout, Requirements, Plan Review, …), the artifact decision belongs to whichever session finalizes the plan — the one that calls `change_status` to `Todo` in step 7 — not to any narrower-scoped delegate. Don't assume an earlier or later session in the chain already made the call.
-6. Once resolved, use `update_ticket` to rewrite `body` with, in this order:
-   - **TL;DR** (FIRST, always): a 1–3 sentence plain-language / ELI5 summary as a leading `> **TL;DR** — …` blockquote, so the user grasps the ticket at a glance without reading the full plan.
-   - **Problem / Motivation** (1–3 sentences): what problem, who benefits, why prioritised.
-   - **Implementation plan**: concrete steps so another agent could pick up without re-discovery. Apply the Plan Discipline items below, scaled to the ticket's size and risk. Scale ceremony to effort generally — see `read_skill('orchestrator', 'Ceremony by effort')`.
-7. Use `change_status` with `newStatus: 'Todo'`. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.** If the board's `plan` gate policy is `Auto` or `Auto→You` (FLUX-1263), this call may not move the ticket immediately — it instead kicks off an automated plan-review pass and the tool's response explains what happened. That's expected: stop the same way regardless of whether the move applied directly or the gate took over.
-   - **Exception — fast-path / Oneshot sessions (FLUX-1380 / FLUX-1733).** This "stop at Todo" instruction is the default grooming contract, not an absolute rule. When the launch mission text explicitly identifies this session as `fast-path` (product name **Oneshot**, dispatched via `phase:'fast-path'`), that mission overrides this step for this launch only: continue straight into implementation per the fast-path mission's own instructions instead of stopping at Todo. If the mission includes a PLAN-FIRST pause, write the plan then wait for user approval via `ask_user_question` in this same session — do **not** `change_status` to Todo to get that approval (that fires the plan gate and ends oneshot). Before Ready, post an **Oneshot wrap-up** comment (docs / follow-up tickets created / validation / residual risk); never `finish_ticket`. This is a launch-time override, not a change to what a normally-dispatched grooming session does — absent an explicit fast-path mission, stop at Todo as written above. Fast-path sessions get **no** injected grooming skill; the persona mission is the contract. These skill clauses are for readers of a normal grooming session and for the docs.
-   - **Exception — batch-grooming sessions (FLUX-1383).** When the launch mission identifies this session as `batch-grooming` (dispatched via `phase:'batch-grooming'` with a `batchTicketIds` member set — one session grooming several sibling tickets sharing one parent, in one sitting, instead of one session per ticket), apply this whole workflow to EACH listed member independently and in turn: read the shared parent once, then for each member run steps 3-7 on its own ticket id, ending with member's own `change_status` call (`Todo`, or `Require Input` with that member's own question). A `Require Input` or any other outcome on one member must never block, skip, or change how you groom the others — each member's status move is its own independent call, made immediately after finishing that member, never deferred or batched together. Ineligible members (already resolved server-side — L/XL effort, epic parents, past Grooming/Require Input) are excluded from the set you're handed; do not re-derive eligibility yourself. End your final turn with a one-line summary naming which members moved to Todo and which (if any) moved to Require Input, and why. This is a launch-time override (like fast-path above), not a change to single-ticket grooming.
+2. **Size it first (FLUX-1795).** Decide `effort` (XS/S/M/L/XL) from what the ticket asks *before* writing any of the body — the size sets how much you read and how much you write below. Re-size if what you read changes the picture.
+3. Read only what the size needs: XS/S — the files the change touches, no docs; M+ — `.docs/INDEX.md`, then only the relevant docs. Treat `Grooming` as a planning phase — do not code.
+4. If an implementation-critical choice is unresolved, `change_status` to `Require Input` with one question + a proposed default, then wait. Non-blocking ambiguity → a stated default in the plan (Plan Discipline item 3), not a status flip.
+5. **Artifact call (FLUX-1313):** emit via `publish_artifact` for UI/UX tickets or M+ effort (see "Rich Artifacts" below). XS/S non-UI tickets skip it silently — no "why no artifact" note (the engine already records whether one exists). Under `## Dynamic Delegation`, the session that moves the ticket to `Todo` owns this call.
+6. `update_ticket` the body (and `priority`/`effort`/`tags`), **written to its size**:
+
+   | Size | Body | Budget |
+   |---|---|---|
+   | XS / S | `> **TL;DR**` + up to ~6 one-line steps + only the non-obvious constraints/gotchas. No separate Problem section, no Acceptance criteria / Recommended Tests / Open Questions / Risks, no per-step rationale. | ~1.5k / ~3k chars |
+   | M | TL;DR, 1-sentence Problem (or none), anchored steps, `## Acceptance criteria`; other Plan Discipline items only when genuinely relevant. | ~6k |
+   | L / XL | Full Plan Discipline treatment. | ~10k |
+
+   **Every size:** the implementer reads the code itself — record the decisions, scope boundaries and non-obvious constraints (what reading the files will *not* tell them), never a re-narration of what the files say. Supporting analysis you did (a test-by-test table, research, logs) goes in a summarized `add_note`, not the body — the body is re-read by every later session. `update_ticket` warns when a body exceeds its size's budget; trim before moving on.
+7. `change_status` to `Todo`. **CRITICAL: Stop after moving to Todo — do not begin implementation.** Under an `Auto`/`Auto→You` plan gate (FLUX-1263) the call may start a plan-review pass instead of moving the ticket; stop the same way either way. Launch-mission overrides (fast-path / Oneshot continues into implementation; batch-grooming runs steps 1-7 per member) are spelled out in the mission itself — full detail: `read_skill('orchestrator', 'Grooming launch overrides')`.
 
 All persistence uses MCP tools (see "Editing & Safety" below).
 
@@ -48,7 +51,7 @@ The `Auto` gate's own revise-dispatch already carries this instruction via `gate
 
 ## Plan Discipline — scale to the ticket, don't apply blanket (FLUX-978)
 
-Borrowed from Builder.io's `agent-native` `/visual-plan` skill. Like the artifact heuristic below, **none of this is a blanket rule.** A small UI bug fix or a one-line change should stay a two-sentence plan — apply these in proportion to the ticket's size and risk, not because the section exists. Each item states its own skip condition; read the skip condition *before* reaching for the item.
+Borrowed from Builder.io's `agent-native` `/visual-plan` skill. Like the artifact heuristic below, **none of this is a blanket rule.** A small UI bug fix or a one-line change should stay a two-sentence plan — apply these in proportion to the ticket's size and risk, not because the section exists. Each item states its own skip condition; read the skip condition *before* reaching for the item. **XS/S:** only item 1 (lightly — name the file/symbol) and item 8 apply; skip the rest outright.
 
 1. **Anchor to real code, lead with reuse.** When the Implementation plan touches existing code, name the actual files/functions/symbols you found while reading the ticket and docs — not invented ones — and state what each step reuses (an existing action, component, or helper) before what it adds. **Prefer symbol names over line numbers** — a line cite drifts the moment an earlier item in the same plan lands; cite a line only where it's genuinely load-bearing (e.g. pinpointing one spot in a large file with no distinguishing symbol). Fewer, stabler anchors also cheapen the plan-review gate's `ANCHOR_CHECK`, which re-derives every citation on every review pass.
    - *Skip for:* XS tickets and single-line fixes where "fix line N in file.ts" is the whole plan.
@@ -68,19 +71,6 @@ Borrowed from Builder.io's `agent-native` `/visual-plan` skill. Like the artifac
 8. **State each constraint once (FLUX-1582).** Write a shared constraint — a validation rule, a derived value, an edge case — in the one implementation step where it's acted on. Acceptance Criteria and any Risks section may reference it by name ("see item 2") but must never restate it in their own words. A Risks/Considerations section that just paraphrases the impl plan instead of naming a genuinely new risk gets cut, not trimmed — restating isn't a lighter version of the same information, it's the same information twice.
    - *Skip for:* tickets with only one implementation step — nothing to restate across.
 
-## "Reground before starting" — tickets filed from point-in-time analysis (FLUX-1048)
-
-Tickets born from a **point-in-time codebase analysis** — tech-debt sweeps, refactor epics, audit/churn findings — cite file:line evidence that is only valid on the day of the analysis. When such a ticket is expected to be picked up **later** (Backlog/Todo queue, epic members), its body MUST include a `## ⚠️ Reground before starting` section (placed right after the TL;DR / Problem prose) that tells the implementer to:
-
-1. **State the snapshot date** — "the findings below are a snapshot from YYYY-MM-DD" — so staleness is visible at a glance.
-2. **Re-derive the evidence** — re-verify cited file:line references via Serena/grep against current code; recorded line numbers are historical, never trust them as-is.
-3. **Check for partial fixes already landed** — check `<releaseNotesPath>/INDEX.md` (default `.docs/release-notes/INDEX.md`) first, the agent-consumable index of every released ticket with a one-line completion gist (FLUX-1151); it only covers already-*released* work, so also scan sibling tickets and recently Done/Released tickets — another ticket may have absorbed part (or all) of the work.
-4. **Update the plan against current reality before coding** — rewrite the body (keep the TL;DR honest) to match what the code looks like now. If the finding no longer exists, re-scope or propose archiving — implementing a stale plan is worse than doing nothing.
-
-See epic **FLUX-1043** and its subtasks **FLUX-1044/1045/1046** for the reference format. When grooming an analysis-derived ticket, add this section if it's missing. The section binds the *implementer* too — the implementation skill's "Reground Before Coding" section requires executing it before any code change.
-
-- *Skip for:* tickets being implemented immediately after grooming, and tickets whose plan cites no point-in-time evidence (pure feature requests, UI tweaks, bug reports with a live repro).
-
 ## Rich Artifacts (`publish_artifact`) — default ON for plan proposals
 
 Shared mechanics — lifecycle framing, sandbox rules, CDN policy, revisions, the annotation round-trip, the layout-audit gate, and richer artifact kinds (Mermaid/SVG/charts/prototypes, plus live React/TSX component previews) — live in `read_skill('orchestrator', 'Rich Artifacts')`; pull it before your first emit. This section covers only grooming's emit/skip judgment.
@@ -94,39 +84,15 @@ This is a **default-ON** rule, not the old "exception, not the norm" — **almos
 
 When in doubt on a plan proposal, emit one.
 
-A plan with a genuinely open-ended "feel" variable (no right answer on paper — scroll speed, easing, spacing) or several pivotal choices buried in prose is a strong signal to emit — and to use the `data-eh-feel`/`data-eh-decision` guided-annotation controls so the user settles them directly on the rendering instead of guessing in a comment. This reinforces the UI-or-M+ rule above; it doesn't replace it.
-
-**Guided-control markup contract (FLUX-1440).** The viewer script upgrades two declarative attributes — `data-eh-feel` (an open-ended value the user dials in on a slider) and `data-eh-decision` (a pivotal either/or, rendered as a decision card) — into live, auto-staging controls; you write plain markup, the viewer injects the interactive UI. **Do not hand-render your own chips, sliders, or option buttons** (they'd be dead pixels — only the injected controls stage annotations). Pull the exact markup shapes via `read_skill('orchestrator', 'Rich Artifacts')` before using either one.
-
-Interacting stages the annotation into the same "N changes" pill as manual select/right-click annotations; the user still sends the batch explicitly (auto-stage ≠ auto-send). Opt-in, not ceremony: cap around 3-4 decisions per plan, and don't sprout controls on a plan that doesn't call for them.
+Open-ended "feel" variables or several pivotal choices buried in prose are a strong signal to emit — the guided-annotation controls (`data-eh-feel` / `data-eh-decision`) are in `read_skill('orchestrator', 'Rich Artifacts')`.
 
 This judgment call is workflow step 5, not just a section to remember on your own (FLUX-1313) — see the ownership note there for Dynamic Delegation. The plan-review gate also checks for this: a UI/UX-shaped plan with no artifact gets flagged in the review comment as a gap rather than silently approved, so a missed decision here surfaces there too — but that's a backstop, not a substitute for making the call at grooming time.
 
-## Design Style Guide (`.docs/design/style-guide.md`) — convention + bootstrap mission (FLUX-1399)
+## Pulled on demand (not needed for most tickets)
 
-**The convention.** A project's de-facto visual language belongs in one checkable doc instead of being re-derived from source on every artifact: `.docs/design/style-guide.md` per repo (or a `group_doc` for a multi-repo group, so every member reads the same guide). When it exists, mockup and prototype work should pull tokens from it — palette + semantic colors, type scale, spacing/radius scale, iconography rules, the component vocabulary in active use, interaction conventions (e.g. swipe/hold/hover-reveal on `pointer: fine`), theming constraints, and the primary target viewport — instead of re-reading component source on every revision. Re-deriving the same visual language from scratch each time is exactly the drift this convention removes.
-
-**The bootstrap mission — when the guide is missing.** Any normal grooming session can run this; no engine change or new persona is required:
-1. Read the real design system from code — theme/tailwind config (or equivalent), shared/primitive components, a few representative screens — never a prose description of it.
-2. Extract the de-facto system from what you read: palette + semantic color roles, type scale, spacing/radius scale, the component vocabulary actually in use, interaction conventions, theming constraints, primary viewport.
-3. Publish it as a visual artifact via `publish_artifact` — color swatches, a type ramp, and a small component zoo (buttons, cards, inputs, chips — whatever the project actually uses) — so the user reasons against a rendering, not prose.
-4. Iterate through the normal annotation round-trip (see "Rich Artifacts" above) until the user is satisfied.
-5. Once approved, write the doc to the conventional path (or submit it via `group_doc` for a multi-repo group) in the same ticket that ran the bootstrap.
-
-**When to offer it.** Non-blocking: a UI/UX ticket with no style guide present is a natural moment to flag the gap and offer to bootstrap one — never block a ticket on it. Small or single-screen projects may never need one; that's fine.
-
-## Epic → Subtask Splitting — Affordance Coverage Check (FLUX-1274)
-
-An epic with published artifact revisions can get cut into well-scoped subtasks that, individually, all look correct — and still **collectively drop an affordance the approved mockup showed**, because no subtask's own review has visibility into what its siblings cover. The plan-review gate (FLUX-1263) doesn't close this either: it reviews one ticket's plan in isolation, so it approves each subtask individually and still misses an epic-level coverage hole. This happened for real on `FLUX-1247`: rev 1-2 of its mockup showed the flagged plan surfacing three ways — a rich panel (artifact embedded inline + an annotation/notes thread), an in-chat prompt, and a board-card stripe — but the 4 subtasks cut from it (`FLUX-1261`-`1264`) only ever scoped the tray item; the panel and in-chat surfacing had no owning subtask and shipped nothing until the user tried the feature and a human filed the gap (`FLUX-1273`).
-
-When you reach "design finalized — ready to split into subtasks" for an epic that has one or more `publish_artifact` revisions, before creating any subtask ticket:
-
-1. **Enumerate every distinct affordance the *latest* revision of each published artifact shows.** A revision supersedes earlier ones — the latest is the approved scope, not the sum of every draft. List screens, panels, and interactions as separate line items, not one blob ("rich panel with inline artifact", "in-chat prompt", "board-card stripe" — not just "the UX").
-2. **Map every affordance to the subtask(s) whose Acceptance Criteria will build it.** An affordance with no owner is a blocking gap — fold it into an existing subtask's Acceptance Criteria or `create_ticket` a new subtask for it before any subtask moves to `Todo`. A subtask's own scoping note (e.g. "no new component needed") is not a substitute for this — it only reasons about that subtask's own scope, with no visibility into whether a *sibling* covers what it's excluding.
-3. **Write the map into the epic's own body** as a `## Subtask Coverage Map` table (`| Affordance | Subtask |`), inside or directly under its `## Acceptance criteria`. An uncounted mental pass is exactly what failed here — the map only works if it's checkable, not remembered.
-4. Only move the epic (and let its subtasks proceed to `Todo`) once every row has an owning subtask.
-
-- *Skip for:* epics with no published artifacts (nothing to drop), and subtask splits with no design/mockup phase behind them.
+- **Point-in-time evidence that won't be implemented right away** (tech-debt sweeps, audits, refactor epics) → add a `## ⚠️ Reground before starting` section: `read_skill('orchestrator', 'Reground before starting')`.
+- **UI/UX ticket on a repo with no `.docs/design/style-guide.md`** → offer the bootstrap: `read_skill('orchestrator', 'Design Style Guide')`.
+- **Splitting an epic that has published artifacts into subtasks** → run the coverage check first: `read_skill('orchestrator', 'Epic → Subtask Splitting')`.
 
 ## Metadata Conventions
 

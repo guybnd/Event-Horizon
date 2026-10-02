@@ -65,7 +65,7 @@ export interface AnthropicCliEvent {
    *  instead (see `recordCompaction`, agents/shared.ts) so the session total stays
    *  provider-independent. */
   compact_metadata?: { trigger?: 'auto' | 'manual'; pre_tokens?: number; post_tokens?: number; cumulative_dropped_tokens?: number; duration_ms?: number };
-  message?: { content?: AnthropicContentBlock[]; usage?: AnthropicUsage };
+  message?: { content?: AnthropicContentBlock[]; usage?: AnthropicUsage; model?: string };
   /** FLUX-1746: present (non-null) on an `assistant` frame emitted FOR a subagent (a Task-tool
    *  delegate), never on the main conversation's own frames — NOT currently declared upstream on
    *  this interface. Its `message.usage` reflects the SUBAGENT's own context, not the main
@@ -168,6 +168,17 @@ export function attachAnthropicStdoutProcessing(
             const detail = raw.trim().slice(0, 200);
             appendErrorToSession(session, `Tool failed: ${toolName}${detail ? ` — ${detail}` : ''}`);
           }
+        }
+      }
+      // FLUX-1791: the CLI reports a hit usage/session limit as a SYNTHETIC assistant message
+      // ("You've hit your session limit · resets …") and can then exit 0 — no error `result` frame, so
+      // the classifier below never ran and the session read as a clean completion (a review "with no
+      // verdict" → retry → park). Classify it here; the exit handler turns it into a failure.
+      if (evt.type === 'assistant' && evt.message?.model === '<synthetic>' && Array.isArray(evt.message.content)) {
+        const text = evt.message.content.map((b) => (b.type === 'text' && typeof b.text === 'string' ? b.text : '')).join(' ');
+        if (dialect.classifyResultError?.(text) === 'rate-limited') {
+          session.terminalReason = 'rate-limited';
+          session.syntheticLimitHit = true;
         }
       }
       if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {

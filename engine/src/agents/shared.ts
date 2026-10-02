@@ -20,7 +20,7 @@ import { INTEGRATION_TIER_DEFAULTS, MODEL_POLICY_PRESETS } from '../config.js';
 import { getModulePromptFragments } from '../modules.js';
 import { updateAgentSession, updateTaskWithHistory } from '../task-store.js';
 import { getWorkspace, resolveWorkspaceByRoot, runWithWorkspace } from '../workspace-context.js';
-import { buildActivityEntry } from '../history.js';
+import { buildActivityEntry, isLaunchFocusEntry } from '../history.js';
 import { raiseNeedsAction } from '../parked-ticket.js';
 import { resolveClaudeBinaryPathDarwin, invalidateClaudeBinaryDarwinCache } from './claude-binary-darwin.js';
 import type { CliSessionRecord, CliFramework, TaskKey, Tier, PatternPosition, LaunchPhase } from './types.js';
@@ -804,7 +804,7 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
     // Fallback: derive intent from ticket status (backwards compat for direct API / child sessions).
     if (taskStatus === 'Grooming' || taskStatus === 'Require Input') {
       return `The ticket is in ${taskStatus}. Your job is to GROOM this ticket:\n` +
-        `1. Use update_ticket to fill metadata (priority, effort, tags) and rewrite the body with a Problem/Motivation section and Implementation Plan.\n` +
+        `1. Decide effort first, then use update_ticket to fill metadata (priority, effort, tags) and rewrite the body sized to that effort — XS/S: a TL;DR plus a few short steps and the non-obvious constraints only.\n` +
         `2. If questions are unresolved, use change_status to move to "Require Input" with a comment containing your question.\n` +
         `3. When grooming is complete, use change_status to move to "Todo".\n` +
         mcpNote;
@@ -861,6 +861,12 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
     ...(Array.isArray(task.history) ? task.history.filter((e) => e?.type !== 'agent_message').slice(-3).map((entry) => {
       if (entry?.type === 'status_change') {
         return `- [${entry.date || ''}] ${entry.user || 'Unknown'} moved ${entry.from || '?'} -> ${entry.to || '?'}`;
+      }
+      // FLUX-1788: a launch focus is one-lined here — it may belong to another session/phase, and
+      // this session's own focus is delivered verbatim in its "## Launch focus" block instead.
+      if (isLaunchFocusEntry(entry)) {
+        const forPhase = typeof (entry as { phase?: unknown }).phase === 'string' ? ` for a ${(entry as { phase: string }).phase} session` : '';
+        return `- [${entry?.date || ''}] ${entry?.user || 'Unknown'}: launch focus recorded${forPhase}`;
       }
       return `- [${entry?.date || ''}] ${entry?.user || 'Unknown'}: ${entry?.comment || entry?.type || 'activity'}`;
     }) : ['- (No history)']),

@@ -358,6 +358,12 @@ interface AntigravityCliEvent {
  * degradation (every row would read as the bare activity label) rather than a crash, which is
  * exactly why it is spelled out. Key names observed live; unknown tools fall back to the label.
  */
+/** FLUX-1800: agy reports Windows paths even when this engine (or its test run) is on POSIX, where
+ *  `path.basename` doesn't split on `\\` — the v1.13.0 macOS release job failed on exactly that. */
+function anyPathBasename(p: string): string {
+  return p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+}
+
 export function antigravityProgressMessage(
   toolName: string | undefined,
   params: Record<string, unknown> | undefined,
@@ -374,15 +380,15 @@ export function antigravityProgressMessage(
   const query = str('Query') || str('Pattern') || str('SearchTerm');
   switch (toolName) {
     case 'view_file':
-      return file ? `Reading ${path.basename(file)}` : fallback;
+      return file ? `Reading ${anyPathBasename(file)}` : fallback;
     case 'write_to_file':
-      return file ? `Writing ${path.basename(file)}` : fallback;
+      return file ? `Writing ${anyPathBasename(file)}` : fallback;
     case 'replace_file_content':
     case 'multi_replace_file_content':
     case 'sed_file':
-      return file ? `Editing ${path.basename(file)}` : fallback;
+      return file ? `Editing ${anyPathBasename(file)}` : fallback;
     case 'list_dir':
-      return dir ? `Reading ${path.basename(dir) || dir}` : fallback;
+      return dir ? `Reading ${anyPathBasename(dir) || dir}` : fallback;
     case 'run_command': {
       if (!cmd) return fallback;
       const clipped = cmd.slice(0, 50);

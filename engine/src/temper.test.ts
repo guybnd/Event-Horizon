@@ -31,7 +31,7 @@ vi.mock('./task-worktree.js', async (importOriginal) => {
 let sessionSeq = 0;
 // dispatchSession returns a classified DispatchOutcome (FLUX-1235) — { sid } on success, { sid: null, status?, ... } on refusal.
 const dispatchSession = vi.fn(async (_ticketId: string, _phase: string, _opts?: unknown): Promise<{ sid: string | null; status?: number; error?: string; sessionLabel?: string; sessionStatus?: string }> => ({ sid: `sess-${++sessionSeq}` }));
-const parkTicketOnBoard = vi.fn(async (_ticketId: string, _reason: string) => {});
+const parkTicketOnBoard = vi.fn(async (_ticketId: string, _reason: string, _opts?: { status?: string }) => {});
 const clearReviewState = vi.fn(async (_ticketId: string) => {});
 
 vi.mock('./furnace-stoker.js', async (importOriginal) => {
@@ -48,7 +48,8 @@ vi.mock('./furnace-stoker.js', async (importOriginal) => {
       const r = await dispatchSession(t, p, o);
       return { ...r, resumed: false };
     },
-    parkTicketOnBoard: (t: string, r: string) => parkTicketOnBoard(t, r),
+    // FLUX-1791: forward opts only when non-empty, so the many 2-arg assertions below stay exact.
+    parkTicketOnBoard: (t: string, r: string, o?: { status?: string }) => (o && Object.keys(o).length ? parkTicketOnBoard(t, r, o) : parkTicketOnBoard(t, r)),
     clearReviewState: (t: string) => clearReviewState(t),
   };
 });
@@ -253,13 +254,33 @@ describe('Temper (FLUX-1071) — single-ticket auto-review loop', () => {
     expect(call?.[2]).not.toHaveProperty('framework');
   });
 
-  it('parks the ticket (Require Input) when its review session dies', async () => {
+  // FLUX-1791: a dead REVIEW parks at Ready — moving the finished implementation to In Progress made the
+  // next session re-implement it (TOWERO-15).
+  it('parks the ticket (Require Input) at Ready when its review session dies', async () => {
     await enterReady('PK-1');
     putSession('sess-1', 'review', 'failed');
     await temperTick();
-    expect(parkTicketOnBoard).toHaveBeenCalledWith('PK-1', expect.stringContaining('Temper:'));
+    expect(parkTicketOnBoard).toHaveBeenCalledWith('PK-1', expect.stringContaining('Temper:'), { status: 'Ready' });
     expect(isTempering('PK-1')).toBe(false);
     expect(getWorkspace().tasks['PK-1'].tempering).toBeUndefined();
+  });
+
+  it('cools down on a rate-limited review and retries the REVIEW instead of parking', async () => {
+    const saved = getConfig().furnaceSettings;
+    getConfig().furnaceSettings = { ...(saved ?? {}), rateLimitRetryIntervalMs: 0 };
+    try {
+      await enterReady('RL-1');
+      cliSessionsById.set('sess-1', { id: 'sess-1', phase: 'review', status: 'failed', terminalReason: 'rate-limited' } as unknown as ReturnType<typeof cliSessionsById.get> & object);
+      await temperTick(); // → cooling down
+      expect(parkTicketOnBoard).not.toHaveBeenCalled();
+      expect(isTempering('RL-1')).toBe(true);
+      dispatchSession.mockClear();
+      await temperTick(); // retry window (0ms) elapsed → fresh review
+      expect(dispatchSession).toHaveBeenCalledWith('RL-1', 'review', expect.anything());
+      expect(parkTicketOnBoard).not.toHaveBeenCalled();
+    } finally {
+      getConfig().furnaceSettings = saved;
+    }
   });
 
   // FLUX-1297: a finish/merge flow killed the review session (cancelled) AFTER the ticket's board
